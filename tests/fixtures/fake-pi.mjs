@@ -2,16 +2,137 @@
 /**
  * Scripted stand-in for `pi --mode rpc`.
  * Reads JSONL on stdin; responds on stdout.
- * Behaviors keyed by prompt content:
- *   "hello"    → streamed text response
- *   "use-tool" → tool_execution sequence
+ *
+ * Protocol-correct event shapes (matches src/shared/pi-protocol/events.ts):
+ *   - message_start/update/end carry `message: { role }`
+ *   - message_update carries `assistantMessageEvent: { type, delta, ... }`
+ *   - tool_execution_* use `args` / `partialResult` / `result` (not input/output)
+ *
+ * Persists sessions to JSONL files so e2e can test durability:
+ *   - Mirrors real pi's layout: <sessionsDir>/<encodedCwd>/<timestamp>_<uuid>.jsonl
+ *   - File is lazy — only created on the first prompt.
+ *   - `set_session_name` appends a `session_info` entry; the name survives resume.
+ *
+ * Behaviors keyed by prompt content (lowercased):
+ *   "hello"    → streamed text "Hello! I'm your pi coding agent."
+ *   "use-tool" → tool_execution sequence + "Done reading."
  *   "ask-me"   → select dialog roundtrip
- * Everything else → simple echo response
+ *   anything else → "Echo: <message>"
  */
 
 import { createInterface } from "readline";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import crypto from "crypto";
 
-const rl = createInterface({ input: process.stdin, terminal: false });
+// ── CLI args ──────────────────────────────────────────────────────────────
+
+if (process.argv.includes("--version")) {
+  process.stdout.write("fake-pi 1.0.0\n");
+  process.exit(0);
+}
+
+function argValue(flag) {
+  const idx = process.argv.indexOf(flag);
+  if (idx === -1 || idx === process.argv.length - 1) return undefined;
+  return process.argv[idx + 1];
+}
+
+const sessionFileArg = argValue("--session");
+const sessionDirArg =
+  argValue("--session-dir") ?? process.env.FAKE_PI_SESSIONS_DIR ?? path.join(os.tmpdir(), "fake-pi-sessions");
+
+// ── Module state ──────────────────────────────────────────────────────────
+
+let sessionId;
+let sessionFile;
+let sessionName = null;
+let pendingName = null;
+let lastEntryId = null;
+let fileCreated = false;
+let currentThinkingLevel = "off";
+
+// Resolve session identity. With --session, reuse the file. Without, build a
+// path that mirrors real pi's layout (encoded-cwd subdirectory required so
+// the app's session-discovery only needs one level of recursion).
+if (sessionFileArg) {
+  sessionFile = sessionFileArg;
+  if (fs.existsSync(sessionFile)) {
+    const content = fs.readFileSync(sessionFile, "utf8");
+    const lines = content.split("\n");
+    // Line 1: header
+    try {
+      const header = JSON.parse(lines[0]);
+      sessionId = header.id;
+    } catch {
+      sessionId = crypto.randomUUID();
+    }
+    fileCreated = true;
+    // Walk remaining lines, tracking last entry id and last session_info name.
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (typeof entry.id === "string" && entry.id) {
+        lastEntryId = entry.id;
+      }
+      if (entry.type === "session_info" && typeof entry.name === "string" && entry.name) {
+        sessionName = entry.name;
+      }
+    }
+  } else {
+    fileCreated = false;
+    sessionId = crypto.randomUUID();
+  }
+} else {
+  sessionId = crypto.randomUUID();
+  const encodedCwd = "-" + process.cwd().replaceAll("/", "-") + "--";
+  const fileName = new Date().toISOString().replace(/[:.]/g, "-") + "_" + sessionId + ".jsonl";
+  sessionFile = path.join(sessionDirArg, encodedCwd, fileName);
+  fileCreated = false;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+function newEntryId() {
+  return crypto.randomBytes(4).toString("hex");
+}
+
+function appendEntry(fields) {
+  const entry = {
+    id: newEntryId(),
+    ...(lastEntryId ? { parentId: lastEntryId } : {}),
+    timestamp: Date.now(),
+    ...fields,
+  };
+  fs.appendFileSync(sessionFile, JSON.stringify(entry) + "\n");
+  lastEntryId = entry.id;
+  return entry;
+}
+
+function ensureFile() {
+  if (fileCreated) return;
+  fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+  const header = {
+    type: "session",
+    version: 3,
+    id: sessionId,
+    timestamp: new Date().toISOString(),
+    cwd: process.cwd(),
+  };
+  fs.writeFileSync(sessionFile, JSON.stringify(header) + "\n");
+  fileCreated = true;
+  if (pendingName !== null) {
+    appendEntry({ type: "session_info", name: pendingName });
+    pendingName = null;
+  }
+}
 
 function send(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -21,18 +142,24 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// ── Behaviors (preserved reply texts from the original) ──────────────────
+
 async function handleHello(id) {
   send({ type: "agent_start" });
   send({ type: "turn_start" });
-  send({ type: "message_start", messageId: "msg-1" });
+  send({ type: "message_start", message: { role: "assistant" } });
 
   const deltas = ["Hello! ", "I'm ", "your pi ", "coding agent."];
   for (const delta of deltas) {
-    send({ type: "message_update", messageId: "msg-1", event: { type: "text_delta", delta } });
+    send({
+      type: "message_update",
+      message: { role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", delta },
+    });
     await sleep(50);
   }
 
-  send({ type: "message_end", messageId: "msg-1" });
+  send({ type: "message_end", message: { role: "assistant" } });
   send({ type: "turn_end" });
   send({ type: "agent_end" });
   send({ type: "response", command: "prompt", success: true, id });
@@ -41,32 +168,48 @@ async function handleHello(id) {
 async function handleUseTool(id) {
   send({ type: "agent_start" });
   send({ type: "turn_start" });
-  send({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read_file", input: { path: "test.txt" } });
+  send({
+    type: "tool_execution_start",
+    toolCallId: "tool-1",
+    toolName: "read_file",
+    args: { path: "test.txt" },
+  });
 
   await sleep(100);
-  send({ type: "tool_execution_update", toolCallId: "tool-1", delta: "reading...\n" });
+  send({
+    type: "tool_execution_update",
+    toolCallId: "tool-1",
+    toolName: "read_file",
+    args: { path: "test.txt" },
+    partialResult: "reading...\n",
+  });
   await sleep(100);
   send({
     type: "tool_execution_end",
     toolCallId: "tool-1",
-    output: "file contents here",
-    details: { diff: "--- a/test.txt\n+++ b/test.txt\n@@ -1 +1 @@\n-old\n+new\n" },
+    toolName: "read_file",
+    result: "file contents here",
     isError: false,
   });
 
-  send({ type: "message_start", messageId: "msg-2" });
-  send({ type: "message_update", messageId: "msg-2", event: { type: "text_delta", delta: "Done reading." } });
-  send({ type: "message_end", messageId: "msg-2" });
+  send({ type: "message_start", message: { role: "assistant" } });
+  send({
+    type: "message_update",
+    message: { role: "assistant" },
+    assistantMessageEvent: { type: "text_delta", delta: "Done reading." },
+  });
+  send({ type: "message_end", message: { role: "assistant" } });
   send({ type: "turn_end" });
   send({ type: "agent_end" });
   send({ type: "response", command: "prompt", success: true, id });
 }
 
+const uiPending = new Map();
+
 async function handleAskMe(id) {
   send({ type: "response", command: "prompt", success: true, id });
   send({ type: "agent_start" });
 
-  // Emit select dialog
   const reqId = "ui-req-1";
   send({
     type: "extension_ui_request",
@@ -76,18 +219,36 @@ async function handleAskMe(id) {
     options: ["Option A", "Option B", "Option C"],
   });
 
-  // Wait for response on stdin — we collect it in the rl loop
   uiPending.set(reqId, async (response) => {
     const chosen = response.value ?? "(cancelled)";
-    send({ type: "message_start", messageId: "msg-3" });
-    send({ type: "message_update", messageId: "msg-3", event: { type: "text_delta", delta: `You chose: ${chosen}` } });
-    send({ type: "message_end", messageId: "msg-3" });
+    send({ type: "message_start", message: { role: "assistant" } });
+    send({
+      type: "message_update",
+      message: { role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", delta: `You chose: ${chosen}` },
+    });
+    send({ type: "message_end", message: { role: "assistant" } });
     send({ type: "turn_end" });
     send({ type: "agent_end" });
   });
 }
 
-const uiPending = new Map();
+async function handleEcho(id, message) {
+  send({ type: "agent_start" });
+  send({ type: "message_start", message: { role: "assistant" } });
+  send({
+    type: "message_update",
+    message: { role: "assistant" },
+    assistantMessageEvent: { type: "text_delta", delta: `Echo: ${message}` },
+  });
+  send({ type: "message_end", message: { role: "assistant" } });
+  send({ type: "agent_end" });
+  send({ type: "response", command: "prompt", success: true, id });
+}
+
+// ── Main loop ─────────────────────────────────────────────────────────────
+
+const rl = createInterface({ input: process.stdin, terminal: false });
 
 rl.on("line", async (line) => {
   if (!line.trim()) return;
@@ -100,7 +261,6 @@ rl.on("line", async (line) => {
 
   const { type, id } = msg;
 
-  // UI responses
   if (type === "extension_ui_response") {
     const handler = uiPending.get(msg.id);
     if (handler) {
@@ -112,20 +272,43 @@ rl.on("line", async (line) => {
 
   switch (type) {
     case "prompt": {
-      const content = (msg.content ?? "").toLowerCase();
-      if (content.includes("hello")) {
+      // App sends `message`; keep `content` for back-compat with old tests.
+      const text = String(msg.message ?? msg.content ?? "");
+      const lowered = text.toLowerCase();
+
+      // Persist the user turn BEFORE dispatching.
+      ensureFile();
+      appendEntry({
+        type: "message",
+        role: "user",
+        content: [{ type: "text", text }],
+        display: true,
+      });
+
+      if (lowered.includes("hello")) {
         await handleHello(id);
-      } else if (content.includes("use-tool")) {
+        appendEntry({
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "Hello! I'm your pi coding agent." }],
+        });
+      } else if (lowered.includes("use-tool")) {
         await handleUseTool(id);
-      } else if (content.includes("ask-me")) {
+        appendEntry({
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "Done reading." }],
+        });
+      } else if (lowered.includes("ask-me")) {
+        // ask-me path persists only the user entry; unused by the restore e2e.
         await handleAskMe(id);
       } else {
-        send({ type: "agent_start" });
-        send({ type: "message_start", messageId: "echo-msg" });
-        send({ type: "message_update", messageId: "echo-msg", event: { type: "text_delta", delta: `Echo: ${msg.content}` } });
-        send({ type: "message_end", messageId: "echo-msg" });
-        send({ type: "agent_end" });
-        send({ type: "response", command: "prompt", success: true, id });
+        await handleEcho(id, text);
+        appendEntry({
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: `Echo: ${text}` }],
+        });
       }
       break;
     }
@@ -136,16 +319,39 @@ rl.on("line", async (line) => {
         command: "get_commands",
         success: true,
         id,
-        data: [
-          { name: "login", description: "Login to a provider" },
-          { name: "model", description: "Switch model" },
-          { name: "compact", description: "Compact context" },
-        ],
+        data: {
+          commands: [
+            { name: "login", description: "Login to a provider" },
+            { name: "model", description: "Switch model" },
+            { name: "compact", description: "Compact context" },
+          ],
+        },
       });
       break;
 
     case "get_state":
-      send({ type: "response", command: "get_state", success: true, id, data: { messages: [] } });
+      send({
+        type: "response",
+        command: "get_state",
+        success: true,
+        id,
+        data: {
+          model: {
+            id: "fake-model",
+            name: "Fake Model",
+            api: "fake",
+            provider: "fake",
+            reasoning: false,
+          },
+          thinkingLevel: currentThinkingLevel,
+          isStreaming: false,
+          isCompacting: false,
+          sessionFile,
+          sessionId,
+          ...(sessionName ? { sessionName } : {}),
+          messageCount: 0,
+        },
+      });
       break;
 
     case "get_session_stats":
@@ -154,7 +360,18 @@ rl.on("line", async (line) => {
         command: "get_session_stats",
         success: true,
         id,
-        data: { inputTokens: 100, outputTokens: 50, totalTokens: 150, contextUsed: 150, contextLimit: 200000, cost: 0.001 },
+        data: {
+          sessionFile,
+          sessionId,
+          userMessages: 0,
+          assistantMessages: 0,
+          toolCalls: 0,
+          toolResults: 0,
+          totalMessages: 0,
+          tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, total: 150 },
+          cost: 0.001,
+          contextUsage: { tokens: 150, contextWindow: 200000, percent: 0.075 },
+        },
       });
       break;
 
@@ -164,10 +381,12 @@ rl.on("line", async (line) => {
         command: "get_available_models",
         success: true,
         id,
-        data: [
-          { id: "claude-3-5-sonnet", name: "Claude 3.5 Sonnet", isCurrent: true },
-          { id: "claude-3-opus", name: "Claude 3 Opus", isCurrent: false },
-        ],
+        data: {
+          models: [
+            { id: "fake-model", name: "Fake Model", api: "fake", provider: "fake", reasoning: false },
+          ],
+          currentModelId: "fake-model",
+        },
       });
       break;
 
@@ -176,16 +395,25 @@ rl.on("line", async (line) => {
       break;
 
     case "set_thinking_level":
+      currentThinkingLevel = msg.level;
       send({ type: "response", command: "set_thinking_level", success: true, id });
-      // Mirror pi's behavior: echo the level back as a thinking_level_changed
-      // event so the renderer can reconcile the dropdown. Real pi also
-      // silently clamps to a model-supported level, but the fake doesn't.
       send({ type: "thinking_level_changed", level: msg.level });
       break;
 
-    case "set_session_name":
+    case "set_session_name": {
+      // 1. Persist before responding so the renderer's post-response refresh sees the write.
+      if (fileCreated) {
+        appendEntry({ type: "session_info", name: msg.name });
+      } else {
+        pendingName = msg.name;
+      }
+      sessionName = msg.name;
+      // 2. Ack.
       send({ type: "response", command: "set_session_name", success: true, id });
+      // 3. Notify subscribers.
+      send({ type: "session_info_changed", name: msg.name });
       break;
+    }
 
     case "abort":
       send({ type: "agent_end" });
@@ -193,7 +421,13 @@ rl.on("line", async (line) => {
       break;
 
     case "bash":
-      send({ type: "response", command: "bash", success: true, id, data: { output: `$ ${msg.command}\nbash output here\n` } });
+      send({
+        type: "response",
+        command: "bash",
+        success: true,
+        id,
+        data: { output: `$ ${msg.command}\nbash output here\n` },
+      });
       break;
 
     case "new_session":

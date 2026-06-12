@@ -50,10 +50,10 @@ describe("PiProcess", () => {
     const response = events.find((e) => {
       const ev = e as { kind: string; data: { id?: string } };
       return ev.kind === "response" && ev.data.id === id;
-    }) as { kind: string; data: { success: boolean; data: unknown[] } };
+    }) as { kind: string; data: { success: boolean; data: unknown } };
 
     expect(response.data.success).toBe(true);
-    expect(Array.isArray(response.data.data)).toBe(true);
+    expect(Array.isArray((response.data.data as { commands: unknown[] }).commands)).toBe(true);
     child.kill();
   }, 10_000);
 });
