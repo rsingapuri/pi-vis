@@ -104,6 +104,10 @@ export function Sidebar({ onOpenSettings, width, onResize }: { onOpenSettings: (
     if (sessionRestoredRef.current) return;
     if (!settingsLoaded) return;
     if (workspaces.size === 0) return;
+    // Wait until the openTabs snapshot has actually been loaded from disk.
+    // Without this guard, the effect fires once with [] (default state),
+    // sets the ref to true, and never re-fires when the real array lands.
+    if (settings.openTabs.length === 0 && settings.activeSessionFile === null) return;
     sessionRestoredRef.current = true;
 
     const targetFile = settings.activeSessionFile;

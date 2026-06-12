@@ -14,7 +14,7 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "test": "vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test -c tests/e2e/playwright.config.mts",
     "preview": "electron-vite preview"
   },
   "dependencies": {
