@@ -62,14 +62,17 @@ export function initIpc(win: BrowserWindow): void {
     async (_evt, args: { workspacePath: string; sessionFile?: string }) => {
       if (!registry) throw new Error("Registry not initialized");
       let name: string | null = null;
+      let preview: string | null = null;
       if (args.sessionFile) {
         if (!fs.existsSync(args.sessionFile)) {
           throw new Error(`Session file not found: ${args.sessionFile}`);
         }
-        name = extractSessionMeta(args.sessionFile).name;
+        const meta = extractSessionMeta(args.sessionFile);
+        name = meta.name;
+        preview = meta.preview || null;
       }
       const sessionId = registry.openSession(args.workspacePath, args.sessionFile);
-      return { sessionId, name };
+      return { sessionId, name, preview };
     },
   );
 

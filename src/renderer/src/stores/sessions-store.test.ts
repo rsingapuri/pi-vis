@@ -212,3 +212,76 @@ describe("createSession(name) and tab lifecycle", () => {
     expect(() => persistOpenTabs()).not.toThrow();
   });
 });
+
+describe("createSession(title) and addUserMessage self-labeling", () => {
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+    });
+  });
+
+  it("createSession stores title (preview) and leaves sessionName undefined", () => {
+    useSessionsStore.getState().createSession(
+      SESSION_A,
+      WORKSPACE,
+      "/f/a.jsonl",
+      undefined,
+      "What model is this?",
+    );
+    const s = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(s?.sessionTitle).toBe("What model is this?");
+    expect(s?.sessionName).toBeUndefined();
+  });
+
+  it("createSession stores both name and title; consumers prefer name", () => {
+    useSessionsStore.getState().createSession(
+      SESSION_A,
+      WORKSPACE,
+      "/f/a.jsonl",
+      "Renamed",
+      "preview text",
+    );
+    const s = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(s?.sessionName).toBe("Renamed");
+    expect(s?.sessionTitle).toBe("preview text");
+  });
+
+  it("addUserMessage self-labels a brand-new session from the first prompt (single line)", () => {
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    useSessionsStore.getState().addUserMessage(SESSION_A, "hello there");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionTitle).toBe("hello there");
+
+    // A second message must not overwrite the first-prompt identity.
+    useSessionsStore.getState().addUserMessage(SESSION_A, "goodbye");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionTitle).toBe("hello there");
+  });
+
+  it("addUserMessage uses the first line of a multi-line prompt", () => {
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    useSessionsStore.getState().addUserMessage(SESSION_A, "fix the parser\nplease");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionTitle).toBe("fix the parser");
+  });
+
+  it("addUserMessage does NOT overwrite a title set at createSession", () => {
+    useSessionsStore.getState().createSession(
+      SESSION_A,
+      WORKSPACE,
+      "/f/a.jsonl",
+      undefined,
+      "resume preview",
+    );
+    useSessionsStore.getState().addUserMessage(SESSION_A, "first prompt");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionTitle).toBe("resume preview");
+  });
+
+  it("addUserMessage does NOT overwrite a sessionName set by pi or the user", () => {
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    useSessionsStore.getState().setSessionName(SESSION_A, "Renamed by user");
+    useSessionsStore.getState().addUserMessage(SESSION_A, "first prompt");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe("Renamed by user");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionTitle).toBeUndefined();
+  });
+});

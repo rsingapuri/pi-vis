@@ -119,6 +119,7 @@ test.describe("Pi-Vis restore + name round trip", () => {
     const liveRows = w2.locator(".sidebar__session--live");
     const allText = await liveRows.allTextContents();
     expect(allText.some((t) => t.includes("Renamed Tab One"))).toBe(true);
+    expect(allText.some((t) => t.includes("say something else"))).toBe(true); // unnamed tab shows its first-prompt preview, not "New session"
 
     const nonActiveRow = liveRows.filter({ has: w2.locator(".status-dot--cold") }).first();
     await expect(nonActiveRow.locator(".status-dot--cold")).toHaveCount(1);

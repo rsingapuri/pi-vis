@@ -54,7 +54,13 @@ interface SessionsStore {
   removeWorkspace: (path: string) => void;
   setWorkspaceSessions: (path: string, sessions: SessionSummary[]) => void;
 
-  createSession: (sessionId: SessionId, workspacePath: string, sessionFile?: string, name?: string) => void;
+  createSession: (
+    sessionId: SessionId,
+    workspacePath: string,
+    sessionFile?: string,
+    name?: string,
+    title?: string,
+  ) => void;
   openSessionTab: (
     workspacePath: string,
     sessionFile?: string,
@@ -126,7 +132,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     });
   },
 
-  createSession: (sessionId, workspacePath, sessionFile, name) => {
+  createSession: (sessionId, workspacePath, sessionFile, name, title) => {
     set((state) => {
       const sessions = new Map(state.sessions);
       sessions.set(sessionId, {
@@ -134,6 +140,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         workspacePath,
         sessionFile,
         status: "cold",
+        sessionTitle: title,
         sessionName: name,
         transcript: createTranscriptState(),
         isStreaming: false,
@@ -276,7 +283,18 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       const s = sessions.get(sessionId);
       if (!s) return {};
       const transcript = addUserBlock(s.transcript, content, images);
-      sessions.set(sessionId, { ...s, transcript });
+      // Self-label a brand-new session from its first prompt so the tab and
+      // header have a meaningful identity before pi or the user renames it.
+      // Do not overwrite a name set by pi (session_info_changed → sessionName)
+      // or a title set by an extension (setTitle → sessionTitle) or by the
+      // resume preview path (createSession's `title` param).
+      let sessionTitle = s.sessionTitle;
+      if (!s.sessionName && !sessionTitle) {
+        const firstLine = content.trim().split("\n", 1)[0] ?? "";
+        const trimmed = firstLine.slice(0, 80);
+        if (trimmed.length > 0) sessionTitle = trimmed;
+      }
+      sessions.set(sessionId, { ...s, transcript, sessionTitle });
       return { sessions };
     });
   },
@@ -474,11 +492,17 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
           }
         }
       }
-      const { sessionId, name } = await window.pivis.invoke("session.open", {
+      const { sessionId, name, preview } = await window.pivis.invoke("session.open", {
         workspacePath,
         sessionFile,
       });
-      get().createSession(sessionId, workspacePath, sessionFile, name ?? undefined);
+      get().createSession(
+        sessionId,
+        workspacePath,
+        sessionFile,
+        name ?? undefined,
+        preview ?? undefined,
+      );
       if (sessionFile) {
         try {
           const history = await window.pivis.invoke("session.loadHistory", { sessionId });
