@@ -125,13 +125,13 @@ describe("fake-pi fixture", () => {
 
     // Remaining lines = entries; user message + assistant message; parentId chains through.
     const entries = lines.slice(1).map((l) => JSON.parse(l));
-    const userEntry = entries.find((e) => e.type === "message" && e.role === "user");
+    const userEntry = entries.find((e) => e.type === "message" && e.message?.role === "user");
     expect(userEntry).toBeDefined();
-    expect(userEntry.content[0].text).toBe("say hi");
+    expect(userEntry.message.content[0].text).toBe("say hi");
 
-    const assistantEntry = entries.find((e) => e.type === "message" && e.role === "assistant");
+    const assistantEntry = entries.find((e) => e.type === "message" && e.message?.role === "assistant");
     expect(assistantEntry).toBeDefined();
-    expect(assistantEntry.content[0].text).toMatch(/^Echo: say hi$/);
+    expect(assistantEntry.message.content[0].text).toMatch(/^Echo: say hi$/);
 
     // Every entry after the first must have a parentId equal to the previous entry's id.
     for (let i = 1; i < entries.length; i++) {

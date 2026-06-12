@@ -280,24 +280,32 @@ rl.on("line", async (line) => {
       ensureFile();
       appendEntry({
         type: "message",
-        role: "user",
-        content: [{ type: "text", text }],
-        display: true,
+        message: {
+          role: "user",
+          content: [{ type: "text", text }],
+          timestamp: Date.now(),
+        },
       });
 
       if (lowered.includes("hello")) {
         await handleHello(id);
         appendEntry({
           type: "message",
-          role: "assistant",
-          content: [{ type: "text", text: "Hello! I'm your pi coding agent." }],
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Hello! I'm your pi coding agent." }],
+            timestamp: Date.now(),
+          },
         });
       } else if (lowered.includes("use-tool")) {
         await handleUseTool(id);
         appendEntry({
           type: "message",
-          role: "assistant",
-          content: [{ type: "text", text: "Done reading." }],
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Done reading." }],
+            timestamp: Date.now(),
+          },
         });
       } else if (lowered.includes("ask-me")) {
         // ask-me path persists only the user entry; unused by the restore e2e.
@@ -306,8 +314,11 @@ rl.on("line", async (line) => {
         await handleEcho(id, text);
         appendEntry({
           type: "message",
-          role: "assistant",
-          content: [{ type: "text", text: `Echo: ${text}` }],
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: `Echo: ${text}` }],
+            timestamp: Date.now(),
+          },
         });
       }
       break;
