@@ -33,7 +33,7 @@ export function Sidebar({ onOpenSettings, width, onResize }: { onOpenSettings: (
     activeWorkspacePath,
     addWorkspace,
     removeWorkspace,
-    setWorkspaceSessions,
+    refreshWorkspaceSessions,
     createSession,
     setActiveSession,
     setActiveWorkspace,
@@ -71,10 +71,9 @@ export function Sidebar({ onOpenSettings, width, onResize }: { onOpenSettings: (
     if (path) {
       addWorkspace(path);
       setActiveWorkspace(path);
-      const sessions = await window.pivis.invoke("workspace.listSessions", { workspacePath: path });
-      setWorkspaceSessions(path, sessions);
+      void refreshWorkspaceSessions(path);
     }
-  }, [addWorkspace, setActiveWorkspace, setWorkspaceSessions]);
+  }, [addWorkspace, setActiveWorkspace, refreshWorkspaceSessions]);
 
   const handleNewSession = useCallback(async (workspacePath: string) => {
     try {
@@ -145,9 +144,7 @@ export function Sidebar({ onOpenSettings, width, onResize }: { onOpenSettings: (
     window.pivis.invoke("workspace.recents", undefined).then((recents) => {
       for (const path of recents) {
         addWorkspace(path);
-        window.pivis.invoke("workspace.listSessions", { workspacePath: path }).then((s) => {
-          setWorkspaceSessions(path, s);
-        });
+        void refreshWorkspaceSessions(path);
       }
       if (recents.length > 0 && !activeWorkspacePath) {
         setActiveWorkspace(recents[0] ?? null);

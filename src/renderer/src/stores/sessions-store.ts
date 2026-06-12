@@ -71,6 +71,8 @@ interface SessionsStore {
   setThinkingLevel: (sessionId: SessionId, level: ThinkingLevel) => void;
   setSessionName: (sessionId: SessionId, name: string) => void;
 
+  refreshWorkspaceSessions: (path: string) => Promise<void>;
+
   setActiveSession: (sessionId: SessionId | null) => void;
   setActiveWorkspace: (path: string | null) => void;
 }
@@ -402,6 +404,16 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       sessions.set(sessionId, { ...s, sessionName: name });
       return { sessions };
     });
+  },
+
+  refreshWorkspaceSessions: async (path) => {
+    if (typeof window === "undefined" || !window.pivis) return;
+    try {
+      const sessions = await window.pivis.invoke("workspace.listSessions", { workspacePath: path });
+      get().setWorkspaceSessions(path, sessions);
+    } catch (err) {
+      console.error("Failed to refresh workspace sessions:", err);
+    }
   },
 
   setActiveSession: (sessionId) => {

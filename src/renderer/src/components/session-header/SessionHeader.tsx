@@ -35,6 +35,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
   const setCurrentModel = useSessionsStore((s) => s.setCurrentModel);
   const setStats = useSessionsStore((s) => s.setStats);
   const setSessionName = useSessionsStore((s) => s.setSessionName);
+  const refreshWorkspaceSessions = useSessionsStore((s) => s.refreshWorkspaceSessions);
   const setThinkingLevel = useSessionsStore((s) => s.setThinkingLevel);
   const addToast = useSessionsStore((s) => s.addToast);
   const { settings, update: updateSettings } = useSettingsStore();
@@ -113,7 +114,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
       .invoke("session.sendCommand", { sessionId, command: { type: "get_state" } })
       .then((res) => {
         if (cancelled) return;
-        const raw = res?.data as { thinkingLevel?: unknown; model?: { id?: unknown } } | undefined;
+        const raw = res?.data as { thinkingLevel?: unknown; model?: { id?: unknown }; sessionName?: unknown } | undefined;
         if (!raw) return;
         if (typeof raw.thinkingLevel === "string") {
           const parsed = ThinkingLevelSchema.safeParse(raw.thinkingLevel);
@@ -124,12 +125,15 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
         if (raw.model && typeof raw.model.id === "string") {
           setCurrentModel(sessionId, raw.model.id);
         }
+        if (typeof raw.sessionName === "string" && raw.sessionName) {
+          setSessionName(sessionId, raw.sessionName);
+        }
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [sessionId, setThinkingLevel, setCurrentModel]);
+  }, [sessionId, setThinkingLevel, setCurrentModel, setSessionName]);
 
   // Poll stats after each agent_end and periodically while streaming
   const sessionFileRegisteredRef = useRef(false);
@@ -367,12 +371,15 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
           command: { type: "set_session_name", name: nameInput.trim() },
         });
         setSessionName(sessionId, nameInput.trim());
+        if (session?.workspacePath) {
+          void refreshWorkspaceSessions(session.workspacePath);
+        }
       } catch (err) {
         console.error("Failed to set session name:", err);
       }
     }
     setEditingName(false);
-  }, [nameInput, sessionId, setSessionName]);
+  }, [nameInput, sessionId, setSessionName, refreshWorkspaceSessions, session?.workspacePath]);
 
   const stats = session?.stats;
   const contextPct =
