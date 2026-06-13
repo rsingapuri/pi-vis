@@ -203,9 +203,15 @@ function AssistantBlock({
   );
 }
 
-function ToolCallBlock({ data }: { data: ToolCallBlockData }): React.ReactElement {
+function ToolCallBlock({
+  data,
+  preserveScroll,
+}: {
+  data: ToolCallBlockData;
+  preserveScroll: (mutate: () => void) => void;
+}): React.ReactElement {
   const [open, setOpen] = useState(false);
-  const toggle = useCallback(() => setOpen((v) => !v), []);
+  const toggle = useCallback(() => preserveScroll(() => setOpen((v) => !v)), [preserveScroll]);
 
   const diff = data.diff ?? data.patch;
   const diffLines = useMemo(() => (diff ? splitOutputLines(diff) : []), [diff]);
@@ -287,9 +293,15 @@ function ToolCallBlock({ data }: { data: ToolCallBlockData }): React.ReactElemen
   );
 }
 
-function BashBlock({ data }: { data: BashBlockData }): React.ReactElement {
+function BashBlock({
+  data,
+  preserveScroll,
+}: {
+  data: BashBlockData;
+  preserveScroll: (mutate: () => void) => void;
+}): React.ReactElement {
   const [open, setOpen] = useState(false);
-  const toggle = useCallback(() => setOpen((v) => !v), []);
+  const toggle = useCallback(() => preserveScroll(() => setOpen((v) => !v)), [preserveScroll]);
 
   const outputLines = useMemo(() => splitOutputLines(data.outputText), [data.outputText]);
   const hiddenOutput = Math.max(0, outputLines.length - OUTPUT_PREVIEW_LINES);
@@ -343,6 +355,22 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   const contentRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const lastScrollTopRef = useRef(0);
+
+  // Preserve scroll position during expand/collapse toggles.
+  // When the user is scrolled up (not stuck at bottom), we snapshot
+  // scrollTop before the mutation and restore it after layout commits.
+  const preserveScroll = useCallback((mutate: () => void) => {
+    const el = scrollRef.current;
+    if (!el || stickRef.current) {
+      mutate();
+      return;
+    }
+    const prevTop = el.scrollTop;
+    mutate();
+    requestAnimationFrame(() => {
+      el.scrollTop = prevTop;
+    });
+  }, []);
 
   const allBlocks: TypedTranscriptBlock[] = session?.transcript.blocks ?? [];
   const isStreaming = session?.isStreaming ?? false;
@@ -429,9 +457,11 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
               }
               return <AssistantBlock key={block.id} showLabel={showLabel} data={block.data} />;
             case "tool_call":
-              return <ToolCallBlock key={block.id} data={block.data} />;
+              return (
+                <ToolCallBlock key={block.id} data={block.data} preserveScroll={preserveScroll} />
+              );
             case "bash":
-              return <BashBlock key={block.id} data={block.data} />;
+              return <BashBlock key={block.id} data={block.data} preserveScroll={preserveScroll} />;
             case "compaction":
               return (
                 <div key={block.id} className="compaction-marker">

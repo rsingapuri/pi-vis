@@ -97,14 +97,15 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
 
   // ── Re-tokenize open diff when the color scheme changes ───────────
   // CSS variables don't reach Shiki's baked-in hex tokens, so a scheme
-  // switch needs re-tokenization. We call refresh(true) to force
-  // reconcile to null out tokens while keeping models/gaps/collapsed.
+  // switch needs re-tokenization. retokenize() re-runs the highlighter
+  // on every ready file in place — no git re-fetch, no flash.
   const colorScheme = useSettingsStore((s) => s.settings.colorScheme);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: we intentionally only re-run on colorScheme; visible is checked inside, refresh is stable
+  const retokenize = useDiffStore((s) => s.retokenize);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: we intentionally only re-run on colorScheme; visible is checked inside, retokenize is stable
   useEffect(() => {
     if (!visible) return;
-    void refresh(true);
-  }, [colorScheme, visible, refresh]);
+    retokenize();
+  }, [colorScheme, visible, retokenize]);
 
   // ── ResizeObserver → split-view auto-fallback ─────────────────────
   const contentRef = useRef<HTMLDivElement | null>(null);

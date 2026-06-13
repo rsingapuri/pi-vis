@@ -197,17 +197,17 @@
 }
 .diff-row--add .diff-row__num {
   color: var(--ctp-green);
-  background: color-mix(in srgb, var(--ctp-green) 18%, transparent);
+  background: color-mix(in srgb, var(--ctp-green) 12%, transparent);
 }
 .diff-row--del .diff-row__num {
   color: var(--ctp-red);
-  background: color-mix(in srgb, var(--ctp-red) 18%, transparent);
+  background: color-mix(in srgb, var(--ctp-red) 12%, transparent);
 }
 .diff-row--add .diff-row__code {
-  background: color-mix(in srgb, var(--ctp-green) 12%, transparent);
+  background: color-mix(in srgb, var(--ctp-green) 8%, transparent);
 }
 .diff-row--del .diff-row__code {
-  background: color-mix(in srgb, var(--ctp-red) 12%, transparent);
+  background: color-mix(in srgb, var(--ctp-red) 8%, transparent);
 }
 
 .diff-row__code {
@@ -230,11 +230,11 @@
 
 /* Intraline emphasis: background tint on the changed characters. */
 .diff-row__em {
-  background: color-mix(in srgb, var(--ctp-green) 30%, transparent);
+  background: color-mix(in srgb, var(--ctp-green) 12%, transparent);
   border-radius: 2px;
 }
 .diff-row--del .diff-row__em {
-  background: color-mix(in srgb, var(--ctp-red) 30%, transparent);
+  background: color-mix(in srgb, var(--ctp-red) 12%, transparent);
 }
 
 /* Row hover overlay (subtle — aids horizontal tracking in split view). */

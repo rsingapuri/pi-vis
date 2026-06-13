@@ -29,6 +29,8 @@ export interface FileState {
   gapState?: GapState[];
   oldTokens?: ThemedToken[][] | null;
   newTokens?: ThemedToken[][] | null;
+  oldText?: string;
+  newText?: string;
   collapsed: boolean;
   error?: string;
 }
@@ -62,9 +64,10 @@ export interface DiffStore {
   // mutators
   openViewer: (sessionId: SessionId, root: string) => void;
   closeViewer: () => void;
-  refresh: (forceRetokenize?: boolean) => Promise<void>;
+  refresh: () => Promise<void>;
   ensureFileLoaded: (path: string) => Promise<void>;
   expandGap: (path: string, gapIndex: number, dir: "up" | "down" | "all") => void;
+  retokenize: () => void;
   toggleCollapsed: (path: string) => void;
   setViewMode: (mode: "unified" | "split") => void;
   setFilter: (text: string) => void;
@@ -171,7 +174,7 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       if (root !== null) void get().refreshBadge(root);
     },
 
-    refresh: async (forceRetokenize?: boolean) => {
+    refresh: async () => {
       const root = get().root;
       if (root === null) return;
       const myGen = ++generation;
@@ -192,7 +195,7 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         return;
       }
       if (isStale(generation, myGen)) return;
-      handleChangesResult(set, get, res, isFirst, forceRetokenize);
+      handleChangesResult(set, get, res, isFirst);
     },
 
     ensureFileLoaded: async (path) => {
@@ -253,6 +256,8 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         gapState,
         oldTokens: null,
         newTokens: null,
+        oldText: res.oldText,
+        newText: res.newText,
       });
       set({ fileState: m3 });
 
@@ -276,6 +281,25 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       const m = new Map(get().fileState);
       m.set(path, { ...state, gapState: nextGapState });
       set({ fileState: m });
+    },
+
+    retokenize: () => {
+      // Re-tokenize every ready file in place — used when the color
+      // scheme / Shiki theme changes. Preserves model, gaps, and
+      // collapse state; only nulls tokens and re-runs highlighter.
+      const state = get().fileState;
+      let changed = false;
+      const next = new Map(state);
+      for (const [path, fs] of state) {
+        if (fs.status !== "ready") continue;
+        const myGen = (fileGenerations.get(path) ?? 0) + 1;
+        fileGenerations.set(path, myGen);
+        next.set(path, { ...fs, oldTokens: null, newTokens: null });
+        changed = true;
+        if (fs.oldText !== undefined) scheduleTokenization(path, "old", fs.oldText, myGen);
+        if (fs.newText !== undefined) scheduleTokenization(path, "new", fs.newText, myGen);
+      }
+      if (changed) set({ fileState: next });
     },
 
     toggleCollapsed: (path) => {
@@ -388,7 +412,6 @@ function handleChangesResult(
   get: () => DiffStore,
   res: GitChangesResult,
   isFirst: boolean,
-  forceRetokenize?: boolean,
 ): void {
   if (res.kind === "not-a-repo" || res.kind === "git-missing") {
     set({ phase: res.kind, errorMessage: null, files: [], repoRoot: null, truncated: false });
@@ -416,20 +439,11 @@ function handleChangesResult(
     const prevSig = prevSigs.get(f.path);
     const sig = fileSig(f);
 
-    if (prev && prevSig === sig && !forceRetokenize && prev.status !== "error") {
+    if (prev && prevSig === sig && prev.status !== "error") {
       // Signature unchanged — reuse the previous FileState verbatim.
       // This preserves parsed diff models, Shiki tokens, gaps, and
       // collapse state so the diff viewer doesn't flash/reload.
       fileState.set(f.path, prev);
-    } else if (prev && forceRetokenize && prevSig === sig && prev.status === "ready") {
-      // Same file, same signature, but force re-tokenization (e.g.
-      // color scheme changed). Keep model/gaps/collapsed but null
-      // out tokens so the section re-tokenizes with the new theme.
-      fileState.set(f.path, {
-        ...prev,
-        oldTokens: null,
-        newTokens: null,
-      });
     } else {
       // Changed or new file — start idle so ensureFileLoaded reloads.
       fileState.set(f.path, {
