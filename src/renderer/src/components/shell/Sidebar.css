@@ -29,7 +29,7 @@
 .sidebar__workspaces {
   flex: 1;
   overflow-y: auto;
-  padding: 0.571rem 0; /* ≈8px */
+  padding: 0 0 0.571rem 0; /* bottom only — top spacing handled by the divider above */
 }
 
 .sidebar__workspace {
