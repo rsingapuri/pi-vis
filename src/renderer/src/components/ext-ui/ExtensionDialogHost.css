@@ -1,43 +1,85 @@
-/* Extension dialog host — modal forms. Uses the MCM label style for
-   dialog titles and buttons (uppercase, wide tracking), and the MCM
-   body for descriptive text. */
+/* Extension dialog host — extension_ui_request forms.
 
-.ext-dialog-overlay {
-  position: absolute;
-  inset: 0;
-  background: var(--ctp-scrim);
-  backdrop-filter: blur(0.286rem);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 200;
-  padding: var(--mcm-base);
+   Design intent: the dialog replaces the Composer (text input bar)
+   rather than opening as a modal scrim that blocks the rest of the UI.
+   The slot uses the same chrome as the Composer (background, top
+   border, padding) and the inner card uses the same surface0 / border
+   treatment as the Composer input box, so the layout doesn't shift
+   when a dialog opens. The transcript above stays scrollable, the
+   session header (model + thinking level selectors) stays clickable,
+   and the diff viewer (Cmd+G) still works while a question is open.
+
+   The host is mounted in place of the Composer by App.tsx when a
+   dialog is pending, so the Composer and the dialog are never both
+   visible. The slot is the parent flex child that previously held
+   the Composer; the inner `.ext-dialog` is the form card. */
+
+.ext-dialog-slot {
+  background: var(--color-bg);
+  border-top: 1px solid var(--ctp-surface0);
+  padding: 0.714rem 0.857rem;
+  flex-shrink: 1;
+  min-height: 0;
+  font-size: var(--font-size-base);
+  line-height: 1.5;
+  /* Safety net: if a dialog is taller than the available space (e.g.
+     a 20-option select on a small window), scroll the whole slot
+     rather than letting the StatusBar get clipped by .app__session's
+     overflow:hidden. min-height:0 + flex-shrink:1 let the slot yield
+     to the TranscriptView first; the scroll only kicks in on screens
+     too short for even that. */
+  overflow-y: auto;
+  /* Soft entry: the dialog swaps in where the composer was, so a
+     gentle slide + fade tells the eye "something just asked for your
+     attention" without resorting to a scrim. 180ms matches the toast's
+     entry, so they feel like the same family. */
+  animation: ext-dialog-slot-in 0.18s ease-out;
+}
+
+@keyframes ext-dialog-slot-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.357rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .ext-dialog {
   background: var(--ctp-surface0);
   border: 1px solid var(--ctp-surface1);
   border-radius: var(--mcm-radius-md);
-  padding: 1.429rem; /* ≈20px */
-  min-width: 22.857rem; /* ≈320px */
-  max-width: 34.286rem; /* ≈480px */
-  box-shadow: 0 0.571rem 2.286rem var(--ctp-shadow);
+  /* Tighter than the original modal (1.429rem) but still a touch
+     roomier than the composer's input-box padding (0.286rem) so the
+     multi-element form has room to breathe. */
+  padding: 0.571rem 0.857rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.571rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ext-dialog:focus-within {
+  border-color: var(--ctp-mauve);
 }
 
 .ext-dialog--editor {
-  min-width: 34.286rem; /* ≈480px */
-  max-width: 42.857rem; /* ≈600px */
+  /* The editor dialog hosts a multi-line textarea; cap its height so a
+     long draft doesn't push the transcript off-screen. */
+  max-height: 60vh;
 }
 
 .ext-dialog__title {
   font-family: var(--font-display);
-  font-size: 1.071em; /* ≈15px @ 14px root */
-  font-weight: 600;
+  font-size: 0.929em; /* ≈13px @ 14px root */
+  font-weight: 500;
   text-transform: uppercase;
   letter-spacing: var(--mcm-track-label);
   line-height: var(--mcm-line-label);
   color: var(--ctp-text);
-  margin-bottom: 0.857rem;
   display: flex;
   align-items: baseline;
   gap: 0.571rem;
@@ -46,7 +88,7 @@
 
 .ext-dialog__countdown {
   font-family: var(--font-display);
-  font-size: 0.786em; /* ≈11px @ 14px root */
+  font-size: 0.857em; /* ≈12px @ 14px root */
   font-weight: 400;
   color: var(--ctp-overlay0);
   text-transform: none;
@@ -57,20 +99,21 @@
   font-family: var(--font-display);
   font-size: 0.929em;
   color: var(--ctp-subtext0);
-  margin-bottom: 1rem;
   line-height: var(--mcm-line-body);
+  word-break: break-word;
 }
 
 .ext-dialog__options {
   display: flex;
   flex-direction: column;
-  gap: 0.429rem;
-  margin-bottom: 0.714rem;
+  gap: 0.286rem;
+  max-height: 28.571rem; /* ≈400px @ 14px root */
+  overflow-y: auto;
 }
 
 .ext-dialog__option {
-  background: var(--ctp-surface1);
-  border: 1px solid var(--ctp-surface2);
+  background: var(--ctp-mantle);
+  border: 1px solid var(--ctp-surface1);
   border-radius: var(--mcm-radius-sm);
   color: var(--ctp-text);
   cursor: pointer;
@@ -79,6 +122,7 @@
   text-align: left;
   padding: 0.714rem 1rem;
   line-height: 1.3;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
 
 /* Select-dialog question heading: human-language prompt, not a label.
@@ -87,8 +131,15 @@
 .ext-dialog__title--question {
   text-transform: none;
   letter-spacing: normal;
+  font-size: 1em;
+  font-weight: 500;
+  color: var(--ctp-text);
 }
 
+/* Selected/hovered option: full mauve wash. The whole dialog already
+   has a mauve focus-within border, so the option's highlight needs to
+   read as a different visual layer — a flat surface2 + mauve-border
+   combo is too quiet and gets lost next to the surrounding chrome. */
 .ext-dialog__option:hover,
 .ext-dialog__option--highlighted {
   background: var(--ctp-mauve);
@@ -106,7 +157,16 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
   line-height: var(--mcm-line-label);
-  margin-top: 0.286rem;
+  padding: 0;
+  align-self: flex-end;
+}
+
+.ext-dialog__hint {
+  font-family: var(--font-display);
+  font-size: 0.786em;
+  color: var(--ctp-overlay0);
+  letter-spacing: 0.02em;
+  text-align: right;
 }
 
 .ext-dialog__cancel:hover {
@@ -123,7 +183,7 @@
   outline: none;
   padding: 0.571rem 0.857rem;
   width: 100%;
-  margin-bottom: 0.857rem;
+  box-sizing: border-box;
 }
 
 .ext-dialog__input:focus {
@@ -143,7 +203,7 @@
   padding: 0.714rem 0.857rem;
   resize: vertical;
   width: 100%;
-  margin-bottom: 0.857rem;
+  box-sizing: border-box;
 }
 
 .ext-dialog__editor:focus {
@@ -190,7 +250,14 @@
 /* Toast host */
 .toast-host {
   position: absolute;
-  bottom: 5.714rem;
+  /* Sit above the dialog slot, not the status bar. The original
+     bottom: 5.714rem landed inside the dialog for any dialog taller
+     than ~80px (which is every real one). Bottom: 8rem (~128px)
+     clears a typical select/confirm/input dialog while still
+     hovering over the status bar. The dialog is z-index 0 and toasts
+     are z-index 300, so even when a tall dialog does overlap, the
+     toast stays readable on top. */
+  bottom: 8rem;
   right: 1.143rem;
   display: flex;
   flex-direction: column;

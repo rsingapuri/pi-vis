@@ -151,8 +151,11 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
     if (!visible) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.defaultPrevented) return;
-      // Defer to dialogs / pickers when they own the screen.
-      if (document.querySelector(".ext-dialog-overlay, .picker-overlay")) return;
+      // Defer to the picker when it owns the screen. Extension dialogs
+      // no longer block the UI — they live in the Composer slot — so
+      // j/k navigation, Escape, etc. should still work in the diff
+      // viewer while a question is pending.
+      if (document.querySelector(".picker-overlay")) return;
       const target = e.target as HTMLElement | null;
       const isInFilter = target?.classList.contains("diff-rail__search-input") ?? false;
       if (e.key === "Escape") {

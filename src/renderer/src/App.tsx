@@ -31,6 +31,16 @@ export function App(): React.ReactElement {
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(220);
 
+  // Whether the active session has an unanswered extension_ui_request.
+  // When true, the dialog replaces the Composer in the flex slot below.
+  // Subscribed via a hook so the App re-renders when a dialog opens or
+  // closes; the ExtensionDialogHost still owns the form UI.
+  const hasPendingDialog = useSessionsStore((s) => {
+    const id = s.activeSessionId;
+    if (!id) return false;
+    return (s.sessions.get(id)?.pendingDialogs.length ?? 0) > 0;
+  });
+
   // Boot: load settings and check for pi
   useEffect(() => {
     loadSettings();
@@ -56,18 +66,22 @@ export function App(): React.ReactElement {
     if (!showSettings) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "Escape") return;
-      if (document.querySelector(".ext-dialog-overlay, .picker-overlay, .diff-overlay")) return;
+      // Defer to true modals (picker, diff viewer) only. Extension
+      // dialogs no longer block the UI — they live in the Composer
+      // slot — so Escape should still close settings when a question
+      // is pending. The user can reopen the dialog (it's still in the
+      // pendingDialogs queue) by clicking the session in the sidebar.
+      if (document.querySelector(".picker-overlay, .diff-overlay")) return;
       setShowSettings(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [showSettings]);
 
-  // Cmd/Ctrl+G toggles the diff viewer (WP5c). Defer to dialogs and
-  // pickers when they're on top — same defer-to-modal rule the viewer
-  // itself uses. Defer to settings too so opening settings via the
-  // shortcut works (settings is not a modal in the dialog sense but
-  // it's a fullscreen panel and shouldn't get a stacked diff).
+  // Cmd/Ctrl+G toggles the diff viewer (WP5c). The extension dialog is
+  // no longer a modal — the diff viewer must remain usable while a
+  // question is pending — so we only defer to the picker (which is
+  // still a fullscreen modal).
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (!(e.metaKey || e.ctrlKey)) return;
@@ -75,7 +89,7 @@ export function App(): React.ReactElement {
       if (e.key.toLowerCase() !== "g") return;
       e.preventDefault();
       if (showSettings) return;
-      if (document.querySelector(".ext-dialog-overlay, .picker-overlay")) return;
+      if (document.querySelector(".picker-overlay")) return;
       const isOpen = useDiffStore.getState().open;
       if (isOpen) {
         useDiffStore.getState().closeViewer();
@@ -189,9 +203,19 @@ export function App(): React.ReactElement {
           <div className="app__session" style={{ position: "relative" }}>
             <SessionHeader sessionId={activeSessionId} />
             <TranscriptView sessionId={activeSessionId} />
-            <Composer sessionId={activeSessionId} />
+            {/* Composer and the extension dialog share the same flex
+                slot: the dialog replaces the composer when a question is
+                pending, so they are never both visible. The dialog
+                intentionally does not block the rest of the UI — the
+                transcript above stays scrollable, the header (model +
+                thinking level) stays clickable, and the diff viewer
+                (Cmd+G) still works while the question is open. */}
+            {hasPendingDialog ? (
+              <ExtensionDialogHost sessionId={activeSessionId} />
+            ) : (
+              <Composer sessionId={activeSessionId} />
+            )}
             <StatusBar sessionId={activeSessionId} />
-            <ExtensionDialogHost sessionId={activeSessionId} />
             <AppPickerHost sessionId={activeSessionId} />
             <ToastHost sessionId={activeSessionId} />
             <DiffViewerHost sessionId={activeSessionId} />

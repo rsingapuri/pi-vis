@@ -42,7 +42,6 @@ function SelectDialog({ request, onRespond }: DialogProps): React.ReactElement {
     <div
       className="ext-dialog"
       role="dialog"
-      aria-modal="true"
       tabIndex={-1}
       ref={dialogRef}
       onKeyDown={(e) => {
@@ -106,6 +105,7 @@ function SelectDialog({ request, onRespond }: DialogProps): React.ReactElement {
           </button>
         ))}
       </div>
+      <div className="ext-dialog__hint">↑↓ navigate · enter to select</div>
       <button
         type="button"
         className="ext-dialog__cancel"
@@ -137,7 +137,7 @@ function ConfirmDialog({ request, onRespond }: DialogProps): React.ReactElement 
     return () => clearInterval(id);
   }, [req.timeout]);
   return (
-    <div className="ext-dialog" role="dialog" aria-modal="true">
+    <div className="ext-dialog" role="dialog">
       <div className="ext-dialog__title">
         {req.title}
         {remaining != null && remaining > 0 && (
@@ -285,8 +285,13 @@ export function ExtensionDialogHost({
 
   if (!current) return null;
 
+  // No modal overlay: the dialog lives in the Composer slot so the
+  // transcript, status bar, session header (model + thinking level) and
+  // diff viewer remain interactive. The parent renders this host in
+  // place of the Composer when a dialog is pending, so the two are
+  // never both visible.
   return (
-    <div className="ext-dialog-overlay">
+    <div className="ext-dialog-slot">
       {current.method === "select" && <SelectDialog request={current} onRespond={handleRespond} />}
       {current.method === "confirm" && (
         <ConfirmDialog request={current} onRespond={handleRespond} />
