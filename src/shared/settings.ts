@@ -15,6 +15,7 @@ export const AppSettingsSchema = z.object({
     })
     .default({}),
   recentWorkspaces: z.array(z.string()).default([]),
+  lastActiveWorkspace: z.string().nullable().default(null),
   lastUsedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().default(null),
   lastUsedThinkingLevel: ThinkingLevelSchema.nullable().default(null),
   // Catppuccin flavor applied at runtime via CSS vars (and Shiki themes).

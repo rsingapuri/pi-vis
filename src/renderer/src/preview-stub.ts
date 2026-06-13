@@ -383,6 +383,13 @@ const stub = {
         return settingsState;
       case "workspace.recents":
         return [DEMO_WORKSPACE];
+      case "workspace.remove": {
+        const { workspacePath } = req as { workspacePath: string };
+        settingsState.recentWorkspaces = settingsState.recentWorkspaces.filter(
+          (w) => w !== workspacePath,
+        );
+        return settingsState.recentWorkspaces;
+      }
       case "workspace.listSessions":
         return [];
       case "session.loadHistory":

@@ -13,7 +13,7 @@ import { loadHistory } from "./sessions/history-loader.js";
 import { extractSessionMeta, listSessionsForWorkspace } from "./sessions/session-discovery.js";
 import { SessionRegistry } from "./sessions/session-registry.js";
 import { getSettings, saveSettings } from "./settings-store.js";
-import { getRecentWorkspaces, pickWorkspace } from "./workspaces.js";
+import { getRecentWorkspaces, pickWorkspace, removeRecentWorkspace } from "./workspaces.js";
 
 let registry: SessionRegistry | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -56,6 +56,10 @@ export function initIpc(win: BrowserWindow): void {
 
   ipcMain.handle("workspace.recents", async () => {
     return getRecentWorkspaces();
+  });
+
+  ipcMain.handle("workspace.remove", async (_evt, args: { workspacePath: string }) => {
+    return removeRecentWorkspace(args.workspacePath);
   });
 
   ipcMain.handle("workspace.listSessions", async (_evt, args: { workspacePath: string }) => {

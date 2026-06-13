@@ -55,6 +55,12 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Re-entrancy guard for `handleSubmit`. Without this, a rapid/auto-repeat
+  // keydown can read the stale `text` closure before `setText("")` commits
+  // and dispatch two submissions (two optimistic bubbles + two prompts).
+  // Set to true for the duration of the submit, reset in `finally` so a
+  // rejected/throwing call doesn't lock the composer permanently.
+  const submittingRef = useRef(false);
 
   // Pull the active session's state. We read everything we might need at
   // submit time from the same snapshot to avoid a render-during-update race.
@@ -178,100 +184,110 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const handleSubmit = useCallback(async () => {
     const content = text;
     if (!content.trim()) return;
-    setText("");
-    setAttachments([]);
-    setSlashIndex(0);
+    // Drop a second concurrent invocation: a held/auto-repeat Enter can
+    // re-fire this before the `text` state below commits, which would
+    // otherwise read the same `content` twice and dispatch two sends.
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    try {
+      setText("");
+      setAttachments([]);
+      setSlashIndex(0);
 
-    const action = parseComposerInput(content, { discovered });
-    const imgs = attachments;
+      const action = parseComposerInput(content, { discovered });
+      const imgs = attachments;
 
-    const finalAction =
-      action.kind === "send-prompt" && imgs.length > 0
-        ? {
-            ...action,
-            images: imgs.map((a) => {
-              const comma = a.dataUrl.indexOf(",");
-              const header = a.dataUrl.slice(0, comma);
-              const mimeType = /^data:([^;]+)/.exec(header)?.[1] ?? "image/png";
-              return { data: a.dataUrl.slice(comma + 1), mimeType, dataUrl: a.dataUrl };
-            }),
+      const finalAction =
+        action.kind === "send-prompt" && imgs.length > 0
+          ? {
+              ...action,
+              images: imgs.map((a) => {
+                const comma = a.dataUrl.indexOf(",");
+                const header = a.dataUrl.slice(0, comma);
+                const mimeType = /^data:([^;]+)/.exec(header)?.[1] ?? "image/png";
+                return { data: a.dataUrl.slice(comma + 1), mimeType, dataUrl: a.dataUrl };
+              }),
+            }
+          : action;
+
+      // No-model guard: only for plain user prompts. /model (which fixes
+      // the guard!) and bash bypass it. Must run inside `try` so the
+      // `finally` below still resets `submittingRef`.
+      if (
+        finalAction.kind === "send-prompt" &&
+        !session?.currentModel &&
+        finalAction.commandSource === undefined
+      ) {
+        addToast(sessionId, "No model selected", "error");
+        return;
+      }
+
+      const deps = {
+        // The executeAction interface is intentionally generic-string for
+        // testability; the real invoke has a typed channel union, but the
+        // runtime call sites pass the right channel so the runtime contract
+        // is honored. We narrow at the boundary by giving the casted
+        // wrapper the right call signature.
+        invoke: <T = unknown>(channel: string, payload: unknown) =>
+          window.pivis.invoke(
+            channel as Parameters<typeof window.pivis.invoke>[0],
+            payload as Parameters<typeof window.pivis.invoke>[1],
+          ) as unknown as Promise<{ success: boolean; data?: T; error?: string }>,
+        setStreaming,
+        addToast,
+        addUserMessage,
+        addBashCommand,
+        finishBashCommand,
+        setCurrentModel,
+        updateLastUsedModel: async (provider: string, modelId: string) => {
+          await updateSettings({ lastUsedModel: { provider, modelId } });
+        },
+        addCustomMessage,
+        openPicker: (sid: SessionId, picker: PickerRequest) => openPicker(sid, picker),
+        adoptSessionFile: async (sid: SessionId, file?: string, name?: string) => {
+          await adoptSessionFile(sid, file, name);
+          if (file) {
+            const history = await window.pivis.invoke("session.loadHistory", { sessionId: sid });
+            seedHistory(sid, history ?? []);
+            if (session?.workspacePath) {
+              void refreshWorkspaceSessions(session.workspacePath);
+            }
           }
-        : action;
+        },
+        closeSessionTab: async (sid: SessionId) => closeSessionTab(sid),
+        openAppSettings: () => {
+          // The settings panel is owned by App.tsx; we dispatch a custom
+          // event that the App subscribes to. Keeps Composer free of
+          // cross-tree prop drilling.
+          window.dispatchEvent(new CustomEvent("pivis:open-settings"));
+        },
+        openDiffViewer: (sid: SessionId) => {
+          // The diff viewer is mounted at the App level (overlay over
+          // the session area). The store owns its state; we just call
+          // the helper.
+          openDiffForSession(sid);
+        },
+        copyToClipboard: async (t: string) => {
+          await navigator.clipboard.writeText(t);
+        },
+        getAvailableModels: (sid: SessionId): ModelInfo[] => {
+          const s = useSessionsStore.getState().sessions.get(sid);
+          return s?.availableModels ?? [];
+        },
+        getSessionName: (sid: SessionId) =>
+          useSessionsStore.getState().sessions.get(sid)?.sessionName,
+        getCurrentModel: (sid: SessionId) =>
+          useSessionsStore.getState().sessions.get(sid)?.currentModel,
+        getSessionWorkspacePath: (sid: SessionId) =>
+          useSessionsStore.getState().sessions.get(sid)?.workspacePath,
+        listSessions: (p: string) =>
+          window.pivis.invoke("workspace.listSessions", { workspacePath: p }),
+      };
 
-    // No-model guard: only for plain user prompts. /model (which fixes
-    // the guard!) and bash bypass it.
-    if (
-      finalAction.kind === "send-prompt" &&
-      !session?.currentModel &&
-      finalAction.commandSource === undefined
-    ) {
-      addToast(sessionId, "No model selected", "error");
-      return;
+      await executeAction(sessionId, finalAction, deps);
+    } finally {
+      submittingRef.current = false;
     }
-
-    const deps = {
-      // The executeAction interface is intentionally generic-string for
-      // testability; the real invoke has a typed channel union, but the
-      // runtime call sites pass the right channel so the runtime contract
-      // is honored. We narrow at the boundary by giving the casted
-      // wrapper the right call signature.
-      invoke: <T = unknown>(channel: string, payload: unknown) =>
-        window.pivis.invoke(
-          channel as Parameters<typeof window.pivis.invoke>[0],
-          payload as Parameters<typeof window.pivis.invoke>[1],
-        ) as unknown as Promise<{ success: boolean; data?: T; error?: string }>,
-      setStreaming,
-      addToast,
-      addUserMessage,
-      addBashCommand,
-      finishBashCommand,
-      setCurrentModel,
-      updateLastUsedModel: async (provider: string, modelId: string) => {
-        await updateSettings({ lastUsedModel: { provider, modelId } });
-      },
-      addCustomMessage,
-      openPicker: (sid: SessionId, picker: PickerRequest) => openPicker(sid, picker),
-      adoptSessionFile: async (sid: SessionId, file?: string, name?: string) => {
-        await adoptSessionFile(sid, file, name);
-        if (file) {
-          const history = await window.pivis.invoke("session.loadHistory", { sessionId: sid });
-          seedHistory(sid, history ?? []);
-          if (session?.workspacePath) {
-            void refreshWorkspaceSessions(session.workspacePath);
-          }
-        }
-      },
-      closeSessionTab: async (sid: SessionId) => closeSessionTab(sid),
-      openAppSettings: () => {
-        // The settings panel is owned by App.tsx; we dispatch a custom
-        // event that the App subscribes to. Keeps Composer free of
-        // cross-tree prop drilling.
-        window.dispatchEvent(new CustomEvent("pivis:open-settings"));
-      },
-      openDiffViewer: (sid: SessionId) => {
-        // The diff viewer is mounted at the App level (overlay over
-        // the session area). The store owns its state; we just call
-        // the helper.
-        openDiffForSession(sid);
-      },
-      copyToClipboard: async (t: string) => {
-        await navigator.clipboard.writeText(t);
-      },
-      getAvailableModels: (sid: SessionId): ModelInfo[] => {
-        const s = useSessionsStore.getState().sessions.get(sid);
-        return s?.availableModels ?? [];
-      },
-      getSessionName: (sid: SessionId) =>
-        useSessionsStore.getState().sessions.get(sid)?.sessionName,
-      getCurrentModel: (sid: SessionId) =>
-        useSessionsStore.getState().sessions.get(sid)?.currentModel,
-      getSessionWorkspacePath: (sid: SessionId) =>
-        useSessionsStore.getState().sessions.get(sid)?.workspacePath,
-      listSessions: (p: string) =>
-        window.pivis.invoke("workspace.listSessions", { workspacePath: p }),
-    };
-
-    await executeAction(sessionId, finalAction, deps);
   }, [
     text,
     discovered,
@@ -339,6 +355,11 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       }
 
       if (e.key === "Enter" && !e.shiftKey) {
+        // IME composition-Enter: confirm-Enter inside a CJK/IME candidate
+        // window fires `keydown` with `keyCode === 229` and
+        // `isComposing === true`. Submitting on that key would steal the
+        // composition end from the user.
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
         e.preventDefault();
         void handleSubmit();
       }

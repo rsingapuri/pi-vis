@@ -18,6 +18,17 @@ export async function pickWorkspace(): Promise<string | null> {
   return chosen;
 }
 
+export function removeRecentWorkspace(path: string): string[] {
+  const settings = getSettings();
+  const recents = settings.recentWorkspaces.filter((w) => w !== path);
+  const updates: Partial<ReturnType<typeof getSettings>> = { recentWorkspaces: recents };
+  if (settings.lastActiveWorkspace === path) {
+    updates.lastActiveWorkspace = null;
+  }
+  saveSettings(updates);
+  return recents;
+}
+
 export function getRecentWorkspaces(): string[] {
   return getSettings().recentWorkspaces;
 }

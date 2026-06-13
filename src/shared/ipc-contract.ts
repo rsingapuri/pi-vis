@@ -32,6 +32,7 @@ export interface IpcInvokeContract {
   "pi.locate": { req: undefined; res: { path: string; version: string } | null };
   "workspace.pick": { req: undefined; res: string | null };
   "workspace.recents": { req: undefined; res: string[] };
+  "workspace.remove": { req: { workspacePath: string }; res: string[] };
   "workspace.listSessions": { req: { workspacePath: string }; res: SessionSummary[] };
   "session.open": {
     req: { workspacePath: string; sessionFile?: string | undefined };

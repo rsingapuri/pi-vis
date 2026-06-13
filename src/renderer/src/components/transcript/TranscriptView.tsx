@@ -407,15 +407,32 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const stickRef = useRef(true);
-  const lastScrollTopRef = useRef(0);
+  // Single source of truth for "follow the bottom". Only a genuine
+  // user scroll away from the bottom clears it; reaching the bottom
+  // (by any means) sets it back. Compared against `lastPinnedTopRef`
+  // rather than `scrollHeight` so a large content chunk arriving
+  // between a programmatic pin and its lagging scroll-event echo is
+  // not misread as the user scrolling up.
+  const pinnedRef = useRef(true);
+  const lastPinnedTopRef = useRef(0);
+
+  // Programmatic pin helper. Always pin to `scrollHeight - clientHeight`
+  // (the absolute bottom) and record the target so handleScroll can
+  // distinguish "we pinned" from "the user moved up from where we were".
+  const pinToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const target = el.scrollHeight - el.clientHeight;
+    lastPinnedTopRef.current = target;
+    el.scrollTop = target;
+  }, []);
 
   // Preserve scroll position during expand/collapse toggles.
-  // When the user is scrolled up (not stuck at bottom), we snapshot
+  // When the user is scrolled up (not pinned), we snapshot
   // scrollTop before the mutation and restore it after layout commits.
   const preserveScroll = useCallback((mutate: () => void) => {
     const el = scrollRef.current;
-    if (!el || stickRef.current) {
+    if (!el || pinnedRef.current) {
       mutate();
       return;
     }
@@ -434,49 +451,58 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
       ? allBlocks
       : allBlocks.slice(allBlocks.length - MAX_VISIBLE_BLOCKS);
 
-  // Sticky bottom: any upward scroll unsticks; scrolling back down to the
-  // bottom re-sticks.  Programmatic pins land exactly at the bottom, so they
-  // re-confirm stickiness rather than fighting the user.
+  // Sticky bottom via distance-from-bottom detection. Robust against:
+  //   • content *shrink* (async highlight replacing tall raw text, image
+  //     finishing load, tool card collapsing) — the browser clamps
+  //     scrollTop downward; distance stays ~0 → re-pins.
+  //   • a content chunk arriving between a programmatic pin and its
+  //     scroll-event echo — `scrollTop` hasn't moved away from
+  //     `lastPinnedTopRef`, so we don't mistake "grew below us" for
+  //     "user scrolled up".
+  //   • a real wheel/touch up-scroll mid-stream — scrollTop moves above
+  //     `lastPinnedTopRef` by more than the margin → unpins.
+  //   • the user returning to the bottom — distance ≤ margin → re-pins.
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const goingUp = el.scrollTop < lastScrollTopRef.current;
-    lastScrollTopRef.current = el.scrollTop;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (goingUp) {
-      stickRef.current = false;
-    } else if (distance <= SCROLL_RESTICK_PX) {
-      stickRef.current = true;
+    if (distance <= SCROLL_RESTICK_PX) {
+      // At/near bottom: re-pin (covers shrink-clamps, growth-clamps, and
+      // the user actively returning to the bottom).
+      pinnedRef.current = true;
+      lastPinnedTopRef.current = el.scrollTop;
+    } else if (el.scrollTop < lastPinnedTopRef.current - SCROLL_RESTICK_PX) {
+      // The user moved up from where we last pinned.
+      pinnedRef.current = false;
     }
+    // else: ambiguous transient (grew below us, not yet re-pinned) —
+    // leave state as-is. The ResizeObserver follow-loop will pin us
+    // back into the distance-≤-margin branch on the next layout.
   }, []);
 
-  // While stuck, pin on every content/viewport size change.  A ResizeObserver
-  // catches growth the block count misses: streaming text deltas, image loads,
-  // and async syntax highlighting.
+  // While pinned, follow content/viewport size changes. A ResizeObserver
+  // catches growth the block count misses: streaming text deltas, image
+  // loads, and async syntax highlighting — none of which fire scroll
+  // events on their own.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const content = contentRef.current;
     if (!el || !content) return;
-    const pin = () => {
-      if (stickRef.current) el.scrollTop = el.scrollHeight;
-    };
-    const observer = new ResizeObserver(pin);
+    const observer = new ResizeObserver(() => {
+      if (pinnedRef.current) pinToBottom();
+    });
     observer.observe(content);
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [pinToBottom]);
 
   // Switching sessions always starts pinned to the bottom
   // biome-ignore lint/correctness/useExhaustiveDependencies: sessionId is a mount trigger, not a reactive dep
   useLayoutEffect(() => {
     setShowAll(false);
-    stickRef.current = true;
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-      lastScrollTopRef.current = el.scrollTop;
-    }
-  }, [sessionId]);
+    pinnedRef.current = true;
+    pinToBottom();
+  }, [sessionId, pinToBottom]);
 
   // Sending your own message snaps the view back to the bottom
   const lastBlockType = allBlocks[allBlocks.length - 1]?.type;
@@ -484,12 +510,11 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   const prevBlockCountRef = useRef(blockCount);
   useLayoutEffect(() => {
     if (blockCount > prevBlockCountRef.current && lastBlockType === "user") {
-      stickRef.current = true;
-      const el = scrollRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
+      pinnedRef.current = true;
+      pinToBottom();
     }
     prevBlockCountRef.current = blockCount;
-  }, [blockCount, lastBlockType]);
+  }, [blockCount, lastBlockType, pinToBottom]);
 
   return (
     <div className="transcript-view" ref={scrollRef} onScroll={handleScroll}>

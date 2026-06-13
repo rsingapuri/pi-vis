@@ -334,22 +334,61 @@ describe("transcript reducer — role-based message_start", () => {
     expect(state.pendingEchoes).toEqual([]);
   });
 
-  it("user message_start with non-matching text appends a fresh user block", () => {
+  it("user message_start with non-matching text still consumes the pending echo (regression)", () => {
+    // Under the old exact-string-equals dedupe, a normalized or
+    // template-expanded echo (trailing newline, whitespace, prompt
+    // template) would fall through to addUserBlock and append a second
+    // user bubble. The new rule is positional: an optimistic
+    // addUserBlock always expects exactly one echo, so the head of
+    // pendingEchoes is consumed regardless of text content — and the
+    // user's originally-typed optimistic text stands.
     let state = createTranscriptState();
     state = addUserBlock(state, "what I typed", undefined, true);
-    // pi echoes back an expanded text (e.g. a /skill template).
     state = applyPiEvent(
       state,
       e({ type: "message_start", message: { role: "user", content: "expanded prompt" } }),
     );
-    expect(state.blocks).toHaveLength(2);
-    expect(state.blocks[1]?.type).toBe("user");
-    if (state.blocks[1]?.type === "user") {
-      expect(state.blocks[1].data.content).toBe("expanded prompt");
+    expect(state.blocks).toHaveLength(1);
+    if (state.blocks[0]?.type === "user") {
+      expect(state.blocks[0].data.content).toBe("what I typed");
     }
-    // Echo head was NOT consumed (it didn't match); it remains for the
-    // next echo to dedupe against.
-    expect(state.pendingEchoes).toEqual(["what I typed"]);
+    expect(state.pendingEchoes).toEqual([]);
+  });
+
+  it("user message_start with no pending echo appends a fresh user block (server/extension-originated)", () => {
+    // When there is no optimistic block waiting for an echo, a
+    // role:"user" message_start must still render — this covers
+    // server-/extension-originated user messages (slash command
+    // dispatched via `prompt` with `commandSource: "extension"`), which
+    // don't go through the optimistic addUserBlock(registerEcho) path.
+    let state = createTranscriptState();
+    expect(state.pendingEchoes).toEqual([]);
+    state = applyPiEvent(
+      state,
+      e({ type: "message_start", message: { role: "user", content: "from extension" } }),
+    );
+    expect(state.blocks).toHaveLength(1);
+    if (state.blocks[0]?.type === "user") {
+      expect(state.blocks[0].data.content).toBe("from extension");
+    }
+    expect(state.pendingEchoes).toEqual([]);
+  });
+
+  it("optimistic user block is deduped against a trailing-newline echo", () => {
+    // Direct regression test for the most common normalization case:
+    // pi appends a trailing newline on echo, breaking exact string
+    // equality. The user's "hi" bubble must be the one that stands.
+    let state = createTranscriptState();
+    state = addUserBlock(state, "hi", undefined, true);
+    state = applyPiEvent(
+      state,
+      e({ type: "message_start", message: { role: "user", content: "hi\n" } }),
+    );
+    expect(state.blocks).toHaveLength(1);
+    if (state.blocks[0]?.type === "user") {
+      expect(state.blocks[0].data.content).toBe("hi");
+    }
+    expect(state.pendingEchoes).toEqual([]);
   });
 
   it("custom message_start appends a custom_message block", () => {

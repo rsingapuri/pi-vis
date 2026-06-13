@@ -249,19 +249,23 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
         };
       }
       if (role === "user") {
-        // pi echoes the delivered prompt (possibly template-expanded). If
-        // it matches the head of pendingEchoes, consume that echo and skip
-        // — the optimistic block is authoritative. Otherwise append a
-        // fresh user block (covers steered/queued messages, expanded
-        // templates, and unknown `/foo` text).
-        const echoed = extractUserText(event.message);
-        if (echoed !== null) {
-          if (pendingEchoes.length > 0 && pendingEchoes[0] === echoed) {
-            return { ...state, pendingEchoes: pendingEchoes.slice(1) };
-          }
-          return addUserBlock(state, echoed, undefined, false);
+        // pi echoes the delivered prompt. We dedupe by *position*, not by
+        // exact string equality: an optimistic `addUserBlock` always
+        // expects exactly one echo, so we consume the head of
+        // `pendingEchoes` whenever one is pending — regardless of whether
+        // pi normalized the text (trailing newline, whitespace) or
+        // expanded a template/skill. The user's originally-typed
+        // optimistic text stands; we never replace it.
+        //
+        // If there is no pending echo, the message must be
+        // server-/extension-originated (slash command dispatched via
+        // `prompt` with `commandSource: "extension"`); render the echoed
+        // text as a fresh user block.
+        if (pendingEchoes.length > 0) {
+          return { ...state, pendingEchoes: pendingEchoes.slice(1) };
         }
-        return state;
+        const echoed = extractUserText(event.message);
+        return echoed !== null ? addUserBlock(state, echoed, undefined, false) : state;
       }
       if (role === "custom") {
         // Extension-originated message (skill, plugin, etc.). Real pi emits

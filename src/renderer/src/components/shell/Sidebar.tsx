@@ -84,6 +84,8 @@ export function Sidebar({
   const setActiveSession = useSessionsStore((s) => s.setActiveSession);
   const setActiveWorkspace = useSessionsStore((s) => s.setActiveWorkspace);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
+  const updateSettings = useSettingsStore((s) => s.update);
+  const lastActiveWorkspace = useSettingsStore((s) => s.settings.lastActiveWorkspace);
   const sidebarRef = useRef<HTMLElement>(null);
   const isDragging = useRef(false);
 
@@ -116,9 +118,10 @@ export function Sidebar({
     if (path) {
       addWorkspace(path);
       setActiveWorkspace(path);
+      void updateSettings({ lastActiveWorkspace: path });
       void refreshWorkspaceSessions(path);
     }
-  }, [addWorkspace, setActiveWorkspace, refreshWorkspaceSessions]);
+  }, [addWorkspace, setActiveWorkspace, refreshWorkspaceSessions, updateSettings]);
 
   const handleNewSession = useCallback(
     (workspacePath: string) => {
@@ -137,12 +140,14 @@ export function Sidebar({
     (path: string) => {
       if (activeWorkspacePath === path) {
         setActiveWorkspace(null);
+        void updateSettings({ lastActiveWorkspace: null });
         return;
       }
       setActiveWorkspace(path);
+      void updateSettings({ lastActiveWorkspace: path });
       void openSessionTab(path);
     },
-    [activeWorkspacePath, setActiveWorkspace, openSessionTab],
+    [activeWorkspacePath, setActiveWorkspace, openSessionTab, updateSettings],
   );
 
   const handleResumeSession = useCallback(
@@ -169,13 +174,10 @@ export function Sidebar({
       .catch(console.error);
   }, []);
 
-  // One-shot boot: open a single new session in the most-recently-used
-  // workspace (the first inserted entry of the workspaces Map = first
-  // recent loaded by the "load recents on mount" effect above). We
-  // intentionally do NOT restore previously open tabs — that's the
-  // explicit behaviour change in this release. The MRU workspace
-  // ordering itself is driven by main; recents[] on disk is kept
-  // most-recent-first.
+  // One-shot boot: restore the last-active workspace if it exists in the
+  // loaded workspaces, otherwise fall back to the most-recently-used one
+  // (first entry in the workspaces Map, which mirrors recents[] order on
+  // disk, kept most-recent-first).
   const bootSessionRef = useRef(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: one-shot boot effect gated by bootSessionRef
   useEffect(() => {
@@ -184,12 +186,16 @@ export function Sidebar({
     if (workspaces.size === 0) return;
     bootSessionRef.current = true;
 
-    const mru = Array.from(workspaces.keys())[0];
-    if (mru) {
-      setActiveWorkspace(mru);
-      void openSessionTab(mru); // new cold session, focused + activated
+    const target =
+      (lastActiveWorkspace && workspaces.has(lastActiveWorkspace)
+        ? lastActiveWorkspace
+        : undefined) ??
+      Array.from(workspaces.keys())[0];
+    if (target) {
+      setActiveWorkspace(target);
+      void openSessionTab(target); // new cold session, focused + activated
     }
-  }, [settingsLoaded, workspaces.size, openSessionTab, setActiveWorkspace]);
+  }, [settingsLoaded, workspaces.size, lastActiveWorkspace, openSessionTab, setActiveWorkspace]);
 
   return (
     <aside className="sidebar" ref={sidebarRef}>
@@ -313,6 +319,9 @@ export function Sidebar({
                   for (const s of Array.from(sessions.values())) {
                     if (s.workspacePath === ws.path) void closeSessionTab(s.sessionId);
                   }
+                  window.pivis
+                    .invoke("workspace.remove", { workspacePath: ws.path })
+                    .catch(console.error);
                   removeWorkspace(ws.path);
                 }}
                 title="Remove workspace"
