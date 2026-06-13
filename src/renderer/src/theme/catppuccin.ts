@@ -2,6 +2,12 @@
 // Each key maps 1:1 to a `--ctp-<key>` CSS custom property consumed by
 // theme.css and every component. Schemas in @shared/settings.ts use the
 // lowercase flavor names; the Shiki theme names are `catppuccin-<flavor>`.
+//
+// `shadow` and `scrim` are not part of the upstream Catppuccin spec; they
+// are theme-aware UI colors for drop shadows and modal backdrops. They
+// are kept in the palette so each flavor can tune the opacity to suit
+// its base (e.g. Latte needs a softer shadow than Mocha to avoid a black
+// halo on a light background).
 
 export const latte = {
   base: "#eff1f5",
@@ -30,6 +36,8 @@ export const latte = {
   pink: "#ea76cb",
   flamingo: "#dd7878",
   rosewater: "#dc8a78",
+  shadow: "rgba(0, 0, 0, 0.15)",
+  scrim: "rgba(0, 0, 0, 0.4)",
 } as const;
 
 export const frappe = {
@@ -59,6 +67,8 @@ export const frappe = {
   pink: "#f4b8e4",
   flamingo: "#eebebe",
   rosewater: "#f2d5cf",
+  shadow: "rgba(0, 0, 0, 0.4)",
+  scrim: "rgba(0, 0, 0, 0.55)",
 } as const;
 
 export const macchiato = {
@@ -88,6 +98,8 @@ export const macchiato = {
   pink: "#f5bde6",
   flamingo: "#f0c6c6",
   rosewater: "#f4dbd6",
+  shadow: "rgba(0, 0, 0, 0.45)",
+  scrim: "rgba(0, 0, 0, 0.6)",
 } as const;
 
 export const mocha = {
@@ -117,6 +129,8 @@ export const mocha = {
   pink: "#f5c2e7",
   flamingo: "#f2cdcd",
   rosewater: "#f5e0dc",
+  shadow: "rgba(0, 0, 0, 0.5)",
+  scrim: "rgba(17, 17, 27, 0.7)",
 } as const;
 
 export const palettes = { latte, frappe, macchiato, mocha } as const;

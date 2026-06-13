@@ -5,7 +5,7 @@
 .ext-dialog-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(17, 17, 27, 0.7);
+  background: var(--ctp-scrim);
   backdrop-filter: blur(0.286rem);
   display: flex;
   align-items: center;
@@ -21,7 +21,7 @@
   padding: 1.429rem; /* ≈20px */
   min-width: 22.857rem; /* ≈320px */
   max-width: 34.286rem; /* ≈480px */
-  box-shadow: 0 0.571rem 2.286rem rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0.571rem 2.286rem var(--ctp-shadow);
 }
 
 .ext-dialog--editor {
@@ -210,7 +210,7 @@
   max-width: 21.429rem; /* ≈300px */
   cursor: pointer;
   pointer-events: all;
-  box-shadow: 0 0.286rem 0.857rem rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0.286rem 0.857rem var(--ctp-shadow);
   animation: slideIn 0.2s ease;
   line-height: var(--mcm-line-body);
 }

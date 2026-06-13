@@ -27,6 +27,12 @@
   --ctp-flamingo: #f2cdcd;
   --ctp-rosewater: #f5e0dc;
 
+  /* Theme-aware UI colors (overridden per palette by applyColorScheme).
+     Defaults match Mocha so the bundled stylesheet renders correctly
+     before JS runs. */
+  --ctp-shadow: rgba(0, 0, 0, 0.5);
+  --ctp-scrim: rgba(17, 17, 27, 0.7);
+
   /* Semantic tokens */
   --color-bg: var(--ctp-base);
   --color-sidebar: var(--ctp-mantle);

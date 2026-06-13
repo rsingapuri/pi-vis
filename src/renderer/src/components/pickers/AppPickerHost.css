@@ -6,7 +6,7 @@
 .picker-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(17, 17, 27, 0.7);
+  background: var(--ctp-scrim);
   backdrop-filter: blur(0.286rem);
   display: flex;
   align-items: center;
@@ -34,7 +34,7 @@
   max-height: 32.857rem; /* ≈460px */
   display: flex;
   flex-direction: column;
-  box-shadow: 0 0.571rem 2.286rem rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0.571rem 2.286rem var(--ctp-shadow);
   pointer-events: all;
   gap: 0.571rem;
 }

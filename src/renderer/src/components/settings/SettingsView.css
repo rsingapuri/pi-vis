@@ -9,7 +9,7 @@
 .settings-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(17, 17, 27, 0.6);
+  background: var(--ctp-scrim);
   backdrop-filter: blur(0.286rem);
   display: flex;
   align-items: center;
@@ -28,7 +28,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 0.571rem 2.857rem rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0.571rem 2.857rem var(--ctp-shadow);
 }
 
 .settings-panel__header {

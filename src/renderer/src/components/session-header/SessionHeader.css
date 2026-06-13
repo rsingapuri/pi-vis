@@ -112,7 +112,7 @@
   max-height: 21.429rem;
   overflow-y: auto;
   z-index: 100;
-  box-shadow: 0 0.286rem 1.143rem rgba(0, 0, 0, 0.4);
+  box-shadow: 0 0.286rem 1.143rem var(--ctp-shadow);
 }
 
 .session-header__dropdown-search {
