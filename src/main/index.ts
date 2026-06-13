@@ -19,8 +19,15 @@ function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     ...winOpts,
     backgroundColor: "#1e1e2e",
-    titleBarStyle: "hidden",
-    trafficLightPosition: { x: 16, y: 16 },
+    // `hiddenInset` (not `hidden`) — the traffic lights stay visible
+    // and macOS positions them natively as part of the window frame,
+    // so they remain perfectly centered regardless of the renderer's
+    // font size, zoom, or layout. Requires `frame: true` (the default;
+    // do NOT set frame: false, which would strip the frame architecture
+    // that hiddenInset needs to position the lights). The
+    // `trafficLightPosition` option is ignored under `hiddenInset` and
+    // is therefore omitted.
+    titleBarStyle: "hiddenInset",
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       sandbox: false,

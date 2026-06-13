@@ -1,32 +1,35 @@
-/* Title bar — a thin chrome strip. Doubles as the OS-level drag region for
-   the whole window (-webkit-app-region: drag) so the user can grab it to
-   move the window.  The title is rendered as plain "Pi-Vis" (no uppercasing)
-   and inset from the left so the macOS traffic-light buttons don't overlap.
+/* Title bar — a fixed-height chrome strip that spans the full width of
+   the window. Doubles as the OS-level drag region for the whole window
+   (-webkit-app-region: drag) so the user can grab it to move the
+   window.
 
-   Vertical alignment: the title sits toward the bottom of the bar, so the
-   brand mark reads as a peer of the menu-bar contents below it rather than
-   being centered or pushed to the top with the traffic lights. */
+   INVARIANT: height is exactly 38px at all times, regardless of
+   whether a session is selected, what content is inside, the root
+   font size, or any other state. 38px is the macOS standard
+   window-chrome height (the same height Safari uses); with the
+   BrowserWindow set to `titleBarStyle: "hiddenInset"` in main/index.ts,
+   macOS positions the traffic lights natively inside this height, so
+   they remain perfectly centered and unaffected by application-level
+   styling, font sizing, or layout zoom.
+
+   Pixel values (not rem) are used deliberately so the height and the
+   left padding — which must clear the native traffic lights — stay
+   constant regardless of the user's chosen root font size. */
 
 .titlebar {
-  height: 2.714rem; /* ≈38px @ 14px root */
+  height: 38px; /* the constant — do not change without also updating
+                  the main process BrowserWindow and re-verifying the
+                  traffic-light alignment. */
   display: flex;
-  align-items: flex-end;
-  justify-content: flex-start;
-  /* Left padding clears the macOS traffic-light buttons (red / yellow /
-     green) on all current macOS versions.  Generous enough that the title
-     reads as a peer of the lights, not crammed against them. */
-  padding: 0 1rem 0.5rem 6.5rem;
+  align-items: stretch;
+  /* Left padding clears the macOS traffic-light buttons. macOS
+     positions them natively at ~12px from the window's left edge and
+     the three buttons + spacing span ~78px, so 80px of padding puts
+     the leftmost interactive element (the session name button) just
+     past them. */
+  padding: 0 16px 0 80px;
   background: var(--color-sidebar);
   border-bottom: 1px solid var(--ctp-surface0);
   user-select: none;
   -webkit-app-region: drag;
-}
-
-.titlebar__title {
-  font-family: var(--font-display);
-  font-size: var(--font-size-small);
-  font-weight: 600;
-  line-height: 1;
-  color: var(--ctp-overlay1);
-  /* The label is the brand mark — leave its case alone ("Pi-Vis"). */
 }

@@ -5,7 +5,6 @@ import { Composer } from "./components/composer/Composer.js";
 import { DiffViewerHost } from "./components/diff/DiffViewerHost.js";
 import { ExtensionDialogHost, ToastHost } from "./components/ext-ui/ExtensionDialogHost.js";
 import { AppPickerHost } from "./components/pickers/AppPickerHost.js";
-import { SessionHeader } from "./components/session-header/SessionHeader.js";
 import { SettingsView } from "./components/settings/SettingsView.js";
 import { PiNotFound } from "./components/setup/PiNotFound.js";
 import { Sidebar } from "./components/shell/Sidebar.js";
@@ -201,7 +200,10 @@ export function App(): React.ReactElement {
       <main className="app__main">
         {activeSessionId ? (
           <div className="app__session" style={{ position: "relative" }}>
-            <SessionHeader sessionId={activeSessionId} />
+            {/* SessionHeader is rendered inside the TitleBar at the top of
+                the window, not here. Keeping it out of the main column
+                reclaims the previously wasted vertical space below the
+                title bar. */}
             <TranscriptView sessionId={activeSessionId} />
             {/* Composer and the extension dialog share the same flex
                 slot: the dialog replaces the composer when a question is

@@ -6,7 +6,15 @@
 .app {
   height: 100%;
   display: grid;
-  grid-template-rows: 2.714rem 1fr;
+  /* The first row is a constant 38px — the title bar is always that
+     tall regardless of whether a session is selected. 38px matches
+     the macOS standard window-chrome height (the same height Safari
+     and other native macOS apps use), so the traffic lights (which
+     `titleBarStyle: "hiddenInset"` in main/index.ts positions natively
+     inside the BrowserWindow's frame) sit centered vertically inside
+     the strip. Pixel value (not rem) so the row height is unaffected
+     by the user's root font-size setting. */
+  grid-template-rows: 38px 1fr;
   /* Sidebar width is set inline by the React component, in px — it's a
      user-controlled chrome measurement, not typography. */
   grid-template-columns: var(--sidebar-width, 15.714rem) 1fr;

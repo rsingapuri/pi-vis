@@ -3,9 +3,19 @@
    follow the same architectural-signage convention. */
 
 .session-header {
-  height: 3rem; /* ≈42px @ 14px root */
+  /* Fill the parent titlebar (both axes). The titlebar is 38px tall
+     with a 1px border-bottom, so its content area is 37px. height:
+     100% makes the session header fit that content area exactly — no
+     1px overflow that would cover the titlebar's border-bottom. flex:
+     1 makes it grow to fill the titlebar's width, so the name (flex:
+     1 inside the session header) pushes the controls all the way to
+     the right edge of the window instead of the right edge of the
+     session header's content. */
+  flex: 1;
+  height: 100%;
   background: var(--ctp-mantle);
-  border-bottom: 1px solid var(--ctp-surface0);
+  /* No border-bottom: the parent titlebar's border-bottom serves the
+     same visual purpose at the same y. */
   display: flex;
   align-items: center;
   padding: 0 0.857rem;
@@ -34,6 +44,9 @@
   max-width: 14.286rem;
   padding: 0.286rem 0.429rem;
   border-radius: var(--mcm-radius-sm);
+  /* Interactive element inside the titlebar's drag region — must be
+     clickable, not a drag handle. */
+  -webkit-app-region: no-drag;
 }
 
 .session-header__name-btn:hover {
@@ -51,6 +64,8 @@
   padding: 0.286rem 0.429rem;
   outline: none;
   width: 12.857rem;
+  /* Editable input inside the titlebar's drag region. */
+  -webkit-app-region: no-drag;
 }
 
 .session-header__controls {
@@ -76,6 +91,9 @@
   line-height: 1.4;
   padding: 0.214rem 0.571rem;
   cursor: pointer;
+  /* Picker button (model / thinking level) inside the titlebar's drag
+     region. */
+  -webkit-app-region: no-drag;
 }
 
 .session-header__picker-btn:hover {
@@ -93,6 +111,8 @@
   display: inline-flex;
   align-items: center;
   gap: 0.286rem;
+  /* Changes button inside the titlebar's drag region. */
+  -webkit-app-region: no-drag;
 }
 .session-header__changes-btn--clean {
   color: var(--ctp-overlay0);
@@ -133,6 +153,9 @@
   font-size: 0.857em;
   padding: 0.429rem 0.571rem;
   outline: none;
+  /* Search input inside the model dropdown, which is itself inside the
+     titlebar's drag region. */
+  -webkit-app-region: no-drag;
 }
 
 .session-header__dropdown-search-input:focus {
@@ -163,6 +186,9 @@
   font-size: 0.857em;
   line-height: 1.3;
   color: var(--ctp-subtext0);
+  /* Dropdown option inside a popup that's anchored to a control in the
+     titlebar's drag region. */
+  -webkit-app-region: no-drag;
 }
 
 .session-header__dropdown-item:hover {
