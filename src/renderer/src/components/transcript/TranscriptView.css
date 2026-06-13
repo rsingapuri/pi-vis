@@ -243,13 +243,85 @@ button.tool-card__header {
 
 .tool-card__body {
   margin-top: 0.429rem;
-  padding-right: 1.714rem;
+  padding-right: 1.714rem; /* leave room for the absolute-positioned expand button */
   display: flex;
   flex-direction: column;
   gap: 0.429rem;
 }
 
-.tool-card__args,
+/* Unified terminal-style box: a single bordered region for the args
+   (compact one-liner), diff, and output. One scroll context instead of
+   nested scrollable regions per section. */
+.tool-card__scroll {
+  background: var(--ctp-surface0);
+  border: 1px solid var(--ctp-overlay0);
+  border-radius: var(--mcm-radius-sm);
+  padding: 0.571rem 0.857rem;
+  max-height: 28.571rem;
+  overflow-y: auto;
+}
+
+/* Args: a compact `key=value` one-liner at the top of the scroll area.
+   The header already shows the most important arg (subject), so the
+   full JSON is collapsed into a one-liner. A <details> disclosure
+   reveals the full JSON if it's substantially larger. */
+.tool-card__args {
+  color: var(--ctp-overlay1);
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: var(--mcm-line-code);
+  word-break: break-word;
+  margin: 0 0 0.429rem;
+  padding: 0 0 0.429rem;
+  border-bottom: 1px dashed var(--ctp-surface1);
+}
+
+.tool-card__scroll > .tool-card__args:only-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.tool-card__args-label {
+  color: var(--ctp-overlay0);
+  margin-right: 0.429rem;
+}
+
+.tool-card__args-summary {
+  cursor: pointer;
+  display: block;
+  list-style: none;
+}
+
+.tool-card__args-summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-card__args-summary::before {
+  content: "▸";
+  color: var(--ctp-overlay0);
+  display: inline-block;
+  margin-right: 0.429rem;
+  transition: transform 0.15s ease;
+}
+
+details[open] > .tool-card__args-summary::before {
+  transform: rotate(90deg);
+}
+
+.tool-card__args-full {
+  margin: 0.429rem 0 0;
+  padding: 0.429rem 0.571rem;
+  background: var(--ctp-base);
+  border-radius: var(--mcm-radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ctp-overlay2);
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: var(--mcm-line-code);
+}
+
 .tool-card__output {
   font-family: var(--font-code);
   font-size: var(--font-size-code);
@@ -257,18 +329,7 @@ button.tool-card__header {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
-}
-
-.tool-card__args {
-  color: var(--ctp-overlay1);
-  max-height: 17.143rem;
-  overflow-y: auto;
-}
-
-.tool-card__output {
   color: var(--ctp-subtext0);
-  max-height: 28.571rem;
-  overflow-y: auto;
 }
 
 .tool-card__more {

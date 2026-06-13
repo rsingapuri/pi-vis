@@ -84,6 +84,50 @@ function summarizeInput(input?: Record<string, unknown>): string | null {
   return null;
 }
 
+const COMPACT_VALUE_MAX = 80;
+const FULL_JSON_REVEAL_THRESHOLD = 240;
+
+/** Format tool-call args as a compact `key=value key=value` one-liner. */
+function formatArgsCompact(input: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(input)) {
+    let s: string;
+    if (typeof value === "string") s = value;
+    else s = JSON.stringify(value);
+    if (s.length > COMPACT_VALUE_MAX) s = `${s.slice(0, COMPACT_VALUE_MAX - 1)}…`;
+    parts.push(`${key}=${s}`);
+  }
+  return parts.join("  ");
+}
+
+/** Render tool-call args as a compact one-liner. If the full JSON is
+ *  substantially larger than the compact form, wrap it in <details> so
+ *  the user can reveal the full input on demand. */
+function renderArgs(input: Record<string, unknown> | undefined): React.ReactNode {
+  if (!input || Object.keys(input).length === 0) return null;
+  const compact = formatArgsCompact(input);
+  const full = JSON.stringify(input, null, 2);
+  const fullIsLonger =
+    full.length > FULL_JSON_REVEAL_THRESHOLD && full.length > compact.length + 80;
+  if (fullIsLonger) {
+    return (
+      <details className="tool-card__args">
+        <summary className="tool-card__args-summary">
+          <span className="tool-card__args-label">input</span>
+          <span>{compact}</span>
+        </summary>
+        <pre className="tool-card__args-full">{full}</pre>
+      </details>
+    );
+  }
+  return (
+    <div className="tool-card__args">
+      <span className="tool-card__args-label">input</span>
+      <span>{compact}</span>
+    </div>
+  );
+}
+
 function pluralLines(n: number): string {
   return n === 1 ? "line" : "lines";
 }
@@ -239,24 +283,30 @@ function ToolCallBlock({
 
   let body: React.ReactNode = null;
   if (open) {
+    const argsNode = renderArgs(data.input);
+    const diffNode = diff ? <DiffBlock diff={diff} /> : null;
+    const outputNode =
+      outputLines.length > 0 ? (
+        <pre className="tool-card__output">{outputLines.join("\n")}</pre>
+      ) : null;
     body = (
       <div className="tool-card__body">
-        {data.input !== undefined && (
-          <pre className="tool-card__args">{JSON.stringify(data.input, null, 2)}</pre>
-        )}
-        {diff && <DiffBlock diff={diff} />}
-        {outputLines.length > 0 && (
-          <pre className="tool-card__output">{outputLines.join("\n")}</pre>
-        )}
+        <div className="tool-card__scroll">
+          {argsNode}
+          {diffNode}
+          {outputNode}
+        </div>
       </div>
     );
   } else if (diff) {
     // Diffs truncate from the bottom — the head is the interesting part
     body = (
       <div className="tool-card__body">
-        <DiffBlock
-          diff={hiddenDiff > 0 ? diffLines.slice(0, DIFF_PREVIEW_LINES).join("\n") : diff}
-        />
+        <div className="tool-card__scroll">
+          <DiffBlock
+            diff={hiddenDiff > 0 ? diffLines.slice(0, DIFF_PREVIEW_LINES).join("\n") : diff}
+          />
+        </div>
         {hiddenDiff > 0 && (
           <div className="tool-card__more">
             … {hiddenDiff} more {pluralLines(hiddenDiff)}
@@ -273,9 +323,11 @@ function ToolCallBlock({
             … {hiddenOutput} earlier {pluralLines(hiddenOutput)}
           </div>
         )}
-        <pre className="tool-card__output">
-          {outputLines.slice(-OUTPUT_PREVIEW_LINES).join("\n")}
-        </pre>
+        <div className="tool-card__scroll">
+          <pre className="tool-card__output">
+            {outputLines.slice(-OUTPUT_PREVIEW_LINES).join("\n")}
+          </pre>
+        </div>
       </div>
     );
   }
@@ -332,9 +384,11 @@ function BashBlock({
               … {hiddenOutput} earlier {pluralLines(hiddenOutput)}
             </div>
           )}
-          <pre className="tool-card__output">
-            {open ? outputLines.join("\n") : outputLines.slice(-OUTPUT_PREVIEW_LINES).join("\n")}
-          </pre>
+          <div className="tool-card__scroll">
+            <pre className="tool-card__output">
+              {open ? outputLines.join("\n") : outputLines.slice(-OUTPUT_PREVIEW_LINES).join("\n")}
+            </pre>
+          </div>
         </div>
       )}
     </ToolCardShell>
