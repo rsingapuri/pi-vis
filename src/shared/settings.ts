@@ -15,15 +15,15 @@ export const AppSettingsSchema = z.object({
     })
     .default({}),
   recentWorkspaces: z.array(z.string()).default([]),
-  lastUsedModel: z
-    .object({ provider: z.string(), modelId: z.string() })
-    .nullable()
-    .default(null),
+  lastUsedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().default(null),
   lastUsedThinkingLevel: ThinkingLevelSchema.nullable().default(null),
-  openTabs: z
-    .array(z.object({ workspacePath: z.string(), sessionFile: z.string() }))
-    .default([]),
+  openTabs: z.array(z.object({ workspacePath: z.string(), sessionFile: z.string() })).default([]),
   activeSessionFile: z.string().nullable().default(null),
+  // Diff viewer preference (WP5d). Persisted across sessions; the
+  // viewer seeds its own state from this on open and writes back on
+  // toggle. Default is "unified" — split view is opt-in and only
+  // used when the window is wide enough.
+  diffViewMode: z.enum(["unified", "split"]).default("unified"),
   window: z
     .object({
       x: z.number(),

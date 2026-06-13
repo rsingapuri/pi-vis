@@ -109,9 +109,7 @@ function applySgr(style: AnsiStyle, params: number[]): AnsiStyle {
 }
 
 // CSI ... letter | OSC ... (BEL or ST) | lone 2-char escapes
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matching ESC is the purpose of an ANSI parser
-const ANSI_TOKEN =
-  /\x1b\[([0-9;]*)m|\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b./g;
+const ANSI_TOKEN = /\x1b\[([0-9;]*)m|\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b./g;
 
 export function parseAnsi(text: string): AnsiSpan[] {
   const spans: AnsiSpan[] = [];
@@ -137,7 +135,9 @@ export function parseAnsi(text: string): AnsiSpan[] {
 }
 
 export function stripAnsi(text: string): string {
-  return parseAnsi(text).map((s) => s.text).join("");
+  return parseAnsi(text)
+    .map((s) => s.text)
+    .join("");
 }
 
 export function AnsiText({ text }: { text: string }): React.ReactElement {
@@ -147,10 +147,12 @@ export function AnsiText({ text }: { text: string }): React.ReactElement {
       {spans.map((span, i) => {
         const hasStyle = Object.keys(span.style).length > 0;
         return hasStyle ? (
-          // eslint-disable-next-line react/no-array-index-key
-          <span key={i} style={span.style}>{span.text}</span>
+          // biome-ignore lint/suspicious/noArrayIndexKey: ANSI spans are stream-stable per render
+          <span key={i} style={span.style}>
+            {span.text}
+          </span>
         ) : (
-          // eslint-disable-next-line react/no-array-index-key
+          // biome-ignore lint/suspicious/noArrayIndexKey: ANSI spans are stream-stable per render
           <React.Fragment key={i}>{span.text}</React.Fragment>
         );
       })}

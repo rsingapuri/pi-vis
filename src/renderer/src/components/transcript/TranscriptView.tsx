@@ -1,6 +1,8 @@
-import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useSessionsStore } from "../../stores/sessions-store.js";
 import type { SessionId } from "@shared/ids.js";
+import type React from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Markdown } from "../../lib/markdown.js";
+import { useSessionsStore } from "../../stores/sessions-store.js";
 import type {
   AssistantBlockData,
   BashBlockData,
@@ -8,7 +10,6 @@ import type {
   TypedTranscriptBlock,
   UserBlockData,
 } from "../../stores/transcript.js";
-import { Markdown } from "../../lib/markdown.js";
 import { DiffBlock } from "./DiffBlock.js";
 import "./TranscriptView.css";
 
@@ -31,10 +32,7 @@ function speakerOf(block: TypedTranscriptBlock): Speaker | null {
   return null;
 }
 
-function shouldShowLabel(
-  blocks: TypedTranscriptBlock[],
-  index: number,
-): boolean {
+function shouldShowLabel(blocks: TypedTranscriptBlock[], index: number): boolean {
   const current = blocks[index];
   if (!current) return false;
   const curSpeaker = speakerOf(current);
@@ -129,7 +127,9 @@ function ToolCardShell({
     isError ? "tool-card--error" : "",
     open ? "tool-card--open" : "",
     expandable ? "tool-card--expandable" : "",
-  ].filter(Boolean).join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <div className={classes}>
@@ -165,8 +165,14 @@ function UserBlock({ data }: { data: UserBlockData }): React.ReactElement {
         {data.images && data.images.length > 0 && (
           <div className="transcript-block__images">
             {data.images.map((img, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: image order is stable for a given user message
               <a key={i} href={img} target="_blank" rel="noreferrer">
-                <img src={img} alt={`Attached image ${i + 1}`} className="transcript-block__image-thumb" />
+                <img
+                  src={img}
+                  // biome-ignore lint/a11y/noRedundantAlt: alt describes which attached image, not "what"
+                  alt={`Attached image ${i + 1}`}
+                  className="transcript-block__image-thumb"
+                />
               </a>
             ))}
           </div>
@@ -187,9 +193,7 @@ function AssistantBlock({
   return (
     <div className="transcript-block transcript-block--assistant">
       {showLabel && <div className="transcript-block__label">Pi</div>}
-      {data.thinkingContent && (
-        <div className="thinking-block">{data.thinkingContent}</div>
-      )}
+      {data.thinkingContent && <div className="thinking-block">{data.thinkingContent}</div>}
       {data.textContent && (
         <div className="transcript-block__content">
           <Markdown>{data.textContent}</Markdown>
@@ -244,9 +248,13 @@ function ToolCallBlock({ data }: { data: ToolCallBlockData }): React.ReactElemen
     // Diffs truncate from the bottom — the head is the interesting part
     body = (
       <div className="tool-card__body">
-        <DiffBlock diff={hiddenDiff > 0 ? diffLines.slice(0, DIFF_PREVIEW_LINES).join("\n") : diff} />
+        <DiffBlock
+          diff={hiddenDiff > 0 ? diffLines.slice(0, DIFF_PREVIEW_LINES).join("\n") : diff}
+        />
         {hiddenDiff > 0 && (
-          <div className="tool-card__more">… {hiddenDiff} more {pluralLines(hiddenDiff)}</div>
+          <div className="tool-card__more">
+            … {hiddenDiff} more {pluralLines(hiddenDiff)}
+          </div>
         )}
       </div>
     );
@@ -255,9 +263,13 @@ function ToolCallBlock({ data }: { data: ToolCallBlockData }): React.ReactElemen
     body = (
       <div className="tool-card__body">
         {hiddenOutput > 0 && (
-          <div className="tool-card__more">… {hiddenOutput} earlier {pluralLines(hiddenOutput)}</div>
+          <div className="tool-card__more">
+            … {hiddenOutput} earlier {pluralLines(hiddenOutput)}
+          </div>
         )}
-        <pre className="tool-card__output">{outputLines.slice(-OUTPUT_PREVIEW_LINES).join("\n")}</pre>
+        <pre className="tool-card__output">
+          {outputLines.slice(-OUTPUT_PREVIEW_LINES).join("\n")}
+        </pre>
       </div>
     );
   }
@@ -304,7 +316,9 @@ function BashBlock({ data }: { data: BashBlockData }): React.ReactElement {
       {outputLines.length > 0 && (
         <div className="tool-card__body">
           {!open && hiddenOutput > 0 && (
-            <div className="tool-card__more">… {hiddenOutput} earlier {pluralLines(hiddenOutput)}</div>
+            <div className="tool-card__more">
+              … {hiddenOutput} earlier {pluralLines(hiddenOutput)}
+            </div>
           )}
           <pre className="tool-card__output">
             {open ? outputLines.join("\n") : outputLines.slice(-OUTPUT_PREVIEW_LINES).join("\n")}
@@ -322,8 +336,7 @@ interface TranscriptViewProps {
 }
 
 export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactElement {
-  const sessions = useSessionsStore((s) => s.sessions);
-  const session = sessions.get(sessionId);
+  const session = useSessionsStore((s) => s.sessions.get(sessionId));
   const [showAll, setShowAll] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -372,7 +385,9 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   }, []);
 
   // Switching sessions always starts pinned to the bottom
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionId is a mount trigger, not a reactive dep
   useLayoutEffect(() => {
+    setShowAll(false);
     stickRef.current = true;
     const el = scrollRef.current;
     if (el) {
@@ -398,12 +413,12 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     <div className="transcript-view" ref={scrollRef} onScroll={handleScroll}>
       <div className="transcript-blocks" ref={contentRef}>
         {!showAll && allBlocks.length > MAX_VISIBLE_BLOCKS && (
-          <button className="show-earlier-btn" onClick={() => setShowAll(true)}>
+          <button type="button" className="show-earlier-btn" onClick={() => setShowAll(true)}>
             Show {allBlocks.length - MAX_VISIBLE_BLOCKS} earlier messages
           </button>
         )}
         {visibleBlocks.map((block, idx) => {
-          const showLabel = shouldShowLabel(visibleBlocks, idx);
+          const showLabel = block.type === "assistant" && shouldShowLabel(visibleBlocks, idx);
 
           switch (block.type) {
             case "user":

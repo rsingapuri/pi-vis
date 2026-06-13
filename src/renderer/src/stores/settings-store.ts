@@ -1,6 +1,6 @@
-import { create } from "zustand";
 import type { AppSettings } from "@shared/settings.js";
 import { defaultSettings } from "@shared/settings.js";
+import { create } from "zustand";
 
 interface SettingsStore {
   settings: AppSettings;
@@ -41,5 +41,8 @@ function applyFonts(settings: AppSettings): void {
   // scale fluidly with the user's base-size setting.
   const codeRatio = settings.fonts.code.sizePx / settings.fonts.display.sizePx;
   root.style.setProperty("--font-size-code", `${codeRatio}em`);
-  root.style.setProperty("--font-size-small", `${(settings.fonts.display.sizePx - 2) / settings.fonts.display.sizePx}em`);
+  root.style.setProperty(
+    "--font-size-small",
+    `${(settings.fonts.display.sizePx - 2) / settings.fonts.display.sizePx}em`,
+  );
 }

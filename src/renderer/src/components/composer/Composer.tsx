@@ -1,80 +1,108 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useSessionsStore } from "../../stores/sessions-store.js";
 import type { SessionId } from "@shared/ids.js";
-import type { SlashCommandInfo } from "@shared/pi-protocol/responses.js";
-import type { ImageContent } from "@shared/pi-protocol/commands.js";
+import type { ModelInfo } from "@shared/pi-protocol/responses.js";
+import type React from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnsiText } from "../../lib/ansi.js";
+import {
+  BUILTIN_COMMANDS,
+  type PickerRequest,
+  UNSUPPORTED_TUI_COMMANDS,
+  executeAction,
+  parseComposerInput,
+} from "../../lib/commands/index.js";
+import { openDiffForSession } from "../../stores/diff-store.js";
+import { useSessionsStore } from "../../stores/sessions-store.js";
+import { useSettingsStore } from "../../stores/settings-store.js";
 import "./Composer.css";
-
-const KNOWN_SLASH_COMMANDS = [
-  "login", "model", "name", "session", "new", "resume", "compact", "export",
-  "fork", "clone", "help", "settings",
-];
 
 interface ComposerProps {
   sessionId: SessionId;
 }
 
+interface Attachment {
+  name: string;
+  dataUrl: string;
+}
+
+interface SuggestionEntry {
+  name: string;
+  badge: "built-in" | "extension" | "prompt" | "skill";
+  description?: string | undefined;
+  argHint?: string | undefined;
+  scope?: string | undefined;
+  /** Composite key for React list reconciliation. */
+  key: string;
+}
+
+/**
+ * Composer — terminal-style prompt input.
+ *
+ * The TUI parity flow:
+ *   1. Type → updates `text` + the slash-suggestion list.
+ *   2. Enter → parseComposerInput → executeAction via injected deps.
+ *   3. Slash commands route to dedicated RPC commands (`/model`, `/name`,
+ *      `/new`, `/compact`, etc.); extension/prompt/skill names + unknown
+ *      `/foo` are sent to pi as `prompt` (pi expands templates/skills and
+ *      dispatches extensions immediately, even mid-stream).
+ *
+ * The no-model guard applies ONLY to plain-text prompts — `/model` and
+ * bash work without a model selected, because they're not asking the
+ * LLM for anything.
+ */
 export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const [text, setText] = useState("");
-  const [slashSuggestions, setSlashSuggestions] = useState<string[]>([]);
-  const [selectedSuggestion, setSelectedSuggestion] = useState(0);
-  const [streamCommands, setStreamCommands] = useState<SlashCommandInfo[]>([]);
-  const [attachments, setAttachments] = useState<{ name: string; dataUrl: string }[]>([]);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const sessions = useSessionsStore((s) => s.sessions);
+  // Pull the active session's state. We read everything we might need at
+  // submit time from the same snapshot to avoid a render-during-update race.
+  const session = useSessionsStore((s) => s.sessions.get(sessionId));
+  const commands = session?.commands ?? [];
+  const discovered = useMemo(() => new Map(commands.map((c) => [c.name, c])), [commands]);
+  // The nonce is a monotonic counter; the effect below re-runs whenever
+  // it changes (even if the text is identical) so the user can re-inject
+  // the same prefix on demand.
+  const editorInjectionNonce = session?.editorInjection?.nonce;
+  const editorInjectionText = session?.editorInjection?.text;
+
   const addUserMessage = useSessionsStore((s) => s.addUserMessage);
   const addBashCommand = useSessionsStore((s) => s.addBashCommand);
   const finishBashCommand = useSessionsStore((s) => s.finishBashCommand);
   const setStreaming = useSessionsStore((s) => s.setStreaming);
   const addToast = useSessionsStore((s) => s.addToast);
-  const session = sessions.get(sessionId);
+  const setCurrentModel = useSessionsStore((s) => s.setCurrentModel);
+  const addCustomMessage = useSessionsStore((s) => s.addCustomMessage);
+  const openPicker = useSessionsStore((s) => s.openPicker);
+  const adoptSessionFile = useSessionsStore((s) => s.adoptSessionFile);
+  const refreshWorkspaceSessions = useSessionsStore((s) => s.refreshWorkspaceSessions);
+  const closeSessionTab = useSessionsStore((s) => s.closeSessionTab);
+  const seedHistory = useSessionsStore((s) => s.seedHistory);
+  const updateSettings = useSettingsStore((s) => s.update);
+
   const isStreaming = session?.isStreaming ?? false;
   const live = session?.status === "starting" || session?.status === "ready";
 
-  // Load available commands once
+  // Editor injection: a useEffect on the nonce (monotonic) re-picks up the
+  // same text without thrashing on identical payloads.
   useEffect(() => {
-    if (!live) return;
-    window.pivis.invoke("session.sendCommand", {
-      sessionId,
-      command: { type: "get_commands" },
-    }).then((res) => {
-      const raw = res.data as { commands?: unknown[] } | undefined;
-      if (res.success && Array.isArray(raw?.commands)) {
-        setStreamCommands(raw.commands as SlashCommandInfo[]);
-      }
-    }).catch(() => { /* ignore */ });
-  }, [sessionId, live]);
+    if (editorInjectionNonce === undefined || editorInjectionText === undefined) return;
+    setText(editorInjectionText);
+    setSlashIndex(0);
+    setAttachments([]);
+    textareaRef.current?.focus();
+  }, [editorInjectionNonce, editorInjectionText]);
 
-  const allSlashCommands = [
-    ...KNOWN_SLASH_COMMANDS,
-    ...streamCommands.map((c) => c.name).filter((n) => !KNOWN_SLASH_COMMANDS.includes(n)),
-  ];
+  // ── Attachment handling ─────────────────────────────────────────────
 
-  // ── File upload ────────────────────────────────────────────────────────
   const handleAttachClick = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
 
-  /**
-   * Parse a data URL into an ImageContent object for the pi RPC protocol.
-   * Example: "data:image/png;base64,iVBOR..." → { type: "image", data: "iVBOR...", mimeType: "image/png" }
-   */
-  function dataUrlToImageContent(dataUrl: string): ImageContent {
-    const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-    if (!match) {
-      // Fallback: send as-is (handles unexpected formats)
-      return { type: "image", data: dataUrl, mimeType: "application/octet-stream" };
-    }
-    return { type: "image", data: match[2]!, mimeType: match[1]! };
-  }
-
   const handleFilesSelected = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-
     for (const file of Array.from(files)) {
       const reader = new FileReader();
       reader.onload = () => {
@@ -83,8 +111,6 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       };
       reader.readAsDataURL(file);
     }
-
-    // Reset so the same file can be selected again
     e.target.value = "";
   }, []);
 
@@ -92,120 +118,250 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const updateSuggestions = useCallback((value: string) => {
-    if (value.startsWith("/") && !value.includes(" ")) {
-      const prefix = value.slice(1).toLowerCase();
-      const matches = allSlashCommands.filter((c) => c.toLowerCase().startsWith(prefix));
-      setSlashSuggestions(matches.slice(0, 8));
-      setSelectedSuggestion(0);
-    } else {
-      setSlashSuggestions([]);
+  // ── Suggestion list ────────────────────────────────────────────────
+
+  const suggestions = useMemo<SuggestionEntry[]>(() => {
+    if (!text.startsWith("/")) return [];
+    const prefix = text.slice(1).toLowerCase();
+    const hasSpace = text.includes(" ");
+    if (hasSpace) return []; // suggestions only for the bare command token
+
+    const entries: SuggestionEntry[] = [];
+    // Built-ins first. We filter out unsupported TUI commands from the
+    // suggestions list — they have a dedicated toast on invocation, not
+    // a "click to fill" entry.
+    for (const b of BUILTIN_COMMANDS) {
+      if (!b.name.toLowerCase().startsWith(prefix)) continue;
+      entries.push({
+        name: b.name,
+        badge: "built-in",
+        description: b.description,
+        argHint: b.argHint || undefined,
+        key: `builtin:${b.name}`,
+      });
     }
-  }, [allSlashCommands]);
+    // Discovered (extension / prompt / skill). Skip names that collide with
+    // built-ins (TUI priority: built-in wins for discoverability, the parser
+    // also gives built-ins precedence; surfacing both would be confusing).
+    for (const c of commands) {
+      if (!c.name.toLowerCase().startsWith(prefix)) continue;
+      if (UNSUPPORTED_TUI_COMMANDS.has(c.name)) continue;
+      // If the same name appears as both a built-in and discovered, the
+      // built-in is the user-facing entry. The parser's shadowing rule
+      // makes the discovered one take effect at execute time (it carries
+      // the actual extension data), but the visible command is the built-in.
+      // Skip the discovered duplicate.
+      if (BUILTIN_COMMANDS.some((b) => b.name === c.name)) continue;
+      const badge = c.source === "skill" ? "skill" : c.source === "prompt" ? "prompt" : "extension";
+      const scope =
+        (c as { sourceInfo?: { scope?: string }; location?: string }).sourceInfo?.scope ??
+        (c as { location?: string }).location;
+      entries.push({
+        name: c.name,
+        badge,
+        description: c.description,
+        scope: scope || undefined,
+        key: `disc:${c.source ?? "x"}:${c.name}`,
+      });
+    }
+    return entries.slice(0, 8);
+  }, [text, commands]);
 
-  const sendPrompt = useCallback(async (content: string) => {
+  // Reset highlight when the suggestion list shape changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: depends on shape, not identity; recompute on each keystroke is intentional
+  useEffect(() => {
+    setSlashIndex(0);
+  }, [suggestions.length, text]);
+
+  // ── Submit ─────────────────────────────────────────────────────────
+
+  const handleSubmit = useCallback(async () => {
+    const content = text;
     if (!content.trim()) return;
+    setText("");
+    setAttachments([]);
+    setSlashIndex(0);
 
-    if (!session?.currentModel) {
+    const action = parseComposerInput(content, { discovered });
+    const imgs = attachments;
+
+    const finalAction =
+      action.kind === "send-prompt" && imgs.length > 0
+        ? {
+            ...action,
+            images: imgs.map((a) => {
+              const comma = a.dataUrl.indexOf(",");
+              const header = a.dataUrl.slice(0, comma);
+              const mimeType = /^data:([^;]+)/.exec(header)?.[1] ?? "image/png";
+              return { data: a.dataUrl.slice(comma + 1), mimeType, dataUrl: a.dataUrl };
+            }),
+          }
+        : action;
+
+    // No-model guard: only for plain user prompts. /model (which fixes
+    // the guard!) and bash bypass it.
+    if (
+      finalAction.kind === "send-prompt" &&
+      !session?.currentModel &&
+      finalAction.commandSource === undefined
+    ) {
       addToast(sessionId, "No model selected", "error");
       return;
     }
 
-    // Convert data URLs to proper ImageContent objects for the pi RPC protocol
-    const imageContents: ImageContent[] = attachments.map((a) => dataUrlToImageContent(a.dataUrl));
-
-    if (content.startsWith("!")) {
-      const command = content.slice(1).trim();
-      addBashCommand(sessionId, command);
-      window.pivis.invoke("session.sendCommand", {
-        sessionId,
-        command: { type: "bash", command },
-      }).then((res) => {
-        const data = res.data as { output?: string; exitCode?: number } | undefined;
-        if (res.success) {
-          finishBashCommand(sessionId, data?.output ?? "", data?.exitCode ?? 0);
-        } else {
-          finishBashCommand(sessionId, res.error ?? "Command failed", data?.exitCode ?? 1);
+    const deps = {
+      // The executeAction interface is intentionally generic-string for
+      // testability; the real invoke has a typed channel union, but the
+      // runtime call sites pass the right channel so the runtime contract
+      // is honored. We narrow at the boundary by giving the casted
+      // wrapper the right call signature.
+      invoke: <T = unknown>(channel: string, payload: unknown) =>
+        window.pivis.invoke(
+          channel as Parameters<typeof window.pivis.invoke>[0],
+          payload as Parameters<typeof window.pivis.invoke>[1],
+        ) as unknown as Promise<{ success: boolean; data?: T; error?: string }>,
+      setStreaming,
+      addToast,
+      addUserMessage,
+      addBashCommand,
+      finishBashCommand,
+      setCurrentModel,
+      updateLastUsedModel: async (provider: string, modelId: string) => {
+        await updateSettings({ lastUsedModel: { provider, modelId } });
+      },
+      addCustomMessage,
+      openPicker: (sid: SessionId, picker: PickerRequest) => openPicker(sid, picker),
+      adoptSessionFile: async (sid: SessionId, file?: string, name?: string) => {
+        await adoptSessionFile(sid, file, name);
+        if (file) {
+          const history = await window.pivis.invoke("session.loadHistory", { sessionId: sid });
+          seedHistory(sid, history ?? []);
+          if (session?.workspacePath) {
+            void refreshWorkspaceSessions(session.workspacePath);
+          }
         }
-      }).catch((err) => {
-        finishBashCommand(sessionId, String(err), 1);
-      });
-    } else {
-      addUserMessage(sessionId, content, attachments.length > 0 ? attachments.map((a) => a.dataUrl) : undefined);
-      // Show the working indicator immediately — pi's agent_start can lag
-      // behind the send by a noticeable beat.
-      setStreaming(sessionId, true);
-      const cmd = isStreaming
-        ? { type: "prompt" as const, message: content, images: imageContents.length > 0 ? imageContents : undefined, streamingBehavior: "followUp" as const }
-        : { type: "prompt" as const, message: content, images: imageContents.length > 0 ? imageContents : undefined };
-      window.pivis.invoke("session.sendCommand", {
-        sessionId,
-        command: cmd,
-      }).then((res) => {
-        if (!res.success) {
-          setStreaming(sessionId, false);
-          addToast(sessionId, res.error ?? "Prompt failed", "error");
-        }
-      }).catch((err) => {
-        setStreaming(sessionId, false);
-        addToast(sessionId, `Failed to send: ${String(err)}`, "error");
-      });
-    }
+      },
+      closeSessionTab: async (sid: SessionId) => closeSessionTab(sid),
+      openAppSettings: () => {
+        // The settings panel is owned by App.tsx; we dispatch a custom
+        // event that the App subscribes to. Keeps Composer free of
+        // cross-tree prop drilling.
+        window.dispatchEvent(new CustomEvent("pivis:open-settings"));
+      },
+      openDiffViewer: (sid: SessionId) => {
+        // The diff viewer is mounted at the App level (overlay over
+        // the session area). The store owns its state; we just call
+        // the helper.
+        openDiffForSession(sid);
+      },
+      copyToClipboard: async (t: string) => {
+        await navigator.clipboard.writeText(t);
+      },
+      getAvailableModels: (sid: SessionId): ModelInfo[] => {
+        const s = useSessionsStore.getState().sessions.get(sid);
+        return s?.availableModels ?? [];
+      },
+      getSessionName: (sid: SessionId) =>
+        useSessionsStore.getState().sessions.get(sid)?.sessionName,
+      getCurrentModel: (sid: SessionId) =>
+        useSessionsStore.getState().sessions.get(sid)?.currentModel,
+      getSessionWorkspacePath: (sid: SessionId) =>
+        useSessionsStore.getState().sessions.get(sid)?.workspacePath,
+      listSessions: (p: string) =>
+        window.pivis.invoke("workspace.listSessions", { workspacePath: p }),
+    };
 
-    setText("");
-    setAttachments([]);
-    setSlashSuggestions([]);
-  }, [sessionId, isStreaming, addUserMessage, addBashCommand, finishBashCommand, setStreaming, addToast, session?.currentModel, attachments]);
+    await executeAction(sessionId, finalAction, deps);
+  }, [
+    text,
+    discovered,
+    session,
+    sessionId,
+    addToast,
+    setStreaming,
+    addUserMessage,
+    addBashCommand,
+    finishBashCommand,
+    setCurrentModel,
+    updateSettings,
+    addCustomMessage,
+    openPicker,
+    adoptSessionFile,
+    closeSessionTab,
+    seedHistory,
+    refreshWorkspaceSessions,
+    attachments,
+  ]);
+
+  // ── Abort ──────────────────────────────────────────────────────────
 
   const handleAbort = useCallback(() => {
-    window.pivis.invoke("session.sendCommand", {
-      sessionId,
-      command: { type: "abort" },
-    }).catch(console.error);
+    window.pivis
+      .invoke("session.sendCommand", {
+        sessionId,
+        command: { type: "abort" },
+      })
+      .catch(console.error);
   }, [sessionId]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (slashSuggestions.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setSelectedSuggestion((s) => Math.min(s + 1, slashSuggestions.length - 1));
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setSelectedSuggestion((s) => Math.max(s - 1, 0));
-        return;
-      }
-      if (e.key === "Tab" || (e.key === "Enter" && slashSuggestions.length > 0 && text.startsWith("/"))) {
-        e.preventDefault();
-        const chosen = slashSuggestions[selectedSuggestion];
-        if (chosen) {
-          setText(`/${chosen} `);
-          setSlashSuggestions([]);
+  // ── Keyboard ───────────────────────────────────────────────────────
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (suggestions.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSlashIndex((i) => Math.min(i + 1, suggestions.length - 1));
+          return;
         }
-        return;
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSlashIndex((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          const chosen = suggestions[slashIndex];
+          if (chosen) {
+            // Built-ins that take args get a trailing space to invite the
+            // user to type the argument. Arg-less ones don't.
+            const isArg = BUILTIN_COMMANDS.find((b) => b.name === chosen.name)?.takesArgs;
+            setText(isArg ? `/${chosen.name} ` : `/${chosen.name}`);
+            setSlashIndex(0);
+          }
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setSlashIndex(0);
+          return;
+        }
       }
-      if (e.key === "Escape") {
-        setSlashSuggestions([]);
-        return;
+
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        void handleSubmit();
       }
-    }
 
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void sendPrompt(text);
-    }
-
-    if (e.key === "Escape" && isStreaming) {
-      handleAbort();
-    }
-  }, [text, slashSuggestions, selectedSuggestion, sendPrompt, isStreaming, handleAbort]);
+      if (e.key === "Escape" && isStreaming) {
+        handleAbort();
+      }
+    },
+    [suggestions, slashIndex, handleSubmit, isStreaming, handleAbort],
+  );
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
-    setText(value);
-    updateSuggestions(value);
-  }, [updateSuggestions]);
+    setText(e.target.value);
+  }, []);
+
+  // ── Click to pick a suggestion ─────────────────────────────────────
+
+  const handleSuggestionClick = useCallback((entry: SuggestionEntry) => {
+    const isArg = BUILTIN_COMMANDS.find((b) => b.name === entry.name)?.takesArgs;
+    setText(isArg ? `/${entry.name} ` : `/${entry.name}`);
+    setSlashIndex(0);
+    textareaRef.current?.focus();
+  }, []);
 
   const isBashMode = text.startsWith("!");
   const isSlashMode = text.startsWith("/");
@@ -219,6 +375,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
             <div key={`${att.name}-${i}`} className="composer__attachment-item">
               <img src={att.dataUrl} alt={att.name} className="composer__attachment-thumb" />
               <button
+                type="button"
                 className="composer__attachment-remove"
                 onClick={() => removeAttachment(i)}
                 aria-label={`Remove ${att.name}`}
@@ -236,8 +393,10 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           {Array.from(session.widgets.entries()).map(([key, lines]) => (
             <div key={key} className="widget-strip__item">
               {lines.map((line, i) => (
-                // eslint-disable-next-line react/no-array-index-key
-                <div key={i} className="widget-strip__line"><AnsiText text={line} /></div>
+                // biome-ignore lint/suspicious/noArrayIndexKey: widget lines are appended and stable per key
+                <div key={i} className="widget-strip__line">
+                  <AnsiText text={line} />
+                </div>
               ))}
             </div>
           ))}
@@ -245,19 +404,24 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       )}
 
       {/* Slash suggestions */}
-      {slashSuggestions.length > 0 && (
-        <div className="composer__suggestions">
-          {slashSuggestions.map((suggestion, i) => (
+      {suggestions.length > 0 && (
+        <div className="composer__suggestions" role="listbox">
+          {suggestions.map((s, i) => (
             <button
-              key={suggestion}
-              className={`composer__suggestion ${i === selectedSuggestion ? "composer__suggestion--selected" : ""}`}
-              onClick={() => {
-                setText(`/${suggestion} `);
-                setSlashSuggestions([]);
-                textareaRef.current?.focus();
-              }}
+              type="button"
+              key={s.key}
+              className={`composer__suggestion ${i === slashIndex ? "composer__suggestion--selected" : ""}`}
+              onClick={() => handleSuggestionClick(s)}
+              role="option"
+              aria-selected={i === slashIndex}
             >
-              /{suggestion}
+              <span className="composer__suggestion-name">/{s.name}</span>
+              <span className="composer__suggestion-arg">{s.argHint ?? ""}</span>
+              <span className="composer__suggestion-desc">{s.description ?? ""}</span>
+              <span className={`composer__suggestion-badge composer__suggestion-badge--${s.badge}`}>
+                {s.badge}
+                {s.scope ? `:${s.scope}` : ""}
+              </span>
             </button>
           ))}
         </div>
@@ -271,13 +435,17 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         className="composer__file-input"
         onChange={handleFilesSelected}
       />
-      <div className={`composer__input-row ${isBashMode ? "composer__input-row--bash" : ""} ${isSlashMode ? "composer__input-row--slash" : ""}`}>
+      <div
+        className={`composer__input-row ${isBashMode ? "composer__input-row--bash" : ""} ${isSlashMode ? "composer__input-row--slash" : ""}`}
+      >
         <div className="composer__input-box">
           <button
+            type="button"
             className="composer__attach-btn"
             onClick={handleAttachClick}
             aria-label="Attach images"
             title="Attach images"
+            disabled={!live}
           >
             <svg viewBox="0 0 16 16" aria-hidden="true">
               <path
@@ -297,9 +465,8 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
               onChange={handleChange}
               onKeyDown={handleKeyDown}
               aria-label="Message pi"
+              disabled={!live}
             />
-            {/* Custom placeholder overlay: a native placeholder participates in
-                field-sizing and inflates the empty box once it wraps. */}
             {text === "" && (
               <div className="composer__placeholder" aria-hidden="true">
                 {isStreaming

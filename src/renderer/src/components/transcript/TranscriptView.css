@@ -51,14 +51,14 @@
 .transcript-block {
   display: flex;
   flex-direction: column;
-  gap: 0.714rem;        /* ≈10px */
+  gap: 0.714rem; /* ≈10px */
   max-width: 100%;
   text-align: left;
 }
 
 .transcript-block__label {
   font-family: var(--font-display);
-  font-size: 0.786em;   /* ≈11px @ 14px root */
+  font-size: 0.786em; /* ≈11px @ 14px root */
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: var(--mcm-track-label);
@@ -80,7 +80,7 @@
   background: var(--ctp-surface0);
   border: 1px solid var(--ctp-surface1);
   border-radius: var(--mcm-radius-md);
-  padding: 0.714rem 1rem;     /* ≈10/14 — symmetric, top/bottom 10px, left/right 14px */
+  padding: 0.714rem 1rem; /* ≈10/14 — symmetric, top/bottom 10px, left/right 14px */
   color: var(--ctp-text);
   line-height: var(--mcm-line-body);
   white-space: pre-wrap;
@@ -155,7 +155,7 @@
   background: var(--ctp-mantle);
   border: 1px solid var(--ctp-surface0);
   border-radius: var(--mcm-radius-md);
-  padding: 0.571rem 0.857rem;     /* ≈8/12 */
+  padding: 0.571rem 0.857rem; /* ≈8/12 */
 }
 
 .tool-card:hover {
@@ -227,7 +227,7 @@ button.tool-card__header {
 }
 
 .tool-card__spinner {
-  font-size: 0.786em;       /* ≈11px @ 14px root */
+  font-size: 0.786em; /* ≈11px @ 14px root */
 }
 
 .tool-card__badge {
@@ -274,7 +274,7 @@ button.tool-card__header {
 .tool-card__more {
   font-family: var(--font-code);
   font-size: var(--font-size-small);
-  font-style: italic;     /* True italic variant for "more" notes */
+  font-style: italic; /* True italic variant for "more" notes */
   color: var(--ctp-overlay0);
 }
 
@@ -282,7 +282,7 @@ button.tool-card__header {
   position: absolute;
   right: 0.357rem;
   bottom: 0.357rem;
-  width: 1.571em;          /* ≈22px @ 14px root */
+  width: 1.571em; /* ≈22px @ 14px root */
   height: 1.571em;
   display: flex;
   align-items: center;
@@ -340,7 +340,7 @@ button.tool-card__header {
 
 .compaction-marker__label {
   font-family: var(--font-display);
-  font-size: 0.786em;     /* ≈11px @ 14px root */
+  font-size: 0.786em; /* ≈11px @ 14px root */
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: var(--mcm-track-label);
@@ -373,7 +373,9 @@ button.tool-card__header {
 .transcript-block__content p {
   margin: 0 0 var(--mcm-tight);
 }
-.transcript-block__content p:last-child { margin-bottom: 0; }
+.transcript-block__content p:last-child {
+  margin-bottom: 0;
+}
 
 .transcript-block__content ul,
 .transcript-block__content ol {
@@ -381,7 +383,9 @@ button.tool-card__header {
   margin: 0 0 var(--mcm-tight);
 }
 
-.transcript-block__content li { margin: 0.2em 0; }
+.transcript-block__content li {
+  margin: 0.2em 0;
+}
 
 .transcript-block__content blockquote {
   border-left: 2px solid var(--ctp-surface1);
@@ -406,7 +410,9 @@ button.tool-card__header {
   border-bottom: 1px solid color-mix(in srgb, var(--ctp-blue) 30%, transparent);
 }
 
-.transcript-block__content a:hover { border-bottom-color: var(--ctp-blue); }
+.transcript-block__content a:hover {
+  border-bottom-color: var(--ctp-blue);
+}
 
 .transcript-block__content table {
   border-collapse: collapse;

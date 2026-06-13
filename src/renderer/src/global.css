@@ -7,7 +7,8 @@
 /* ── MCM Display Headers (large UI headers) ─────────────────────────────
    Variable UI font · tight line-height · negative tracking · flush-left.
    Mimics heavy block-print type, set off with a loose bottom margin. */
-h1, h2,
+h1,
+h2,
 .mcm-display {
   font-family: var(--font-display);
   font-weight: 700;
@@ -17,10 +18,17 @@ h1, h2,
   margin-bottom: var(--mcm-base);
 }
 
-h1 { font-size: 2em; }
-h2 { font-size: 1.5em; }
+h1 {
+  font-size: 2em;
+}
+h2 {
+  font-size: 1.5em;
+}
 
-h3, h4, h5, h6 {
+h3,
+h4,
+h5,
+h6 {
   font-family: var(--font-display);
   font-weight: 600;
   line-height: 1.25;
@@ -30,7 +38,8 @@ h3, h4, h5, h6 {
 
 /* ── MCM Body copy ──────────────────────────────────────────────────────
    Variable UI font · airy 1.6 rhythm · default tracking. */
-.mcm-body, p {
+.mcm-body,
+p {
   font-family: var(--font-display);
   line-height: var(--mcm-line-body);
   letter-spacing: var(--mcm-track-body);
@@ -55,28 +64,36 @@ button {
   font-family: inherit;
 }
 
-input, textarea, select {
+input,
+textarea,
+select {
   font-family: inherit;
 }
 
 /* ── MCM Code (terminal, editor, syntax-highlighted blocks) ─────────────
    Monospace font · 1.5 line-height.  Comments/notes use the font's true
    italic variant for architectural contrast against block code. */
-code, pre, .mcm-code {
+code,
+pre,
+.mcm-code {
   font-family: var(--font-code);
   font-size: var(--font-size-code);
   line-height: var(--mcm-line-code);
 }
 
-code em, code i, pre em, pre i,
-.mcm-comment, .mcm-note {
+code em,
+code i,
+pre em,
+pre i,
+.mcm-comment,
+.mcm-note {
   font-style: italic;
 }
 
 /* Inline code (used inside markdown text) */
 .mcm-inline-code {
   font-family: var(--font-code);
-  font-size: 0.929em;        /* relative to the surrounding paragraph */
+  font-size: 0.929em; /* relative to the surrounding paragraph */
   background: var(--ctp-surface0);
   padding: 0.1em 0.3em;
   border-radius: 0.214em;
@@ -129,5 +146,7 @@ code em, code i, pre em, pre i,
 }
 
 @keyframes spinner-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }

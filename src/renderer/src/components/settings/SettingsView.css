@@ -23,7 +23,7 @@
   border: 1px solid var(--ctp-surface1);
   border-radius: var(--mcm-radius-lg);
   width: 100%;
-  max-width: 37.143rem;     /* ≈520px */
+  max-width: 37.143rem; /* ≈520px */
   max-height: 80vh;
   overflow: hidden;
   display: flex;
@@ -34,7 +34,7 @@
 .settings-panel__header {
   display: flex;
   align-items: center;
-  padding: 0.857rem 1rem;    /* ≈12/14 */
+  padding: 0.857rem 1rem; /* ≈12/14 */
   border-bottom: 1px solid var(--ctp-surface1);
 }
 
@@ -59,20 +59,22 @@
   padding: 0.143rem 0.429rem;
 }
 
-.settings-panel__close:hover { color: var(--ctp-text); }
+.settings-panel__close:hover {
+  color: var(--ctp-text);
+}
 
 .settings-panel__body {
   overflow-y: auto;
-  padding: 1rem 1.143rem;          /* ≈14/16 */
+  padding: 1rem 1.143rem; /* ≈14/16 */
   display: flex;
   flex-direction: column;
-  gap: var(--mcm-base);             /* standard section separation */
+  gap: var(--mcm-base); /* standard section separation */
 }
 
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: 0.571rem;                   /* tight grouping within a section */
+  gap: 0.571rem; /* tight grouping within a section */
 }
 
 .settings-section__title {
@@ -129,9 +131,13 @@
   padding: 0.429rem 0.714rem;
 }
 
-.settings-btn:hover { background: var(--ctp-surface2); color: var(--ctp-text); }
+.settings-btn:hover {
+  background: var(--ctp-surface2);
+  color: var(--ctp-text);
+}
 
-.settings-select, .settings-input {
+.settings-select,
+.settings-input {
   background: var(--ctp-mantle);
   border: 1px solid var(--ctp-surface1);
   border-radius: var(--mcm-radius-sm);
@@ -143,7 +149,10 @@
   outline: none;
 }
 
-.settings-select:focus, .settings-input:focus { border-color: var(--ctp-mauve); }
+.settings-select:focus,
+.settings-input:focus {
+  border-color: var(--ctp-mauve);
+}
 
 .settings-stepper {
   display: flex;
@@ -165,7 +174,9 @@
   justify-content: center;
 }
 
-.settings-stepper__btn:hover { background: var(--ctp-surface2); }
+.settings-stepper__btn:hover {
+  background: var(--ctp-surface2);
+}
 
 .settings-stepper__val {
   font-family: var(--font-code);

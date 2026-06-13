@@ -1,13 +1,16 @@
-import { describe, it, expect, vi } from "vitest";
-import { readFileSync, readdirSync, existsSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import type { PiOutbound } from "./jsonl-stream.js";
 import { JsonlStream } from "./jsonl-stream.js";
 
 describe("JsonlStream", () => {
   it("parses a simple JSON line", () => {
     const lines: unknown[] = [];
-    const stream = new JsonlStream((parsed) => lines.push(parsed), () => {});
+    const stream = new JsonlStream(
+      (parsed) => lines.push(parsed),
+      () => {},
+    );
     stream.feed(Buffer.from('{"type":"agent_start"}\n'));
     expect(lines).toHaveLength(1);
     expect((lines[0] as { kind: string }).kind).toBe("event");
@@ -15,7 +18,10 @@ describe("JsonlStream", () => {
 
   it("handles line split across two chunks", () => {
     const lines: unknown[] = [];
-    const stream = new JsonlStream((p) => lines.push(p), () => {});
+    const stream = new JsonlStream(
+      (p) => lines.push(p),
+      () => {},
+    );
     stream.feed(Buffer.from('{"type":"agent_'));
     expect(lines).toHaveLength(0);
     stream.feed(Buffer.from('start"}\n'));
@@ -24,14 +30,20 @@ describe("JsonlStream", () => {
 
   it("handles \\r\\n line endings", () => {
     const lines: unknown[] = [];
-    const stream = new JsonlStream((p) => lines.push(p), () => {});
+    const stream = new JsonlStream(
+      (p) => lines.push(p),
+      () => {},
+    );
     stream.feed(Buffer.from('{"type":"agent_start"}\r\n'));
     expect(lines).toHaveLength(1);
   });
 
   it("does NOT split on U+2028 inside a JSON string", () => {
     const lines: unknown[] = [];
-    const stream = new JsonlStream((p) => lines.push(p), () => {});
+    const stream = new JsonlStream(
+      (p) => lines.push(p),
+      () => {},
+    );
     // U+2028 is a Unicode line separator — should NOT be treated as a line end
     const jsonWithU2028 = '{"type":"message_update","text":"line\\u2028break"}\n';
     stream.feed(Buffer.from(jsonWithU2028, "utf8"));
@@ -40,29 +52,45 @@ describe("JsonlStream", () => {
 
   it("handles multiple lines in one chunk", () => {
     const lines: unknown[] = [];
-    const stream = new JsonlStream((p) => lines.push(p), () => {});
+    const stream = new JsonlStream(
+      (p) => lines.push(p),
+      () => {},
+    );
     stream.feed(Buffer.from('{"type":"agent_start"}\n{"type":"agent_end"}\n'));
     expect(lines).toHaveLength(2);
   });
 
   it("classifies response messages", () => {
     const lines: Array<{ kind: string }> = [];
-    const stream = new JsonlStream((p) => lines.push(p as { kind: string }), () => {});
+    const stream = new JsonlStream(
+      (p) => lines.push(p as { kind: string }),
+      () => {},
+    );
     stream.feed(Buffer.from('{"type":"response","command":"prompt","success":true}\n'));
     expect(lines[0]?.kind).toBe("response");
   });
 
   it("classifies extension_ui_request", () => {
     const lines: Array<{ kind: string }> = [];
-    const stream = new JsonlStream((p) => lines.push(p as { kind: string }), () => {});
-    stream.feed(Buffer.from('{"type":"extension_ui_request","id":"1","method":"select","title":"Pick","options":["A","B"]}\n'));
+    const stream = new JsonlStream(
+      (p) => lines.push(p as { kind: string }),
+      () => {},
+    );
+    stream.feed(
+      Buffer.from(
+        '{"type":"extension_ui_request","id":"1","method":"select","title":"Pick","options":["A","B"]}\n',
+      ),
+    );
     expect(lines[0]?.kind).toBe("extension_ui_request");
   });
 
   it("calls onError for invalid JSON and continues", () => {
     const lines: unknown[] = [];
     const errors: unknown[] = [];
-    const stream = new JsonlStream((p) => lines.push(p), (e) => errors.push(e));
+    const stream = new JsonlStream(
+      (p) => lines.push(p),
+      (e) => errors.push(e),
+    );
     stream.feed(Buffer.from('not-json\n{"type":"agent_end"}\n'));
     expect(errors).toHaveLength(1);
     expect(lines).toHaveLength(1);
@@ -70,9 +98,12 @@ describe("JsonlStream", () => {
 
   it("handles chunk split mid-codepoint (UTF-8 multi-byte)", () => {
     const lines: unknown[] = [];
-    const stream = new JsonlStream((p) => lines.push(p), () => {});
+    const stream = new JsonlStream(
+      (p) => lines.push(p),
+      () => {},
+    );
     // "café" → 'caf\xc3\xa9'
-    const json = JSON.stringify({ type: "agent_start", name: "café" }) + "\n";
+    const json = `${JSON.stringify({ type: "agent_start", name: "café" })}\n`;
     const buf = Buffer.from(json, "utf8");
     // Split at a multi-byte boundary
     stream.feed(buf.slice(0, buf.length - 3));

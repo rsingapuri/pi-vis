@@ -27,7 +27,7 @@
 
 .composer__attachment-item {
   position: relative;
-  width: 4.571em;   /* ≈64px @ 14px root */
+  width: 4.571em; /* ≈64px @ 14px root */
   height: 4.571em;
   border-radius: var(--mcm-radius-sm);
   overflow: hidden;
@@ -46,7 +46,7 @@
   position: absolute;
   top: 0.143rem;
   right: 0.143rem;
-  width: 1.286em;   /* ≈18px @ 14px root */
+  width: 1.286em; /* ≈18px @ 14px root */
   height: 1.286em;
   border-radius: 50%;
   border: none;
@@ -93,7 +93,7 @@
   display: flex;
   flex-direction: column;
   background: var(--ctp-surface0);
-  max-height: 14.286em;   /* ≈200px @ 14px root */
+  max-height: 14.286em; /* ≈200px @ 14px root */
   overflow-y: auto;
 }
 
@@ -106,12 +106,66 @@
   font-family: var(--font-code);
   font-size: 0.929em;
   color: var(--ctp-subtext0);
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: baseline;
+  gap: 0.571rem;
 }
 
 .composer__suggestion:hover,
 .composer__suggestion--selected {
   background: var(--ctp-surface1);
   color: var(--ctp-text);
+}
+
+.composer__suggestion-name {
+  font-weight: 500;
+}
+
+.composer__suggestion-arg {
+  color: var(--ctp-overlay0);
+  font-size: 0.929em;
+}
+
+.composer__suggestion-badge {
+  font-family: var(--font-display);
+  font-size: 0.714em;
+  letter-spacing: var(--mcm-track-label);
+  text-transform: uppercase;
+  padding: 0.071em 0.357em;
+  border-radius: 999px;
+  border: 1px solid var(--ctp-surface2);
+  color: var(--ctp-overlay0);
+  background: var(--ctp-surface0);
+}
+
+.composer__suggestion-badge--built-in {
+  color: var(--ctp-mauve);
+  border-color: var(--ctp-mauve);
+}
+
+.composer__suggestion-badge--extension {
+  color: var(--ctp-green);
+  border-color: var(--ctp-green);
+}
+
+.composer__suggestion-badge--prompt {
+  color: var(--ctp-blue);
+  border-color: var(--ctp-blue);
+}
+
+.composer__suggestion-badge--skill {
+  color: var(--ctp-peach);
+  border-color: var(--ctp-peach);
+}
+
+.composer__suggestion-desc {
+  color: var(--ctp-subtext0);
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Input box ───────────────────────────────────────────────────────────

@@ -40,16 +40,20 @@ export const NotifyUiRequestSchema = BaseUiRequest.extend({
   notifyType: z.string().optional(),
 });
 
+// `statusText` is optional: pi sends `undefined` (which JSON.stringify omits
+// from the wire) to clear an existing segment. See sessions-store.addUiRequest.
 export const SetStatusUiRequestSchema = BaseUiRequest.extend({
   method: z.literal("setStatus"),
   statusKey: z.string(),
-  statusText: z.string(),
+  statusText: z.string().optional(),
 });
 
+// `widgetLines` is optional for the same reason as `statusText` above — an
+// absent payload field means "remove this widget".
 export const SetWidgetUiRequestSchema = BaseUiRequest.extend({
   method: z.literal("setWidget"),
   widgetKey: z.string(),
-  widgetLines: z.array(z.string()),
+  widgetLines: z.array(z.string()).optional(),
   widgetPlacement: z.string().optional(),
 });
 

@@ -1,10 +1,7 @@
 import type { SessionId } from "@shared/ids.js";
+import { ExtensionUiRequestSchema } from "@shared/pi-protocol/extension-ui.js";
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  computeOpenTabs,
-  persistOpenTabs,
-  useSessionsStore,
-} from "./sessions-store.js";
+import { computeOpenTabs, persistOpenTabs, useSessionsStore } from "./sessions-store.js";
 
 const SESSION_A = "session-a" as SessionId;
 const SESSION_B = "session-b" as SessionId;
@@ -163,7 +160,9 @@ describe("createSession(name) and tab lifecycle", () => {
   });
 
   it("createSession sixth arg sets status; omitted arg defaults to cold", () => {
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl", undefined, undefined, "ready");
+    useSessionsStore
+      .getState()
+      .createSession(SESSION_A, WORKSPACE, "/f/a.jsonl", undefined, undefined, "ready");
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.status).toBe("ready");
 
     useSessionsStore.getState().createSession(SESSION_B, WORKSPACE, "/f/b.jsonl");
@@ -232,26 +231,18 @@ describe("createSession(title) and addUserMessage self-labeling", () => {
   });
 
   it("createSession stores title (preview) and leaves sessionName undefined", () => {
-    useSessionsStore.getState().createSession(
-      SESSION_A,
-      WORKSPACE,
-      "/f/a.jsonl",
-      undefined,
-      "What model is this?",
-    );
+    useSessionsStore
+      .getState()
+      .createSession(SESSION_A, WORKSPACE, "/f/a.jsonl", undefined, "What model is this?");
     const s = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(s?.sessionTitle).toBe("What model is this?");
     expect(s?.sessionName).toBeUndefined();
   });
 
   it("createSession stores both name and title; consumers prefer name", () => {
-    useSessionsStore.getState().createSession(
-      SESSION_A,
-      WORKSPACE,
-      "/f/a.jsonl",
-      "Renamed",
-      "preview text",
-    );
+    useSessionsStore
+      .getState()
+      .createSession(SESSION_A, WORKSPACE, "/f/a.jsonl", "Renamed", "preview text");
     const s = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(s?.sessionName).toBe("Renamed");
     expect(s?.sessionTitle).toBe("preview text");
@@ -270,26 +261,137 @@ describe("createSession(title) and addUserMessage self-labeling", () => {
   it("addUserMessage uses the first line of a multi-line prompt", () => {
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
     useSessionsStore.getState().addUserMessage(SESSION_A, "fix the parser\nplease");
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionTitle).toBe("fix the parser");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionTitle).toBe(
+      "fix the parser",
+    );
   });
 
   it("addUserMessage does NOT overwrite a title set at createSession", () => {
-    useSessionsStore.getState().createSession(
-      SESSION_A,
-      WORKSPACE,
-      "/f/a.jsonl",
-      undefined,
+    useSessionsStore
+      .getState()
+      .createSession(SESSION_A, WORKSPACE, "/f/a.jsonl", undefined, "resume preview");
+    useSessionsStore.getState().addUserMessage(SESSION_A, "first prompt");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionTitle).toBe(
       "resume preview",
     );
-    useSessionsStore.getState().addUserMessage(SESSION_A, "first prompt");
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionTitle).toBe("resume preview");
   });
 
   it("addUserMessage does NOT overwrite a sessionName set by pi or the user", () => {
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
     useSessionsStore.getState().setSessionName(SESSION_A, "Renamed by user");
     useSessionsStore.getState().addUserMessage(SESSION_A, "first prompt");
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe("Renamed by user");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe(
+      "Renamed by user",
+    );
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionTitle).toBeUndefined();
+  });
+});
+
+/**
+ * /plan (and other extensions) clear their on-screen metadata by sending
+ * `setStatus` / `setWidget` with the payload field set to `undefined`. Pi's
+ * `JSON.stringify` drops undefined values, so the wire frame omits the
+ * field entirely. The store's clear-payload handling, paired with the
+ * optional schema fields, is what makes `/plan exit` actually remove the
+ * widget strip and status segment instead of leaving them on screen.
+ */
+describe("sessions store - extension UI clear payloads", () => {
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+  });
+
+  it("setStatus → setStatus(undef) round-trip removes the key from statusSegments", () => {
+    useSessionsStore.getState().addUiRequest(SESSION_A, {
+      type: "extension_ui_request",
+      id: "s1",
+      method: "setStatus",
+      statusKey: "plan",
+      statusText: "plan active",
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.statusSegments.get("plan")).toBe(
+      "plan active",
+    );
+
+    useSessionsStore.getState().addUiRequest(SESSION_A, {
+      type: "extension_ui_request",
+      id: "s2",
+      method: "setStatus",
+      statusKey: "plan",
+      // statusText intentionally omitted: this is how a clear arrives on
+      // the wire. The store must treat absent ⇒ delete, not set-undefined.
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.statusSegments.has("plan")).toBe(
+      false,
+    );
+  });
+
+  it("setStatus clearing a non-existent key is a no-op (no throw, no stray entries)", () => {
+    useSessionsStore.getState().addUiRequest(SESSION_A, {
+      type: "extension_ui_request",
+      id: "s3",
+      method: "setStatus",
+      statusKey: "never-set",
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.statusSegments.size).toBe(0);
+  });
+
+  it("setWidget → setWidget(undef) round-trip removes the key from widgets", () => {
+    useSessionsStore.getState().addUiRequest(SESSION_A, {
+      type: "extension_ui_request",
+      id: "w1",
+      method: "setWidget",
+      widgetKey: "plan",
+      widgetLines: ["Plan mode: planning", "Produce a <proposed_plan> block."],
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.widgets.get("plan")).toEqual([
+      "Plan mode: planning",
+      "Produce a <proposed_plan> block.",
+    ]);
+
+    useSessionsStore.getState().addUiRequest(SESSION_A, {
+      type: "extension_ui_request",
+      id: "w2",
+      method: "setWidget",
+      widgetKey: "plan",
+      // widgetLines intentionally omitted: clear-on-undefined contract.
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.widgets.has("plan")).toBe(false);
+  });
+
+  it("setWidget clearing a non-existent key is a no-op (no throw, no stray entries)", () => {
+    useSessionsStore.getState().addUiRequest(SESSION_A, {
+      type: "extension_ui_request",
+      id: "w3",
+      method: "setWidget",
+      widgetKey: "never-set",
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.widgets.size).toBe(0);
+  });
+
+  it("ExtensionUiRequestSchema accepts setStatus / setWidget with payload field absent (wire-shape regression)", () => {
+    // Regression for the /plan-exit bug: the previous schema required
+    // statusText / widgetLines, but pi's wire frame omits them entirely
+    // (not null — just absent). The schema must parse these lines.
+    const statusClear = ExtensionUiRequestSchema.safeParse({
+      type: "extension_ui_request",
+      id: "1",
+      method: "setStatus",
+      statusKey: "plan",
+    });
+    expect(statusClear.success).toBe(true);
+
+    const widgetClear = ExtensionUiRequestSchema.safeParse({
+      type: "extension_ui_request",
+      id: "2",
+      method: "setWidget",
+      widgetKey: "plan",
+    });
+    expect(widgetClear.success).toBe(true);
   });
 });

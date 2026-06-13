@@ -4,9 +4,13 @@ import { ThinkingLevelSchema } from "./thinking.js";
 // Minimal passthrough schema for wire AgentMessage objects embedded in events.
 // Content arrays contain text/thinking/toolCall blocks — modeled as passthrough
 // since the transcript reducer drives UI state from streaming events, not these snapshots.
+// `role` is a free string: pi emits "user" for delivered prompts, "assistant"
+// for model output, "toolResult" for tool outcomes, and "custom" (plus
+// extension-defined values) for extension-originated messages. The transcript
+// reducer branches on the role string at runtime rather than the type system.
 const WireAgentMessageSchema = z
   .object({
-    role: z.enum(["user", "assistant", "toolResult"]),
+    role: z.string(),
   })
   .passthrough();
 

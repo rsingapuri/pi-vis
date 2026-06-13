@@ -1,19 +1,23 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
-import fs from "fs";
-import os from "os";
-import { SessionRegistry } from "./session-registry.js";
-import type { PiEvent } from "@shared/pi-protocol/events.js";
-import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
+import fs from "node:fs";
+import os from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SessionId } from "@shared/ids.js";
 import type { SessionStatus } from "@shared/ipc-contract.js";
+import type { PiEvent } from "@shared/pi-protocol/events.js";
+import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { SessionRegistry } from "./session-registry.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const FAKE_PI = join(__dirname, "../../../tests/fixtures/fake-pi.mjs");
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5000, label = "condition"): Promise<void> {
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 5000,
+  label = "condition",
+): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (predicate()) return;
@@ -25,7 +29,11 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000, label = "cond
 describe("SessionRegistry", () => {
   let sessionsDir: string;
   let workspaceDir: string;
-  let statusChanges: Array<{ sessionId: SessionId; status: SessionStatus; error?: string | undefined }>;
+  let statusChanges: Array<{
+    sessionId: SessionId;
+    status: SessionStatus;
+    error?: string | undefined;
+  }>;
   let registry: SessionRegistry;
 
   beforeAll(() => {
@@ -161,7 +169,9 @@ describe("SessionRegistry", () => {
 
     // No status changes should have been emitted for the closed id after the close call.
     const afterClose = statusChanges.filter(
-      (s) => s.sessionId === id && statusChanges.indexOf(s) > statusChanges.findIndex((x) => x.sessionId === id),
+      (s) =>
+        s.sessionId === id &&
+        statusChanges.indexOf(s) > statusChanges.findIndex((x) => x.sessionId === id),
     );
     // The above may be brittle; simpler assertion: nothing after the close event.
     expect(statusChanges.every((s) => s.sessionId !== id)).toBe(true);
@@ -216,5 +226,49 @@ describe("SessionRegistry", () => {
 
     registry.noteSessionFile(id, fileB);
     expect(registry.getSession(id)?.sessionFile).toBe(fileA);
+  });
+
+  describe("updateSessionFile (WP4 fileChanged flow)", () => {
+    it("re-points byFile to the new path, freeing the old slot", () => {
+      const id = registry.openSession(workspaceDir);
+      const fileA = join(sessionsDir, "orig.jsonl");
+      const fileB = join(sessionsDir, "new.jsonl");
+      registry.noteSessionFile(id, fileA);
+      expect(registry.getByFile(fileA)?.sessionId).toBe(id);
+
+      registry.updateSessionFile(id, fileB);
+      expect(registry.getSession(id)?.sessionFile).toBe(fileB);
+      // Old slot freed so a future openSession(ws, fileA) doesn't
+      // collide with the just-moved session.
+      expect(registry.getByFile(fileA)).toBeUndefined();
+      expect(registry.getByFile(fileB)?.sessionId).toBe(id);
+    });
+
+    it("clears the file when called with undefined (lazy new_session)", () => {
+      const id = registry.openSession(workspaceDir);
+      const fileA = join(sessionsDir, "lazy.jsonl");
+      registry.noteSessionFile(id, fileA);
+      registry.updateSessionFile(id, undefined);
+      expect(registry.getSession(id)?.sessionFile).toBeUndefined();
+      expect(registry.getByFile(fileA)).toBeUndefined();
+    });
+
+    it("is a no-op for unknown session ids", () => {
+      const fileA = join(sessionsDir, "unknown.jsonl");
+      // Should not throw.
+      registry.updateSessionFile("unknown" as SessionId, fileA);
+      expect(registry.getByFile(fileA)).toBeUndefined();
+    });
+
+    it("preserves ownership of the previous byFile slot when it points at a different session", () => {
+      const fileA = join(sessionsDir, "shared.jsonl");
+      fs.writeFileSync(fileA, "");
+      const id1 = registry.openSession(workspaceDir, fileA);
+      const id2 = registry.openSession(workspaceDir);
+      // id1 owns fileA in byFile; move id2 to fileA — should free id1's
+      // prior mapping (which is fileA) and re-claim it for id2.
+      registry.updateSessionFile(id2, fileA);
+      expect(registry.getByFile(fileA)?.sessionId).toBe(id2);
+    });
   });
 });

@@ -1,7 +1,7 @@
-import { app, BrowserWindow, session } from "electron";
-import path from "path";
-import { loadSettings, saveSettings } from "./settings-store.js";
+import path from "node:path";
+import { BrowserWindow, app, session } from "electron";
 import { initIpc, stopAllSessions } from "./ipc.js";
+import { loadSettings, saveSettings } from "./settings-store.js";
 
 app.setName("Pi-Vis");
 
@@ -30,12 +30,10 @@ function createWindow(): BrowserWindow {
 
   // Allow queryLocalFonts (permission name "local-fonts" may not be in Electron's typed union)
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    callback((permission as any) === "local-fonts");
+    callback(String(permission) === "local-fonts");
   });
   session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (permission as any) === "local-fonts";
+    return String(permission) === "local-fonts";
   });
 
   initIpc(win);

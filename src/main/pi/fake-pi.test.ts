@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
-import { spawn, type ChildProcess } from "child_process";
-import fs from "fs";
-import os from "os";
-import { JsonlStream, type PiOutbound } from "./jsonl-stream.js";
-import { SessionHeaderSchema } from "@shared/session-file/entries.js";
+import { type ChildProcess, spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { SessionStateSchema, SessionStatsSchema } from "@shared/pi-protocol/responses.js";
+import { SessionHeaderSchema } from "@shared/session-file/entries.js";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { JsonlStream, type PiOutbound } from "./jsonl-stream.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -31,7 +31,11 @@ function startFakePi(args: string[], cwd: string, env: Record<string, string>) {
 }
 
 /** Wait until predicate returns truthy, polling every 25ms. */
-async function waitFor(predicate: () => boolean, timeoutMs = 5000, label = "condition"): Promise<void> {
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 5000,
+  label = "condition",
+): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (predicate()) return;
@@ -48,16 +52,18 @@ function sendCommand(
   timeoutMs = 5000,
 ): Promise<{ id?: string; success: boolean; data?: unknown }> {
   const id = command.id as string | undefined;
-  child.stdin?.write(JSON.stringify(command) + "\n");
-  return waitFor(() => out.some((e) => e.kind === "response" && e.data.id === id), timeoutMs, `response to ${command.type}`).then(
-    () => {
-      const response = out.find((e) => e.kind === "response" && e.data.id === id) as
-        | { kind: "response"; data: { id?: string; success: boolean; data?: unknown } }
-        | undefined;
-      if (!response) throw new Error("response disappeared");
-      return response.data;
-    },
-  );
+  child.stdin?.write(`${JSON.stringify(command)}\n`);
+  return waitFor(
+    () => out.some((e) => e.kind === "response" && e.data.id === id),
+    timeoutMs,
+    `response to ${command.type}`,
+  ).then(() => {
+    const response = out.find((e) => e.kind === "response" && e.data.id === id) as
+      | { kind: "response"; data: { id?: string; success: boolean; data?: unknown } }
+      | undefined;
+    if (!response) throw new Error("response disappeared");
+    return response.data;
+  });
 }
 
 describe("fake-pi fixture", () => {
@@ -94,13 +100,18 @@ describe("fake-pi fixture", () => {
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
     });
-    const exitCode: number = await new Promise((resolve) => child.on("exit", (code) => resolve(code ?? -1)));
+    const exitCode: number = await new Promise((resolve) =>
+      child.on("exit", (code) => resolve(code ?? -1)),
+    );
     expect(exitCode).toBe(0);
     expect(stdout).toMatch(/^fake-pi /);
   });
 
   it("persists session file with user/assistant entries on first prompt", async () => {
-    const { child, out } = startFakePi([], workspaceDir, { ...process.env, FAKE_PI_SESSIONS_DIR: sessionsDir });
+    const { child, out } = startFakePi([], workspaceDir, {
+      ...process.env,
+      FAKE_PI_SESSIONS_DIR: sessionsDir,
+    });
 
     const response = await sendCommand(child, out, { type: "prompt", message: "say hi", id: "p1" });
     expect(response.success).toBe(true);
@@ -129,7 +140,9 @@ describe("fake-pi fixture", () => {
     expect(userEntry).toBeDefined();
     expect(userEntry.message.content[0].text).toBe("say hi");
 
-    const assistantEntry = entries.find((e) => e.type === "message" && e.message?.role === "assistant");
+    const assistantEntry = entries.find(
+      (e) => e.type === "message" && e.message?.role === "assistant",
+    );
     expect(assistantEntry).toBeDefined();
     expect(assistantEntry.message.content[0].text).toMatch(/^Echo: say hi$/);
 
@@ -142,13 +155,20 @@ describe("fake-pi fixture", () => {
   }, 15_000);
 
   it("set_session_name appends a session_info entry and emits session_info_changed", async () => {
-    const { child, out } = startFakePi([], workspaceDir, { ...process.env, FAKE_PI_SESSIONS_DIR: sessionsDir });
+    const { child, out } = startFakePi([], workspaceDir, {
+      ...process.env,
+      FAKE_PI_SESSIONS_DIR: sessionsDir,
+    });
 
     // First create the file via a prompt.
     await sendCommand(child, out, { type: "prompt", message: "hi", id: "p1" });
 
     // Now rename.
-    const response = await sendCommand(child, out, { type: "set_session_name", name: "My Session", id: "r1" });
+    const response = await sendCommand(child, out, {
+      type: "set_session_name",
+      name: "My Session",
+      id: "r1",
+    });
     expect(response.success).toBe(true);
 
     // The session_info_changed event must arrive.
@@ -156,7 +176,10 @@ describe("fake-pi fixture", () => {
       () => out.some((e) => e.kind === "event" && e.data.type === "session_info_changed"),
       5000,
       "session_info_changed event",
-    ).then(() => out.find((e) => e.kind === "event" && e.data.type === "session_info_changed") as PiOutbound);
+    ).then(
+      () =>
+        out.find((e) => e.kind === "event" && e.data.type === "session_info_changed") as PiOutbound,
+    );
     expect(event).toBeDefined();
     if (event.kind === "event") {
       expect((event.data as { name: string }).name).toBe("My Session");
@@ -166,7 +189,10 @@ describe("fake-pi fixture", () => {
     const subdirs = fs.readdirSync(sessionsDir);
     const subdir = subdirs[0]!;
     const filePath = join(sessionsDir, subdir, fs.readdirSync(join(sessionsDir, subdir))[0]!);
-    const lines = fs.readFileSync(filePath, "utf8").split("\n").filter((l) => l.trim().length > 0);
+    const lines = fs
+      .readFileSync(filePath, "utf8")
+      .split("\n")
+      .filter((l) => l.trim().length > 0);
     const lastEntry = JSON.parse(lines[lines.length - 1]!);
     expect(lastEntry.type).toBe("session_info");
     expect(lastEntry.name).toBe("My Session");
@@ -175,7 +201,10 @@ describe("fake-pi fixture", () => {
   }, 15_000);
 
   it("get_state returns a SessionState with sessionName + sessionFile", async () => {
-    const { child, out } = startFakePi([], workspaceDir, { ...process.env, FAKE_PI_SESSIONS_DIR: sessionsDir });
+    const { child, out } = startFakePi([], workspaceDir, {
+      ...process.env,
+      FAKE_PI_SESSIONS_DIR: sessionsDir,
+    });
 
     await sendCommand(child, out, { type: "prompt", message: "hi", id: "p1" });
     await sendCommand(child, out, { type: "set_session_name", name: "My Session", id: "r1" });
@@ -194,7 +223,10 @@ describe("fake-pi fixture", () => {
   }, 15_000);
 
   it("get_session_stats returns valid SessionStats with sessionFile", async () => {
-    const { child, out } = startFakePi([], workspaceDir, { ...process.env, FAKE_PI_SESSIONS_DIR: sessionsDir });
+    const { child, out } = startFakePi([], workspaceDir, {
+      ...process.env,
+      FAKE_PI_SESSIONS_DIR: sessionsDir,
+    });
 
     const response = await sendCommand(child, out, { type: "get_session_stats", id: "st1" });
     expect(response.success).toBe(true);
@@ -209,9 +241,16 @@ describe("fake-pi fixture", () => {
 
   it("resume via --session reuses the same sessionId and sessionName", async () => {
     // First process: prompt + rename.
-    const first = startFakePi([], workspaceDir, { ...process.env, FAKE_PI_SESSIONS_DIR: sessionsDir });
+    const first = startFakePi([], workspaceDir, {
+      ...process.env,
+      FAKE_PI_SESSIONS_DIR: sessionsDir,
+    });
     await sendCommand(first.child, first.out, { type: "prompt", message: "hi", id: "p1" });
-    await sendCommand(first.child, first.out, { type: "set_session_name", name: "Resumed Name", id: "r1" });
+    await sendCommand(first.child, first.out, {
+      type: "set_session_name",
+      name: "Resumed Name",
+      id: "r1",
+    });
 
     const firstState = await sendCommand(first.child, first.out, { type: "get_state", id: "s1" });
     const firstData = firstState.data as { sessionFile: string; sessionId: string };
@@ -220,12 +259,14 @@ describe("fake-pi fixture", () => {
     first.child.kill();
 
     // Second process: resume by passing the file path.
-    const second = startFakePi(
-      ["--mode", "rpc", "--session", sessionFile],
-      workspaceDir,
-      { ...process.env, FAKE_PI_SESSIONS_DIR: sessionsDir },
-    );
-    const resumedState = await sendCommand(second.child, second.out, { type: "get_state", id: "s2" });
+    const second = startFakePi(["--mode", "rpc", "--session", sessionFile], workspaceDir, {
+      ...process.env,
+      FAKE_PI_SESSIONS_DIR: sessionsDir,
+    });
+    const resumedState = await sendCommand(second.child, second.out, {
+      type: "get_state",
+      id: "s2",
+    });
     const resumedData = resumedState.data as { sessionId: string; sessionName?: string };
     expect(resumedData.sessionId).toBe(firstId);
     expect(resumedData.sessionName).toBe("Resumed Name");

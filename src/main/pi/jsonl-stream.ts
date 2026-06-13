@@ -1,9 +1,9 @@
-import { PiRpcResponseSchema } from "@shared/pi-protocol/responses.js";
 import { PiEventSchema } from "@shared/pi-protocol/events.js";
-import { ExtensionUiRequestSchema } from "@shared/pi-protocol/extension-ui.js";
-import type { PiRpcResponse } from "@shared/pi-protocol/responses.js";
 import type { PiEvent } from "@shared/pi-protocol/events.js";
+import { ExtensionUiRequestSchema } from "@shared/pi-protocol/extension-ui.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
+import { PiRpcResponseSchema } from "@shared/pi-protocol/responses.js";
+import type { PiRpcResponse } from "@shared/pi-protocol/responses.js";
 
 export type PiOutbound =
   | { kind: "response"; data: PiRpcResponse }
@@ -65,15 +65,15 @@ export class JsonlStream {
           const raw = JSON.parse(lineStr) as unknown;
           this.onLine(parseOutbound(raw));
         } catch (e) {
-          this.onError(new Error(`JSONL parse error: ${e instanceof Error ? e.message : String(e)} on line: ${lineStr.slice(0, 200)}`));
+          this.onError(
+            new Error(
+              `JSONL parse error: ${e instanceof Error ? e.message : String(e)} on line: ${lineStr.slice(0, 200)}`,
+            ),
+          );
         }
       }
     }
 
     this.buffer = this.buffer.slice(start);
-  }
-
-  reset(): void {
-    this.buffer = Buffer.alloc(0);
   }
 }

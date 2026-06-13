@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
+import type React from "react";
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getHighlighter, highlightCode } from "./shiki.js";
-import type { Components } from "react-markdown";
 
 // Kick off highlighter init immediately so it's ready when needed
 void getHighlighter();
@@ -28,17 +29,21 @@ function CodeBlock({ className, children }: CodeBlockProps): React.ReactElement 
         try {
           const result = h.codeToHtml(code, { lang: "text", theme: "catppuccin-mocha" });
           if (!cancelled) setHtml(result);
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [code, lang]);
 
   if (html) {
     return (
       <div
         className="code-block"
-        // eslint-disable-next-line react/no-danger
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: shiki escapes all code content
         dangerouslySetInnerHTML={{ __html: html }}
       />
     );

@@ -1,8 +1,8 @@
-import fs from "fs";
-import path from "path";
-import { app } from "electron";
+import fs from "node:fs";
+import path from "node:path";
 import { AppSettingsSchema, defaultSettings } from "@shared/settings.js";
 import type { AppSettings } from "@shared/settings.js";
+import { app } from "electron";
 
 function getSettingsDir(): string {
   if (process.env["PIVIS_SETTINGS_DIR"]) {
@@ -45,7 +45,7 @@ export function saveSettings(updates: Partial<AppSettings>): AppSettings {
   }
 
   // Atomic write: write to temp file, then rename
-  const tmpPath = filePath + ".tmp";
+  const tmpPath = `${filePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(current, null, 2), "utf8");
   fs.renameSync(tmpPath, filePath);
 

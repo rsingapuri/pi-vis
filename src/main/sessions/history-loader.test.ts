@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import fs from "fs";
-import os from "os";
-import path from "path";
-import { loadHistory } from "./history-loader.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { TranscriptBlock } from "@shared/ipc-contract.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { loadHistory } from "./history-loader.js";
 
 let dir: string;
 let file: string;
@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 function writeEntries(entries: object[]): void {
-  fs.writeFileSync(file, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  fs.writeFileSync(file, `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`);
 }
 
 describe("loadHistory (real pi v3 nested message format)", () => {
@@ -28,13 +28,21 @@ describe("loadHistory (real pi v3 nested message format)", () => {
       { type: "session", version: 3, id: "00000000", timestamp: "2024-01-01T00:00:00.000Z", cwd },
       // user
       {
-        id: "00000001", parentId: "00000000", timestamp: "2024-01-01T00:00:01.000Z",
+        id: "00000001",
+        parentId: "00000000",
+        timestamp: "2024-01-01T00:00:01.000Z",
         type: "message",
-        message: { role: "user", content: [{ type: "text", text: "fix the bug" }], timestamp: 1_700_000_001_000 },
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "fix the bug" }],
+          timestamp: 1_700_000_001_000,
+        },
       },
       // assistant with text + a toolCall part
       {
-        id: "00000002", parentId: "00000001", timestamp: "2024-01-01T00:00:02.000Z",
+        id: "00000002",
+        parentId: "00000001",
+        timestamp: "2024-01-01T00:00:02.000Z",
         type: "message",
         message: {
           role: "assistant",
@@ -47,7 +55,9 @@ describe("loadHistory (real pi v3 nested message format)", () => {
       },
       // toolResult for call_1
       {
-        id: "00000003", parentId: "00000002", timestamp: "2024-01-01T00:00:03.000Z",
+        id: "00000003",
+        parentId: "00000002",
+        timestamp: "2024-01-01T00:00:03.000Z",
         type: "message",
         message: {
           role: "toolResult",
@@ -60,9 +70,15 @@ describe("loadHistory (real pi v3 nested message format)", () => {
       },
       // final assistant text
       {
-        id: "00000004", parentId: "00000003", timestamp: "2024-01-01T00:00:04.000Z",
+        id: "00000004",
+        parentId: "00000003",
+        timestamp: "2024-01-01T00:00:04.000Z",
         type: "message",
-        message: { role: "assistant", content: [{ type: "text", text: "Done." }], timestamp: 1_700_000_004_000 },
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Done." }],
+          timestamp: 1_700_000_004_000,
+        },
       },
     ]);
 
@@ -100,21 +116,39 @@ describe("loadHistory (real pi v3 nested message format)", () => {
     writeEntries([
       { type: "session", version: 3, id: "00000000", timestamp: "2024-01-01T00:00:00.000Z", cwd },
       {
-        id: "00000001", parentId: "00000000", timestamp: "2024-01-01T00:00:01.000Z",
+        id: "00000001",
+        parentId: "00000000",
+        timestamp: "2024-01-01T00:00:01.000Z",
         type: "message",
-        message: { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1_700_000_001_000 },
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "hi" }],
+          timestamp: 1_700_000_001_000,
+        },
       },
       // older leaf fork
       {
-        id: "00000002", parentId: "00000001", timestamp: "2024-01-01T00:00:02.000Z",
+        id: "00000002",
+        parentId: "00000001",
+        timestamp: "2024-01-01T00:00:02.000Z",
         type: "message",
-        message: { role: "assistant", content: [{ type: "text", text: "OLD-FORK" }], timestamp: 1_700_000_002_000 },
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "OLD-FORK" }],
+          timestamp: 1_700_000_002_000,
+        },
       },
       // newer leaf fork (must be picked)
       {
-        id: "00000003", parentId: "00000001", timestamp: "2024-01-01T00:00:03.000Z",
+        id: "00000003",
+        parentId: "00000001",
+        timestamp: "2024-01-01T00:00:03.000Z",
         type: "message",
-        message: { role: "assistant", content: [{ type: "text", text: "NEW-FORK" }], timestamp: 1_700_000_003_000 },
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "NEW-FORK" }],
+          timestamp: 1_700_000_003_000,
+        },
       },
     ]);
 

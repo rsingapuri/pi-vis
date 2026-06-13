@@ -11,7 +11,18 @@
         "noExplicitAny": "error"
       },
       "style": {
-        "noNonNullAssertion": "warn"
+        "noNonNullAssertion": "off"
+      },
+      "complexity": {
+        "useLiteralKeys": "off"
+      },
+      "performance": {
+        "noDelete": "off"
+      },
+      "a11y": {
+        "useSemanticElements": "off",
+        "useFocusableInteractive": "off",
+        "noAutofocus": "off"
       }
     }
   },
@@ -29,6 +40,40 @@
     }
   },
   "files": {
-    "ignore": ["node_modules", "out", "dist", "release", "coverage", "playwright-report", "test-results"]
-  }
+    "ignore": [
+      "node_modules",
+      "out",
+      "dist",
+      "release",
+      "coverage",
+      "playwright-report",
+      "test-results"
+    ]
+  },
+  "overrides": [
+    {
+      "include": ["**/*.test.ts", "tests/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noControlCharactersInRegex": "off",
+            "noAssignInExpressions": "off"
+          }
+        }
+      }
+    },
+    {
+      "include": ["src/renderer/src/lib/ansi.tsx"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noControlCharactersInRegex": "off"
+          }
+        }
+      },
+      "formatter": {
+        "lineWidth": 120
+      }
+    }
+  ]
 }

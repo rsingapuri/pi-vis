@@ -1,8 +1,14 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-import fs from "fs";
-import os from "os";
+import fs from "node:fs";
+import os from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  type ElectronApplication,
+  type Page,
+  _electron as electron,
+  expect,
+  test,
+} from "@playwright/test";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -34,7 +40,10 @@ async function launchApp(folders: Folders): Promise<{ app: ElectronApplication; 
       JSON.stringify({
         piBinaryPath: FAKE_PI,
         recentWorkspaces: [folders.workspaceDir],
-        fonts: { display: { family: "system-ui", sizePx: 14 }, code: { family: "monospace", sizePx: 13 } },
+        fonts: {
+          display: { family: "system-ui", sizePx: 14 },
+          code: { family: "monospace", sizePx: 13 },
+        },
       }),
     );
   }
@@ -61,7 +70,11 @@ async function readSettings(settingsDir: string): Promise<Record<string, unknown
 }
 
 function rmrf(p: string): void {
-  try { fs.rmSync(p, { recursive: true, force: true }); } catch { /* best effort */ }
+  try {
+    fs.rmSync(p, { recursive: true, force: true });
+  } catch {
+    /* best effort */
+  }
 }
 
 test.describe("Pi-Vis restore + name round trip", () => {
@@ -75,7 +88,10 @@ test.describe("Pi-Vis restore + name round trip", () => {
     const { app, window } = await launchApp(folders);
 
     await window.getByRole("button", { name: "+ New session" }).click();
-    await expect(window.locator(".session-header__picker-btn").first()).toContainText("fake-model", { timeout: 15_000 });
+    await expect(window.locator(".session-header__picker-btn").first()).toContainText(
+      "fake-model",
+      { timeout: 15_000 },
+    );
 
     const textarea = window.locator(".composer__textarea");
     await textarea.fill("hello there friend");
@@ -86,27 +102,42 @@ test.describe("Pi-Vis restore + name round trip", () => {
     const nameInput = window.locator(".session-header__name-input");
     await nameInput.fill("Renamed Tab One");
     await nameInput.press("Enter");
-    await expect(window.locator(".session-header__name-btn")).toContainText("Renamed Tab One", { timeout: 5_000 });
-    await expect(window.locator(".sidebar__session--live .sidebar__session-name").first()).toContainText(
-      "Renamed Tab One",
-      { timeout: 5_000 },
-    );
+    await expect(window.locator(".session-header__name-btn")).toContainText("Renamed Tab One", {
+      timeout: 5_000,
+    });
+    await expect(
+      window.locator(".sidebar__session--live .sidebar__session-name").first(),
+    ).toContainText("Renamed Tab One", { timeout: 5_000 });
 
     await window.getByRole("button", { name: "+ New session" }).click();
-    await expect(window.locator(".session-header__picker-btn").first()).toContainText("fake-model", { timeout: 15_000 });
+    await expect(window.locator(".session-header__picker-btn").first()).toContainText(
+      "fake-model",
+      { timeout: 15_000 },
+    );
     await textarea.fill("say something else");
     await textarea.press("Enter");
-    await expect(window.locator("body")).toContainText("Echo: say something else", { timeout: 15_000 });
+    await expect(window.locator("body")).toContainText("Echo: say something else", {
+      timeout: 15_000,
+    });
 
     await window.locator(".sidebar__session--live", { hasText: "Renamed Tab One" }).click();
-    await expect(window.locator(".session-header__name-btn")).toContainText("Renamed Tab One", { timeout: 5_000 });
+    await expect(window.locator(".session-header__name-btn")).toContainText("Renamed Tab One", {
+      timeout: 5_000,
+    });
 
     await expect
-      .poll(async () => {
-        const s = await readSettings(folders.settingsDir);
-        const tabs = (s["openTabs"] as Array<unknown> | undefined) ?? [];
-        return tabs.length === 2 && typeof s["activeSessionFile"] === "string" && (s["activeSessionFile"] as string).endsWith(".jsonl");
-      }, { timeout: 15_000 })
+      .poll(
+        async () => {
+          const s = await readSettings(folders.settingsDir);
+          const tabs = (s["openTabs"] as Array<unknown> | undefined) ?? [];
+          return (
+            tabs.length === 2 &&
+            typeof s["activeSessionFile"] === "string" &&
+            (s["activeSessionFile"] as string).endsWith(".jsonl")
+          );
+        },
+        { timeout: 15_000 },
+      )
       .toBe(true);
 
     await app.close();
@@ -132,7 +163,9 @@ test.describe("Pi-Vis restore + name round trip", () => {
     const coldRow = liveRows.filter({ has: w2.locator(".status-dot--cold") }).first();
     await coldRow.click();
     await expect(coldRow.locator(".status-dot--cold")).toHaveCount(0, { timeout: 10_000 });
-    await expect(w2.locator(".session-header__picker-btn").first()).toContainText("fake-model", { timeout: 15_000 });
+    await expect(w2.locator(".session-header__picker-btn").first()).toContainText("fake-model", {
+      timeout: 15_000,
+    });
 
     await app2.close();
     rmrf(folders.settingsDir);
@@ -149,18 +182,24 @@ test.describe("Pi-Vis restore + name round trip", () => {
     const { window, app } = first;
 
     await window.getByRole("button", { name: "+ New session" }).click();
-    await expect(window.locator(".session-header__picker-btn").first()).toContainText("fake-model", { timeout: 15_000 });
+    await expect(window.locator(".session-header__picker-btn").first()).toContainText(
+      "fake-model",
+      { timeout: 15_000 },
+    );
     const textarea = window.locator(".composer__textarea");
     await textarea.fill("echo me please");
     await textarea.press("Enter");
     await expect(window.locator("body")).toContainText("Echo: echo me please", { timeout: 15_000 });
 
     await expect
-      .poll(async () => {
-        const s = await readSettings(folders.settingsDir);
-        const tabs = (s["openTabs"] as Array<{ sessionFile: string }> | undefined) ?? [];
-        return tabs.length === 1;
-      }, { timeout: 15_000 })
+      .poll(
+        async () => {
+          const s = await readSettings(folders.settingsDir);
+          const tabs = (s["openTabs"] as Array<{ sessionFile: string }> | undefined) ?? [];
+          return tabs.length === 1;
+        },
+        { timeout: 15_000 },
+      )
       .toBe(true);
 
     const settings = await readSettings(folders.settingsDir);
@@ -178,11 +217,14 @@ test.describe("Pi-Vis restore + name round trip", () => {
     await expect(w2.locator(".sidebar__session--live")).toHaveCount(0, { timeout: 10_000 });
 
     await expect
-      .poll(async () => {
-        const s = await readSettings(folders.settingsDir);
-        const t = (s["openTabs"] as Array<unknown> | undefined) ?? [];
-        return t.length === 0;
-      }, { timeout: 15_000 })
+      .poll(
+        async () => {
+          const s = await readSettings(folders.settingsDir);
+          const t = (s["openTabs"] as Array<unknown> | undefined) ?? [];
+          return t.length === 0;
+        },
+        { timeout: 15_000 },
+      )
       .toBe(true);
 
     await app2.close();
@@ -213,7 +255,10 @@ test.describe("Pi-Vis restore + name round trip", () => {
     stderrHook(app);
 
     await window.getByRole("button", { name: "+ New session" }).click();
-    await expect(window.locator(".session-header__picker-btn").first()).toContainText("fake-model", { timeout: 15_000 });
+    await expect(window.locator(".session-header__picker-btn").first()).toContainText(
+      "fake-model",
+      { timeout: 15_000 },
+    );
 
     const textarea = window.locator(".composer__textarea");
     await textarea.fill("hello");
@@ -221,11 +266,14 @@ test.describe("Pi-Vis restore + name round trip", () => {
     await expect(window.locator("body")).toContainText("your pi coding agent", { timeout: 15_000 });
 
     await expect
-      .poll(async () => {
-        const s = await readSettings(folders.settingsDir);
-        const tabs = (s["openTabs"] as Array<unknown> | undefined) ?? [];
-        return tabs.length === 1;
-      }, { timeout: 15_000 })
+      .poll(
+        async () => {
+          const s = await readSettings(folders.settingsDir);
+          const tabs = (s["openTabs"] as Array<unknown> | undefined) ?? [];
+          return tabs.length === 1;
+        },
+        { timeout: 15_000 },
+      )
       .toBe(true);
 
     // ── Reload: same settings dir, same process. The renderer's webContents
@@ -243,11 +291,14 @@ test.describe("Pi-Vis restore + name round trip", () => {
     // null, the sessions map was empty, and the final persistOpenTabs() wrote
     // openTabs: [] — silently dropping the user's saved tabs. Pin openTabs=1.
     await expect
-      .poll(async () => {
-        const s = await readSettings(folders.settingsDir);
-        const tabs = (s["openTabs"] as Array<unknown> | undefined) ?? [];
-        return tabs.length;
-      }, { timeout: 5_000, intervals: [200, 500, 1_000] })
+      .poll(
+        async () => {
+          const s = await readSettings(folders.settingsDir);
+          const tabs = (s["openTabs"] as Array<unknown> | undefined) ?? [];
+          return tabs.length;
+        },
+        { timeout: 5_000, intervals: [200, 500, 1_000] },
+      )
       .toBe(1);
 
     // No IPC handler error should have been logged.

@@ -15,11 +15,17 @@
 // captured at the start of each test, so other `pi` processes on the host
 // (e.g. a `pi` running in a terminal) do not fail the suite.
 
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
-import { join } from "path";
-import fs from "fs";
-import os from "os";
-import { execSync } from "child_process";
+import { execSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import { join } from "node:path";
+import {
+  type ElectronApplication,
+  type Page,
+  _electron as electron,
+  expect,
+  test,
+} from "@playwright/test";
 
 const APP_ENTRY = join(import.meta.dirname, "../../out/main/index.js");
 const SETTINGS_DIR = "/Users/romil/Library/Application Support/Pi-Vis";
@@ -31,17 +37,27 @@ function readSettings(): Record<string, unknown> {
 }
 
 function resetSettings(): void {
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify({
-    piBinaryPath: null,
-    fonts: { display: { family: "Inter", sizePx: 14 }, code: { family: "IBM Plex Mono", sizePx: 14 } },
-    recentWorkspaces: ["/Users/romil/src/pi-vis"],
-    openTabs: [],
-    activeSessionFile: null,
-  }, null, 2));
+  fs.writeFileSync(
+    SETTINGS_PATH,
+    JSON.stringify(
+      {
+        piBinaryPath: null,
+        fonts: {
+          display: { family: "Inter", sizePx: 14 },
+          code: { family: "IBM Plex Mono", sizePx: 14 },
+        },
+        recentWorkspaces: ["/Users/romil/src/pi-vis"],
+        openTabs: [],
+        activeSessionFile: null,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 function countPiProcs(): number {
-  return parseInt(execSync("pgrep -fl 'pi --mode rpc' | wc -l").toString().trim(), 10);
+  return Number.parseInt(execSync("pgrep -fl 'pi --mode rpc' | wc -l").toString().trim(), 10);
 }
 
 async function launchApp(): Promise<{ app: ElectronApplication; window: Page }> {
@@ -63,18 +79,21 @@ async function launchApp(): Promise<{ app: ElectronApplication; window: Page }> 
 }
 
 test.describe("Real-pi verification (mandatory manual check, automated)", () => {
-  test.skip(process.env["REAL_PI_VERIFY"] !== "1", "Opt-in: set REAL_PI_VERIFY=1 to run against the real pi binary and real user data");
+  test.skip(
+    process.env["REAL_PI_VERIFY"] !== "1",
+    "Opt-in: set REAL_PI_VERIFY=1 to run against the real pi binary and real user data",
+  );
   test.beforeAll(() => {
     // Snapshot the settings so we can restore them at the end.
     if (fs.existsSync(SETTINGS_PATH)) {
-      fs.copyFileSync(SETTINGS_PATH, SETTINGS_PATH + ".bak");
+      fs.copyFileSync(SETTINGS_PATH, `${SETTINGS_PATH}.bak`);
     }
   });
 
   test.afterAll(() => {
-    if (fs.existsSync(SETTINGS_PATH + ".bak")) {
-      fs.copyFileSync(SETTINGS_PATH + ".bak", SETTINGS_PATH);
-      fs.unlinkSync(SETTINGS_PATH + ".bak");
+    if (fs.existsSync(`${SETTINGS_PATH}.bak`)) {
+      fs.copyFileSync(`${SETTINGS_PATH}.bak`, SETTINGS_PATH);
+      fs.unlinkSync(`${SETTINGS_PATH}.bak`);
     }
   });
 
@@ -92,8 +111,10 @@ test.describe("Real-pi verification (mandatory manual check, automated)", () => 
     expect(storedCount).toBeGreaterThan(0);
 
     // First stored row has a non-empty preview AND a non-zero msg count.
-    const firstPreview = (await storedSessions.first().locator(".sidebar__session-preview").textContent()) ?? "";
-    const firstMeta = (await storedSessions.first().locator(".sidebar__session-meta").textContent()) ?? "";
+    const firstPreview =
+      (await storedSessions.first().locator(".sidebar__session-preview").textContent()) ?? "";
+    const firstMeta =
+      (await storedSessions.first().locator(".sidebar__session-meta").textContent()) ?? "";
     console.log(`[a] first preview: "${firstPreview.slice(0, 60)}"`);
     console.log(`[a] first meta: "${firstMeta}"`);
     expect(firstPreview.trim().length).toBeGreaterThan(0);
@@ -118,9 +139,10 @@ test.describe("Real-pi verification (mandatory manual check, automated)", () => 
     let picked = storedSessions.first();
     let pickedTitle = "";
     for (let i = 0; i < (await storedSessions.count()); i++) {
-      const meta = (await storedSessions.nth(i).locator(".sidebar__session-meta").textContent()) ?? "";
+      const meta =
+        (await storedSessions.nth(i).locator(".sidebar__session-meta").textContent()) ?? "";
       const m = meta.match(/^(\d+)msg/);
-      if (m && parseInt(m[1] ?? "0", 10) >= 5) {
+      if (m && Number.parseInt(m[1] ?? "0", 10) >= 5) {
         picked = storedSessions.nth(i);
         pickedTitle = (await picked.getAttribute("title")) ?? "";
         console.log(`[b] picking stored session ${i} with ${meta}`);
@@ -130,16 +152,20 @@ test.describe("Real-pi verification (mandatory manual check, automated)", () => 
     }
     await picked.click();
     // Wait for the picker to show a model — proves activation + get_state worked.
-    await expect(window.locator(".session-header__picker-btn").first()).toContainText("/", { timeout: 60_000 });
-    console.log(`[b] picker populated — session activated`);
+    await expect(window.locator(".session-header__picker-btn").first()).toContainText("/", {
+      timeout: 60_000,
+    });
+    console.log("[b] picker populated — session activated");
     // Check procs RIGHT after activation
     for (let i = 0; i < 5; i++) {
       const c = countPiProcs();
-      console.log(`[b] +${i*100}ms after picker: procs=${c - baseline}`);
+      console.log(`[b] +${i * 100}ms after picker: procs=${c - baseline}`);
       await new Promise((r) => setTimeout(r, 100));
     }
     // Wait for transcript blocks to appear (loadHistory runs on session.open for a resume).
-    await expect(window.locator(".transcript-block--user").first()).toBeVisible({ timeout: 15_000 });
+    await expect(window.locator(".transcript-block--user").first()).toBeVisible({
+      timeout: 15_000,
+    });
     const userCount = await window.locator(".transcript-block--user").count();
     const assistantCount = await window.locator(".transcript-block--assistant").count();
     console.log(`[b] transcript blocks: ${userCount} user, ${assistantCount} assistant`);
@@ -163,17 +189,24 @@ test.describe("Real-pi verification (mandatory manual check, automated)", () => 
     // Create a new session.
     await window.getByRole("button", { name: "+ New session" }).click();
     // Wait for the picker to show an actual model (a name with "/", e.g. "minimax/minimax-m3").
-    await expect(window.locator(".session-header__picker-btn").first()).toContainText("/", { timeout: 60_000 });
-    console.log(`[c] model picker populated`);
+    await expect(window.locator(".session-header__picker-btn").first()).toContainText("/", {
+      timeout: 60_000,
+    });
+    console.log("[c] model picker populated");
 
     // Send a prompt.
     const textarea = window.locator(".composer__textarea");
     await textarea.fill("Reply with only the word: smoke");
     await textarea.press("Enter");
     // Wait for the user + assistant blocks.
-    await expect(window.locator(".transcript-block--user").first()).toBeVisible({ timeout: 30_000 });
-    await expect(window.locator(".transcript-block--assistant").first()).toBeVisible({ timeout: 90_000 });
-    const assistantText = (await window.locator(".transcript-block--assistant").first().textContent()) ?? "";
+    await expect(window.locator(".transcript-block--user").first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(window.locator(".transcript-block--assistant").first()).toBeVisible({
+      timeout: 90_000,
+    });
+    const assistantText =
+      (await window.locator(".transcript-block--assistant").first().textContent()) ?? "";
     console.log(`[c] assistant response: "${assistantText.slice(0, 80)}"`);
 
     // Rename.
@@ -182,7 +215,9 @@ test.describe("Real-pi verification (mandatory manual check, automated)", () => 
     const RENAME = `R2 Verify ${Date.now()}`;
     await nameInput.fill(RENAME);
     await nameInput.press("Enter");
-    await expect(window.locator(".session-header__name-btn")).toContainText(RENAME, { timeout: 10_000 });
+    await expect(window.locator(".session-header__name-btn")).toContainText(RENAME, {
+      timeout: 10_000,
+    });
     console.log(`[c] renamed to ${RENAME}`);
 
     // Wait for settings.json to be durably updated with the new tab.
@@ -192,7 +227,10 @@ test.describe("Real-pi verification (mandatory manual check, automated)", () => 
           const s = readSettings();
           const tabs = s["openTabs"] as Array<{ sessionFile: string }> | undefined;
           const target = tabs?.find((t) => t.sessionFile && fs.existsSync(t.sessionFile));
-          const settingsOk = !!s["activeSessionFile"] && typeof s["activeSessionFile"] === "string" && (s["activeSessionFile"] as string).endsWith(".jsonl");
+          const settingsOk =
+            !!s["activeSessionFile"] &&
+            typeof s["activeSessionFile"] === "string" &&
+            (s["activeSessionFile"] as string).endsWith(".jsonl");
           return { tabs: tabs?.length ?? 0, target: target?.sessionFile, settingsOk };
         },
         { timeout: 30_000 },
@@ -216,23 +254,29 @@ test.describe("Real-pi verification (mandatory manual check, automated)", () => 
     expect(procCountAfterRelaunch - baseline).toBe(1);
 
     // The renamed session is restored.
-    await expect(w2.locator(".session-header__name-btn")).toContainText(RENAME, { timeout: 30_000 });
+    await expect(w2.locator(".session-header__name-btn")).toContainText(RENAME, {
+      timeout: 30_000,
+    });
     // Transcript is restored.
     await expect(w2.locator(".transcript-block--user").first()).toBeVisible({ timeout: 15_000 });
-    await expect(w2.locator(".transcript-block--assistant").first()).toContainText("smoke", { timeout: 15_000 });
-    console.log(`[c] relaunched with transcript intact`);
+    await expect(w2.locator(".transcript-block--assistant").first()).toContainText("smoke", {
+      timeout: 15_000,
+    });
+    console.log("[c] relaunched with transcript intact");
 
     // Click a stored (cold) session from the sidebar.
     const stored = w2.locator(".sidebar__session--stored");
     if ((await stored.count()) > 0) {
       await stored.first().click();
       // Wait for it to activate.
-      await expect(w2.locator(".session-header__picker-btn").first()).toContainText("/", { timeout: 60_000 });
+      await expect(w2.locator(".session-header__picker-btn").first()).toContainText("/", {
+        timeout: 60_000,
+      });
       const procCountAfterClick = countPiProcs();
       console.log(`[c] pi procs after clicking cold: ${procCountAfterClick - baseline}`);
       expect(procCountAfterClick - baseline).toBe(2);
     } else {
-      console.log(`[c] no cold stored sessions to click (only the new one is open)`);
+      console.log("[c] no cold stored sessions to click (only the new one is open)");
     }
 
     await app2.close();

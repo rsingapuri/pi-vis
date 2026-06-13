@@ -15,7 +15,7 @@
 }
 
 .pi-not-found__icon {
-  font-size: 4.571em;   /* ≈64px @ 14px root — monumental, but still in em */
+  font-size: 4.571em; /* ≈64px @ 14px root — monumental, but still in em */
   color: var(--ctp-mauve);
   font-weight: 200;
   line-height: 1;
@@ -23,7 +23,7 @@
 
 .pi-not-found__title {
   font-family: var(--font-display);
-  font-size: 1.714em;       /* ≈24px @ 14px root */
+  font-size: 1.714em; /* ≈24px @ 14px root */
   font-weight: 700;
   line-height: var(--mcm-line-display);
   letter-spacing: var(--mcm-track-display);
@@ -36,7 +36,7 @@
   font-family: var(--font-display);
   font-size: 1em;
   color: var(--ctp-subtext0);
-  max-width: 28.571rem;     /* ≈400px */
+  max-width: 28.571rem; /* ≈400px */
   line-height: var(--mcm-line-body);
   /* Indent to the right of the flush-left axis */
   margin-left: 10%;
@@ -59,7 +59,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.571rem;
-  max-width: 34.286rem;     /* ≈480px */
+  max-width: 34.286rem; /* ≈480px */
   width: 100%;
   /* Architectural shelf */
   margin-left: 10%;

@@ -1,6 +1,6 @@
-import fs from "fs";
-import { SessionHeaderSchema, SessionEntrySchema } from "@shared/session-file/entries.js";
+import fs from "node:fs";
 import type { TranscriptBlock } from "@shared/ipc-contract.js";
+import { SessionEntrySchema, SessionHeaderSchema } from "@shared/session-file/entries.js";
 
 type EntryMap = Map<string, Record<string, unknown>>;
 
@@ -14,7 +14,10 @@ function entryTime(e: Record<string, unknown>): number {
   return 0;
 }
 
-function parseEntries(filePath: string): { header: Record<string, unknown> | null; entries: EntryMap } {
+function parseEntries(filePath: string): {
+  header: Record<string, unknown> | null;
+  entries: EntryMap;
+} {
   const entries: EntryMap = new Map();
   let header: Record<string, unknown> | null = null;
   let firstLine = true;
@@ -33,7 +36,9 @@ function parseEntries(filePath: string): { header: Record<string, unknown> | nul
       if (typeof id === "string") {
         entries.set(id, obj);
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
 
   return { header, entries };
@@ -131,8 +136,12 @@ export function loadHistory(filePath: string): TranscriptBlock[] {
             outputText = content;
           } else if (Array.isArray(content)) {
             for (const part of content) {
-              if (typeof part === "object" && part !== null && (part as Record<string, unknown>)["type"] === "text") {
-                outputText += (part as Record<string, unknown>)["text"] as string ?? "";
+              if (
+                typeof part === "object" &&
+                part !== null &&
+                (part as Record<string, unknown>)["type"] === "text"
+              ) {
+                outputText += ((part as Record<string, unknown>)["text"] as string) ?? "";
               }
             }
           }
@@ -142,7 +151,10 @@ export function loadHistory(filePath: string): TranscriptBlock[] {
           if (toolCallId) {
             for (let i = blocks.length - 1; i >= 0; i--) {
               const b = blocks[i];
-              if (b?.type === "tool_call" && (b.data as Record<string, unknown>)["toolCallId"] === toolCallId) {
+              if (
+                b?.type === "tool_call" &&
+                (b.data as Record<string, unknown>)["toolCallId"] === toolCallId
+              ) {
                 (b.data as Record<string, unknown>)["outputText"] = outputText;
                 (b.data as Record<string, unknown>)["isError"] = msg.isError ?? false;
                 (b.data as Record<string, unknown>)["isStreaming"] = false;
@@ -181,9 +193,9 @@ export function loadHistory(filePath: string): TranscriptBlock[] {
             if (typeof part !== "object" || part === null) continue;
             const p = part as Record<string, unknown>;
             if (p["type"] === "text") {
-              textContent += p["text"] as string ?? "";
+              textContent += (p["text"] as string) ?? "";
             } else if (p["type"] === "thinking") {
-              thinkingContent += p["thinking"] as string ?? "";
+              thinkingContent += (p["thinking"] as string) ?? "";
             } else if (p["type"] === "toolCall") {
               toolCalls.push({
                 id: p["id"] as string,
@@ -215,7 +227,7 @@ export function loadHistory(filePath: string): TranscriptBlock[] {
                 toolCallId: tc.id,
                 toolName: tc.name,
                 input: tc.arguments as Record<string, unknown> | undefined,
-                outputText: "",  // filled in by subsequent toolResult
+                outputText: "", // filled in by subsequent toolResult
                 isError: false,
                 isStreaming: true,
               },

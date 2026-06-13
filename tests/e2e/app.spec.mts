@@ -1,8 +1,8 @@
-import { test, expect, _electron as electron } from "@playwright/test";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-import fs from "fs";
-import os from "os";
+import fs from "node:fs";
+import os from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { _electron as electron, expect, test } from "@playwright/test";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -19,7 +19,10 @@ test.describe("Pi-Vis e2e", () => {
       JSON.stringify({
         piBinaryPath: `node ${FAKE_PI}`,
         recentWorkspaces: [],
-        fonts: { display: { family: "system-ui", sizePx: 14 }, code: { family: "monospace", sizePx: 13 } },
+        fonts: {
+          display: { family: "system-ui", sizePx: 14 },
+          code: { family: "monospace", sizePx: 13 },
+        },
       }),
     );
 

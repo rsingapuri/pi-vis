@@ -3,7 +3,7 @@
    follow the same architectural-signage convention. */
 
 .session-header {
-  height: 3rem;       /* ≈42px @ 14px root */
+  height: 3rem; /* ≈42px @ 14px root */
   background: var(--ctp-mantle);
   border-bottom: 1px solid var(--ctp-surface0);
   display: flex;
@@ -89,6 +89,18 @@
   color: var(--ctp-overlay0);
 }
 
+.session-header__changes-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.286rem;
+}
+.session-header__changes-btn--clean {
+  color: var(--ctp-overlay0);
+}
+.session-header__changes-count {
+  color: var(--ctp-yellow);
+}
+
 .session-header__dropdown {
   position: absolute;
   top: calc(100% + 0.286rem);
@@ -111,8 +123,8 @@
 }
 
 .session-header__dropdown-search-input {
+  /* box-sizing is set globally by theme.css */
   width: 100%;
-  box-sizing: border-box;
   background: var(--ctp-mantle);
   border: 1px solid var(--ctp-surface1);
   border-radius: var(--mcm-radius-sm);
@@ -195,12 +207,10 @@
   transition: width 0.3s ease;
 }
 
-.context-meter__fill[style*="width: 8"] {
+.context-meter__fill--warn {
   background: var(--ctp-peach);
 }
-
-.context-meter__fill[style*="width: 9"],
-.context-meter__fill[style*="width: 100"] {
+.context-meter__fill--danger {
   background: var(--ctp-red);
 }
 

@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import fs from "fs";
-import os from "os";
-import path from "path";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { extractSessionMeta, listSessionsForWorkspace } from "./session-discovery.js";
 
 let root: string;
@@ -27,7 +27,7 @@ function writeSession(workspace: string, fileName: string, lines: object[]): str
   const dir = path.join(root, workspace);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, fileName);
-  fs.writeFileSync(filePath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  fs.writeFileSync(filePath, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
   return filePath;
 }
 
@@ -87,7 +87,16 @@ describe("listSessionsForWorkspace", () => {
     const first = await listSessionsForWorkspace(cwd);
     expect(first[0]?.name).toBe("Initial");
 
-    fs.appendFileSync(filePath, JSON.stringify({ id: "e3", parentId: "e2", timestamp: "2024-01-01T00:00:01Z", type: "session_info", name: "Third" }) + "\n");
+    fs.appendFileSync(
+      filePath,
+      `${JSON.stringify({
+        id: "e3",
+        parentId: "e2",
+        timestamp: "2024-01-01T00:00:01Z",
+        type: "session_info",
+        name: "Third",
+      })}\n`,
+    );
     const future = new Date(Date.now() + 5000);
     fs.utimesSync(filePath, future, future);
 
@@ -114,7 +123,13 @@ describe("listSessionsForWorkspace", () => {
       { type: "session", version: 3, id: "abc", timestamp: "2024-01-01T00:00:00Z", cwd },
       userEntry("e1", "abc", "hi"),
       sessionInfo("e2", "e1", "First"),
-      { id: "e3", parentId: "e2", timestamp: "2024-01-01T00:00:01Z", type: "session_info", name: "" },
+      {
+        id: "e3",
+        parentId: "e2",
+        timestamp: "2024-01-01T00:00:01Z",
+        type: "session_info",
+        name: "",
+      },
     ]);
 
     const meta = extractSessionMeta(filePath);
@@ -141,7 +156,14 @@ describe("listSessionsForWorkspace", () => {
     const cwd = path.join(root, "workspace-A");
     const filePath = writeSession("workspace-A", "session1.jsonl", [
       { type: "session", version: 3, id: "abc", timestamp: "2024-01-01T00:00:00Z", cwd },
-      { id: "e1", parentId: "abc", timestamp: "2024-01-01T00:00:00Z", type: "message", role: "user", content: [{ type: "text", text: "FLAT" }] },
+      {
+        id: "e1",
+        parentId: "abc",
+        timestamp: "2024-01-01T00:00:00Z",
+        type: "message",
+        role: "user",
+        content: [{ type: "text", text: "FLAT" }],
+      },
     ]);
     const meta = extractSessionMeta(filePath);
     expect(meta.messageCount).toBe(0);

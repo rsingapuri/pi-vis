@@ -1,4 +1,4 @@
-import path from "path";
+import path from "node:path";
 import { newSessionId } from "@shared/ids.js";
 import type { SessionId } from "@shared/ids.js";
 import type { SessionStatus } from "@shared/ipc-contract.js";
@@ -122,7 +122,14 @@ export class SessionRegistry {
         clearTimeout(readyTimer);
         if (record.proc !== proc) return;
         record.status = "exited";
-        record.error = code !== 0 && code !== null ? `Exited with code ${code}` : undefined;
+        if (code !== 0 && code !== null) {
+          const tail = proc.stderrLog.slice(-5).join("").trim();
+          record.error = tail
+            ? `Exited with code ${code}: ${tail.slice(-400)}`
+            : `Exited with code ${code}`;
+        } else {
+          record.error = undefined;
+        }
         this.onStatusChanged(sessionId, "exited", record.error);
       });
 
@@ -152,6 +159,35 @@ export class SessionRegistry {
     if (this.byFile.has(resolved)) return;
     rec.sessionFile = sessionFile;
     this.byFile.set(resolved, sessionId);
+  }
+
+  /**
+   * Re-point a session to a new file (used after /new, /fork, /clone,
+   * /switch_session). Always overrides the existing sessionFile (the
+   * "only-if-unset" guard of `noteSessionFile` is bypassed because pi
+   * has confirmed the new path is authoritative). `sessionFile` may be
+   * `undefined` to clear it (lazy new_session doesn't have one yet;
+   * the next harvest re-attaches).
+   *
+   * The byFile mapping is re-pointed: the old path is freed (if it
+   * still belongs to this session) and the new path is claimed.
+   */
+  updateSessionFile(sessionId: SessionId, sessionFile: string | undefined): void {
+    const rec = this.sessions.get(sessionId);
+    if (!rec) return;
+    // Drop the old mapping if we still own it (resolves a real bug:
+    // after /new, the byFile map would still point at the previous
+    // file and block a switch back to it).
+    if (rec.sessionFile) {
+      const oldResolved = path.resolve(rec.sessionFile);
+      if (this.byFile.get(oldResolved) === sessionId) {
+        this.byFile.delete(oldResolved);
+      }
+    }
+    rec.sessionFile = sessionFile;
+    if (sessionFile) {
+      this.byFile.set(path.resolve(sessionFile), sessionId);
+    }
   }
 
   /**

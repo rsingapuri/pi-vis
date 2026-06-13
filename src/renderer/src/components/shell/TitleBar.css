@@ -8,7 +8,7 @@
    being centered or pushed to the top with the traffic lights. */
 
 .titlebar {
-  height: 2.714rem;       /* ≈38px @ 14px root */
+  height: 2.714rem; /* ≈38px @ 14px root */
   display: flex;
   align-items: flex-end;
   justify-content: flex-start;

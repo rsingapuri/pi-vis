@@ -4,13 +4,15 @@ import type { TranscriptBlock } from "@shared/ipc-contract.js";
 import type { PiEvent } from "@shared/pi-protocol/events.js";
 import type { KnownPiEvent } from "@shared/pi-protocol/events.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
-import type { ModelInfo, SessionStats } from "@shared/pi-protocol/responses.js";
+import type { ModelInfo, SessionStats, SlashCommandInfo } from "@shared/pi-protocol/responses.js";
 import type { ThinkingLevel } from "@shared/pi-protocol/thinking.js";
 import { create } from "zustand";
+import type { PickerRequest } from "../lib/commands/execute.js";
 import { useSettingsStore } from "./settings-store.js";
 import {
   type TranscriptState,
   addBashBlock,
+  addCustomMessageBlock,
   addUserBlock,
   applyPiEvent,
   createTranscriptState,
@@ -29,13 +31,16 @@ export interface SessionViewState {
   pendingDialogs: ExtensionUiRequest[];
   statusSegments: Map<string, string>; // statusKey → statusText
   widgets: Map<string, string[]>; // widgetKey → lines
-  toasts: Array<{ id: string; message: string; type?: string | undefined }>;
+  toasts: Array<{ id: string; message: string; type?: string | undefined; createdAt: number }>;
   stats?: SessionStats | undefined;
   availableModels: ModelInfo[];
   currentModel?: string | undefined;
   thinkingLevel?: ThinkingLevel | undefined;
   sessionTitle?: string | undefined;
   sessionName?: string | undefined;
+  commands: SlashCommandInfo[];
+  editorInjection?: { text: string; nonce: number } | undefined;
+  pendingPicker?: PickerRequest | undefined;
 }
 
 interface WorkspaceState {
@@ -86,6 +91,22 @@ interface SessionsStore {
   setCurrentModel: (sessionId: SessionId, model: string) => void;
   setThinkingLevel: (sessionId: SessionId, level: ThinkingLevel) => void;
   setSessionName: (sessionId: SessionId, name: string) => void;
+  /** Re-point the session to a new file (overrides the only-if-unset guard). */
+  adoptSessionFile: (
+    sessionId: SessionId,
+    sessionFile?: string,
+    sessionName?: string,
+  ) => Promise<void>;
+  /** Refresh the discovered command list (extension/prompt/skill) from pi. */
+  refreshCommands: (sessionId: SessionId) => Promise<void>;
+  /** Drop a fresh nonce on editorInjection so the Composer re-picks it up. */
+  injectEditorText: (sessionId: SessionId, text: string) => void;
+  /** Open a built-in picker (model / fork / resume). Single slot. */
+  openPicker: (sessionId: SessionId, picker: PickerRequest) => void;
+  /** Drop any active picker. */
+  closePicker: (sessionId: SessionId) => void;
+  /** Append a custom_message block to the transcript (TUI parity for /session). */
+  addCustomMessage: (sessionId: SessionId, content: string) => void;
 
   refreshWorkspaceSessions: (path: string) => Promise<void>;
 
@@ -94,6 +115,7 @@ interface SessionsStore {
 }
 
 let toastCounter = 0;
+let editorInjectionNonce = 0;
 
 export const useSessionsStore = create<SessionsStore>((set, get) => ({
   workspaces: new Map(),
@@ -146,6 +168,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         transcript: createTranscriptState(),
         isStreaming: false,
         pendingDialogs: [],
+        commands: [],
         statusSegments: new Map(),
         widgets: new Map(),
         toasts: [],
@@ -219,9 +242,6 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       if (!s) return {};
 
       let isStreaming = s.isStreaming;
-      const statusSegments = new Map(s.statusSegments);
-      const widgets = new Map(s.widgets);
-      const sessionTitle = s.sessionTitle;
       // Pi (and its extensions) drive the session name; it gets reported as
       // a `session_info_changed` event. Pi rejects empty names server-side,
       // so `name` is always a non-empty string.
@@ -236,33 +256,9 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         ...s,
         transcript,
         isStreaming,
-        statusSegments,
-        widgets,
-        sessionTitle,
         sessionName,
         thinkingLevel,
       });
-      return { sessions };
-    });
-  },
-
-  applyUiSideEffect: (sessionId: SessionId, method: string, args: Record<string, unknown>) => {
-    set((state) => {
-      const sessions = new Map(state.sessions);
-      const s = sessions.get(sessionId);
-      if (!s) return {};
-
-      if (method === "setStatus") {
-        const statusSegments = new Map(s.statusSegments);
-        statusSegments.set(args["statusKey"] as string, args["statusText"] as string);
-        sessions.set(sessionId, { ...s, statusSegments });
-      } else if (method === "setWidget") {
-        const widgets = new Map(s.widgets);
-        widgets.set(args["widgetKey"] as string, args["widgetLines"] as string[]);
-        sessions.set(sessionId, { ...s, widgets });
-      } else if (method === "setTitle") {
-        sessions.set(sessionId, { ...s, sessionTitle: args["title"] as string });
-      }
       return { sessions };
     });
   },
@@ -283,7 +279,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
       if (!s) return {};
-      const transcript = addUserBlock(s.transcript, content, images);
+      const transcript = addUserBlock(s.transcript, content, images, true);
       // Self-label a brand-new session from its first prompt so the tab and
       // header have a meaningful identity before pi or the user renames it.
       // Do not overwrite a name set by pi (session_info_changed → sessionName)
@@ -334,46 +330,76 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
   addUiRequest: (sessionId, request) => {
     set((state) => {
-      const sessions = new Map(state.sessions);
-      const s = sessions.get(sessionId);
+      const s = state.sessions.get(sessionId);
       if (!s) return {};
 
       // Handle fire-and-forget methods as side effects
       if (
         ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(request.method)
       ) {
-        const sessionsFinal = new Map(state.sessions);
-        const sFinal = sessionsFinal.get(sessionId);
-        if (!sFinal) return {};
+        // Build the clone only when we actually need to mutate.
+        const sessions = new Map(state.sessions);
+        const sFinal = s;
 
         if (request.method === "notify") {
           const toastId = `toast-${++toastCounter}`;
           const notifyReq = request as { message: string; notifyType?: string };
-          sessionsFinal.set(sessionId, {
+          sessions.set(sessionId, {
             ...sFinal,
             toasts: [
               ...sFinal.toasts,
-              { id: toastId, message: notifyReq.message, type: notifyReq.notifyType },
+              {
+                id: toastId,
+                message: notifyReq.message,
+                type: notifyReq.notifyType,
+                createdAt: Date.now(),
+              },
             ],
           });
         } else if (request.method === "setStatus") {
+          // Pi sends `statusText: undefined` to clear a segment (the field is
+          // omitted from the JSON wire). A present `statusText` (including the
+          // empty string) replaces the entry. `Map.delete` on a non-existent
+          // key is a no-op, so clearing a missing key is safe.
           const statusSegments = new Map(sFinal.statusSegments);
-          const sr = request as { statusKey: string; statusText: string };
-          statusSegments.set(sr.statusKey, sr.statusText);
-          sessionsFinal.set(sessionId, { ...sFinal, statusSegments });
+          const sr = request as { statusKey: string; statusText?: string };
+          if (sr.statusText === undefined) {
+            statusSegments.delete(sr.statusKey);
+          } else {
+            statusSegments.set(sr.statusKey, sr.statusText);
+          }
+          sessions.set(sessionId, { ...sFinal, statusSegments });
         } else if (request.method === "setWidget") {
+          // Same clear-on-undefined contract as setStatus. The store keeps
+          // `widgets` typed as `Map<string, string[]>` and guarantees no
+          // undefined values, so the Composer's widget strip never has to
+          // guard for them.
           const widgets = new Map(sFinal.widgets);
-          const wr = request as { widgetKey: string; widgetLines: string[] };
-          widgets.set(wr.widgetKey, wr.widgetLines);
-          sessionsFinal.set(sessionId, { ...sFinal, widgets });
+          const wr = request as { widgetKey: string; widgetLines?: string[] };
+          if (wr.widgetLines === undefined) {
+            widgets.delete(wr.widgetKey);
+          } else {
+            widgets.set(wr.widgetKey, wr.widgetLines);
+          }
+          sessions.set(sessionId, { ...sFinal, widgets });
         } else if (request.method === "setTitle") {
           const tr = request as { title: string };
-          sessionsFinal.set(sessionId, { ...sFinal, sessionTitle: tr.title });
+          sessions.set(sessionId, { ...sFinal, sessionTitle: tr.title });
+        } else if (request.method === "set_editor_text") {
+          // Editor injection is consumed by the Composer via a useEffect on
+          // editorInjection.nonce. The nonce is a monotonic counter so the
+          // same Composer instance can re-inject the same text on demand.
+          const er = request as { text: string };
+          sessions.set(sessionId, {
+            ...sFinal,
+            editorInjection: { text: er.text, nonce: ++editorInjectionNonce },
+          });
         }
-        return { sessions: sessionsFinal };
+        return { sessions };
       }
 
-      // Dialog requests — queue them
+      // Dialog requests — queue them. Build the clone only when we mutate.
+      const sessions = new Map(state.sessions);
       sessions.set(sessionId, { ...s, pendingDialogs: [...s.pendingDialogs, request] });
       return { sessions };
     });
@@ -400,7 +426,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       const toastId = `toast-${++toastCounter}`;
       sessions.set(sessionId, {
         ...s,
-        toasts: [...s.toasts, { id: toastId, message, type }],
+        toasts: [...s.toasts, { id: toastId, message, type, createdAt: Date.now() }],
       });
       return { sessions };
     });
@@ -477,6 +503,118 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     } catch (err) {
       console.error("Failed to refresh workspace sessions:", err);
     }
+  },
+
+  /**
+   * Re-point a session to a new file (used by the fileChanged flow after
+   * /new, /fork, /clone, /switch_session). Overrides the only-if-unset
+   * guard that setSessionFile enforces for normal harvests — pi has
+   * confirmed the file is the new authoritative path.
+   *
+   * Steps:
+   *   1. Update sessionFile (may be undefined for a lazy new_session).
+   *   2. Clear the transcript (the new session is empty until loadHistory).
+   *   3. Update sessionName if pi provided one.
+   *   4. Persist openTabs so a restart resumes on the new file.
+   */
+  adoptSessionFile: async (sessionId, sessionFile, sessionName) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      const next: SessionViewState = {
+        ...s,
+        sessionFile,
+        transcript: createTranscriptState(),
+        isStreaming: false,
+        ...(sessionName !== undefined ? { sessionName } : {}),
+      };
+      sessions.set(sessionId, next);
+      return { sessions };
+    });
+    persistOpenTabs();
+  },
+
+  /** Refresh the discovered command list (extension / prompt / skill). */
+  refreshCommands: async (sessionId) => {
+    if (typeof window === "undefined" || !window.pivis) return;
+    try {
+      const res = await window.pivis.invoke("session.sendCommand", {
+        sessionId,
+        command: { type: "get_commands" },
+      });
+      if (!res || !res.success) return;
+      // Tolerant read: pi v0.79.1 returns { commands: RpcSlashCommand[] };
+      // the contract's PiRpcResponse is a discriminated union, but we
+      // only care about `data.commands` so a narrow cast is fine here.
+      const data = (res as { data?: { commands?: unknown[] } }).data;
+      const raw = data?.commands;
+      if (!Array.isArray(raw)) return;
+      const commands: SlashCommandInfo[] = raw
+        .map((c) => {
+          // Tolerant parse: SlashCommandInfoSchema is permissive and tolerates
+          // both v0.79.1's nested sourceInfo shape and the docs' flat shape.
+          const parsed = c as SlashCommandInfo | null;
+          return parsed && typeof parsed.name === "string" ? parsed : null;
+        })
+        .filter((c): c is SlashCommandInfo => c !== null);
+      set((state) => {
+        const sessions = new Map(state.sessions);
+        const s = sessions.get(sessionId);
+        if (!s) return {};
+        sessions.set(sessionId, { ...s, commands });
+        return { sessions };
+      });
+    } catch {
+      // best effort
+    }
+  },
+
+  injectEditorText: (sessionId, text) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      sessions.set(sessionId, {
+        ...s,
+        editorInjection: { text, nonce: ++editorInjectionNonce },
+      });
+      return { sessions };
+    });
+  },
+
+  openPicker: (sessionId, picker) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      sessions.set(sessionId, { ...s, pendingPicker: picker });
+      return { sessions };
+    });
+  },
+
+  closePicker: (sessionId) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      sessions.set(sessionId, { ...s, pendingPicker: undefined });
+      return { sessions };
+    });
+  },
+
+  addCustomMessage: (sessionId, content) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      const next: SessionViewState = {
+        ...s,
+        transcript: addCustomMessageBlock(s.transcript, content),
+      };
+      sessions.set(sessionId, next);
+      return { sessions };
+    });
   },
 
   openSessionTab: async (workspacePath, sessionFile, opts) => {

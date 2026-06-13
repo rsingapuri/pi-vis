@@ -1,20 +1,29 @@
-import { spawn, type ChildProcess } from "child_process";
-import { EventEmitter } from "events";
+import { type ChildProcess, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { newRpcRequestId } from "@shared/ids.js";
 import type { RpcRequestId } from "@shared/ids.js";
 import type { PiRpcCommand } from "@shared/pi-protocol/commands.js";
-import type { PiRpcResponse } from "@shared/pi-protocol/responses.js";
 import type { PiEvent } from "@shared/pi-protocol/events.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
+import type { PiRpcResponse } from "@shared/pi-protocol/responses.js";
 import { JsonlStream } from "./jsonl-stream.js";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
-const PROMPT_COMMANDS = new Set(["prompt", "bash", "steer", "follow_up", "compact"]);
+const COMMAND_TIMEOUTS_MS: Readonly<Record<string, number>> = {
+  // 0 = no timer; the only termination is process exit (which `rejectAllPending`
+  // handles). pi blocks on user dialogs during a `prompt` — a 30s timer
+  // would fire mid-dialog and surface a spurious "RPC timeout" rejection
+  // that the renderer cannot suppress. `compact` is similar: it streams
+  // events as it runs and only returns when summarisation is done.
+  prompt: 0,
+  compact: 0,
+  // Bash can take minutes; 10 minutes is the documented upper bound.
+  bash: 600_000,
+};
 
 interface PendingRequest {
   resolve: (res: PiRpcResponse) => void;
   reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 export interface PiProcessEvents {
@@ -24,6 +33,7 @@ export interface PiProcessEvents {
   error: (err: Error) => void;
 }
 
+// biome-ignore lint/suspicious/noUnsafeDeclarationMerging: typed EventEmitter overloads via declaration merging
 export class PiProcess extends EventEmitter {
   private proc: ChildProcess;
   private stream: JsonlStream;
@@ -31,11 +41,7 @@ export class PiProcess extends EventEmitter {
   public stderrLog: string[] = [];
   public readonly sessionFile?: string | undefined;
 
-  constructor(
-    piPath: string,
-    workspacePath: string,
-    sessionFile?: string,
-  ) {
+  constructor(piPath: string, workspacePath: string, sessionFile?: string) {
     super();
     this.sessionFile = sessionFile;
     const args = ["--mode", "rpc"];
@@ -54,7 +60,7 @@ export class PiProcess extends EventEmitter {
           if (id) {
             const pending = this.pending.get(id);
             if (pending) {
-              clearTimeout(pending.timer);
+              if (pending.timer) clearTimeout(pending.timer);
               this.pending.delete(id);
               pending.resolve(parsed.data);
               return;
@@ -96,23 +102,32 @@ export class PiProcess extends EventEmitter {
     });
   }
 
-  async sendCommand(
-    command: PiRpcCommand,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
-  ): Promise<PiRpcResponse> {
+  async sendCommand(command: PiRpcCommand): Promise<PiRpcResponse> {
     const id = newRpcRequestId() as string;
-    const msg = JSON.stringify({ ...command, id }) + "\n";
+    const msg = `${JSON.stringify({ ...command, id })}\n`;
+    // Per-command timeout. 0 = no timer; the only termination is process
+    // exit, which rejectAllPending handles. A 0 timeout was previously
+    // the source of the 30s "RPC timeout" false-positive during dialog
+    // round-trips on `prompt` and during long `compact` runs.
+    const timeoutMs = COMMAND_TIMEOUTS_MS[command.type] ?? 0;
 
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`RPC timeout for command ${command.type} (id=${id})`));
-      }, timeoutMs);
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              this.pending.delete(id);
+              reject(
+                new Error(
+                  `RPC timeout for command ${command.type} (id=${id}) after ${timeoutMs}ms`,
+                ),
+              );
+            }, timeoutMs)
+          : null;
 
       this.pending.set(id, { resolve, reject, timer });
 
       if (!this.proc.stdin?.writable) {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         this.pending.delete(id);
         reject(new Error("pi process stdin is not writable"));
         return;
@@ -120,7 +135,7 @@ export class PiProcess extends EventEmitter {
 
       this.proc.stdin.write(msg, (err) => {
         if (err) {
-          clearTimeout(timer);
+          if (timer) clearTimeout(timer);
           this.pending.delete(id);
           reject(err);
         }
@@ -130,20 +145,16 @@ export class PiProcess extends EventEmitter {
 
   sendUiResponse(responseJson: string): void {
     if (this.proc.stdin?.writable) {
-      this.proc.stdin.write(responseJson + "\n");
+      this.proc.stdin.write(`${responseJson}\n`);
     }
   }
 
   private rejectAllPending(err: Error): void {
     for (const [id, pending] of this.pending) {
-      clearTimeout(pending.timer);
+      if (pending.timer) clearTimeout(pending.timer);
       pending.reject(err);
       this.pending.delete(id);
     }
-  }
-
-  isPromptCommand(type: string): boolean {
-    return PROMPT_COMMANDS.has(type);
   }
 
   private killTimer: ReturnType<typeof setTimeout> | null = null;
@@ -164,14 +175,6 @@ export class PiProcess extends EventEmitter {
         this.killTimer = null;
       }
     });
-  }
-
-  get pid(): number | undefined {
-    return this.proc.pid;
-  }
-
-  get killed(): boolean {
-    return this.proc.killed;
   }
 }
 

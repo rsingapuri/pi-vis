@@ -1,0 +1,310 @@
+import type { SessionId } from "@shared/ids.js";
+import { describe, expect, it, vi } from "vitest";
+import { type ExecuteDeps, type PickerRequest, executeAction } from "./execute.js";
+import type { ComposerAction } from "./types.js";
+
+const SID = "s1" as SessionId;
+
+function makeDeps(overrides: Partial<ExecuteDeps> = {}): {
+  deps: ExecuteDeps;
+  calls: Record<string, unknown[]>;
+} {
+  const calls: Record<string, unknown[]> = {};
+  // Capture every argument as an array — the executor's calls have
+  // varying arity (addToast takes 2-3 args, invoke takes a payload,
+  // openPicker takes 2 args, etc.). Storing `arguments` lets the test
+  // assert against a faithful call signature.
+  const make =
+    (key: string) =>
+    (...args: unknown[]) => {
+      (calls[key] ??= []).push(args);
+    };
+  const deps: ExecuteDeps = {
+    invoke: vi.fn(async (_ch: string, payload: unknown) => {
+      (calls["invoke"] ??= []).push([payload]);
+      return { success: true, data: {} };
+    }) as ExecuteDeps["invoke"],
+    setStreaming: make("setStreaming") as ExecuteDeps["setStreaming"],
+    addToast: make("addToast") as ExecuteDeps["addToast"],
+    addUserMessage: make("addUserMessage") as ExecuteDeps["addUserMessage"],
+    addBashCommand: make("addBashCommand") as ExecuteDeps["addBashCommand"],
+    finishBashCommand: make("finishBashCommand") as ExecuteDeps["finishBashCommand"],
+    setCurrentModel: make("setCurrentModel") as ExecuteDeps["setCurrentModel"],
+    updateLastUsedModel: vi.fn(async () => {}) as ExecuteDeps["updateLastUsedModel"],
+    addCustomMessage: make("addCustomMessage") as ExecuteDeps["addCustomMessage"],
+    openPicker: make("openPicker") as ExecuteDeps["openPicker"],
+    adoptSessionFile: (async (...args: unknown[]) => {
+      (calls["adoptSessionFile"] ??= []).push(args);
+    }) as ExecuteDeps["adoptSessionFile"],
+    closeSessionTab: (async (...args: unknown[]) => {
+      (calls["closeSessionTab"] ??= []).push(args);
+    }) as ExecuteDeps["closeSessionTab"],
+    openAppSettings: make("openAppSettings") as ExecuteDeps["openAppSettings"],
+    openDiffViewer: make("openDiffViewer") as ExecuteDeps["openDiffViewer"],
+    copyToClipboard: vi.fn(async () => {}) as ExecuteDeps["copyToClipboard"],
+    getAvailableModels: () =>
+      [
+        { id: "claude-sonnet-4", provider: "anthropic", name: "Claude Sonnet 4" },
+        { id: "deepseek-v3", provider: "deepseek", name: "DeepSeek V3" },
+        { id: "claude-haiku", provider: "anthropic", name: "Claude Haiku" },
+      ] as never,
+    getSessionName: () => "Existing Name",
+    getCurrentModel: () => "claude-sonnet-4",
+    getSessionWorkspacePath: () => "/tmp/ws",
+    listSessions: vi.fn(async () => []) as ExecuteDeps["listSessions"],
+    ...overrides,
+  };
+  return { deps, calls };
+}
+
+describe("executeAction — model", () => {
+  it("/model (no arg) opens the model picker with no search", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "model" }, deps);
+    expect(calls["openPicker"]).toEqual([[SID, { kind: "model" }]]);
+  });
+
+  it("/model <search> with exact canonical match (provider/id) sets the model directly", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "model", search: "anthropic/claude-haiku" }, deps);
+    expect(calls["invoke"]).toEqual([
+      [
+        {
+          sessionId: SID,
+          command: { type: "set_model", provider: "anthropic", modelId: "claude-haiku" },
+        },
+      ],
+    ]);
+    expect(calls["setCurrentModel"]).toEqual([[SID, "claude-haiku"]]);
+    expect(calls["openPicker"]).toBeUndefined();
+  });
+
+  it("/model <search> with exact id (case-insensitive) sets the model directly", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "model", search: "DEEPSEEK-V3" }, deps);
+    expect(calls["invoke"]).toEqual([
+      [
+        {
+          sessionId: SID,
+          command: { type: "set_model", provider: "deepseek", modelId: "deepseek-v3" },
+        },
+      ],
+    ]);
+  });
+
+  it("/model <search> with no match opens the picker (search prefilled)", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "model", search: "nope" }, deps);
+    expect(calls["openPicker"]).toEqual([[SID, { kind: "model", search: "nope" }]]);
+  });
+
+  it("/model <search> ambiguous across providers opens the picker", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "model", search: "claude" }, deps);
+    expect(calls["openPicker"]).toBeDefined();
+  });
+});
+
+describe("executeAction — name", () => {
+  it("/name <name> sends set_session_name", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "name", name: "Hello" }, deps);
+    expect(calls["invoke"]).toEqual([
+      [{ sessionId: SID, command: { type: "set_session_name", name: "Hello" } }],
+    ]);
+    expect(calls["addToast"]).toEqual([[SID, "Session name set: Hello"]]);
+  });
+
+  it("/name with no arg shows current name when one is set", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "name" }, deps);
+    expect(calls["invoke"]).toBeUndefined();
+    expect(calls["addToast"]).toEqual([[SID, "Session name: Existing Name"]]);
+  });
+
+  it("/name with no arg and no current name shows usage", async () => {
+    const { deps, calls } = makeDeps({ getSessionName: () => undefined });
+    await executeAction(SID, { kind: "name" }, deps);
+    expect(calls["addToast"]).toEqual([[SID, "Usage: /name <name>", "warning"]]);
+  });
+});
+
+describe("executeAction — copy", () => {
+  it("/copy with text puts it on the clipboard", async () => {
+    const { deps, calls } = makeDeps();
+    // Override invoke to return a text payload.
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: { text: "the last agent message" },
+    });
+    await executeAction(SID, { kind: "copy" }, deps);
+    expect(calls["addToast"]).toEqual([[SID, "Copied last agent message to clipboard"]]);
+  });
+
+  it("/copy with no last message shows warning", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: { text: null },
+    });
+    await executeAction(SID, { kind: "copy" }, deps);
+    expect(calls["addToast"]).toEqual([[SID, "No agent messages to copy yet.", "warning"]]);
+  });
+});
+
+describe("executeAction — quit / settings / unsupported", () => {
+  it("/quit calls closeSessionTab", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "quit" }, deps);
+    expect(calls["closeSessionTab"]).toEqual([[SID]]);
+  });
+
+  it("/settings opens the app settings panel", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "open-app-settings" }, deps);
+    expect(calls["openAppSettings"]).toEqual([[]]);
+  });
+
+  it("/login (unsupported) toasts without invoking", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "unsupported", name: "login" }, deps);
+    expect(calls["addToast"]).toEqual([
+      [SID, "/login is not supported in pi-vis — use a terminal session.", "warning"],
+    ]);
+    expect(calls["invoke"]).toBeUndefined();
+  });
+});
+
+describe("executeAction — bash", () => {
+  it("adds a bash block and runs the command", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "bash", command: "ls", excludeFromContext: false }, deps);
+    expect(calls["addBashCommand"]).toEqual([[SID, "ls"]]);
+  });
+});
+
+describe("executeAction — session-info", () => {
+  it("renders a custom_message block (TUI parity for /session)", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (ch: string) => {
+      if (ch === "session.sendCommand" && (calls["invoke"]?.length ?? 0) === 0) {
+        return {
+          success: true,
+          data: {
+            sessionId: "ses-x",
+            sessionName: "Test",
+            sessionFile: "/tmp/x.jsonl",
+            tokens: { input: 100, output: 50, total: 150 },
+            cost: 0.001,
+            userMessages: 2,
+            assistantMessages: 1,
+            toolCalls: 0,
+            toolResults: 0,
+            totalMessages: 3,
+          },
+        };
+      }
+      return { success: true, data: {} };
+    });
+    await executeAction(SID, { kind: "session-info" }, deps);
+    expect(calls["addCustomMessage"]).toBeDefined();
+    const block = (calls["addCustomMessage"] as Array<[SessionId, string]>)[0]![1];
+    expect(block).toContain("Session Info");
+    expect(block).toContain("Test");
+    expect(block).toContain("/tmp/x.jsonl");
+  });
+});
+
+describe("executeAction — new-session / fork", () => {
+  it("/new without cancellation toasts; fileChanged handles the rest", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: { cancelled: false },
+    });
+    await executeAction(SID, { kind: "new-session" }, deps);
+    expect(calls["addToast"]).toEqual([[SID, "Started a fresh session"]]);
+  });
+
+  it("/fork with no messages toasts 'No messages to fork from'", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: { messages: [] },
+    });
+    await executeAction(SID, { kind: "fork" }, deps);
+    expect(calls["addToast"]).toEqual([[SID, "No messages to fork from", "warning"]]);
+    expect(calls["openPicker"]).toBeUndefined();
+  });
+
+  it("/fork with messages opens the fork picker", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: {
+        messages: [
+          { entryId: "e1", text: "first message" },
+          { entryId: "e2", text: "second message" },
+        ],
+      },
+    });
+    await executeAction(SID, { kind: "fork" }, deps);
+    expect(calls["openPicker"]).toEqual([
+      [
+        SID,
+        {
+          kind: "fork",
+          messages: [
+            { entryId: "e1", text: "first message" },
+            { entryId: "e2", text: "second message" },
+          ],
+        },
+      ],
+    ]);
+  });
+});
+
+describe("executeAction — unsupported exposes nothing via invoke", () => {
+  it.each([
+    "login",
+    "logout",
+    "trust",
+    "share",
+    "import",
+    "tree",
+    "changelog",
+    "hotkeys",
+    "debug",
+    "reload",
+    "scoped-models",
+  ])("always toasts for /%s", async (name) => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "unsupported", name } as ComposerAction, deps);
+    expect(calls["invoke"]).toBeUndefined();
+    expect(calls["addToast"]).toEqual([
+      [SID, `/${name} is not supported in pi-vis — use a terminal session.`, "warning"],
+    ]);
+  });
+});
+
+describe("executeAction — picker host receives a well-typed PickerRequest", () => {
+  it("/resume opens the resume picker with the workspace sessions", async () => {
+    const fixture = [
+      {
+        filePath: "/tmp/a.jsonl",
+        id: "ses-a",
+        mtime: 0,
+        preview: "preview",
+        messageCount: 4,
+        cwd: "/tmp",
+      },
+    ];
+    const { deps, calls } = makeDeps({
+      listSessions: vi.fn(async () => fixture) as ExecuteDeps["listSessions"],
+    });
+    await executeAction(SID, { kind: "resume" }, deps);
+    const picker = (calls["openPicker"] as Array<[SessionId, PickerRequest]>)[0]![1];
+    expect(picker.kind).toBe("resume");
+    if (picker.kind === "resume") expect(picker.sessions.length).toBe(1);
+  });
+});

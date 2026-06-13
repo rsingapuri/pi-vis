@@ -9,6 +9,7 @@ import {
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCost, formatTokens } from "../../lib/format.js";
+import { openDiffForSession, useDiffStore } from "../../stores/diff-store.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import "./SessionHeader.css";
@@ -30,7 +31,7 @@ function highlightMatch(text: string, query: string): React.ReactNode {
 }
 
 export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactElement {
-  const sessions = useSessionsStore((s) => s.sessions);
+  const session = useSessionsStore((s) => s.sessions.get(sessionId));
   const setAvailableModels = useSessionsStore((s) => s.setAvailableModels);
   const setCurrentModel = useSessionsStore((s) => s.setCurrentModel);
   const setStats = useSessionsStore((s) => s.setStats);
@@ -41,7 +42,6 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
   const addToast = useSessionsStore((s) => s.addToast);
   const { settings, update: updateSettings } = useSettingsStore();
 
-  const session = sessions.get(sessionId);
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
@@ -122,7 +122,14 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
       .invoke("session.sendCommand", { sessionId, command: { type: "get_state" } })
       .then((res) => {
         if (cancelled) return;
-        const raw = res?.data as { thinkingLevel?: unknown; model?: { id?: unknown }; sessionName?: unknown; sessionFile?: unknown } | undefined;
+        const raw = res?.data as
+          | {
+              thinkingLevel?: unknown;
+              model?: { id?: unknown };
+              sessionName?: unknown;
+              sessionFile?: unknown;
+            }
+          | undefined;
         if (!raw) return;
         if (typeof raw.thinkingLevel === "string") {
           const parsed = ThinkingLevelSchema.safeParse(raw.thinkingLevel);
@@ -171,7 +178,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
     fetchStats();
     const interval = setInterval(fetchStats, 60_000);
     return () => clearInterval(interval);
-  }, [sessionId, live, session?.workspacePath, setStats, setSessionFile]);
+  }, [sessionId, live, setStats, setSessionFile]);
 
   // Listen for agent_end to refresh stats
   useEffect(() => {
@@ -212,6 +219,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
   });
 
   // Reset highlight when search/filter changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: depends on the filter value, not on identity
   useEffect(() => {
     setHighlightedIndex(0);
   }, [modelSearch]);
@@ -391,16 +399,22 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
             }}
           />
         ) : (
-          <button className="session-header__name-btn" onClick={handleRenameStart}>
+          <button type="button" className="session-header__name-btn" onClick={handleRenameStart}>
             {session?.sessionName ?? session?.sessionTitle ?? "Untitled session"}
           </button>
         )}
       </div>
 
       <div className="session-header__controls">
+        {/* Changes button + live badge (WP5a) */}
+        <ChangesButton sessionId={sessionId} />
         {/* Model picker */}
         <div className="session-header__model-picker">
-          <button className="session-header__picker-btn" onClick={() => setModelOpen((v) => !v)}>
+          <button
+            type="button"
+            className="session-header__picker-btn"
+            onClick={() => setModelOpen((v) => !v)}
+          >
             {session?.currentModel ?? "model"} ▾
           </button>
           {modelOpen && (
@@ -468,6 +482,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
                     const selected = session?.currentModel === m.id;
                     return (
                       <button
+                        type="button"
                         key={m.id}
                         ref={(el) => {
                           if (el) itemRefs.current.set(idx, el);
@@ -495,6 +510,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
             can accommodate descenders ('g' in "high") without clipping. */}
         <div className="session-header__thinking">
           <button
+            type="button"
             className="session-header__picker-btn"
             onClick={() => setThinkingOpen((v) => !v)}
             disabled={thinkingDisabled}
@@ -512,6 +528,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
                 const selected = session?.thinkingLevel === l;
                 return (
                   <button
+                    type="button"
                     key={l}
                     role="option"
                     aria-selected={selected}
@@ -533,7 +550,10 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
         {contextPct !== null && (
           <div className="session-header__context">
             <div className="context-meter" title={`${contextPct}% context used`}>
-              <div className="context-meter__fill" style={{ width: `${contextPct}%` }} />
+              <div
+                className={`context-meter__fill${contextPct >= 90 ? " context-meter__fill--danger" : contextPct >= 80 ? " context-meter__fill--warn" : ""}`}
+                style={{ width: `${contextPct}%` }}
+              />
             </div>
             <span className="session-header__meta">
               {stats?.tokens?.total != null && formatTokens(stats.tokens.total)}
@@ -543,5 +563,62 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
         )}
       </div>
     </div>
+  );
+}
+
+// ── Changes button (WP5a) ──────────────────────────────────────────
+//
+// Mirrors the existing agent_end → stats refresh pattern. Renders a
+// ghost button matching the model/thinking picker style with a live
+// badge showing the changed-file count, or just `±` dimmed when the
+// working tree is clean.
+function ChangesButton({ sessionId }: { sessionId: SessionId }): React.ReactElement | null {
+  const session = useSessionsStore((s) => s.sessions.get(sessionId));
+  const live = session?.status === "ready" || session?.status === "starting";
+  const badge = useDiffStore((s) => s.badge);
+  const badgeKind = useDiffStore((s) => s.badgeKind);
+  const refreshBadge = useDiffStore((s) => s.refreshBadge);
+
+  // Refresh on session live, agent_end, and window focus. Mirrors
+  // the existing stats effect in this file.
+  useEffect(() => {
+    if (!live) return;
+    const root = session?.workspacePath;
+    if (!root) return;
+    void refreshBadge(root);
+
+    const unsubEvent = window.pivis.on("session.event", ({ sessionId: sid, event }) => {
+      if (sid === sessionId && event.type === "agent_end") {
+        void refreshBadge(root);
+      }
+    });
+    const onFocus = (): void => {
+      void refreshBadge(root);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      unsubEvent();
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [live, session?.workspacePath, sessionId, refreshBadge]);
+
+  // Don't render when the workspace is not a repo (badge resolved
+  // "not-a-repo" or "git-missing") or when the badge is still loading.
+  if (badgeKind === "not-a-repo" || badgeKind === "git-missing") return null;
+  if (badge === null) return null;
+
+  const hasChanges = badge.fileCount > 0;
+  return (
+    <button
+      type="button"
+      className={`session-header__picker-btn session-header__changes-btn${hasChanges ? "" : " session-header__changes-btn--clean"}`}
+      onClick={() => openDiffForSession(sessionId)}
+      title="View changes (⌘G)"
+      aria-label="View changes"
+      data-testid="changes-button"
+    >
+      <span aria-hidden>±</span>
+      {hasChanges && <span className="session-header__changes-count">{badge.fileCount}</span>}
+    </button>
   );
 }

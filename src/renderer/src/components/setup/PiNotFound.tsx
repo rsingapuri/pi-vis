@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 import "./PiNotFound.css";
 
 interface PiNotFoundProps {
@@ -15,10 +15,12 @@ export function PiNotFound({ onRecheck }: PiNotFoundProps): React.ReactElement {
       </p>
       <div className="pi-not-found__instructions">
         <p>Install pi globally:</p>
-        <pre className="pi-not-found__code">npm i -g --ignore-scripts @earendil-works/pi-coding-agent</pre>
+        <pre className="pi-not-found__code">
+          npm i -g --ignore-scripts @earendil-works/pi-coding-agent
+        </pre>
         <p>Then restart Pi-Vis, or:</p>
       </div>
-      <button className="pi-not-found__btn" onClick={onRecheck}>
+      <button type="button" className="pi-not-found__btn" onClick={onRecheck}>
         Re-check for pi
       </button>
     </div>

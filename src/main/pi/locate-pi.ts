@@ -1,7 +1,8 @@
-import { exec } from "child_process";
-import { promisify } from "util";
+import { exec, execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 let cached: { path: string; version: string } | null = null;
 
@@ -31,18 +32,22 @@ export async function locatePi(
   if (whichPath) candidates.push(whichPath);
 
   for (const candidate of candidates) {
-    const version = await runCommand(`"${candidate}" --version`);
-    if (version) {
-      cached = { path: candidate, version };
-      return cached;
+    try {
+      // Use execFile so we never interpolate a path into a shell string.
+      // execFile is also the only safe way to pass a path with spaces or
+      // shell metacharacters.
+      const { stdout } = await execFileAsync(candidate, ["--version"], { timeout: 5000 });
+      const version = stdout.trim();
+      if (version) {
+        cached = { path: candidate, version };
+        return cached;
+      }
+    } catch {
+      // try next candidate
     }
   }
 
   return null;
-}
-
-export function getCachedPiLocation(): { path: string; version: string } | null {
-  return cached;
 }
 
 export function clearPiLocationCache(): void {

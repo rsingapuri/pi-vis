@@ -6,7 +6,7 @@
 .app {
   height: 100%;
   display: grid;
-  grid-template-rows: 2.857rem 1fr;
+  grid-template-rows: 2.714rem 1fr;
   /* Sidebar width is set inline by the React component, in px — it's a
      user-controlled chrome measurement, not typography. */
   grid-template-columns: var(--sidebar-width, 15.714rem) 1fr;

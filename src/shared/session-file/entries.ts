@@ -1,13 +1,15 @@
 import { z } from "zod";
 
-export const SessionHeaderSchema = z.object({
-  type: z.literal("session"),
-  version: z.number(),
-  id: z.string(),
-  timestamp: z.string().or(z.number()),
-  cwd: z.string(),
-  model: z.string().optional(),
-}).passthrough();
+export const SessionHeaderSchema = z
+  .object({
+    type: z.literal("session"),
+    version: z.number(),
+    id: z.string(),
+    timestamp: z.string().or(z.number()),
+    cwd: z.string(),
+    model: z.string().optional(),
+  })
+  .passthrough();
 
 export type SessionHeader = z.infer<typeof SessionHeaderSchema>;
 
@@ -20,13 +22,15 @@ const BaseEntrySchema = z.object({
 // Real pi v3 nests message data under a `message` key. The body carries
 // role/content + toolResult-specific fields; entry-level fields (id, parentId,
 // timestamp) live on the envelope.
-const MessageBodySchema = z.object({
-  role: z.enum(["user", "assistant", "toolResult"]),
-  content: z.unknown(),
-  toolCallId: z.string().optional(),
-  toolName: z.string().optional(),
-  isError: z.boolean().optional(),
-}).passthrough();
+const MessageBodySchema = z
+  .object({
+    role: z.enum(["user", "assistant", "toolResult"]),
+    content: z.unknown(),
+    toolCallId: z.string().optional(),
+    toolName: z.string().optional(),
+    isError: z.boolean().optional(),
+  })
+  .passthrough();
 
 export const MessageEntrySchema = BaseEntrySchema.extend({
   type: z.literal("message"),
@@ -87,7 +91,9 @@ export const KnownSessionEntrySchema = z.discriminatedUnion("type", [
   SessionInfoEntrySchema,
 ]);
 
-const UnknownEntrySchema = z.object({ type: z.string() }).passthrough()
+const UnknownEntrySchema = z
+  .object({ type: z.string() })
+  .passthrough()
   .transform((v) => ({ ...v, __unknown: true as const }));
 
 export const SessionEntrySchema = KnownSessionEntrySchema.or(UnknownEntrySchema);

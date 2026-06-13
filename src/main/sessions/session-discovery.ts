@@ -1,8 +1,8 @@
-import fs from "fs";
-import path from "path";
-import os from "os";
-import { SessionHeaderSchema } from "@shared/session-file/entries.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { SessionSummary } from "@shared/ipc-contract.js";
+import { SessionHeaderSchema } from "@shared/session-file/entries.js";
 
 // Read per call so tests can override PIVIS_SESSIONS_DIR.
 function getSessionsDir(): string {
@@ -25,12 +25,20 @@ function readFirstLine(filePath: string): string | null {
     return null;
   } finally {
     if (fd !== null) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore */
+      }
     }
   }
 }
 
-export function extractSessionMeta(filePath: string): { preview: string; messageCount: number; name: string | null } {
+export function extractSessionMeta(filePath: string): {
+  preview: string;
+  messageCount: number;
+  name: string | null;
+} {
   let preview = "";
   let messageCount = 0;
   let name: string | null = null;
@@ -59,12 +67,20 @@ export function extractSessionMeta(filePath: string): { preview: string; message
             }
           }
         }
-        if (entry["type"] === "session_info" && typeof entry["name"] === "string" && entry["name"]) {
+        if (
+          entry["type"] === "session_info" &&
+          typeof entry["name"] === "string" &&
+          entry["name"]
+        ) {
           name = entry["name"];
         }
-      } catch { /* skip bad lines */ }
+      } catch {
+        /* skip bad lines */
+      }
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return { preview, messageCount, name };
 }
 
@@ -121,10 +137,6 @@ export async function listSessionsForWorkspace(workspacePath: string): Promise<S
       }
 
       if (!header.success) continue;
-      if (header.data.cwd !== workspacePath) {
-        // Still cache even if not for this workspace
-        continue;
-      }
 
       const { preview, messageCount, name } = extractSessionMeta(filePath);
 
@@ -138,7 +150,11 @@ export async function listSessionsForWorkspace(workspacePath: string): Promise<S
         cwd: header.data.cwd,
       };
 
+      // Cache entries for ALL workspaces, not just the one we are
+      // enumerating. Without this, switching workspaces re-parses every
+      // file from disk on each call.
       cache.set(filePath, { mtime, summary });
+      if (header.data.cwd !== workspacePath) continue;
       results.push(summary);
     }
   }

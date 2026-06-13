@@ -1,3 +1,4 @@
+import type { SessionId } from "@shared/ids.js";
 /**
  * Stubs window.pivis for standalone browser preview (not running in Electron).
  *
@@ -7,7 +8,6 @@
  * exercised in a plain browser via `npm run dev:renderer`.
  */
 import { useSessionsStore } from "./stores/sessions-store.js";
-import type { SessionId } from "@shared/ids.js";
 
 const DEMO_SESSION_ID = "demo-session-1" as SessionId;
 const DEMO_WORKSPACE = "/Users/demo/src/pi-vis";
@@ -54,7 +54,7 @@ const READ_OUTPUT = [
   "",
   "export function loadConfig(root: string): Config {",
   '  const file = path.join(root, "config.json");',
-  "  const raw = fs.readFileSync(file, \"utf8\");",
+  '  const raw = fs.readFileSync(file, "utf8");',
   "  return ConfigSchema.parse(JSON.parse(raw));",
   "}",
 ].join("\n");

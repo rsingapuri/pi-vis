@@ -1,8 +1,8 @@
-import React from "react";
-import { useSessionsStore } from "../../stores/sessions-store.js";
 import type { SessionId } from "@shared/ids.js";
+import type React from "react";
 import { AnsiText } from "../../lib/ansi.js";
 import { formatCost, formatTokens } from "../../lib/format.js";
+import { useSessionsStore } from "../../stores/sessions-store.js";
 import "./StatusBar.css";
 
 interface StatusBarProps {
@@ -18,8 +18,7 @@ function abbreviateHome(p: string): string {
 // polled session stats; pi's own TUI footer is not sent over RPC), then one
 // line per extension status segment.  Segment text may contain ANSI colors.
 export function StatusBar({ sessionId }: StatusBarProps): React.ReactElement | null {
-  const sessions = useSessionsStore((s) => s.sessions);
-  const session = sessionId ? sessions.get(sessionId) : null;
+  const session = useSessionsStore((s) => (sessionId ? s.sessions.get(sessionId) : undefined));
 
   if (!session) return null;
 
@@ -49,9 +48,7 @@ export function StatusBar({ sessionId }: StatusBarProps): React.ReactElement | n
       {usageParts.length > 0 && (
         <div className="statusbar__line statusbar__line--split">
           <span>{usageParts.join(" ")}</span>
-          {session.currentModel && (
-            <span className="statusbar__model">{session.currentModel}</span>
-          )}
+          {session.currentModel && <span className="statusbar__model">{session.currentModel}</span>}
         </div>
       )}
       {segmentLines.map(({ key, text }) => (

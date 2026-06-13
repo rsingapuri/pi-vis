@@ -5,7 +5,7 @@
 .statusbar {
   background: var(--ctp-mantle);
   border-top: 1px solid var(--ctp-surface0);
-  padding: 0.429rem 1rem;     /* ≈6/14 */
+  padding: 0.429rem 1rem; /* ≈6/14 */
   display: flex;
   flex-direction: column;
   gap: 0.143rem;

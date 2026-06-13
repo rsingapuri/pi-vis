@@ -1,0 +1,353 @@
+/* DiffFileSection — one file's diff in the viewer.
+   The sticky header floats over scrolling code, so its background must
+   be opaque. The body renders either unified or split rows depending
+   on the viewer's mode. */
+
+.diff-file {
+  margin: 0.857rem;
+  border: 1px solid var(--ctp-surface0);
+  border-radius: var(--mcm-radius-sm);
+  overflow: hidden;
+  scroll-margin-top: 0.571rem;
+}
+
+.diff-file__header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.571rem;
+  padding: 0.429rem 0.714rem;
+  background: var(--ctp-mantle);
+  border-bottom: 1px solid var(--ctp-surface0);
+  cursor: pointer;
+  user-select: none;
+}
+
+.diff-file__chevron {
+  color: var(--ctp-overlay1);
+  font-family: var(--font-code);
+  font-size: 0.857em;
+  width: 0.857rem;
+  display: inline-block;
+  transition: transform 120ms;
+}
+
+.diff-file--open .diff-file__chevron {
+  transform: rotate(90deg);
+}
+
+.diff-file__path {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: var(--mcm-line-code);
+  flex: 1;
+}
+
+.diff-file__dirname {
+  color: var(--ctp-overlay1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+  direction: rtl;
+  text-align: left;
+}
+
+.diff-file__basename {
+  color: var(--ctp-text);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.diff-file__arrow {
+  color: var(--ctp-overlay1);
+  margin: 0 0.286rem;
+  flex-shrink: 0;
+}
+
+.diff-file__counts {
+  font-family: var(--font-code);
+  font-size: var(--font-size-small);
+  display: flex;
+  gap: 0.429rem;
+  flex-shrink: 0;
+}
+
+.diff-file__count--add {
+  color: var(--ctp-green);
+}
+.diff-file__count--del {
+  color: var(--ctp-red);
+}
+.diff-file__count--bin {
+  color: var(--ctp-overlay1);
+}
+
+.diff-file__body {
+  background: var(--ctp-base);
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: var(--mcm-line-code);
+  tab-size: 4;
+  /* gutter-w set inline based on max line count. */
+  --gutter-w: 3.571rem;
+}
+
+.diff-file__body--collapsed {
+  display: none;
+}
+
+/* ── Status badge (shared by rail + section header) ──────────────── */
+
+.diff-status-badge {
+  width: 1.286em;
+  height: 1.286em;
+  border-radius: var(--mcm-radius-sm);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.714em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.diff-status-badge--M {
+  color: var(--ctp-yellow);
+  background: color-mix(in srgb, var(--ctp-yellow) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ctp-yellow) 30%, transparent);
+}
+.diff-status-badge--A {
+  color: var(--ctp-green);
+  background: color-mix(in srgb, var(--ctp-green) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ctp-green) 30%, transparent);
+}
+.diff-status-badge--D {
+  color: var(--ctp-red);
+  background: color-mix(in srgb, var(--ctp-red) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ctp-red) 30%, transparent);
+}
+.diff-status-badge--R {
+  color: var(--ctp-mauve);
+  background: color-mix(in srgb, var(--ctp-mauve) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ctp-mauve) 30%, transparent);
+}
+
+/* ── Row grid ────────────────────────────────────────────────────── */
+
+.diff-row {
+  display: grid;
+  grid-template-columns: var(--gutter-w) var(--gutter-w) 1.143rem 1fr;
+  align-items: stretch;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: var(--mcm-line-code);
+}
+
+.diff-row--split {
+  grid-template-columns: var(--gutter-w) 1fr var(--gutter-w) 1fr;
+}
+
+.diff-row__num {
+  text-align: right;
+  padding-right: 0.571rem;
+  color: var(--ctp-overlay0);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.929em;
+}
+
+.diff-row__num--empty {
+  background: color-mix(in srgb, var(--ctp-surface0) 40%, transparent);
+}
+
+.diff-row__marker {
+  text-align: center;
+  user-select: none;
+  font-size: 0.929em;
+  line-height: var(--mcm-line-code);
+  /* Marker text comes from a ::before pseudo so it never pollutes
+     copied text. */
+}
+
+.diff-row--add .diff-row__marker::before {
+  content: "+";
+  color: var(--ctp-green);
+}
+.diff-row--del .diff-row__marker::before {
+  content: "−";
+  color: var(--ctp-red);
+}
+.diff-row--add .diff-row__num {
+  color: var(--ctp-green);
+  background: color-mix(in srgb, var(--ctp-green) 18%, transparent);
+}
+.diff-row--del .diff-row__num {
+  color: var(--ctp-red);
+  background: color-mix(in srgb, var(--ctp-red) 18%, transparent);
+}
+.diff-row--add .diff-row__code {
+  background: color-mix(in srgb, var(--ctp-green) 12%, transparent);
+}
+.diff-row--del .diff-row__code {
+  background: color-mix(in srgb, var(--ctp-red) 12%, transparent);
+}
+
+.diff-row__code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 0 0.714rem 0 0.286rem;
+  min-height: 1.43em;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-row__code--empty {
+  background: color-mix(in srgb, var(--ctp-surface0) 40%, transparent);
+}
+
+/* Split view: side-by-side columns. One CSS grid row holds both sides
+   so wrapped-line heights align automatically. */
+.diff-row--split .diff-row__num--right {
+  border-left: 1px solid var(--ctp-surface0);
+}
+
+/* Intraline emphasis: background tint on the changed characters. */
+.diff-row__em {
+  background: color-mix(in srgb, var(--ctp-green) 30%, transparent);
+  border-radius: 2px;
+}
+.diff-row--del .diff-row__em {
+  background: color-mix(in srgb, var(--ctp-red) 30%, transparent);
+}
+
+/* Row hover overlay (subtle — aids horizontal tracking in split view). */
+.diff-row:hover {
+  background: color-mix(in srgb, var(--ctp-surface1) 30%, transparent);
+}
+/* .diff-row--split:hover removed: .diff-row:hover already covers it */
+
+/* No-newline marker — feature deferred; the per-file model exposes
+   oldMissingNewline/newMissingNewline, but the IPC surface that would
+   feed them is not yet implemented, so the marker is never rendered. */
+.diff-row__noeol {
+  display: none;
+}
+
+/* ── Gap separator row ──────────────────────────────────────────── */
+
+.diff-gap {
+  display: flex;
+  align-items: center;
+  gap: 0.571rem;
+  padding: 0.143rem 0.714rem;
+  background: color-mix(in srgb, var(--ctp-surface0) 55%, transparent);
+  border-block: 1px solid var(--ctp-surface0);
+  user-select: none;
+  font-family: var(--font-code);
+  font-size: var(--font-size-small);
+}
+
+.diff-gap__gutter {
+  /* Width matches the two number columns + marker column in unified
+     view, so the expander buttons sit over the gutter and the code
+     stays aligned. */
+  width: calc(var(--gutter-w) * 2 + 1.143rem);
+  text-align: center;
+  color: var(--ctp-overlay0);
+  flex-shrink: 0;
+  font-size: 0.929em;
+}
+
+.diff-gap__btn {
+  background: transparent;
+  border: 1px solid var(--ctp-surface1);
+  border-radius: var(--mcm-radius-sm);
+  color: var(--ctp-subtext0);
+  cursor: pointer;
+  width: 1.714rem;
+  height: 1.714rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-code);
+  font-size: 0.857em;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.diff-gap__btn:hover {
+  background: var(--ctp-surface1);
+  color: var(--ctp-text);
+}
+
+.diff-gap__label {
+  background: transparent;
+  border: none;
+  color: var(--ctp-overlay1);
+  cursor: pointer;
+  font-family: var(--font-code);
+  font-size: var(--font-size-small);
+  padding: 0.143rem 0.286rem;
+  text-align: left;
+  user-select: none;
+}
+
+.diff-gap__label:hover {
+  color: var(--ctp-text);
+  text-decoration: underline;
+}
+
+/* ── Per-file notice (binary / too-large / zero / error) ─────────── */
+
+.diff-file__notice {
+  padding: 1.429rem;
+  color: var(--ctp-subtext0);
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.571rem;
+}
+
+.diff-file__notice--loading {
+  animation: diff-pulse 1.2s ease-in-out infinite;
+}
+
+.diff-file__notice__retry {
+  background: var(--ctp-mauve);
+  color: var(--ctp-base);
+  border: none;
+  border-radius: var(--mcm-radius-sm);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.857em;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--mcm-track-label);
+  line-height: var(--mcm-line-label);
+  padding: 0.429rem 1rem;
+}
+
+.diff-file__notice__retry:hover {
+  background: var(--ctp-lavender);
+}
+
+@keyframes diff-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}

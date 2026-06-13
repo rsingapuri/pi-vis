@@ -1,6 +1,6 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
 import { PiProcess } from "./pi-process.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,17 +22,20 @@ describe("PiProcess", () => {
     proc.stop();
 
     // Spawn fake-pi directly
-    const { spawn } = await import("child_process");
+    const { spawn } = await import("node:child_process");
     const child = spawn("node", [FAKE_PI], { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] });
 
     const events: unknown[] = [];
     const { JsonlStream } = await import("./jsonl-stream.js");
-    const stream = new JsonlStream((p) => events.push(p), () => {});
+    const stream = new JsonlStream(
+      (p) => events.push(p),
+      () => {},
+    );
     child.stdout.on("data", (chunk: Buffer) => stream.feed(chunk));
 
     // Send get_commands
     const id = "test-1";
-    child.stdin.write(JSON.stringify({ type: "get_commands", id }) + "\n");
+    child.stdin.write(`${JSON.stringify({ type: "get_commands", id })}\n`);
 
     await new Promise<void>((resolve) => {
       const check = setInterval(() => {

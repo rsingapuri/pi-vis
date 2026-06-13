@@ -56,19 +56,19 @@
   /* ── MCM Spacing tokens (relative to root font size) ─────────────────
      The entire layout breathes off these four tokens.  Changing the root
      font size scales the whole architecture seamlessly. */
-  --mcm-tight: 0.5rem;   /* Grouping related items close together */
-  --mcm-base: 1.5rem;    /* Standard element / paragraph separation */
-  --mcm-large: 3.5rem;   /* Asymmetric breathing room / section spacing */
-  --mcm-massive: 6rem;   /* Outer view padding — pools of negative space */
+  --mcm-tight: 0.5rem; /* Grouping related items close together */
+  --mcm-base: 1.5rem; /* Standard element / paragraph separation */
+  --mcm-large: 3.5rem; /* Asymmetric breathing room / section spacing */
+  --mcm-massive: 6rem; /* Outer view padding — pools of negative space */
 
   /* ── MCM Typography scale (unitless multipliers + em tracking) ─────── */
-  --mcm-line-display: 1.1;       /* Tight, block-print feel */
-  --mcm-line-body: 1.6;          /* Generous, airy reading rhythm */
-  --mcm-line-code: 1.5;          /* Standard code editor cadence */
-  --mcm-line-label: 1.0;         /* Flat for uppercase labels */
+  --mcm-line-display: 1.1; /* Tight, block-print feel */
+  --mcm-line-body: 1.6; /* Generous, airy reading rhythm */
+  --mcm-line-code: 1.5; /* Standard code editor cadence */
+  --mcm-line-label: 1.0; /* Flat for uppercase labels */
   --mcm-track-display: -0.025em; /* Negative: characters compress tightly */
-  --mcm-track-label: 0.13em;     /* Wide, architectural */
-  --mcm-track-body: 0;           /* Default layout tracking */
+  --mcm-track-label: 0.13em; /* Wide, architectural */
+  --mcm-track-body: 0; /* Default layout tracking */
 
   /* Border radius — gentle corners, in em so they scale with the type. */
   --mcm-radius-sm: 0.286em;
@@ -76,13 +76,17 @@
   --mcm-radius-lg: 0.857em;
 }
 
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
   width: 100%;
   overflow: hidden;

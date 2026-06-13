@@ -1,0 +1,154 @@
+/* Built-in picker host — modals for /model, /fork, /resume. Visually
+   consistent with ExtensionDialogHost but simpler: no queue, no timeout,
+   no request/response RPC. The host is single-slot (a new picker replaces
+   the active one) and the user is the one driving the choice. */
+
+.picker-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 17, 27, 0.7);
+  backdrop-filter: blur(0.286rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 250;
+  padding: var(--mcm-base);
+}
+
+.picker-host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.picker {
+  background: var(--ctp-surface0);
+  border: 1px solid var(--ctp-surface1);
+  border-radius: var(--mcm-radius-md);
+  padding: 1rem;
+  min-width: 26.857rem; /* ≈376px */
+  max-width: 38.571rem; /* ≈540px */
+  max-height: 32.857rem; /* ≈460px */
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 0.571rem 2.286rem rgba(0, 0, 0, 0.5);
+  pointer-events: all;
+  gap: 0.571rem;
+}
+
+.picker__title {
+  font-family: var(--font-display);
+  font-size: 1.071em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--mcm-track-label);
+  line-height: var(--mcm-line-label);
+  color: var(--ctp-text);
+}
+
+.picker__search {
+  display: flex;
+  border: 1px solid var(--ctp-surface1);
+  border-radius: var(--mcm-radius-sm);
+  background: var(--ctp-mantle);
+}
+
+.picker__search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--ctp-text);
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  outline: none;
+  padding: 0.429rem 0.714rem;
+}
+
+.picker__search-input::placeholder {
+  color: var(--ctp-overlay0);
+}
+
+.picker__search:focus-within {
+  border-color: var(--ctp-mauve);
+}
+
+.picker__list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.214rem;
+  padding: 0.214rem 0;
+  min-height: 6.429rem; /* ≈90px */
+}
+
+.picker__item {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--mcm-radius-sm);
+  color: var(--ctp-text);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  text-align: left;
+  padding: 0.429rem 0.714rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.571rem;
+  justify-content: space-between;
+}
+
+.picker__item:hover,
+.picker__item--highlighted {
+  background: var(--ctp-surface1);
+  border-color: var(--ctp-surface2);
+}
+
+.picker__item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker__item-meta {
+  color: var(--ctp-overlay0);
+  font-size: 0.857em;
+}
+
+.picker__empty {
+  color: var(--ctp-overlay0);
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  text-align: center;
+  padding: 1rem 0;
+}
+
+.picker__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.571rem;
+}
+
+.picker__btn {
+  background: var(--ctp-surface1);
+  border: none;
+  border-radius: var(--mcm-radius-sm);
+  color: var(--ctp-subtext0);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--mcm-track-label);
+  line-height: var(--mcm-line-label);
+  padding: 0.429rem 1rem;
+}
+
+.picker__btn--cancel:hover {
+  background: var(--ctp-surface2);
+  color: var(--ctp-text);
+}

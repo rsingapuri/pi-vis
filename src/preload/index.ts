@@ -1,5 +1,5 @@
+import type { IpcEventContract, IpcInvokeContract } from "@shared/ipc-contract.js";
 import { contextBridge, ipcRenderer } from "electron";
-import type { IpcInvokeContract, IpcEventContract } from "@shared/ipc-contract.js";
 
 type IpcEventCallback<T> = (payload: T) => void;
 
