@@ -256,6 +256,10 @@ export function Sidebar({
   }, []);
 
   // Load recents on mount
+  // NOTE: This effect MUST NOT select any workspace, even when one is not yet
+  // active. The stale-closure guard (!activeWorkspacePath) always passes under
+  // StrictMode's double-invoke, causing it to clobber the boot effect's restore.
+  // Selection is the sole responsibility of the boot effect below.
   // biome-ignore lint/correctness/useExhaustiveDependencies: run-once boot effect
   useEffect(() => {
     window.pivis
@@ -264,9 +268,6 @@ export function Sidebar({
         for (const path of recents) {
           addWorkspace(path);
           void refreshWorkspaceSessions(path);
-        }
-        if (recents.length > 0 && !activeWorkspacePath) {
-          setActiveWorkspace(recents[0] ?? null);
         }
       })
       .catch(console.error);
