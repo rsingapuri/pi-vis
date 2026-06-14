@@ -26,6 +26,7 @@ export function App(): React.ReactElement {
   const seedHistory = useSessionsStore((s) => s.seedHistory);
   const refreshWorkspaceSessions = useSessionsStore((s) => s.refreshWorkspaceSessions);
   const loadSettings = useSettingsStore((s) => s.load);
+  const statusBarVisible = useSettingsStore((s) => s.settings.statusBarVisible);
   const [piFound, setPiFound] = useState<boolean | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(220);
@@ -217,7 +218,7 @@ export function App(): React.ReactElement {
             ) : (
               <Composer sessionId={activeSessionId} />
             )}
-            <StatusBar sessionId={activeSessionId} />
+            {statusBarVisible && <StatusBar sessionId={activeSessionId} />}
             <AppPickerHost sessionId={activeSessionId} />
             <ToastHost sessionId={activeSessionId} />
             <DiffViewerHost sessionId={activeSessionId} />

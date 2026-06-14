@@ -40,6 +40,13 @@ export interface SessionViewState {
   commands: SlashCommandInfo[];
   editorInjection?: { text: string; nonce: number } | undefined;
   pendingPicker?: PickerRequest | undefined;
+  /**
+   * Recency key for sidebar ordering. Set when a session is *created fresh*
+   * (no file yet) and bumped only when the user submits a prompt — NOT on
+   * mere open/activate. Resumed sessions leave this undefined so the sidebar
+   * falls back to the session file's mtime, keeping them in place when clicked.
+   */
+  lastActivityAt?: number | undefined;
 }
 
 interface WorkspaceState {
@@ -73,6 +80,9 @@ interface SessionsStore {
   ) => Promise<SessionId | null>;
   closeSessionTab: (sessionId: SessionId) => Promise<void>;
   removeSession: (sessionId: SessionId) => void;
+  /** Archive a session: add its file path to archivedSessions in settings,
+   *  close its live tab if one exists, and refresh the workspace list. */
+  archiveSession: (sessionId: SessionId | undefined, filePath: string, workspacePath: string) => Promise<void>;
   setSessionFile: (sessionId: SessionId, sessionFile: string) => void;
   setSessionStatus: (sessionId: SessionId, status: SessionStatus, error?: string) => void;
   applyEvent: (sessionId: SessionId, event: PiEvent) => void;
@@ -172,6 +182,9 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         widgets: new Map(),
         toasts: [],
         availableModels: [],
+        // Fresh sessions (no file yet) sort to the top; resumed sessions
+        // leave this undefined and fall back to their file mtime.
+        lastActivityAt: sessionFile ? undefined : Date.now(),
       });
       const workspaces = new Map(state.workspaces);
       const ws = workspaces.get(workspacePath);
@@ -289,7 +302,9 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         const trimmed = firstLine.slice(0, 80);
         if (trimmed.length > 0) sessionTitle = trimmed;
       }
-      sessions.set(sessionId, { ...s, transcript, sessionTitle });
+      // Submitting a prompt is the only thing that promotes a session in the
+      // sidebar order — opening/activating it does not (see lastActivityAt).
+      sessions.set(sessionId, { ...s, transcript, sessionTitle, lastActivityAt: Date.now() });
       return { sessions };
     });
   },
@@ -685,6 +700,29 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       await window.pivis.invoke("session.close", { sessionId }).catch(console.error);
     }
     get().removeSession(sessionId);
+  },
+
+  archiveSession: async (sessionId, filePath, workspacePath) => {
+    // 1. Add file path to archivedSessions in settings
+    try {
+      const settings = await window.pivis.invoke("settings.get", undefined);
+      const archived = settings.archivedSessions ?? [];
+      if (archived.includes(filePath)) return;
+      await window.pivis.invoke("settings.set", {
+        archivedSessions: [...archived, filePath],
+      });
+    } catch (err) {
+      console.error("Failed to archive session:", err);
+      return;
+    }
+
+    // 2. If a live record exists, close its tab
+    if (sessionId) {
+      await get().closeSessionTab(sessionId);
+    }
+
+    // 3. Refresh the workspace list so the archived row disappears
+    await get().refreshWorkspaceSessions(workspacePath);
   },
 
   setActiveSession: (sessionId) => {

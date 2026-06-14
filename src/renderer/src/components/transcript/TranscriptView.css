@@ -31,8 +31,6 @@
   font-family: var(--font-display);
   font-size: 0.857em;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: var(--mcm-track-label);
   line-height: var(--mcm-line-label);
   padding: 0.571rem 1.143rem;
   cursor: pointer;
@@ -60,8 +58,6 @@
   font-family: var(--font-display);
   font-size: 0.786em; /* ≈11px @ 14px root */
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: var(--mcm-track-label);
   line-height: var(--mcm-line-label);
   color: var(--ctp-overlay1);
 }
@@ -195,12 +191,10 @@ button.tool-card__header {
 }
 
 .tool-card__name {
-  /* MCM label: UI font · uppercase · wide architectural tracking. */
+  /* MCM label: UI font · wide architectural tracking. */
   font-family: var(--font-display);
   font-size: var(--font-size-small);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: var(--mcm-track-label);
   line-height: var(--mcm-line-label);
   color: var(--ctp-text);
   flex-shrink: 0;
@@ -403,8 +397,6 @@ details[open] > .tool-card__args-summary::before {
   font-family: var(--font-display);
   font-size: 0.786em; /* ≈11px @ 14px root */
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: var(--mcm-track-label);
   line-height: var(--mcm-line-label);
   color: var(--ctp-overlay0);
   white-space: nowrap;

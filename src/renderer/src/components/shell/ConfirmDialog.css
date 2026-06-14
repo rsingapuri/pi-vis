@@ -1,0 +1,98 @@
+/* App-level confirmation dialog (scrim + card).
+   Distinct from extension_ui_request dialogs — this is for archive confirm
+   and similar app-owned modals. */
+
+.confirm-dialog-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: confirm-fade-in 0.12s ease-out;
+}
+
+@keyframes confirm-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.confirm-dialog {
+  background: var(--ctp-surface0);
+  border: 1px solid var(--ctp-surface1);
+  border-radius: var(--mcm-radius-md);
+  padding: 1.143rem 1.429rem;
+  max-width: 24rem;
+  width: 90%;
+  box-shadow: 0 0.429rem 1.714rem var(--ctp-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.857rem;
+  animation: confirm-slide-in 0.12s ease-out;
+}
+
+@keyframes confirm-slide-in {
+  from {
+    transform: translateY(-0.571rem);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.confirm-dialog__title {
+  font-family: var(--font-display);
+  font-size: 1.071em;
+  font-weight: 600;
+  color: var(--ctp-text);
+}
+
+.confirm-dialog__message {
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  color: var(--ctp-subtext0);
+  line-height: var(--mcm-line-body);
+}
+
+.confirm-dialog__actions {
+  display: flex;
+  gap: 0.571rem;
+  justify-content: flex-end;
+  margin-top: 0.286rem;
+}
+
+.confirm-dialog__btn {
+  border: none;
+  border-radius: var(--mcm-radius-sm);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  font-weight: 500;
+  line-height: var(--mcm-line-label);
+  padding: 0.571rem 1.143rem;
+}
+
+.confirm-dialog__btn--confirm {
+  background: var(--ctp-mauve);
+  color: var(--ctp-base);
+}
+
+.confirm-dialog__btn--confirm:hover {
+  background: var(--ctp-lavender);
+}
+
+.confirm-dialog__btn--cancel {
+  background: var(--ctp-surface1);
+  color: var(--ctp-subtext0);
+}
+
+.confirm-dialog__btn--cancel:hover {
+  background: var(--ctp-surface2);
+}

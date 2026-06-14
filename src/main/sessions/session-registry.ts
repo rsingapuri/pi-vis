@@ -13,7 +13,13 @@ export interface SessionRecord {
   status: SessionStatus;
   error?: string | undefined;
   proc?: PiProcess | undefined;
+  /** Timestamp of last activity (open, command, or agent event). Used for LRU eviction. */
+  lastActiveAt: number;
+  /** True while the agent is actively processing a command (busy = ineligible for idle kill). */
+  busy: boolean;
 }
+
+const MAX_IDLE_PROCESSES = 10;
 
 type SessionEventCallback = (sessionId: SessionId, event: PiEvent) => void;
 type UiRequestCallback = (sessionId: SessionId, req: ExtensionUiRequest) => void;
@@ -61,6 +67,8 @@ export class SessionRegistry {
       workspacePath,
       sessionFile,
       status: "cold",
+      lastActiveAt: Date.now(),
+      busy: false,
     };
     this.sessions.set(sessionId, record);
 
@@ -143,7 +151,11 @@ export class SessionRegistry {
       record.status = "failed";
       record.error = err instanceof Error ? err.message : String(err);
       this.onStatusChanged(sessionId, "failed", record.error);
+      return;
     }
+
+    // After successful spawn, enforce the idle process limit
+    this.enforceIdleLimit(sessionId);
   }
 
   /**
@@ -206,6 +218,45 @@ export class SessionRegistry {
       if (this.byFile.get(resolved) === sessionId) {
         this.byFile.delete(resolved);
       }
+    }
+  }
+
+  /**
+   * Deactivate a session: stop its pi process and set status to "cold"
+   * while keeping the record and byFile mapping intact so the session
+   * stays resumable (re-activation spawns a fresh process).
+   */
+  deactivateSession(sessionId: SessionId): void {
+    const rec = this.sessions.get(sessionId);
+    if (!rec) return;
+    const proc = rec.proc;
+    rec.proc = undefined;
+    proc?.stop();
+    rec.status = "cold";
+    rec.error = undefined;
+    rec.busy = false;
+    this.onStatusChanged(sessionId, "cold");
+  }
+
+  /**
+   * Enforce the maximum number of idle (non-busy, live-proc) sessions.
+   * Kills the oldest idle processes until at most MAX_IDLE_PROCESSES
+   * remain. The session identified by `exceptId` is never killed.
+   */
+  enforceIdleLimit(exceptId: SessionId): void {
+    const liveIdle: Array<{ id: SessionId; lastActiveAt: number }> = [];
+    for (const [id, rec] of this.sessions) {
+      if (id === exceptId) continue;
+      if (rec.proc && (rec.status === "ready" || rec.status === "starting") && !rec.busy) {
+        liveIdle.push({ id, lastActiveAt: rec.lastActiveAt });
+      }
+    }
+    // Sort oldest-first so we kill the least-recently-used
+    liveIdle.sort((a, b) => a.lastActiveAt - b.lastActiveAt);
+
+    while (liveIdle.length >= MAX_IDLE_PROCESSES) {
+      const { id } = liveIdle.shift()!;
+      this.deactivateSession(id);
     }
   }
 

@@ -130,8 +130,6 @@
 .composer__suggestion-badge {
   font-family: var(--font-display);
   font-size: 0.714em;
-  letter-spacing: var(--mcm-track-label);
-  text-transform: uppercase;
   padding: 0.071em 0.357em;
   border-radius: 999px;
   border: 1px solid var(--ctp-surface2);

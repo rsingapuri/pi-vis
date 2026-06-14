@@ -94,8 +94,6 @@
   font-family: var(--font-display);
   font-size: 1em;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: var(--mcm-track-label);
   line-height: var(--mcm-line-label);
   padding: 0.714rem 1.714rem;
   margin-left: 10%;

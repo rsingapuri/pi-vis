@@ -1,10 +1,13 @@
 import type { SessionId } from "@shared/ids.js";
 import type { SessionStatus } from "@shared/ipc-contract.js";
 import type React from "react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 import "./Sidebar.css";
+
+const VISIBLE_PAGE_SIZE = 30;
 
 function StatusDot({
   status,
@@ -63,6 +66,13 @@ function StreamingIndicator({ isStreaming }: StreamingDotProps): React.ReactElem
   );
 }
 
+interface ArchiveConfirmState {
+  sessionId: SessionId | undefined;
+  filePath: string;
+  workspacePath: string;
+  sessionName: string;
+}
+
 export function Sidebar({
   onOpenSettings,
   width,
@@ -81,13 +91,98 @@ export function Sidebar({
   const refreshWorkspaceSessions = useSessionsStore((s) => s.refreshWorkspaceSessions);
   const openSessionTab = useSessionsStore((s) => s.openSessionTab);
   const closeSessionTab = useSessionsStore((s) => s.closeSessionTab);
+  const archiveSession = useSessionsStore((s) => s.archiveSession);
   const setActiveSession = useSessionsStore((s) => s.setActiveSession);
   const setActiveWorkspace = useSessionsStore((s) => s.setActiveWorkspace);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
+  const statusBarVisible = useSettingsStore((s) => s.settings.statusBarVisible);
   const updateSettings = useSettingsStore((s) => s.update);
   const lastActiveWorkspace = useSettingsStore((s) => s.settings.lastActiveWorkspace);
   const sidebarRef = useRef<HTMLElement>(null);
   const isDragging = useRef(false);
+
+  // Pagination: visible count per workspace
+  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
+  // Archive confirm dialog state
+  const [archiveTarget, setArchiveTarget] = useState<ArchiveConfirmState | null>(null);
+
+  const getVisibleCount = useCallback(
+    (wsPath: string) => visibleCounts[wsPath] ?? VISIBLE_PAGE_SIZE,
+    [visibleCounts],
+  );
+
+  const handleShowMore = useCallback((wsPath: string) => {
+    setVisibleCounts((prev) => ({
+      ...prev,
+      [wsPath]: (prev[wsPath] ?? VISIBLE_PAGE_SIZE) + VISIBLE_PAGE_SIZE,
+    }));
+  }, []);
+
+  // Build the unified, deduped session list for a workspace
+  const getUnifiedSessions = useCallback(
+    (wsPath: string) => {
+      const activeSessionsForWs = Array.from(sessions.values()).filter(
+        (s) => s.workspacePath === wsPath,
+      );
+      const ws = workspaces.get(wsPath);
+      if (!ws) return [];
+
+      // Build mtime lookup: filePath → mtime for stored sessions
+      const mtimeByFile = new Map(
+        (ws.sessions ?? []).map((s) => [s.filePath, s.mtime]),
+      );
+
+      // Live sessions: those with content or the active one
+      const liveSessions = activeSessionsForWs.filter((s) => {
+        if (s.sessionId === activeSessionId) return true;
+        return s.transcript.blocks.length > 0;
+      });
+
+      // Stored sessions: dedupe against live (by filePath) and include only
+      // those with messageCount > 0
+      const liveFilePaths = new Set(
+        liveSessions.map((s) => s.sessionFile).filter(Boolean) as string[],
+      );
+      const storedSessions = (ws.sessions ?? [])
+        .filter((s) => s.messageCount > 0 && !liveFilePaths.has(s.filePath));
+
+      // Merge: every row gets a sortKey based on activity timestamp
+      // (bumped on prompt submit) or file mtime — live sessions that
+      // have never had a prompt submitted fall back to their file mtime
+      // so clicking them doesn't reorder the list.
+      const merged: Array<
+        | { kind: "live"; sessionId: SessionId; name: string; filePath: string | undefined; sortKey: number }
+        | { kind: "stored"; filePath: string; name: string; preview: string; mtime: number; messageCount: number; sortKey: number }
+      > = [];
+
+      for (const s of liveSessions) {
+        merged.push({
+          kind: "live",
+          sessionId: s.sessionId,
+          name: s.sessionName ?? s.sessionTitle ?? "New session",
+          filePath: s.sessionFile ?? undefined,
+          sortKey: s.lastActivityAt ?? mtimeByFile.get(s.sessionFile ?? "") ?? 0,
+        });
+      }
+      for (const s of storedSessions) {
+        merged.push({
+          kind: "stored",
+          filePath: s.filePath,
+          name: s.name ?? s.preview ?? "Session",
+          preview: s.preview ?? "",
+          mtime: s.mtime,
+          messageCount: s.messageCount,
+          sortKey: s.mtime,
+        });
+      }
+
+      // Sort by activity timestamp descending (most recent first)
+      merged.sort((a, b) => b.sortKey - a.sortKey);
+
+      return merged;
+    },
+    [sessions, workspaces, activeSessionId],
+  );
 
   // Sidebar resize via drag handle
   const handleResizeStart = useCallback(
@@ -132,10 +227,7 @@ export function Sidebar({
 
   // Selecting a different workspace should land you in a fresh session in
   // the target workspace — launch parity. Selecting the already-active
-  // workspace collapses it (same as before). The empty session you leave
-  // behind disappears from the sidebar via the live-session filter
-  // (it has no transcript content), but its pi process keeps running
-  // until the app quits — existing hide-not-close semantics.
+  // workspace collapses it (same as before).
   const handleSelectWorkspace = useCallback(
     (path: string) => {
       if (activeWorkspacePath === path) {
@@ -157,6 +249,16 @@ export function Sidebar({
     [openSessionTab],
   );
 
+  const handleArchiveConfirm = useCallback(() => {
+    if (!archiveTarget) return;
+    void archiveSession(archiveTarget.sessionId, archiveTarget.filePath, archiveTarget.workspacePath);
+    setArchiveTarget(null);
+  }, [archiveTarget, archiveSession]);
+
+  const handleArchiveCancel = useCallback(() => {
+    setArchiveTarget(null);
+  }, []);
+
   // Load recents on mount
   // biome-ignore lint/correctness/useExhaustiveDependencies: run-once boot effect
   useEffect(() => {
@@ -174,10 +276,7 @@ export function Sidebar({
       .catch(console.error);
   }, []);
 
-  // One-shot boot: restore the last-active workspace if it exists in the
-  // loaded workspaces, otherwise fall back to the most-recently-used one
-  // (first entry in the workspaces Map, which mirrors recents[] order on
-  // disk, kept most-recent-first).
+  // One-shot boot: restore the last-active workspace
   const bootSessionRef = useRef(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: one-shot boot effect gated by bootSessionRef
   useEffect(() => {
@@ -193,19 +292,31 @@ export function Sidebar({
       Array.from(workspaces.keys())[0];
     if (target) {
       setActiveWorkspace(target);
-      void openSessionTab(target); // new cold session, focused + activated
+      void openSessionTab(target);
     }
   }, [settingsLoaded, workspaces.size, lastActiveWorkspace, openSessionTab, setActiveWorkspace]);
 
   return (
     <aside className="sidebar" ref={sidebarRef}>
+      {archiveTarget && (
+        <ConfirmDialog
+          title="Archive session"
+          message={`Archive "${archiveTarget.sessionName}"? It will be hidden permanently from the sidebar, but its file will remain on disk.`}
+          confirmLabel="Archive"
+          cancelLabel="Cancel"
+          onConfirm={handleArchiveConfirm}
+          onCancel={handleArchiveCancel}
+        />
+      )}
+
       <div className="sidebar__draghandle" onMouseDown={handleResizeStart} />
       <div className="sidebar__workspaces">
         {Array.from(workspaces.values()).map((ws) => {
           const isActiveWs = activeWorkspacePath === ws.path;
-          const activeSessionsForWs = Array.from(sessions.values()).filter(
-            (s) => s.workspacePath === ws.path,
-          );
+          const unifiedSessions = getUnifiedSessions(ws.path);
+          const visibleCount = getVisibleCount(ws.path);
+          const visibleSessions = unifiedSessions.slice(0, visibleCount);
+          const hasMore = unifiedSessions.length > visibleCount;
 
           return (
             <div
@@ -234,81 +345,106 @@ export function Sidebar({
                     + New session
                   </button>
 
-                  {/* Live sessions pinned on top, newest-opened first. */}
-                  {activeSessionsForWs
-                    .filter((s) => {
-                      // The active tab is always visible. Otherwise show a row
-                      // only if it has real transcript content — an empty
-                      // session (no messages yet) disappears once you switch
-                      // away, even after pi has assigned it a file. This is
-                      // safe because resumed stored sessions always seed a
-                      // transcript (blocks > 0) and open focused.
-                      if (s.sessionId === activeSessionId) return true;
-                      return s.transcript.blocks.length > 0;
-                    })
-                    .reverse() // newest-opened first
-                    .map((s) => (
+                  {/* Unified session list (live + stored, paginated) */}
+                  {visibleSessions.map((entry) => {
+                    if (entry.kind === "live") {
+                      const liveSession = sessions.get(entry.sessionId);
+                      return (
+                        <div
+                          key={entry.sessionId}
+                          role="button"
+                          tabIndex={0}
+                          className={`sidebar__session ${activeSessionId === entry.sessionId ? "sidebar__session--active" : ""}`}
+                          onClick={() => setActiveSession(entry.sessionId)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              setActiveSession(entry.sessionId);
+                            }
+                          }}
+                        >
+                          {liveSession?.isStreaming ? (
+                            <StreamingIndicator isStreaming />
+                          ) : (
+                            <StatusDot
+                              status={liveSession?.status ?? "cold"}
+                              hasPendingDialog={(liveSession?.pendingDialogs.length ?? 0) > 0}
+                            />
+                          )}
+                          <span className="sidebar__session-name">
+                            {entry.name}
+                          </span>
+                          <button
+                            type="button"
+                            className="sidebar__session-archive"
+                            title="Archive session"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setArchiveTarget({
+                                sessionId: entry.sessionId,
+                                filePath: entry.filePath ?? "",
+                                workspacePath: ws.path,
+                                sessionName: entry.name,
+                              });
+                            }}
+                          >
+                            🗑
+                          </button>
+                        </div>
+                      );
+                    }
+
+                    // Stored session row
+                    return (
                       <div
-                        key={s.sessionId}
+                        key={entry.filePath}
                         role="button"
                         tabIndex={0}
-                        className={`sidebar__session sidebar__session--live ${activeSessionId === s.sessionId ? "sidebar__session--active" : ""}`}
-                        onClick={() => setActiveSession(s.sessionId)}
+                        className="sidebar__session"
+                        onClick={() => handleResumeSession(ws.path, entry.filePath)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();
-                            setActiveSession(s.sessionId);
+                            handleResumeSession(ws.path, entry.filePath);
                           }
                         }}
                       >
-                        {s.isStreaming ? (
-                          <StreamingIndicator isStreaming />
-                        ) : (
-                          <StatusDot
-                            status={s.status}
-                            hasPendingDialog={s.pendingDialogs.length > 0}
-                          />
-                        )}
-                        <span className="sidebar__session-name">
-                          {s.sessionName ?? s.sessionTitle ?? "New session"}
+                        <span className="status-dot status-dot--cold" title="Not running">
+                          ◌
                         </span>
+                        <span className="sidebar__session-name">
+                          {entry.name}
+                        </span>
+                        <span className="sidebar__session-meta">{entry.messageCount}msg</span>
                         <button
                           type="button"
-                          className="sidebar__session-close"
-                          title="Close tab"
+                          className="sidebar__session-archive"
+                          title="Archive session"
                           onClick={(e) => {
                             e.stopPropagation();
-                            void closeSessionTab(s.sessionId);
+                            setArchiveTarget({
+                              sessionId: undefined,
+                              filePath: entry.filePath,
+                              workspacePath: ws.path,
+                              sessionName: entry.name,
+                            });
                           }}
                         >
-                          ×
+                          ⤓
                         </button>
                       </div>
-                    ))}
+                    );
+                  })}
 
-                  {/* Stored sessions */}
-                  {ws.sessions
-                    .filter((s) => s.messageCount > 0)
-                    .map((stored) => {
-                      const alreadyLive = activeSessionsForWs.some(
-                        (s) => s.sessionFile === stored.filePath,
-                      );
-                      if (alreadyLive) return null;
-                      return (
-                        <button
-                          type="button"
-                          key={stored.filePath}
-                          className="sidebar__session sidebar__session--stored"
-                          onClick={() => handleResumeSession(ws.path, stored.filePath)}
-                          title={`Resume: ${stored.filePath}`}
-                        >
-                          <span className="sidebar__session-preview">
-                            {stored.name ?? stored.preview ?? "Session"}
-                          </span>
-                          <span className="sidebar__session-meta">{stored.messageCount}msg</span>
-                        </button>
-                      );
-                    })}
+                  {hasMore && (
+                    <button
+                      type="button"
+                      className="sidebar__show-more"
+                      onClick={() => handleShowMore(ws.path)}
+                    >
+                      + Show more ({unifiedSessions.length - visibleCount} remaining)
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -344,6 +480,14 @@ export function Sidebar({
           title="Settings"
         >
           ⚙
+        </button>
+        <button
+          type="button"
+          className="sidebar__status-toggle"
+          onClick={() => updateSettings({ statusBarVisible: !statusBarVisible })}
+          title={statusBarVisible ? "Hide status bar" : "Show status bar"}
+        >
+          {statusBarVisible ? "⬓" : "□"}
         </button>
       </div>
     </aside>

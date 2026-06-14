@@ -117,16 +117,27 @@
   text-overflow: ellipsis;
 }
 
-.sidebar__session-close {
+/* Hover-revealed archive button */
+.sidebar__session-archive {
   margin-left: auto;
   opacity: 0;
   background: none;
   border: none;
   color: var(--ctp-overlay0);
   cursor: pointer;
+  font-size: 0.929em;
+  padding: 0.143rem 0.286rem;
+  line-height: 1;
+  flex-shrink: 0;
+  border-radius: var(--mcm-radius-sm);
+  transition: opacity 0.1s, background 0.1s, color 0.1s;
 }
-.sidebar__session:hover .sidebar__session-close {
+.sidebar__session:hover .sidebar__session-archive {
   opacity: 1;
+}
+.sidebar__session-archive:hover {
+  background: var(--ctp-surface2);
+  color: var(--ctp-red);
 }
 
 .sidebar__session-preview {
@@ -138,7 +149,7 @@
 }
 
 .sidebar__session-meta {
-  font-size: 0.929em;
+  font-size: 0.857em;
   color: var(--ctp-overlay0);
   flex-shrink: 0;
   letter-spacing: 0;
@@ -155,13 +166,33 @@
   font-family: var(--font-display);
   font-size: 0.857em;
   color: var(--ctp-overlay1);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   line-height: var(--mcm-line-label);
 }
 
 .sidebar__new-session:hover {
   color: var(--ctp-mauve);
+}
+
+/* Show more button */
+.sidebar__show-more {
+  width: calc(100% - 1.714rem);
+  margin: 0.286rem 0.857rem;
+  background: var(--ctp-surface0);
+  border: 1px solid var(--ctp-surface1);
+  border-radius: var(--mcm-radius-sm);
+  cursor: pointer;
+  padding: 0.357rem 0.571rem;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 0.786em;
+  color: var(--ctp-overlay1);
+  line-height: var(--mcm-line-label);
+  transition: background 0.1s, color 0.1s;
+}
+
+.sidebar__show-more:hover {
+  background: var(--ctp-surface1);
+  color: var(--ctp-text);
 }
 
 .sidebar__footer {
@@ -178,8 +209,6 @@
   text-align: left;
   font-family: var(--font-display);
   font-size: 0.857em;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   line-height: var(--mcm-line-label);
   color: var(--ctp-overlay1);
   flex: 1;
@@ -189,18 +218,20 @@
   color: var(--ctp-blue);
 }
 
-.sidebar__settings-btn {
+.sidebar__settings-btn,
+.sidebar__status-toggle {
   background: none;
   border: none;
   cursor: pointer;
-  padding: 0.857rem 0.857rem 0.857rem 0.286rem;
-  font-size: 1em;
+  padding: 0.857rem 0.571rem 0.857rem 0.286rem;
+  font-size: 1.3em;
   color: var(--ctp-overlay1);
   line-height: 1;
   flex-shrink: 0;
 }
 
-.sidebar__settings-btn:hover {
+.sidebar__settings-btn:hover,
+.sidebar__status-toggle:hover {
   color: var(--ctp-mauve);
 }
 
@@ -226,9 +257,9 @@
   color: var(--ctp-red);
 }
 
-/* Status dots */
+/* Status dots — bigger, more readable */
 .status-dot {
-  font-size: 0.714em; /* ≈10px @ 14px root */
+  font-size: 1em; /* bumped from 0.714em for readability */
   flex-shrink: 0;
   line-height: 1;
 }

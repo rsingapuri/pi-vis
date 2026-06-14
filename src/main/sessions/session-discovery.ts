@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { SessionSummary } from "@shared/ipc-contract.js";
 import { SessionHeaderSchema } from "@shared/session-file/entries.js";
+import { getSettings } from "../settings-store.js";
 
 // Read per call so tests can override PIVIS_SESSIONS_DIR.
 function getSessionsDir(): string {
@@ -161,5 +162,8 @@ export async function listSessionsForWorkspace(workspacePath: string): Promise<S
 
   // Sort by most recent first
   results.sort((a, b) => b.mtime - a.mtime);
-  return results;
+
+  // Filter out archived sessions
+  const archived = new Set(getSettings().archivedSessions);
+  return results.filter((s) => !archived.has(s.filePath));
 }

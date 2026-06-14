@@ -148,8 +148,6 @@
   cursor: pointer;
   font-family: var(--font-display);
   font-size: 0.857em;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   line-height: var(--mcm-line-label);
   padding: 0;
   align-self: flex-end;
@@ -222,8 +220,6 @@
   font-family: var(--font-display);
   font-size: 0.929em;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: var(--mcm-track-label);
   line-height: var(--mcm-line-label);
   padding: 0.571rem 1.143rem;
 }
