@@ -159,7 +159,7 @@ export function Sidebar({
         merged.push({
           kind: "live",
           sessionId: s.sessionId,
-          name: s.sessionName ?? s.sessionTitle ?? "New session",
+          name: s.sessionName ?? s.sessionTitle ?? "Untitled session",
           filePath: s.sessionFile ?? undefined,
           sortKey: s.lastActivityAt ?? mtimeByFile.get(s.sessionFile ?? "") ?? 0,
         });
