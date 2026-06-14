@@ -15,40 +15,28 @@ function StatusDot({
 }: { status: SessionStatus; hasPendingDialog: boolean }): React.ReactElement {
   if (hasPendingDialog)
     return (
-      <span className="status-dot status-dot--attention" title="Needs attention">
-        ▲
-      </span>
+      <span className="status-dot status-dot--attention" title="Needs attention" />
     );
   switch (status) {
     case "cold":
       return (
-        <span className="status-dot status-dot--cold" title="Not running">
-          ◌
-        </span>
+        <span className="status-dot status-dot--cold" title="Not running" />
       );
     case "starting":
       return (
-        <span className="status-dot status-dot--starting" title="Starting">
-          ◌
-        </span>
+        <span className="status-dot status-dot--starting" title="Starting" />
       );
     case "ready":
       return (
-        <span className="status-dot status-dot--idle" title="Idle">
-          ◌
-        </span>
+        <span className="status-dot status-dot--idle" title="Idle" />
       );
     case "exited":
       return (
-        <span className="status-dot status-dot--exited" title="Exited">
-          ✕
-        </span>
+        <span className="status-dot status-dot--exited" title="Exited" />
       );
     case "failed":
       return (
-        <span className="status-dot status-dot--failed" title="Failed">
-          ✕
-        </span>
+        <span className="status-dot status-dot--failed" title="Failed" />
       );
   }
 }
@@ -60,9 +48,7 @@ interface StreamingDotProps {
 function StreamingIndicator({ isStreaming }: StreamingDotProps): React.ReactElement | null {
   if (!isStreaming) return null;
   return (
-    <span className="status-dot status-dot--streaming" title="Streaming">
-      ●
-    </span>
+    <span className="status-dot status-dot--streaming" title="Streaming" />
   );
 }
 
@@ -409,9 +395,7 @@ export function Sidebar({
                           }
                         }}
                       >
-                        <span className="status-dot status-dot--cold" title="Not running">
-                          ◌
-                        </span>
+                        <span className="status-dot status-dot--cold" title="Not running" />
                         <span className="sidebar__session-name">
                           {entry.name}
                         </span>

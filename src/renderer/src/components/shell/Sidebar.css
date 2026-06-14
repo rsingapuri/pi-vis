@@ -257,31 +257,46 @@
   color: var(--ctp-red);
 }
 
-/* Status dots — bigger, more readable */
+/* Status dots — CSS shapes (font-independent, uniform size) */
 .status-dot {
-  font-size: 1em; /* bumped from 0.714em for readability */
+  display: inline-block;
+  box-sizing: border-box;
+  width: 0.6em;
+  height: 0.6em;
   flex-shrink: 0;
-  line-height: 1;
+  border-radius: 50%;
+  vertical-align: middle;
 }
 
-.status-dot--idle {
-  color: var(--ctp-overlay0);
+/* filled circle — streaming */
+.status-dot--streaming {
+  background: var(--ctp-mauve);
+  animation: pulse 1s ease-in-out infinite;
 }
-.status-dot--starting {
-  color: var(--ctp-yellow);
-}
+
+/* hollow rings (color-coded) */
+.status-dot--idle     { border: 1.5px solid var(--ctp-overlay0); }
+.status-dot--starting { border: 1.5px solid var(--ctp-yellow); }
+.status-dot--cold     { border: 1.5px solid var(--ctp-surface2); }
+
+/* triangle = needs attention */
 .status-dot--attention {
-  color: var(--ctp-peach);
+  background: var(--ctp-peach);
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
 }
-.status-dot--exited {
-  color: var(--ctp-overlay0);
+
+/* cross = exited / failed */
+.status-dot--exited, .status-dot--failed { border-radius: 0; position: relative; }
+.status-dot--exited  { color: var(--ctp-overlay0); }
+.status-dot--failed  { color: var(--ctp-red); }
+.status-dot--exited::before, .status-dot--exited::after,
+.status-dot--failed::before, .status-dot--failed::after {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 120%; height: 1.5px; background: currentColor;
 }
-.status-dot--failed {
-  color: var(--ctp-red);
-}
-.status-dot--cold {
-  color: var(--ctp-surface2);
-}
+.status-dot--exited::before, .status-dot--failed::before { transform: translate(-50%,-50%) rotate(45deg); }
+.status-dot--exited::after,  .status-dot--failed::after  { transform: translate(-50%,-50%) rotate(-45deg); }
 
 @keyframes pulse {
   0%,
@@ -291,9 +306,4 @@
   50% {
     opacity: 0.4;
   }
-}
-
-.status-dot--streaming {
-  color: var(--ctp-mauve);
-  animation: pulse 1s ease-in-out infinite;
 }
