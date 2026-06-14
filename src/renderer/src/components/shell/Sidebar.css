@@ -139,6 +139,11 @@
   background: var(--ctp-surface2);
   color: var(--ctp-red);
 }
+.sidebar__session-archive svg {
+  width: 0.95em;
+  height: 0.95em;
+  display: block;
+}
 
 .sidebar__session-preview {
   flex: 1;
@@ -230,6 +235,13 @@
   flex-shrink: 0;
 }
 
+.sidebar__settings-btn svg,
+.sidebar__status-toggle svg {
+  width: 1.1em;
+  height: 1.1em;
+  display: block;
+}
+
 .sidebar__settings-btn:hover,
 .sidebar__status-toggle:hover {
   color: var(--ctp-mauve);
@@ -255,6 +267,12 @@
 
 .sidebar__remove-workspace:hover {
   color: var(--ctp-red);
+}
+
+.sidebar__remove-workspace svg {
+  width: 1em;
+  height: 1em;
+  display: block;
 }
 
 /* Status dots — CSS shapes (font-independent, uniform size) */

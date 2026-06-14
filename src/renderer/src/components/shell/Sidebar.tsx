@@ -45,6 +45,16 @@ interface StreamingDotProps {
   isStreaming: boolean;
 }
 
+function ArchiveIcon(): React.ReactElement {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="12" height="3" rx="0.75" />
+      <path d="M3 6v6.5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6" />
+      <path d="M6.5 9h3" />
+    </svg>
+  );
+}
+
 function StreamingIndicator({ isStreaming }: StreamingDotProps): React.ReactElement | null {
   if (!isStreaming) return null;
   return (
@@ -374,7 +384,7 @@ export function Sidebar({
                               });
                             }}
                           >
-                            🗑
+                            <ArchiveIcon />
                           </button>
                         </div>
                       );
@@ -414,7 +424,7 @@ export function Sidebar({
                             });
                           }}
                         >
-                          ⤓
+                          <ArchiveIcon />
                         </button>
                       </div>
                     );
@@ -446,7 +456,9 @@ export function Sidebar({
                 }}
                 title="Remove workspace"
               >
-                ×
+                <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <path d="M4 4l8 8M12 4l-8 8" />
+                </svg>
               </button>
             </div>
           );
@@ -463,7 +475,10 @@ export function Sidebar({
           onClick={onOpenSettings}
           title="Settings"
         >
-          ⚙
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
         </button>
         <button
           type="button"
@@ -471,7 +486,11 @@ export function Sidebar({
           onClick={() => updateSettings({ statusBarVisible: !statusBarVisible })}
           title={statusBarVisible ? "Hide status bar" : "Show status bar"}
         >
-          {statusBarVisible ? "⬓" : "□"}
+          <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+              <rect x="2" y="3" width="12" height="10" rx="1" />
+              <path d="M2 10.5h12" />
+              {statusBarVisible && <rect x="2.75" y="11" width="10.5" height="1.5" fill="currentColor" stroke="none" />}
+            </svg>
         </button>
       </div>
     </aside>
