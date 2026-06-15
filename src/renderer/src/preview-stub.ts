@@ -1,3 +1,4 @@
+import type { ProviderAuthStatus } from "@shared/auth.js";
 import type { SessionId } from "@shared/ids.js";
 /**
  * Stubs window.pivis for standalone browser preview (not running in Electron).
@@ -407,6 +408,96 @@ const stub = {
         return handleSendCommand(req);
       case "app.versions":
         return { app: "0.1.0-preview", electron: "stub", node: "stub" };
+
+      // ── Auth stubs ──────────────────────────────────────────────
+      case "auth.status":
+        return [
+          {
+            key: "openrouter",
+            displayName: "OpenRouter",
+            source: "none",
+            envVar: "OPENROUTER_API_KEY",
+          },
+          {
+            key: "anthropic",
+            displayName: "Anthropic",
+            source: "none",
+            envVar: "ANTHROPIC_API_KEY",
+            supportsOAuth: true,
+          },
+          {
+            key: "openai",
+            displayName: "OpenAI",
+            source: "environment",
+            envVar: "OPENAI_API_KEY",
+            supportsOAuth: true,
+          },
+          {
+            key: "deepseek",
+            displayName: "DeepSeek",
+            source: "api_key",
+            envVar: "DEEPSEEK_API_KEY",
+          },
+          { key: "google", displayName: "Google", source: "none", envVar: "GEMINI_API_KEY" },
+        ];
+      case "auth.saveApiKey":
+        return { ok: true };
+      case "auth.remove":
+        return { ok: true };
+
+      // ── PTY stubs (no-op) ──────────────────────────────────────
+      case "pty.start":
+        return { ptyId: "stub-pty" };
+      case "pty.write":
+        return undefined;
+      case "pty.resize":
+        return undefined;
+      case "pty.kill":
+        return undefined;
+
+      // ── Update stubs ────────────────────────────────────────────
+      case "update.check":
+        return {
+          pi: { current: "0.79.3", latest: "0.80.0", updateAvailable: true },
+          extensions: [
+            {
+              source: "npm:@pi/mcp",
+              name: "@pi/mcp",
+              current: "1.2.0",
+              latest: "1.3.0",
+              updateAvailable: true,
+              kind: "npm",
+            },
+            {
+              source: "npm:@pi/fs",
+              name: "@pi/fs",
+              current: "0.5.1",
+              latest: "0.5.1",
+              updateAvailable: false,
+              kind: "npm",
+            },
+            {
+              source: "local:../../src/pi-architect",
+              name: "pi-architect",
+              current: "0.2.0",
+              latest: undefined,
+              updateAvailable: false,
+              kind: "local",
+            },
+            {
+              source: "git:github.com/user/mcp-extra",
+              name: "mcp-extra",
+              current: undefined,
+              latest: undefined,
+              updateAvailable: false,
+              kind: "git",
+            },
+          ],
+          checkedAt: Date.now(),
+        };
+      case "update.run":
+        return { runId: "stub-run" };
+
       default:
         return undefined;
     }

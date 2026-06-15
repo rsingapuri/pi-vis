@@ -7,12 +7,21 @@ import type { ExtensionUiRequest, ExtensionUiResponse } from "@shared/pi-protoco
 import type { PiRpcResponse } from "@shared/pi-protocol/responses.js";
 import { app, ipcMain } from "electron";
 import type { BrowserWindow } from "electron";
+import {
+  getAuthStatus,
+  saveApiKey,
+  removeProvider,
+  startAuthWatch,
+  stopAuthWatch,
+} from "./auth.js";
 import { getChanges, getFileDiff } from "./git/git.js";
 import { clearPiLocationCache, locatePi } from "./pi/locate-pi.js";
+import { initPty, startPty, writePty, resizePty, killPty, killAllPtys } from "./pty.js";
 import { loadHistory } from "./sessions/history-loader.js";
 import { extractSessionMeta, listSessionsForWorkspace } from "./sessions/session-discovery.js";
 import { SessionRegistry } from "./sessions/session-registry.js";
 import { getSettings, saveSettings } from "./settings-store.js";
+import { checkForUpdates, startUpdate } from "./updates.js";
 import { getRecentWorkspaces, pickWorkspace, removeRecentWorkspace } from "./workspaces.js";
 
 let registry: SessionRegistry | null = null;
@@ -43,6 +52,14 @@ export function initIpc(win: BrowserWindow): void {
       safeSend("session.statusChanged", { sessionId, status, error });
     },
   );
+
+  // Init PTY support (must be after safeSend is wired)
+  initPty(safeSend);
+
+  // Start watching auth.json for external changes
+  startAuthWatch((providers) => {
+    safeSend("auth.changed", { providers });
+  });
 
   ipcMain.handle("pi.locate", async () => {
     clearPiLocationCache();
@@ -252,8 +269,103 @@ export function initIpc(win: BrowserWindow): void {
       }
     },
   );
+
+  // ── Auth IPC ──────────────────────────────────────────────────────────
+
+  ipcMain.handle("auth.status", async () => {
+    try {
+      return await getAuthStatus();
+    } catch {
+      return [];
+    }
+  });
+
+  ipcMain.handle("auth.saveApiKey", async (_evt, args: { provider: string; key: string }) => {
+    return await saveApiKey(args.provider, args.key);
+  });
+
+  ipcMain.handle("auth.remove", async (_evt, args: { provider: string }) => {
+    return await removeProvider(args.provider);
+  });
+
+  // ── PTY IPC ───────────────────────────────────────────────────────────
+
+  ipcMain.handle(
+    "pty.start",
+    async (_evt, args: { cwd?: string; autoLogin?: boolean; cols?: number; rows?: number }) => {
+      return startPty(args);
+    },
+  );
+
+  ipcMain.handle("pty.write", async (_evt, args: { ptyId: string; data: string }) => {
+    writePty(args.ptyId, args.data);
+  });
+
+  ipcMain.handle(
+    "pty.resize",
+    async (_evt, args: { ptyId: string; cols: number; rows: number }) => {
+      resizePty(args.ptyId, args.cols, args.rows);
+    },
+  );
+
+  ipcMain.handle("pty.kill", async (_evt, args: { ptyId: string }) => {
+    killPty(args.ptyId);
+  });
+
+  // ── Update IPC ────────────────────────────────────────────────────────
+
+  ipcMain.handle("update.check", async () => {
+    try {
+      return await checkForUpdates();
+    } catch {
+      return {
+        pi: { current: "unknown", updateAvailable: false },
+        extensions: [],
+        checkedAt: Date.now(),
+      };
+    }
+  });
+
+  ipcMain.handle(
+    "update.run",
+    async (_evt, args: { target: "all" | "pi" | { extension: string } }) => {
+      const { runId } = startUpdate(
+        args.target,
+        (id, chunk) => {
+          safeSend("update.progress", { runId: id, chunk });
+        },
+        (id, exitCode, status) => {
+          safeSend("update.done", { runId: id, exitCode, status });
+        },
+      );
+      return { runId };
+    },
+  );
 }
 
 export function stopAllSessions(): void {
+  // Kill all PTY sessions (embedded terminals for login)
+  try {
+    killAllPtys();
+  } catch {
+    /* best effort */
+  }
   registry?.stopAll();
+}
+
+/**
+ * Exported for background check at app start. Called from index.ts
+ * after window is ready. Delays the check by 3s to let the UI settle.
+ */
+export function triggerBackgroundUpdateCheck(): void {
+  setTimeout(async () => {
+    try {
+      const status = await checkForUpdates();
+      if (status.pi.updateAvailable || status.extensions.some((e) => e.updateAvailable)) {
+        safeSend("update.available", status);
+      }
+    } catch {
+      // silent — updates are best-effort
+    }
+  }, 3000);
 }

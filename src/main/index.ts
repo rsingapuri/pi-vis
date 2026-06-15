@@ -1,6 +1,6 @@
 import path from "node:path";
 import { BrowserWindow, app, session } from "electron";
-import { initIpc, stopAllSessions } from "./ipc.js";
+import { initIpc, stopAllSessions, triggerBackgroundUpdateCheck } from "./ipc.js";
 import { loadSettings, saveSettings } from "./settings-store.js";
 
 app.setName("Pi-Vis");
@@ -65,6 +65,9 @@ function createWindow(): BrowserWindow {
 
 app.whenReady().then(() => {
   createWindow();
+
+  // Background update check (3s delay, non-blocking)
+  triggerBackgroundUpdateCheck();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

@@ -82,7 +82,11 @@ interface SessionsStore {
   removeSession: (sessionId: SessionId) => void;
   /** Archive a session: add its file path to archivedSessions in settings,
    *  close its live tab if one exists, and refresh the workspace list. */
-  archiveSession: (sessionId: SessionId | undefined, filePath: string, workspacePath: string) => Promise<void>;
+  archiveSession: (
+    sessionId: SessionId | undefined,
+    filePath: string,
+    workspacePath: string,
+  ) => Promise<void>;
   setSessionFile: (sessionId: SessionId, sessionFile: string) => void;
   setSessionStatus: (sessionId: SessionId, status: SessionStatus, error?: string) => void;
   applyEvent: (sessionId: SessionId, event: PiEvent) => void;

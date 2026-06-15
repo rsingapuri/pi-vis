@@ -231,3 +231,177 @@
 .settings-toggle--off .settings-toggle__knob {
   transform: translateX(0);
 }
+
+/* ── Updates section ─────────────────────────────────────────────── */
+
+.settings-update-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.571rem;
+}
+
+.settings-update-header {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1fr 1.5fr;
+  gap: 0.429rem;
+  padding: 0.286rem 0;
+  font-family: var(--font-display);
+  font-size: 0.786em;
+  font-weight: 600;
+  color: var(--ctp-overlay0);
+  border-bottom: 1px solid var(--ctp-surface1);
+}
+
+.settings-update-col-pkg,
+.settings-update-col-current,
+.settings-update-col-target,
+.settings-update-col-action {
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  line-height: 1.2;
+}
+
+.settings-update-row {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1fr 1.5fr;
+  gap: 0.429rem;
+  align-items: center;
+  padding: 0.429rem 0;
+  border-bottom: 1px solid var(--ctp-surface0);
+}
+
+.settings-update-row:last-child {
+  border-bottom: none;
+}
+
+.settings-update-row--uptodate {
+  opacity: 0.75;
+}
+
+.settings-update-row--unknown {
+  opacity: 0.55;
+}
+
+.settings-update-col-pkg--pi {
+  font-weight: 600;
+  color: var(--ctp-mauve);
+}
+
+.settings-update-badge {
+  font-family: var(--font-display);
+  font-size: 0.786em;
+  padding: 0.143rem 0.429rem;
+  border-radius: var(--mcm-radius-sm);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.settings-update-badge--ok {
+  background: var(--ctp-surface1);
+  color: var(--ctp-green);
+}
+
+.settings-update-badge--na {
+  background: var(--ctp-surface1);
+  color: var(--ctp-overlay0);
+}
+
+.settings-update-badge--local {
+  background: var(--ctp-surface1);
+  color: var(--ctp-yellow);
+}
+
+.settings-update-badge--checking {
+  background: var(--ctp-surface1);
+  color: var(--ctp-overlay0);
+}
+
+.settings-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: var(--ctp-surface1);
+  color: var(--ctp-overlay0);
+}
+
+.settings-btn:disabled:hover {
+  background: var(--ctp-surface1);
+  color: var(--ctp-overlay0);
+}
+
+/* ── Auth / Account section ─────────────────────────────────────────── */
+
+.settings-auth-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.429rem;
+}
+
+.settings-auth-row {
+  display: flex;
+  align-items: center;
+  gap: 0.571rem;
+  padding: 0.286rem 0;
+}
+
+.settings-auth-name {
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  color: var(--ctp-text);
+  min-width: 6rem;
+}
+
+.settings-auth-badge {
+  font-family: var(--font-display);
+  font-size: 0.786em;
+  padding: 0.143rem 0.429rem;
+  border-radius: var(--mcm-radius-sm);
+  font-weight: 500;
+}
+
+.badge--api-key {
+  background: var(--ctp-surface1);
+  color: var(--ctp-teal);
+}
+
+.badge--oauth {
+  background: var(--ctp-surface1);
+  color: var(--ctp-mauve);
+}
+
+.badge--env {
+  background: var(--ctp-surface1);
+  color: var(--ctp-yellow);
+}
+
+.settings-btn--small {
+  font-size: 0.786em;
+  padding: 0.214rem 0.571rem;
+}
+
+.settings-auth-add {
+  display: flex;
+  flex-direction: column;
+  gap: 0.429rem;
+  padding: 0.571rem 0;
+  border-top: 1px solid var(--ctp-surface1);
+  margin-top: 0.429rem;
+}
+
+.settings-label--inline {
+  min-width: auto;
+}
+
+.settings-select--compact {
+  flex: 0 1 auto;
+  max-width: 14rem;
+}
+
+.settings-password-row {
+  display: flex;
+  align-items: center;
+  gap: 0.429rem;
+}
+
+.settings-password-row .settings-input {
+  flex: 1;
+}

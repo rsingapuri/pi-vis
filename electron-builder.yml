@@ -16,6 +16,9 @@ files:
   - "!{.mocharc,.prettierrc}.{js,cjs,yml,yaml}"
 asarUnpack:
   - resources/**
+  - node_modules/@homebridge/node-pty-prebuilt-multiarch/**/*.node
+  - node_modules/@homebridge/node-pty-prebuilt-multiarch/build/**
+  - node_modules/proper-lockfile/**
 mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:

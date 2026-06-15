@@ -46,6 +46,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandDef[] = [
   { name: "quit", argHint: "", description: "Close the current tab", takesArgs: false },
   { name: "settings", argHint: "", description: "Open app settings", takesArgs: false },
   { name: "diff", argHint: "", description: "View working tree changes", takesArgs: false },
+  { name: "login", argHint: "", description: "Sign in to a provider", takesArgs: false },
 ];
 
 /**
@@ -55,7 +56,6 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandDef[] = [
  * which case the discovered command wins (the user has installed a drop-in).
  */
 export const UNSUPPORTED_TUI_COMMANDS: ReadonlySet<string> = new Set([
-  "login",
   "logout",
   "trust",
   "share",

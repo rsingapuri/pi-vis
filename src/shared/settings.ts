@@ -28,6 +28,8 @@ export const AppSettingsSchema = z.object({
   diffViewMode: z.enum(["unified", "split"]).default("unified"),
   statusBarVisible: z.boolean().default(true),
   archivedSessions: z.array(z.string()).default([]),
+  lastDismissedPiVersion: z.string().nullable().default(null),
+  updateCheckEnabled: z.boolean().default(true),
   diffRailWidth: z.number().default(280),
   window: z
     .object({

@@ -1,0 +1,79 @@
+/* Update banner — slim dismissible bar below TitleBar */
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.857rem;
+  padding: 0.429rem 1rem;
+  background: var(--ctp-surface0);
+  border-bottom: 1px solid var(--ctp-surface1);
+  font-family: var(--font-display);
+  font-size: 0.857em;
+  color: var(--ctp-text);
+  grid-area: banner;
+  animation: update-banner-slide 0.2s ease-out;
+}
+
+@keyframes update-banner-slide {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.update-banner__text {
+  flex: 1;
+  color: var(--ctp-green);
+  font-weight: 500;
+}
+
+.update-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.429rem;
+}
+
+.update-banner__btn {
+  background: var(--ctp-mauve);
+  border: none;
+  border-radius: var(--mcm-radius-sm);
+  color: var(--ctp-base);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.857em;
+  font-weight: 500;
+  line-height: var(--mcm-line-label);
+  padding: 0.286rem 0.714rem;
+}
+
+.update-banner__btn:hover {
+  background: var(--ctp-lavender);
+}
+
+.update-banner__btn--secondary {
+  background: var(--ctp-surface1);
+  color: var(--ctp-subtext0);
+}
+
+.update-banner__btn--secondary:hover {
+  background: var(--ctp-surface2);
+  color: var(--ctp-text);
+}
+
+.update-banner__close {
+  background: none;
+  border: none;
+  color: var(--ctp-overlay0);
+  cursor: pointer;
+  font-size: 1.143em;
+  line-height: 1;
+  padding: 0.143rem;
+}
+
+.update-banner__close:hover {
+  color: var(--ctp-text);
+}

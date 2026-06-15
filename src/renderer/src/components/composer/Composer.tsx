@@ -267,6 +267,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           // the helper.
           openDiffForSession(sid);
         },
+        openLogin: () => {
+          window.dispatchEvent(new CustomEvent("pivis:open-login"));
+        },
         copyToClipboard: async (t: string) => {
           await navigator.clipboard.writeText(t);
         },

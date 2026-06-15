@@ -158,6 +158,8 @@ function dispatchArgless(name: string): ComposerAction {
       return { kind: "quit" };
     case "settings":
       return { kind: "open-app-settings" };
+    case "login":
+      return { kind: "open-login" };
     case "diff":
       return { kind: "git-diff" };
     default:

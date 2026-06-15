@@ -10,10 +10,13 @@ import { PiNotFound } from "./components/setup/PiNotFound.js";
 import { Sidebar } from "./components/shell/Sidebar.js";
 import { StatusBar } from "./components/shell/StatusBar.js";
 import { TitleBar } from "./components/shell/TitleBar.js";
+import { UpdateBanner } from "./components/shell/UpdateBanner.js";
 import { TranscriptView } from "./components/transcript/TranscriptView.js";
+import { UpdateProgress } from "./components/updates/UpdateProgress.js";
 import { openDiffForSession, useDiffStore } from "./stores/diff-store.js";
 import { useSessionsStore } from "./stores/sessions-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
+import { useUpdatesStore } from "./stores/updates-store.js";
 import "./App.css";
 
 export function App(): React.ReactElement {
@@ -28,7 +31,12 @@ export function App(): React.ReactElement {
   const loadSettings = useSettingsStore((s) => s.load);
   const statusBarVisible = useSettingsStore((s) => s.settings.statusBarVisible);
   const [piFound, setPiFound] = useState<boolean | null>(null);
+  // onClose	SettingsView handler
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialSection, setSettingsInitialSection] = useState<"account" | undefined>(
+    undefined,
+  );
+  const [showLoginTerminal, setShowLoginTerminal] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(220);
 
   // Whether the active session has an unanswered extension_ui_request.
@@ -59,7 +67,18 @@ export function App(): React.ReactElement {
   useEffect(() => {
     const handler = (): void => setShowSettings(true);
     window.addEventListener("pivis:open-settings", handler);
-    return () => window.removeEventListener("pivis:open-settings", handler);
+
+    // /login command → open Settings at Account section
+    const loginHandler = (): void => {
+      setShowSettings(true);
+      setSettingsInitialSection("account");
+    };
+    window.addEventListener("pivis:open-login", loginHandler);
+
+    return () => {
+      window.removeEventListener("pivis:open-settings", handler);
+      window.removeEventListener("pivis:open-login", loginHandler);
+    };
   }, []);
 
   useEffect(() => {
@@ -146,11 +165,44 @@ export function App(): React.ReactElement {
       },
     );
 
+    // Update events
+    const unsubUpdateAvailable = window.pivis.on("update.available", (status) => {
+      useUpdatesStore.getState().setStatus(status);
+    });
+
+    const unsubUpdateProgress = window.pivis.on("update.progress", ({ runId, chunk }) => {
+      const store = useUpdatesStore.getState();
+      if (store.activeRun?.runId === runId) {
+        store.appendOutput(runId, chunk);
+      }
+    });
+
+    const unsubUpdateDone = window.pivis.on("update.done", ({ runId, exitCode, status }) => {
+      useUpdatesStore.getState().setStatus(status);
+      // Clear active run so the progress modal can show completion
+      const store = useUpdatesStore.getState();
+      if (store.activeRun?.runId === runId) {
+        store.appendOutput(
+          runId,
+          "\n\n" + (exitCode === 0 ? "✓ Update complete" : "✗ Update failed") + "\n",
+        );
+      }
+    });
+
+    // Auth changed events
+    const unsubAuthChanged = window.pivis.on("auth.changed", () => {
+      // Auth changes are handled by the SettingsView component
+    });
+
     return () => {
       unsubEvent();
       unsubUiReq();
       unsubStatus();
       unsubFileChanged();
+      unsubUpdateAvailable();
+      unsubUpdateProgress();
+      unsubUpdateDone();
+      unsubAuthChanged();
     };
   }, [
     applyEvent,
@@ -193,6 +245,7 @@ export function App(): React.ReactElement {
       }
     >
       <TitleBar />
+      <UpdateBanner />
       <Sidebar
         onOpenSettings={() => setShowSettings(true)}
         width={sidebarWidth}
@@ -229,7 +282,16 @@ export function App(): React.ReactElement {
           </div>
         )}
       </main>
-      {showSettings && <SettingsView onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsView
+          onClose={() => {
+            setShowSettings(false);
+            setSettingsInitialSection(undefined);
+          }}
+          initialSection={settingsInitialSection}
+        />
+      )}
+      <UpdateProgress />
     </div>
   );
 }

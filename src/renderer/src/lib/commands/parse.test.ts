@@ -165,7 +165,6 @@ describe("parseComposerInput — arg-less built-ins with trailing text fall thro
 
 describe("parseComposerInput — unsupported TUI commands", () => {
   it.each([
-    "login",
     "logout",
     "trust",
     "share",

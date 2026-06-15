@@ -1,3 +1,4 @@
+import type { ProviderAuthStatus } from "./auth.js";
 import type { GitChangedFile, GitChangesResult, GitFileDiffResult, GitFileStatus } from "./git.js";
 import type { SessionId } from "./ids.js";
 import type { PiRpcCommand } from "./pi-protocol/commands.js";
@@ -5,6 +6,7 @@ import type { PiEvent } from "./pi-protocol/events.js";
 import type { ExtensionUiRequest, ExtensionUiResponse } from "./pi-protocol/extension-ui.js";
 import type { PiRpcResponse } from "./pi-protocol/responses.js";
 import type { AppSettings } from "./settings.js";
+import type { UpdateStatus } from "./updates.js";
 
 export interface SessionSummary {
   filePath: string;
@@ -76,6 +78,30 @@ export interface IpcInvokeContract {
     };
     res: GitFileDiffResult;
   };
+
+  // ── Auth ────────────────────────────────────────────────────────────
+  "auth.status": { req: undefined; res: ProviderAuthStatus[] };
+  "auth.saveApiKey": {
+    req: { provider: string; key: string };
+    res: { ok: true } | { ok: false; error: string };
+  };
+  "auth.remove": {
+    req: { provider: string };
+    res: { ok: true } | { ok: false; error: string };
+  };
+
+  // ── PTY ─────────────────────────────────────────────────────────────
+  "pty.start": { req: { cwd?: string; autoLogin?: boolean; cols?: number; rows?: number }; res: { ptyId: string } };
+  "pty.write": { req: { ptyId: string; data: string }; res: undefined };
+  "pty.resize": { req: { ptyId: string; cols: number; rows: number }; res: undefined };
+  "pty.kill": { req: { ptyId: string }; res: undefined };
+
+  // ── Updates ─────────────────────────────────────────────────────────
+  "update.check": { req: undefined; res: UpdateStatus };
+  "update.run": {
+    req: { target: "all" | "pi" | { extension: string } };
+    res: { runId: string };
+  };
 }
 
 // Every event channel: payload type (main → renderer)
@@ -96,6 +122,18 @@ export interface IpcEventContract {
     sessionFile?: string | undefined;
     sessionName?: string | undefined;
   };
+
+  // ── Auth ────────────────────────────────────────────────────────────
+  "auth.changed": { providers: ProviderAuthStatus[] };
+
+  // ── PTY ─────────────────────────────────────────────────────────────
+  "pty.data": { ptyId: string; data: string };
+  "pty.exit": { ptyId: string; exitCode: number };
+
+  // ── Updates ─────────────────────────────────────────────────────────
+  "update.available": UpdateStatus;
+  "update.progress": { runId: string; chunk: string };
+  "update.done": { runId: string; exitCode: number; status: UpdateStatus };
 }
 
 export type IpcInvokeChannel = keyof IpcInvokeContract;

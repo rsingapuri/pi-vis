@@ -86,6 +86,8 @@ export interface ExecuteDeps {
   closeSessionTab: (sessionId: SessionId) => Promise<void>;
   /** Open the app settings panel. */
   openAppSettings: () => void;
+  /** Open the login terminal (called via /login command). */
+  openLogin: () => void;
   /** Open the diff viewer for the active session. */
   openDiffViewer: (sessionId: SessionId) => void;
   /** Put text on the system clipboard. */
@@ -154,6 +156,9 @@ export async function executeAction(
       return;
     case "open-app-settings":
       deps.openAppSettings();
+      return;
+    case "open-login":
+      deps.openLogin();
       return;
     case "git-diff":
       deps.openDiffViewer(sessionId);

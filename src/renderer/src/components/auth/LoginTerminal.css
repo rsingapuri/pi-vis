@@ -1,0 +1,150 @@
+/* LoginTerminal — embedded xterm.js modal for OAuth sign-in */
+
+.login-terminal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--ctp-scrim);
+  backdrop-filter: blur(0.286rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 550;
+  padding: var(--mcm-base);
+}
+
+.login-terminal {
+  background: var(--ctp-base);
+  border: 1px solid var(--ctp-surface1);
+  border-radius: var(--mcm-radius-lg);
+  width: 100%;
+  max-width: 48rem;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 0.571rem 2.857rem var(--ctp-shadow);
+  overflow: hidden;
+}
+
+.login-terminal__header {
+  display: flex;
+  align-items: center;
+  padding: 0.857rem 1rem;
+  border-bottom: 1px solid var(--ctp-surface1);
+  background: var(--ctp-surface0);
+}
+
+.login-terminal__title {
+  flex: 1;
+  font-family: var(--font-display);
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--ctp-text);
+}
+
+.login-terminal__close {
+  background: none;
+  border: none;
+  color: var(--ctp-overlay0);
+  cursor: pointer;
+  font-size: 1.429em;
+  line-height: 1;
+  padding: 0.143rem 0.429rem;
+}
+
+.login-terminal__close:hover {
+  color: var(--ctp-text);
+}
+
+.login-terminal__hint {
+  margin: 0;
+  padding: 0.714rem 1rem;
+  font-family: var(--font-display);
+  font-size: 0.857em;
+  color: var(--ctp-overlay0);
+  line-height: var(--mcm-line-body);
+  background: var(--ctp-mantle);
+  border-bottom: 1px solid var(--ctp-surface0);
+}
+
+.login-terminal__hint code {
+  font-family: var(--font-code);
+  background: var(--ctp-surface1);
+  padding: 0.1em 0.3em;
+  border-radius: 0.214em;
+  font-size: 0.929em;
+}
+
+.login-terminal__xterm {
+  flex: 1;
+  min-height: 18rem;
+  max-height: 50vh;
+  padding: 0.5rem;
+}
+
+/* Override xterm.js default colors to match our dark theme */
+.login-terminal__xterm .xterm {
+  height: 100%;
+}
+
+.login-terminal__xterm .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ctp-surface1) transparent;
+}
+
+.login-terminal__footer {
+  display: flex;
+  align-items: center;
+  padding: 0.571rem 1rem;
+  gap: 0.857rem;
+  border-top: 1px solid var(--ctp-surface1);
+  background: var(--ctp-surface0);
+}
+
+.login-terminal__status {
+  flex: 1;
+  font-family: var(--font-display);
+  font-size: 0.857em;
+  color: var(--ctp-overlay0);
+}
+
+.login-terminal__status--live {
+  color: var(--ctp-green);
+}
+
+.login-terminal__status--done {
+  color: var(--ctp-green);
+  font-weight: 600;
+}
+
+.login-terminal__btn {
+  background: var(--ctp-surface1);
+  border: none;
+  border-radius: var(--mcm-radius-sm);
+  color: var(--ctp-subtext0);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.857em;
+  font-weight: 500;
+  line-height: var(--mcm-line-label);
+  padding: 0.429rem 0.857rem;
+}
+
+.login-terminal__btn:hover {
+  background: var(--ctp-surface2);
+  color: var(--ctp-text);
+}
+
+.login-terminal__error {
+  padding: 1rem;
+  color: var(--ctp-red);
+  font-family: var(--font-display);
+  font-size: 0.929em;
+}
+
+.login-terminal__success {
+  padding: 1rem;
+  color: var(--ctp-green);
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  font-weight: 600;
+}

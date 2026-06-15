@@ -16,13 +16,10 @@ let currentTheme = "catppuccin-mocha";
  * Patch a single theme object's comment foreground for better contrast.
  * Returns a shallow clone with the comment rule updated.
  */
-function patchCommentFg(
-  theme: typeof catppuccinMocha,
-  target: string,
-): typeof catppuccinMocha {
+function patchCommentFg(theme: typeof catppuccinMocha, target: string): typeof catppuccinMocha {
   const clone = { ...theme, tokenColors: (theme.tokenColors ?? []).map((tc) => ({ ...tc })) };
   for (const rule of clone.tokenColors) {
-    const scopes = typeof rule.scope === "string" ? [rule.scope] : rule.scope ?? [];
+    const scopes = typeof rule.scope === "string" ? [rule.scope] : (rule.scope ?? []);
     if (scopes.some((s) => s === "comment" || s === "punctuation.definition.comment")) {
       // Preserve fontStyle (italic), only bump the foreground
       rule.settings = { ...rule.settings, foreground: target };

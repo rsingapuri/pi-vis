@@ -19,7 +19,13 @@ export function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps): React.ReactElement {
   return (
-    <div className="confirm-dialog-scrim" onClick={onCancel} onKeyDown={(e) => { if (e.key === "Escape") onCancel(); }}>
+    <div
+      className="confirm-dialog-scrim"
+      onClick={onCancel}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onCancel();
+      }}
+    >
       <div
         className="confirm-dialog"
         onClick={(e) => e.stopPropagation()}
@@ -30,10 +36,18 @@ export function ConfirmDialog({
         <div className="confirm-dialog__title">{title}</div>
         <div className="confirm-dialog__message">{message}</div>
         <div className="confirm-dialog__actions">
-          <button type="button" className="confirm-dialog__btn confirm-dialog__btn--cancel" onClick={onCancel}>
+          <button
+            type="button"
+            className="confirm-dialog__btn confirm-dialog__btn--cancel"
+            onClick={onCancel}
+          >
             {cancelLabel}
           </button>
-          <button type="button" className="confirm-dialog__btn confirm-dialog__btn--confirm" onClick={onConfirm}>
+          <button
+            type="button"
+            className="confirm-dialog__btn confirm-dialog__btn--confirm"
+            onClick={onConfirm}
+          >
             {confirmLabel}
           </button>
         </div>

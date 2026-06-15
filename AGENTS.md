@@ -27,8 +27,11 @@
 ```
 src/
 ├── main/                    # Electron main process
-│   ├── index.ts             # Entry: BrowserWindow creation, IPC init, settings/window persistence
-│   ├── ipc.ts               # All ipcMain.handle() registrations — the main-process API surface
+│   ├── index.ts             # Entry: BrowserWindow creation, IPC init, settings/window persistence, background update check
+│   ├── ipc.ts               # All ipcMain.handle() registrations — the main-process API surface (auth, pty, updates)
+│   ├── auth.ts              # Auth file management: read/write ~/.pi/agent/auth.json with proper-lockfile, login-shell env detection, fs.watch
+│   ├── pty.ts               # Embedded terminal (node-pty) for pi /login OAuth flow
+│   ├── updates.ts           # Update checker (pi.dev/api/latest-version) + runner (spawns `pi update`)
 │   ├── settings-store.ts    # Reads/writes ~/Library/Application Support/pi-vis/settings.json
 │   ├── workspaces.ts        # Workspace picker (OS dialog), recents management
 │   ├── pi/                  # Pi subprocess management
@@ -46,24 +49,28 @@ src/
 │   └── index.ts             # contextBridge exposing typed `window.pivis` API (invoke + on)
 │
 ├── renderer/src/            # React 19 SPA
-│   ├── App.tsx              # Root: wires IPC event listeners, layout (TitleBar + Sidebar + main area)
+│   ├── App.tsx              # Root: wires IPC event listeners, layout (TitleBar + Sidebar + UpdateBanner + main area)
 │   ├── main.tsx             # React entry, loads settings + preview-stub in browser mode
 │   ├── preview-stub.ts      # Stubs window.pivis for standalone browser dev (demo session + streaming)
 │   ├── components/
 │   │   ├── composer/        # Textarea input: prompts, !bash, /slash commands, image attach, autocomplete
 │   │   ├── transcript/      # TranscriptView, DiffBlock (renders user/assistant/tool_call/bash/compaction blocks)
-│   │   ├── shell/           # TitleBar, Sidebar (workspace switcher, session list, tabs, drag/drop), StatusBar
+│   │   ├── shell/           # TitleBar, Sidebar (workspace switcher, session list, tabs, drag/drop), StatusBar,
+│   │   │                   #   UpdateBanner (dismissible update notification bar)
+│   │   ├── auth/            # LoginTerminal (embedded xterm.js terminal for pi's /login OAuth flow)
+│   │   ├── updates/         # UpdateProgress (modal with streaming `pi update` output via AnsiText)
 │   │   ├── diff/            # DiffViewerHost, DiffFileSection (Shiki-highlighted unified/split diffs)
 │   │   ├── ext-ui/          # ExtensionDialogHost (select/confirm/input/editor dialogs + toasts)
 │   │   ├── pickers/         # AppPickerHost (model picker, thinking level picker)
 │   │   ├── session-header/  # SessionHeader (model dropdown, thinking level, token stats, session name)
-│   │   ├── settings/        # SettingsView (fonts, pi path, color scheme, diff view mode)
+│   │   ├── settings/        # SettingsView (fonts, pi path, color scheme, diff view mode, Account, Updates)
 │   │   └── setup/           # PiNotFound (shown when pi binary can't be located)
 │   ├── stores/              # Zustand stores
 │   │   ├── sessions-store.ts   # Primary store: SessionViewState per session, transcript, streaming, pickers
 │   │   ├── transcript.ts       # Pure reducer: PiEvent → TypedTranscriptBlock[] (with pending-echo matching)
 │   │   ├── diff-store.ts       # Diff viewer state: file list, Shiki tokenization, expand/collapse gaps
-│   │   └── settings-store.ts   # Renderer mirror of AppSettings with font/scheme application
+│   │   ├── settings-store.ts   # Renderer mirror of AppSettings with font/scheme application
+│   │   └── updates-store.ts    # Update status + active-run state for the in-app update system
 │   ├── lib/
 │   │   ├── commands/        # Slash command system (builtins mirror pi's TUI, parser, executor, model resolver)
 │   │   ├── diff/            # Diff model (hunk parsing, gap computation), Shiki tokenizer, intraline diff
@@ -76,6 +83,8 @@ src/
 │       └── theme.css        # CSS variables from Catppuccin
 │
 └── shared/                  # Shared types (imported by main, preload, and renderer)
+    ├── auth.ts              # ProviderAuthStatus, PROVIDERS constant (transcribed from pi's docs/providers.md), AuthCredential
+    ├── updates.ts           # PiUpdateStatus, ExtensionUpdate, UpdateStatus types
     ├── ipc-contract.ts      # Typed IPC surface: IpcInvokeContract (request/response) + IpcEventContract (push events)
     ├── pi-protocol/         # Zod schemas for the pi RPC protocol
     │   ├── commands.ts      # PiRpcCommand (prompt, steer, abort, set_model, bash, compact, etc.)
@@ -121,12 +130,18 @@ src/
 - `settings.get` / `settings.set`
 - `git.changes` / `git.fileDiff`
 - `app.versions`
+- `auth.status` / `auth.saveApiKey` / `auth.remove`
+- `pty.start` (with optional `cols`/`rows` for viewport matching) / `pty.write` / `pty.resize` / `pty.kill`
+- `update.check` / `update.run`
 
 **Event channels** (main → renderer push):
 - `session.event` — PiEvent (streaming transcript events)
 - `session.uiRequest` — Extension UI requests (dialogs, toasts, status bar, widgets)
 - `session.statusChanged` — SessionStatus transitions
 - `session.fileChanged` — session file association updated
+- `auth.changed` — auth.json modified externally (e.g. pi's token refresh)
+- `pty.data` / `pty.exit` — embedded terminal I/O
+- `update.available` / `update.progress` / `update.done` — update lifecycle
 
 ### Pi RPC Protocol (`shared/pi-protocol/`)
 
@@ -158,10 +173,12 @@ All renderer state uses **Zustand** stores:
 
 The composer parses input into typed `ComposerAction` discriminated unions:
 - `!text` → bash command
-- `/command [args]` → slash command (builtins mirror pi's TUI: model, compact, name, session, new, export, fork, clone, resume, copy, quit, settings, diff)
+- `/command [args]` → slash command (builtins mirror pi's TUI: model, compact, name, session, new, export, fork, clone, resume, copy, quit, settings, diff, login)
 - Otherwise → user prompt
 
 Builtins are defined in `builtins.ts` (mirrors pi's interactive-mode.js). Discovered commands (extensions/prompts/skills) come from `get_commands` RPC. `parse.ts` resolves input to an action; `execute.ts` dispatches it.
+
+**`/login`** dispatches `{ kind: "open-login" }` → the composer fires a `pivis:open-login` CustomEvent → `App.tsx` opens Settings scrolled to the Account section.
 
 ## Key Patterns
 
@@ -173,6 +190,10 @@ Builtins are defined in `builtins.ts` (mirrors pi's interactive-mode.js). Discov
 - **CSS**: Custom CSS with BEM naming (`composer__input-row--bash`). No CSS framework. CSS modules co-located with components.
 - **Catppuccin theming**: Four variants (latte/frappé/macchiato/mocha). Default is mocha. Theme variables set via CSS custom properties.
 - **Browser preview**: `npm run dev:renderer` loads `preview-stub.ts` which stubs `window.pivis` with a demo session and canned responses including streamed agent output.
+- **Auth**: API keys stored in `~/.pi/agent/auth.json` using `proper-lockfile` for mutual exclusion with pi's token-refresh writes. Environment variables detected via `$SHELL -ilc env` (GUI apps don't inherit shell env). Atomic writes with tmp+rename, chmod 0600.
+- **Login**: Native API-key sign-in (writes auth.json) + embedded xterm.js terminal for OAuth (spawns real `pi` in `node-pty`, watches `auth.json` for success detection).
+- **Updates**: Background check at launch (3s delay, non-blocking). `update.run` spawns `pi update --no-approve`, streams output via IPC events. New sessions automatically use the updated binary.
+- **Dependencies**: `@homebridge/node-pty-prebuilt-multiarch` (native, externalized from main bundle, asarUnpack in electron-builder), `@xterm/xterm` + `@xterm/addon-fit` (renderer), `proper-lockfile` + `@types/proper-lockfile` (main).
 
 ## Testing
 
@@ -186,13 +207,25 @@ Builtins are defined in `builtins.ts` (mirrors pi's interactive-mode.js). Discov
 | Path | Purpose |
 |---|---|
 | `~/.pi/agent/sessions/` | Session files (JSONL format) |
+| `~/.pi/agent/auth.json` | Auth credentials (api_key/oauth); read/written by `auth.ts` with proper-lockfile |
+| `~/.pi/agent/settings.json` | Pi settings including `packages[]` for extension management |
+| `~/.pi/agent/npm/node_modules/` | Installed pi extension packages |
 | `~/Library/Application Support/pi-vis/settings.json` | App settings |
 | `src/shared/ipc-contract.ts` | The typed IPC boundary — start here when adding new main↔renderer communication |
 | `src/shared/pi-protocol/` | Source of truth for all pi RPC types |
+| `src/shared/auth.ts` | Provider definitions (transcribed from pi's docs/providers.md) |
+| `src/shared/updates.ts` | Update status types |
+| `src/main/auth.ts` | Auth file management: read/write with proper-lockfile, env detection, fs.watch |
+| `src/main/pty.ts` | Embedded terminal (node-pty) for OAuth login |
+| `src/main/updates.ts` | Update checker + runner (spawns `pi update`) |
 | `src/main/ipc.ts` | All IPC handler registrations |
 | `src/renderer/src/stores/sessions-store.ts` | Primary renderer state — most UI logic lives here |
 | `src/renderer/src/stores/transcript.ts` | Event→block reducer — modify this to change how transcript renders |
+| `src/renderer/src/stores/updates-store.ts` | Update notification + progress state |
 | `src/renderer/src/lib/commands/` | Slash command definitions, parsing, and execution |
+| `src/renderer/src/components/auth/LoginTerminal.tsx` | Embedded xterm.js terminal for pi's /login OAuth flow |
+| `src/renderer/src/components/shell/UpdateBanner.tsx` | Dismissible update notification banner |
+| `src/renderer/src/components/updates/UpdateProgress.tsx` | Modal streaming `pi update` output |
 
 ## Maintaining This File
 

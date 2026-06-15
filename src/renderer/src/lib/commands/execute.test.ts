@@ -40,6 +40,7 @@ function makeDeps(overrides: Partial<ExecuteDeps> = {}): {
       (calls["closeSessionTab"] ??= []).push(args);
     }) as ExecuteDeps["closeSessionTab"],
     openAppSettings: make("openAppSettings") as ExecuteDeps["openAppSettings"],
+    openLogin: make("openLogin") as ExecuteDeps["openLogin"],
     openDiffViewer: make("openDiffViewer") as ExecuteDeps["openDiffViewer"],
     copyToClipboard: vi.fn(async () => {}) as ExecuteDeps["copyToClipboard"],
     getAvailableModels: () =>
