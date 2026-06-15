@@ -186,10 +186,6 @@
   line-height: 1.5;
 }
 
-.composer__input-box:focus-within {
-  border-color: var(--ctp-mauve);
-}
-
 .composer__attach-btn {
   flex-shrink: 0;
   width: 2.1em;

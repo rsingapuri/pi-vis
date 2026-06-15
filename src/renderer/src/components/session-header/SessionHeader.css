@@ -101,6 +101,13 @@
   color: var(--ctp-text);
 }
 
+/* These chrome buttons signal interaction via their hover border/color; the
+   global :focus-visible ring is just noise (and re-appears when focus returns
+   to the button after closing its dropdown/the diff viewer with Escape). */
+.session-header__picker-btn:focus-visible {
+  outline: none;
+}
+
 .session-header__picker-btn:disabled {
   cursor: not-allowed;
   opacity: 0.6;

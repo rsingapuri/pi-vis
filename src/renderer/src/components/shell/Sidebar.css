@@ -261,6 +261,15 @@
   color: var(--ctp-mauve);
 }
 
+/* Chrome icon buttons signal interaction via the hover color change; the
+   global :focus-visible ring is just noise here (and re-appears when focus
+   returns to the button after a modal is closed with Escape). */
+.sidebar__settings-btn:focus-visible,
+.sidebar__status-toggle:focus-visible,
+.sidebar__add-workspace:focus-visible {
+  outline: none;
+}
+
 .sidebar__remove-workspace {
   position: absolute;
   top: 0.571rem;

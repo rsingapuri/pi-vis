@@ -100,6 +100,21 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     textareaRef.current?.focus();
   }, [editorInjectionNonce, editorInjectionText]);
 
+  // Focus the composer when the session becomes active (app open or tab
+  // switch) so the user can type right away. Guarded so we don't yank focus
+  // away from another field the user may already be interacting with.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const active = document.activeElement;
+    const typingElsewhere =
+      active instanceof HTMLElement &&
+      active !== el &&
+      (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable);
+    if (typingElsewhere) return;
+    el.focus();
+  }, [sessionId]);
+
   // ── Attachment handling ─────────────────────────────────────────────
 
   const handleAttachClick = useCallback(() => {
