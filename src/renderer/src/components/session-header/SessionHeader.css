@@ -192,7 +192,7 @@
   font-family: var(--font-code);
   font-size: 0.857em;
   line-height: 1.3;
-  color: var(--ctp-subtext0);
+  color: var(--ctp-text);
   /* Dropdown option inside a popup that's anchored to a control in the
      titlebar's drag region. */
   -webkit-app-region: no-drag;

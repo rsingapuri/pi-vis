@@ -32,6 +32,7 @@
      before JS runs. */
   --ctp-shadow: rgba(0, 0, 0, 0.5);
   --ctp-scrim: rgba(17, 17, 27, 0.7);
+  --ctp-input-bg: #313244;
 
   /* Semantic tokens */
   --color-bg: var(--ctp-base);

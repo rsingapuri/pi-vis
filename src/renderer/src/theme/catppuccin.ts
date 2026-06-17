@@ -3,19 +3,27 @@
 // theme.css and every component. Schemas in @shared/settings.ts use the
 // lowercase flavor names; the Shiki theme names are `catppuccin-<flavor>`.
 //
-// `shadow` and `scrim` are not part of the upstream Catppuccin spec; they
-// are theme-aware UI colors for drop shadows and modal backdrops. They
-// are kept in the palette so each flavor can tune the opacity to suit
-// its base (e.g. Latte needs a softer shadow than Mocha to avoid a black
-// halo on a light background).
+// `shadow`, `scrim` and `input-bg` are not part of the upstream Catppuccin
+// spec; they are theme-aware UI colors. `shadow`/`scrim` tune drop shadows
+// and modal backdrops per flavor (e.g. Latte needs a softer shadow than
+// Mocha to avoid a black halo on a light background). `input-bg` backs the
+// composer text field: on the light Latte base it uses the lightest swatch
+// (`base`) so the input reads as a bright, high-contrast field, whereas on
+// the dark flavors it stays a raised `surface0` panel.
 
 export const latte = {
   base: "#eff1f5",
   mantle: "#e6e9ef",
   crust: "#dce0e8",
-  surface0: "#ccd0da",
-  surface1: "#bcc0cc",
-  surface2: "#acb0be",
+  // Surfaces are nudged a touch lighter than the canonical Latte values
+  // (surface0 #ccd0da / surface1 #bcc0cc / surface2 #acb0be). On a light
+  // base these mid-grays back too many UI panels (pills, inputs, diff
+  // headers) where they sat too close in lightness to the overlay/subtext
+  // foreground, hurting contrast. The shift keeps the blue-grey hue and the
+  // crust → surface0 → surface1 → surface2 → overlay ordering intact.
+  surface0: "#d7dbe4",
+  surface1: "#c5c9d4",
+  surface2: "#b3b7c5",
   overlay0: "#9ca0b0",
   overlay1: "#8c8fa1",
   overlay2: "#7c7f93",
@@ -38,6 +46,7 @@ export const latte = {
   rosewater: "#dc8a78",
   shadow: "rgba(0, 0, 0, 0.15)",
   scrim: "rgba(0, 0, 0, 0.4)",
+  "input-bg": "#eff1f5", // base — brightest swatch for a high-contrast field
 } as const;
 
 export const frappe = {
@@ -69,6 +78,7 @@ export const frappe = {
   rosewater: "#f2d5cf",
   shadow: "rgba(0, 0, 0, 0.4)",
   scrim: "rgba(0, 0, 0, 0.55)",
+  "input-bg": "#414559", // surface0 — raised panel on the dark base
 } as const;
 
 export const macchiato = {
@@ -100,6 +110,7 @@ export const macchiato = {
   rosewater: "#f4dbd6",
   shadow: "rgba(0, 0, 0, 0.45)",
   scrim: "rgba(0, 0, 0, 0.6)",
+  "input-bg": "#363a4f", // surface0 — raised panel on the dark base
 } as const;
 
 export const mocha = {
@@ -131,6 +142,7 @@ export const mocha = {
   rosewater: "#f5e0dc",
   shadow: "rgba(0, 0, 0, 0.5)",
   scrim: "rgba(17, 17, 27, 0.7)",
+  "input-bg": "#313244", // surface0 — raised panel on the dark base
 } as const;
 
 export const palettes = { latte, frappe, macchiato, mocha } as const;

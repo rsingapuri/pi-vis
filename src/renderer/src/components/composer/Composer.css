@@ -179,7 +179,7 @@
   align-items: flex-end;
   gap: 0.143rem;
   padding: 0.286rem;
-  background: var(--ctp-surface0);
+  background: var(--ctp-input-bg);
   border: 1px solid var(--ctp-surface1);
   border-radius: var(--mcm-radius-md);
   font-size: var(--font-size-base);
