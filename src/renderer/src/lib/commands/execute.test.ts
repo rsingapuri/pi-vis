@@ -219,11 +219,7 @@ describe("executeAction — bash", () => {
 describe("executeAction — send-prompt vs steer", () => {
   it("sends a `prompt` command when idle", async () => {
     const { deps, calls } = makeDeps();
-    await executeAction(
-      SID,
-      { kind: "send-prompt", text: "hello" },
-      deps,
-    );
+    await executeAction(SID, { kind: "send-prompt", text: "hello" }, deps);
     const invocations = (deps.invoke as ReturnType<typeof vi.fn>).mock.calls;
     const send = invocations.find((c) => c[0] === "session.sendCommand");
     expect(send).toBeDefined();
@@ -233,11 +229,7 @@ describe("executeAction — send-prompt vs steer", () => {
 
   it("sends a `steer` command (and does not set streaming) when already streaming", async () => {
     const { deps, calls } = makeDeps({ isStreaming: () => true });
-    await executeAction(
-      SID,
-      { kind: "send-prompt", text: "actually do X" },
-      deps,
-    );
+    await executeAction(SID, { kind: "send-prompt", text: "actually do X" }, deps);
     const invocations = (deps.invoke as ReturnType<typeof vi.fn>).mock.calls;
     const send = invocations.find((c) => c[0] === "session.sendCommand");
     expect(send).toBeDefined();

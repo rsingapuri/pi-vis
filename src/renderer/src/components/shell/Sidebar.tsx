@@ -12,9 +12,18 @@ const VISIBLE_PAGE_SIZE = 30;
 function StatusDot({
   status,
   hasPendingDialog,
-}: { status: SessionStatus; hasPendingDialog: boolean }): React.ReactElement {
+  unreadStatus,
+}: {
+  status: SessionStatus;
+  hasPendingDialog: boolean;
+  unreadStatus?: "done" | "error" | undefined;
+}): React.ReactElement {
   if (hasPendingDialog)
     return <span className="status-dot status-dot--attention" title="Needs attention" />;
+  if (unreadStatus === "error")
+    return <span className="status-dot status-dot--error" title="Turn ended with an error" />;
+  if (unreadStatus === "done")
+    return <span className="status-dot status-dot--done" title="Turn complete" />;
   switch (status) {
     case "cold":
       return <span className="status-dot status-dot--cold" title="Not running" />;
@@ -380,6 +389,7 @@ export function Sidebar({
                             <StatusDot
                               status={liveSession?.status ?? "cold"}
                               hasPendingDialog={(liveSession?.pendingDialogs.length ?? 0) > 0}
+                              unreadStatus={liveSession?.unreadStatus}
                             />
                           )}
                           <span className="sidebar__session-name">{entry.name}</span>

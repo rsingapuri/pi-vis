@@ -6,6 +6,7 @@ import type { KnownPiEvent } from "@shared/pi-protocol/events.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
 import type { ModelInfo, SessionStats, SlashCommandInfo } from "@shared/pi-protocol/responses.js";
 import type { ThinkingLevel } from "@shared/pi-protocol/thinking.js";
+import { detectTurnError } from "@shared/pi-protocol/turn-error.js";
 import { create } from "zustand";
 import type { PickerRequest } from "../lib/commands/execute.js";
 import {
@@ -27,6 +28,19 @@ export interface SessionViewState {
   error?: string | undefined;
   transcript: TranscriptState;
   isStreaming: boolean;
+  /**
+   * Unread turn-result marker for the sidebar status dot. Set to "done" or
+   * "error" when a turn finishes (see applyEvent's agent_end handling). It
+   * acts as a notification for background sessions: it persists until the
+   * user views the session and moves on (setActiveSession clears the
+   * previously-active session) or starts a new turn there (agent_start).
+   */
+  unreadStatus?: "done" | "error" | undefined;
+  /** Transient: did the current agent attempt produce a provider/model error?
+   *  Reset on agent_start and on a willRetry agent_end (each auto-retry attempt
+   *  starts clean), set on an erroring assistant message_end, consumed at the
+   *  final (non-retrying) agent_end to decide unreadStatus. */
+  turnErrored: boolean;
   pendingDialogs: ExtensionUiRequest[];
   statusSegments: Map<string, string>; // statusKey → statusText
   widgets: Map<string, string[]>; // widgetKey → lines
@@ -180,6 +194,8 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         sessionName: name,
         transcript: createTranscriptState(),
         isStreaming: false,
+        unreadStatus: undefined,
+        turnErrored: false,
         pendingDialogs: [],
         commands: [],
         statusSegments: new Map(),
@@ -257,13 +273,43 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       if (!s) return {};
 
       let isStreaming = s.isStreaming;
+      let unreadStatus = s.unreadStatus;
+      let turnErrored = s.turnErrored;
       // Pi (and its extensions) drive the session name; it gets reported as
       // a `session_info_changed` event. Pi rejects empty names server-side,
       // so `name` is always a non-empty string.
       const sessionName = event.type === "session_info_changed" ? event.name : s.sessionName;
 
-      if (event.type === "agent_start") isStreaming = true;
-      if (event.type === "agent_end") isStreaming = false;
+      if (event.type === "agent_start") {
+        isStreaming = true;
+        // Starting a new turn acknowledges any prior unread dot — the user is
+        // actively engaging with the session again.
+        turnErrored = false;
+        unreadStatus = undefined;
+      }
+      // Track provider/model failures within the turn so agent_end can decide
+      // the dot color.
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        if (detectTurnError(event.message).isError) turnErrored = true;
+      }
+      if (event.type === "agent_end") {
+        if (event.willRetry) {
+          // Not a real turn end — pi will auto-retry. Stay "working" (the
+          // agent is still going) and wipe the error flag so the next attempt
+          // starts clean. The terminal dot is decided only by the final
+          // (non-retrying) agent_end below, regardless of whether the retry
+          // re-emits agent_start.
+          turnErrored = false;
+        } else {
+          isStreaming = false;
+          // A finished turn surfaces an unread "done"/"error" marker. For a
+          // background session this is a notification that persists until the
+          // user clicks in and then leaves (setActiveSession) or starts a new
+          // turn (agent_start above).
+          unreadStatus = turnErrored ? "error" : "done";
+          turnErrored = false;
+        }
+      }
 
       const thinkingLevel = event.type === "thinking_level_changed" ? event.level : s.thinkingLevel;
       const transcript = applyPiEvent(s.transcript, event);
@@ -271,6 +317,8 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         ...s,
         transcript,
         isStreaming,
+        unreadStatus,
+        turnErrored,
         sessionName,
         thinkingLevel,
       });
@@ -548,6 +596,8 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         sessionFile,
         transcript: createTranscriptState(),
         isStreaming: false,
+        unreadStatus: undefined,
+        turnErrored: false,
         ...(sessionName !== undefined ? { sessionName } : {}),
       };
       sessions.set(sessionId, next);
@@ -730,7 +780,22 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
   },
 
   setActiveSession: (sessionId) => {
-    set({ activeSessionId: sessionId });
+    set((state) => {
+      // Switching away from the previously-active session clears its unread
+      // turn-result dot: the user has now "seen" it and moved on. Sessions
+      // that were never activated (background notifications) are left alone
+      // so their dot persists until the user actually visits them.
+      const prev = state.activeSessionId;
+      if (prev && prev !== sessionId) {
+        const prevSession = state.sessions.get(prev);
+        if (prevSession?.unreadStatus) {
+          const sessions = new Map(state.sessions);
+          sessions.set(prev, { ...prevSession, unreadStatus: undefined });
+          return { sessions, activeSessionId: sessionId };
+        }
+      }
+      return { activeSessionId: sessionId };
+    });
     if (sessionId && typeof window !== "undefined" && window.pivis) {
       const s = get().sessions.get(sessionId);
       if (s && (s.status === "cold" || s.status === "exited" || s.status === "failed")) {

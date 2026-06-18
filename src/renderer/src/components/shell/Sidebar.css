@@ -315,6 +315,14 @@
   animation: pulse 1s ease-in-out infinite;
 }
 
+/* filled circle — turn finished (unread sidebar notification) */
+.status-dot--done {
+  background: var(--ctp-green);
+}
+.status-dot--error {
+  background: var(--ctp-red);
+}
+
 /* hollow rings (color-coded) */
 .status-dot--idle {
   border: 1.5px solid var(--ctp-overlay0);

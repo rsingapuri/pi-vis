@@ -367,3 +367,149 @@ describe("sessions store - extension UI clear payloads", () => {
     expect(widgetClear.success).toBe(true);
   });
 });
+
+/**
+ * Sidebar status-dot unread notifications: a finished turn marks the session
+ * "done" (or "error" on a provider failure). The marker persists as a
+ * notification for background sessions and is cleared only when the user has
+ * viewed the session and moves on, or starts a new turn there.
+ */
+describe("sessions store - unread turn-result status dot", () => {
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    useSessionsStore.getState().createSession(SESSION_B, WORKSPACE);
+  });
+
+  const finishTurn = (sessionId: SessionId, opts: { error?: boolean } = {}) => {
+    const store = useSessionsStore.getState();
+    store.applyEvent(sessionId, { type: "agent_start" });
+    store.applyEvent(sessionId, {
+      type: "message_end",
+      message: opts.error
+        ? { role: "assistant", stopReason: "error", errorMessage: "provider down" }
+        : { role: "assistant", stopReason: "end_turn" },
+    });
+    store.applyEvent(sessionId, { type: "agent_end" });
+  };
+
+  it("marks a finished turn 'done' and an erroring turn 'error'", () => {
+    finishTurn(SESSION_A);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("done");
+
+    finishTurn(SESSION_A, { error: true });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("error");
+  });
+
+  it("starts a new turn with no unread marker", () => {
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBeUndefined();
+  });
+
+  it("a background session's marker persists while the user is elsewhere", () => {
+    useSessionsStore.getState().setActiveSession(SESSION_B); // user is in B
+    finishTurn(SESSION_A); // A finishes in the background
+    // User never visits A — the notification must remain.
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("done");
+  });
+
+  it("clicking into the background session keeps the marker (not yet 'moved on')", () => {
+    useSessionsStore.getState().setActiveSession(SESSION_B);
+    finishTurn(SESSION_A);
+    useSessionsStore.getState().setActiveSession(SESSION_A); // user visits A
+    // Just visiting is not enough — they must leave or send a message.
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("done");
+  });
+
+  it("clears when the user leaves the session they were viewing", () => {
+    useSessionsStore.getState().setActiveSession(SESSION_A);
+    finishTurn(SESSION_A); // seen while active
+    useSessionsStore.getState().setActiveSession(SESSION_B); // move on
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBeUndefined();
+  });
+
+  it("clears when the user clicks into the background session then leaves", () => {
+    useSessionsStore.getState().setActiveSession(SESSION_B);
+    finishTurn(SESSION_A); // unread notification in A
+    useSessionsStore.getState().setActiveSession(SESSION_A); // visit A
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("done");
+    useSessionsStore.getState().setActiveSession(SESSION_B); // leave A
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBeUndefined();
+  });
+
+  it("starting a new turn in the session clears the marker", () => {
+    useSessionsStore.getState().setActiveSession(SESSION_B);
+    finishTurn(SESSION_A); // unread in background A
+    useSessionsStore.getState().setActiveSession(SESSION_A);
+    // User sends a new message → agent_start acknowledges the old marker.
+    useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBeUndefined();
+  });
+
+  it("switching between other sessions does not touch an unvisited background session", () => {
+    useSessionsStore.getState().createSession(SESSION_C, WORKSPACE);
+    useSessionsStore.getState().setActiveSession(SESSION_B); // user in B
+    finishTurn(SESSION_A); // A finishes in the background (never visited)
+    useSessionsStore.getState().setActiveSession(SESSION_C); // user switches B → C
+    // A was never visited; its notification must persist.
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("done");
+  });
+
+  it("clears the left (seen) session but keeps the destination's background marker", () => {
+    useSessionsStore.getState().setActiveSession(SESSION_B);
+    finishTurn(SESSION_A); // A unread (background notification)
+    finishTurn(SESSION_B); // B unread (active, user saw it)
+    // Move B → A: B was seen and is being left → cleared.
+    //              A is the destination being visited → marker survives.
+    useSessionsStore.getState().setActiveSession(SESSION_A);
+    expect(useSessionsStore.getState().sessions.get(SESSION_B)?.unreadStatus).toBeUndefined();
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("done");
+  });
+
+  // ── Auto-retry: a willRetry agent_end is not a real turn end ───────────────
+  // pi reports a transient failure as an erroring message_end + an agent_end
+  // with `willRetry: true`, then makes another attempt. We must not surface a
+  // terminal dot (or stop "streaming") mid-retry, and the final color must
+  // reflect only the last attempt — whether or not the retry re-emits
+  // agent_start.
+
+  const errorMsg = { role: "assistant" as const, stopReason: "error", errorMessage: "503" };
+  const okMsg = { role: "assistant" as const, stopReason: "end_turn" };
+
+  it("does not surface a dot on a willRetry agent_end (stays streaming)", () => {
+    const store = useSessionsStore.getState();
+    store.applyEvent(SESSION_A, { type: "agent_start" });
+    store.applyEvent(SESSION_A, { type: "message_end", message: errorMsg });
+    store.applyEvent(SESSION_A, { type: "agent_end", willRetry: true });
+    const s = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(s?.unreadStatus).toBeUndefined(); // no terminal marker yet
+    expect(s?.isStreaming).toBe(true); // still working through the retry gap
+  });
+
+  it("a retry that succeeds ends 'done', not 'error' (no agent_start between attempts)", () => {
+    const store = useSessionsStore.getState();
+    store.applyEvent(SESSION_A, { type: "agent_start" });
+    store.applyEvent(SESSION_A, { type: "message_end", message: errorMsg }); // attempt 1 fails
+    store.applyEvent(SESSION_A, { type: "agent_end", willRetry: true });
+    // Retry attempt arrives WITHOUT a fresh agent_start, just new messages.
+    store.applyEvent(SESSION_A, { type: "message_end", message: okMsg }); // attempt 2 ok
+    store.applyEvent(SESSION_A, { type: "agent_end" });
+    const s = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(s?.unreadStatus).toBe("done");
+    expect(s?.isStreaming).toBe(false);
+  });
+
+  it("a retry that also fails ends 'error'", () => {
+    const store = useSessionsStore.getState();
+    store.applyEvent(SESSION_A, { type: "agent_start" });
+    store.applyEvent(SESSION_A, { type: "message_end", message: errorMsg });
+    store.applyEvent(SESSION_A, { type: "agent_end", willRetry: true });
+    store.applyEvent(SESSION_A, { type: "message_end", message: errorMsg });
+    store.applyEvent(SESSION_A, { type: "agent_end" });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("error");
+  });
+});
