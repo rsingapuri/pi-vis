@@ -2,6 +2,7 @@ import type { SessionId } from "@shared/ids.js";
 import type React from "react";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../../lib/markdown.js";
+import { htmlToMarkdown } from "../../lib/turndown.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import type {
   AssistantBlockData,
@@ -525,8 +526,30 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     if (wasAtBottom) pinToBottom();
   });
 
+  const handleClipboard = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const range = selection.getRangeAt(0);
+    if (!container.contains(range.commonAncestorContainer)) return;
+
+    const fragment = range.cloneContents();
+    const markdown = htmlToMarkdown(fragment);
+
+    e.preventDefault();
+    e.clipboardData.setData("text/plain", markdown);
+  }, []);
+
   return (
-    <div className="transcript-view" ref={scrollRef} onScroll={handleScroll}>
+    <div
+      className="transcript-view"
+      ref={scrollRef}
+      onScroll={handleScroll}
+      onCopy={handleClipboard}
+    >
       <div className="transcript-blocks" ref={contentRef}>
         {!showAll && allBlocks.length > MAX_VISIBLE_BLOCKS && (
           <button type="button" className="show-earlier-btn" onClick={() => setShowAll(true)}>

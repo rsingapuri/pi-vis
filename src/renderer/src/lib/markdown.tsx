@@ -46,6 +46,7 @@ function CodeBlock({ className, children }: CodeBlockProps): React.ReactElement 
     return (
       <div
         className="code-block"
+        data-language={lang}
         // biome-ignore lint/security/noDangerouslySetInnerHtml: shiki escapes all code content
         dangerouslySetInnerHTML={{ __html: html }}
       />
@@ -54,7 +55,7 @@ function CodeBlock({ className, children }: CodeBlockProps): React.ReactElement 
 
   // Plain pre on first paint — swap in highlighted HTML async
   return (
-    <pre className="code-block code-block--plain">
+    <pre className="code-block code-block--plain" data-language={lang}>
       <code>{code}</code>
     </pre>
   );
