@@ -18,7 +18,7 @@
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   type ElectronApplication,
   type Page,
@@ -30,7 +30,12 @@ import {
 const APP_ENTRY = join(import.meta.dirname, "../../out/main/index.js");
 const SETTINGS_DIR = join(os.homedir(), "Library/Application Support/Pi-Vis");
 const SETTINGS_PATH = join(SETTINGS_DIR, "settings.json");
-const SESSIONS_DIR = join(os.homedir(), ".pi/agent/sessions/--Users-romil-src-pi-vis--");
+// The workspace the suite opens — the repo root, so this is portable across
+// clone locations rather than hardcoded to one machine.
+const WORKSPACE = resolve(import.meta.dirname, "../..");
+// pi derives a session subdir from the cwd: same encoding as fake-pi.mjs.
+const ENCODED_CWD = `-${WORKSPACE.replaceAll("/", "-")}--`;
+const SESSIONS_DIR = join(os.homedir(), ".pi/agent/sessions", ENCODED_CWD);
 
 function readSettings(): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8"));
@@ -46,7 +51,7 @@ function resetSettings(): void {
           display: { family: "Inter", sizePx: 14 },
           code: { family: "IBM Plex Mono", sizePx: 14 },
         },
-        recentWorkspaces: [join(os.homedir(), "src/pi-vis")],
+        recentWorkspaces: [WORKSPACE],
       },
       null,
       2,
