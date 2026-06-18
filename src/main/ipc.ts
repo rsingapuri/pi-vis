@@ -15,7 +15,7 @@ import {
   startAuthWatch,
   stopAuthWatch,
 } from "./auth.js";
-import { getBranches, getChanges, getFileDiff } from "./git/git.js";
+import { createWorktree, getBranches, getChanges, getFileDiff } from "./git/git.js";
 import { clearPiLocationCache, locatePi } from "./pi/locate-pi.js";
 import { initPty, killAllPtys, killPty, resizePty, startPty, writePty } from "./pty.js";
 import { loadHistory } from "./sessions/history-loader.js";
@@ -129,6 +129,42 @@ export function initIpc(win: BrowserWindow): void {
     const loginShellEnv = await getLoginShellEnv();
     registry?.activateSession(args.sessionId, piInfo.path, loginShellEnv);
   });
+
+  // ── Worktree ───────────────────────────────────────────────────────
+
+  ipcMain.handle(
+    "session.createWorktree",
+    async (_evt, args: { sessionId: SessionId; base: string }) => {
+      const rec = registry?.getSession(args.sessionId);
+      if (!rec) return { ok: false, error: "Session not found" };
+      const settings = getSettings();
+      const piInfo = await locatePi(settings.piBinaryPath);
+      if (!piInfo) return { ok: false, error: "pi binary not found" };
+      const loginShellEnv = await getLoginShellEnv();
+      try {
+        const result = await createWorktree(rec.workspacePath, args.base);
+        if (result.kind === "error") return { ok: false, error: result.message };
+        registry?.setWorktreeAndRespawn(
+          args.sessionId,
+          result.worktreePath,
+          piInfo.path,
+          loginShellEnv,
+        );
+        return {
+          ok: true,
+          worktreePath: result.worktreePath,
+          branch: result.branch,
+          name: result.name,
+          base: result.base,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
 
   ipcMain.handle("session.reload", async (_evt, args: { sessionId: SessionId }) => {
     const settings = getSettings();

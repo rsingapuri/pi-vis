@@ -24,6 +24,7 @@ import type {
   GitChangesResult,
   GitFileDiffResult,
   GitFileStatus,
+  GitWorktreeResult,
 } from "@shared/git.js";
 import { getSubprocessEnv } from "../auth.js";
 
@@ -657,6 +658,85 @@ function mapSpawnErrorBranches(err: unknown): GitBranchesResult {
     return { kind: "not-a-repo" };
   }
   return { kind: "error", message: errorMessage(err) };
+}
+
+// ── Public: createWorktree ────────────────────────────────────────────
+
+/**
+ * Create a disconnected git worktree on a fresh branch.
+ * Returns the worktree path, branch name, friendly name, and base.
+ * Collision-safe: if the branch ref or dir already exists, re-rolls
+ * the name a few times before appending a suffix.
+ */
+export async function createWorktree(root: string, base: string): Promise<GitWorktreeResult> {
+  try {
+    const env = await getSubprocessEnv();
+    // Resolve the repo root
+    const r = await execGitText(["rev-parse", "--show-toplevel"], root, env);
+    const repoRoot = r.stdout.trim();
+    if (!repoRoot) return { kind: "error", message: "Not a git repository" };
+
+    const repoName = path.basename(repoRoot);
+    const parentDir = path.dirname(repoRoot);
+    const worktreesRoot = path.join(parentDir, `${repoName}-worktrees`);
+    await fs.mkdir(worktreesRoot, { recursive: true });
+
+    // Import the name generator (lazy to avoid circular deps if any).
+    const { generateWorktreeName } = await import("./worktree-names.js");
+
+    // Try up to 5 names, then append -2, -3, etc.
+    let name = generateWorktreeName();
+    let attempts = 0;
+    const MAX_ATTEMPTS = 5;
+
+    const collision = async (n: string): Promise<boolean> => {
+      const branchRef = `pivis/${n}`;
+      // Check branch existence
+      try {
+        await execGitText(["rev-parse", "--verify", "--quiet", branchRef], repoRoot, env);
+        return true; // branch exists
+      } catch {
+        // branch doesn't exist — good
+      }
+      // Check directory existence
+      const dir = path.join(worktreesRoot, n);
+      try {
+        await fs.stat(dir);
+        return true; // directory exists
+      } catch {
+        return false; // no collision
+      }
+    };
+
+    while (await collision(name)) {
+      attempts++;
+      if (attempts < MAX_ATTEMPTS) {
+        name = generateWorktreeName();
+      } else {
+        // Last-resort suffix
+        const suffix = attempts - MAX_ATTEMPTS + 2;
+        name = `${generateWorktreeName()}-${suffix}`;
+      }
+    }
+
+    const branch = `pivis/${name}`;
+    const worktreePath = path.join(worktreesRoot, name);
+
+    // `git worktree add -b <branch> <path> <base>`
+    const exitCode = await execGitQuiet(
+      ["worktree", "add", "-b", branch, worktreePath, base],
+      repoRoot,
+      env,
+    );
+
+    if (exitCode !== 0) {
+      return { kind: "error", message: `git worktree add failed with code ${exitCode}` };
+    }
+
+    return { kind: "ok", worktreePath, branch, name, base };
+  } catch (err) {
+    return { kind: "error", message: errorMessage(err) };
+  }
 }
 
 function mapSpawnError(err: unknown): GitChangesResult {

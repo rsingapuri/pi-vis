@@ -131,6 +131,7 @@ src/
 - `settings.get` / `settings.set`
 - `git.changes` / `git.fileDiff` (both accept optional `base?: string` for branch-relative diffs). `git.changes` also returns a `fingerprint` — a content hash of the working tree vs HEAD (always HEAD, regardless of `base`) plus untracked contents — that the diff viewer uses to detect whether tool calls actually changed files.
 - `git.branches` — list local + remote branches
+- `session.createWorktree` — creates a git worktree from a base branch and re-spawns the pi process into it
 - `app.versions`
 - `auth.status` / `auth.saveApiKey` / `auth.remove`
 - `pty.start` (with optional `cols`/`rows` for viewport matching) / `pty.write` / `pty.resize` / `pty.kill`
@@ -157,7 +158,7 @@ Pi runs in `--mode rpc` with JSONL on stdin/stdout. Every command has a unique `
 
 All renderer state uses **Zustand** stores:
 
-- **`sessions-store`** — The primary store. Maps `SessionId → SessionViewState` (transcript, streaming status, pending dialogs, status segments, widgets, stats, model info, thinking level, commands). Handles all mutations via IPC calls + local state updates.
+- **`sessions-store`** — The primary store. Maps `SessionId → SessionViewState` (transcript, streaming status, pending dialogs, status segments, widgets, stats, model info, thinking level, commands, worktreeCreate/worktreeBase/worktreePath/worktreeBranch/worktreeName/worktreeFromBase for worktree-per-session). Handles all mutations via IPC calls + local state updates. Export `gitRootForSession(session)` helper that returns the worktree path if set, else the workspace path — used by the diff viewer and changes badge.
 - **`transcript.ts`** — Pure reducer (not a store). `applyPiEvent(state, event) → TranscriptState` transforms pi streaming events into `TypedTranscriptBlock[]` (user, assistant, tool_call, bash, compaction, custom_message, error). Uses pending-echo matching to deduplicate user messages that pi echoes back. The `error` block surfaces pi's `stopReason: "error"` / `errorMessage` turns (provider failures) so a dropped stream is visible instead of looking like a silent cut-off.
 - **`diff-store`** — Manages diff viewer: file list from `git.changes` (optionally branch-relative via `base`), lazy Shiki tokenization, expand/collapse gap state, unified/split view mode, base branch selection with `loadBranches`/`setBase`/`setIncludeRemoteBranches`. Tracks a `stale` flag for the refresh-button dot: each per-tool-call badge refresh compares `git.changes`'s `fingerprint` against the `baselineFingerprint` captured at the last full viewer refresh, so the dot lights only when files actually changed (and clears if an edit is reverted).
 - **`settings-store`** — Renderer mirror of app settings; applies fonts and color scheme.
@@ -168,8 +169,27 @@ All renderer state uses **Zustand** stores:
 2. **Activate**: `session.activate` IPC → `SessionRegistry.activateSession()` spawns `PiProcess` (runs `pi --mode rpc`)
 3. **Ready**: Process emits first event or 2s timeout → status becomes `"ready"`
 4. **Streaming**: User sends prompt → `session.sendCommand` → pi emits `agent_start`, `message_*`, `tool_execution_*`, `agent_end` events
-5. **Close**: `session.close` → process killed, session record retained for resume
+5. **Close**: `session.close` → process killed, session record retained for resume. Worktrees are left on disk (never removed).
 6. **Idle eviction**: MAX_IDLE_PROCESSES = 10; oldest inactive process stopped when exceeded
+
+### Worktree-per-session
+
+A **WorktreeBar** above the composer appears in brand-new sessions (empty transcript).
+It has a "Create worktree" checkbox and a branch dropdown (reusing the shared
+`BranchDropdown` presentational component). On first send with the box checked:
+
+1. `session.createWorktree` IPC creates a git worktree in a sibling
+   `<repoName>-worktrees/<friendlyName>` directory on a fresh `pivis/<friendlyName>`
+   branch (e.g. `pivis/swift-otter`), cutting from the selected base branch.
+2. `setWorktreeAndRespawn()` re-points the session's `cwd` to the worktree and
+   re-spawns the pi process there.
+3. The WorktreeBar vanishes; the **WorktreeChip** (`⑂ swift-otter`) appears next to
+   the session name in the header. Hover shows the full branch · base · path.
+
+**Responsive reflow**: At narrow widths (<500px), secondary controls (model picker,
+thinking level, changes badge, context meter) drop into a **SessionSubBar** below the
+38px title bar. The name + WorktreeChip stay up top. The `SessionControls` component
+is the single source of truth rendered in either position.
 
 ### Reload
 
@@ -224,6 +244,13 @@ Builtins are defined in `builtins.ts` (mirrors pi's interactive-mode.js). Discov
 | `src/renderer/src/components/ErrorBoundary.tsx` | React error boundary — catches render crashes without white-screening the app |
 | `src/shared/ipc-contract.ts` | The typed IPC boundary — start here when adding new main↔renderer communication |
 | `src/shared/pi-protocol/` | Source of truth for all pi RPC types |
+| `src/main/git/worktree-names.ts` | Curated word lists + `generateWorktreeName()` for worktree branches |
+| `src/renderer/src/components/common/BranchDropdown.tsx` | Presentational branch dropdown (search, keyboard nav, remote toggle) |
+| `src/renderer/src/components/common/BranchDropdown.css` | Branch dropdown styles (extracted from DiffViewer.css) |
+| `src/renderer/src/components/composer/WorktreeBar.tsx` | Pre-send worktree creation bar (checkbox + branch picker) |
+| `src/renderer/src/components/composer/WorktreeBar.css` | WorktreeBar styles |
+| `src/renderer/src/components/session-header/SessionSubBar.tsx` | Compact-mode secondary controls strip |
+| `src/renderer/src/components/session-header/SessionSubBar.css` | SessionSubBar styles |
 | `src/shared/auth.ts` | Provider definitions (transcribed from pi's docs/providers.md) |
 | `src/shared/updates.ts` | Update status types |
 | `src/main/auth.ts` | Auth file management: read/write with proper-lockfile, env detection, fs.watch |

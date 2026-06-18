@@ -85,6 +85,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const refreshWorkspaceSessions = useSessionsStore((s) => s.refreshWorkspaceSessions);
   const closeSessionTab = useSessionsStore((s) => s.closeSessionTab);
   const seedHistory = useSessionsStore((s) => s.seedHistory);
+  const setWorktreeCreating = useSessionsStore((s) => s.setWorktreeCreating);
+  const applyWorktree = useSessionsStore((s) => s.applyWorktree);
+  const clearWorktreeIntent = useSessionsStore((s) => s.clearWorktreeIntent);
   const updateSettings = useSettingsStore((s) => s.update);
 
   const isStreaming = session?.isStreaming ?? false;
@@ -253,6 +256,48 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     // otherwise read the same `content` twice and dispatch two sends.
     if (submittingRef.current) return;
     submittingRef.current = true;
+
+    // ── Worktree creation on first send ──
+    // Only create one when this session has not already been placed in a
+    // worktree (worktreePath unset). After `/new` etc. the transcript resets
+    // to empty, so guarding on the transcript alone would re-create a worktree
+    // for a session that already has one.
+    const isNewSession = (session?.transcript.blocks.length ?? 0) === 0;
+    if (isNewSession && session?.worktreeCreate && !session.worktreePath) {
+      try {
+        setWorktreeCreating(sessionId, true);
+        // Fall back to HEAD (current commit) when no base branch is resolved —
+        // e.g. a detached HEAD where there is no current branch to default to.
+        // Never assume a literal "main"; it may not exist.
+        const base = session.worktreeBase ?? "HEAD";
+        const res = await window.pivis.invoke("session.createWorktree", {
+          sessionId,
+          base,
+        });
+        if (!res.ok) {
+          addToast(sessionId, `Failed to create worktree: ${res.error}`, "error");
+          submittingRef.current = false;
+          return;
+        }
+        applyWorktree(sessionId, {
+          worktreePath: res.worktreePath,
+          branch: res.branch,
+          name: res.name,
+          base: res.base,
+        });
+        // Drop the pre-send intent so the bar doesn't reappear (still checked)
+        // if the transcript later resets via /new, /fork, or /clone.
+        clearWorktreeIntent(sessionId);
+        addToast(sessionId, `Worktree ${res.name} created`, "success");
+      } catch (err) {
+        addToast(sessionId, `Failed to create worktree: ${String(err)}`, "error");
+        submittingRef.current = false;
+        return;
+      } finally {
+        setWorktreeCreating(sessionId, false);
+      }
+    }
+
     try {
       setText("");
       setAttachments([]);
@@ -387,6 +432,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     closeSessionTab,
     seedHistory,
     refreshWorkspaceSessions,
+    setWorktreeCreating,
+    applyWorktree,
+    clearWorktreeIntent,
     attachments,
     modelSupportsImages,
     modelLabel,

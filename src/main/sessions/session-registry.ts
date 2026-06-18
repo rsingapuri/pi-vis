@@ -9,6 +9,10 @@ import { PiProcess } from "../pi/pi-process.js";
 export interface SessionRecord {
   sessionId: SessionId;
   workspacePath: string;
+  /** If set, the session's pi process runs in this worktree directory
+   *  instead of workspacePath. Set at first-send time via
+   *  setWorktreeAndRespawn. */
+  worktreePath?: string | undefined;
   sessionFile?: string | undefined;
   status: SessionStatus;
   error?: string | undefined;
@@ -99,7 +103,8 @@ export class SessionRegistry {
     this.onStatusChanged(sessionId, "starting");
 
     try {
-      const proc = new PiProcess(piPath, record.workspacePath, record.sessionFile, env);
+      const cwd = record.worktreePath ?? record.workspacePath;
+      const proc = new PiProcess(piPath, cwd, record.sessionFile, env);
       record.proc = proc;
 
       const readyTimer = setTimeout(() => {
@@ -251,6 +256,31 @@ export class SessionRegistry {
     const proc = record.proc;
     record.proc = undefined;
     proc?.stop();
+    this.activateSession(sessionId, piPath, env);
+  }
+
+  /**
+   * Re-point the session to a worktree and re-spawn its pi process.
+   * Stops the current process (same guard pattern as reloadSession),
+   * sets the worktree path, and re-activates (which spawns a fresh
+   * process in the worktree cwd). Safe for fresh sessions (empty
+   * transcript, no session file — so no data loss on kill).
+   */
+  setWorktreeAndRespawn(
+    sessionId: SessionId,
+    worktreePath: string,
+    piPath: string,
+    env?: Record<string, string>,
+  ): void {
+    const record = this.sessions.get(sessionId);
+    if (!record) {
+      throw new Error(`Unknown session: ${sessionId}`);
+    }
+    // Stop the current process with the generation guard.
+    const proc = record.proc;
+    record.proc = undefined;
+    proc?.stop();
+    record.worktreePath = worktreePath;
     this.activateSession(sessionId, piPath, env);
   }
 

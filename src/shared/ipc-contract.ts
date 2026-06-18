@@ -59,6 +59,12 @@ export interface IpcInvokeContract {
     req: { sessionId: SessionId };
     res: { success: true } | { success: false; error: string };
   };
+  "session.createWorktree": {
+    req: { sessionId: SessionId; base: string };
+    res:
+      | { ok: true; worktreePath: string; branch: string; name: string; base: string }
+      | { ok: false; error: string };
+  };
   "session.close": { req: { sessionId: SessionId }; res: undefined };
   "session.loadHistory": { req: { sessionId: SessionId }; res: TranscriptBlock[] };
   "session.sendCommand": {

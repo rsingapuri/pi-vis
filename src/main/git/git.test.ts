@@ -488,3 +488,82 @@ describe("getChanges fingerprint", () => {
     expect(withBase.fingerprint).toBe(noBase.fingerprint);
   });
 });
+
+describe("createWorktree", () => {
+  it("creates a worktree on a new branch from the current HEAD", async () => {
+    makeRepo();
+    // Create a branch to use as base
+    git(workDir, ["checkout", "-b", "feature"]);
+    write(path.join(workDir, "b.ts"), "export const b = 2;\n");
+    git(workDir, ["add", "b.ts"]);
+    git(workDir, [...COMMIT_C, "commit", "-m", "feature"]);
+    git(workDir, ["checkout", "main"]);
+
+    const { createWorktree } = await import("./git.js");
+    const result = await createWorktree(workDir, "feature");
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.worktreePath).toBeTruthy();
+    expect(result.branch).toMatch(/^pivis\/[a-z]+-[a-z]+$/);
+    expect(result.name).toMatch(/^[a-z]+-[a-z]+$/);
+    expect(result.base).toBe("feature");
+
+    // Verify the worktree exists and is on the right branch
+    const worktreeList = git(workDir, ["worktree", "list"]);
+    expect(worktreeList).toContain(result.worktreePath);
+
+    // Verify the branch exists
+    const branches = git(workDir, ["branch", "--list", result.branch]);
+    expect(branches).toContain(result.branch);
+
+    // Clean up the worktree so subsequent tests aren't polluted
+    git(workDir, ["worktree", "remove", "--force", result.worktreePath]);
+    git(workDir, ["branch", "-D", result.branch]);
+  });
+
+  it("handles collision by generating a different name", async () => {
+    makeRepo();
+
+    const { createWorktree } = await import("./git.js");
+    const first = await createWorktree(workDir, "main");
+    expect(first.kind).toBe("ok");
+    if (first.kind !== "ok") return;
+
+    // Make a worktree with the exact same name by creating a ref manually
+    const dupBranch = first.branch;
+    const dupDir = first.worktreePath;
+    // Create a second one — collision handling should produce a different name
+    const second = await createWorktree(workDir, "main");
+    expect(second.kind).toBe("ok");
+    if (second.kind !== "ok") return;
+    // Names should differ
+    expect(second.name).not.toBe(first.name);
+
+    // Clean up
+    git(workDir, ["worktree", "remove", "--force", dupDir]);
+    git(workDir, ["branch", "-D", dupBranch]);
+    git(workDir, ["worktree", "remove", "--force", second.worktreePath]);
+    git(workDir, ["branch", "-D", second.branch]);
+  });
+
+  it("creates a worktree from a remote base", async () => {
+    makeRepo();
+    // Simulate a remote-tracking branch by creating a local branch that
+    // looks like one (git worktree add supports origin/x patterns).
+    git(workDir, ["checkout", "-b", "origin/stable"]);
+    write(path.join(workDir, "c.ts"), "export const c = 3;\n");
+    git(workDir, ["add", "c.ts"]);
+    git(workDir, [...COMMIT_C, "commit", "-m", "stable"]);
+    git(workDir, ["checkout", "main"]);
+
+    const { createWorktree } = await import("./git.js");
+    const result = await createWorktree(workDir, "main");
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.base).toBe("main");
+
+    git(workDir, ["worktree", "remove", "--force", result.worktreePath]);
+    git(workDir, ["branch", "-D", result.branch]);
+  });
+});

@@ -63,6 +63,27 @@ export interface SessionViewState {
   editorInjection?: { text: string; nonce: number } | undefined;
   pendingPicker?: PickerRequest | undefined;
   /**
+   * Pre-send worktree creation intent (drives the WorktreeBar).
+   * These are only set for a brand-new session (no transcript yet)
+   * and are cleared after the first send.
+   */
+  worktreeCreate?: boolean | undefined;
+  /** The base branch the user selected in the WorktreeBar. */
+  worktreeBase?: string | null | undefined;
+  /** True while the worktree creation IPC is in flight. */
+  worktreeCreating?: boolean | undefined;
+  /**
+   * Post-creation identity — set after a worktree is successfully
+   * created and the pi process is re-spawned into it.
+   */
+  worktreePath?: string | undefined;
+  /** Full branch name, e.g. "pivis/swift-otter". */
+  worktreeBranch?: string | undefined;
+  /** The friendly name, e.g. "swift-otter". */
+  worktreeName?: string | undefined;
+  /** The base branch the worktree was cut from (for the chip tooltip). */
+  worktreeFromBase?: string | undefined;
+  /**
    * Recency key for sidebar ordering. Set when a session is *created fresh*
    * (no file yet) and bumped only when the user submits a prompt — NOT on
    * mere open/activate. Resumed sessions leave this undefined so the sidebar
@@ -82,6 +103,8 @@ interface SessionsStore {
   sessions: Map<SessionId, SessionViewState>;
   activeSessionId: SessionId | null;
   activeWorkspacePath: string | null;
+  /** Whether the session header is in compact mode (controls in sub-bar). */
+  headerCompact: boolean;
 
   addWorkspace: (path: string) => void;
   removeWorkspace: (path: string) => void;
@@ -121,6 +144,24 @@ interface SessionsStore {
   dismissUiRequest: (sessionId: SessionId, requestId: string) => void;
   addToast: (sessionId: SessionId, message: string, type?: string) => void;
   dismissToast: (sessionId: SessionId, toastId: string) => void;
+  setHeaderCompact: (v: boolean) => void;
+
+  // Worktree bar state (pre-send)
+  setWorktreeCreate: (sessionId: SessionId, v: boolean) => void;
+  setWorktreeBase: (sessionId: SessionId, base: string | null) => void;
+  setWorktreeCreating: (sessionId: SessionId, v: boolean) => void;
+  /** Apply post-creation identity after a successful worktree creation. */
+  applyWorktree: (
+    sessionId: SessionId,
+    result: {
+      worktreePath: string;
+      branch: string;
+      name: string;
+      base: string;
+    },
+  ) => void;
+  /** Clear pre-send worktree state — called after first send. */
+  clearWorktreeIntent: (sessionId: SessionId) => void;
   setStats: (sessionId: SessionId, stats: SessionStats) => void;
   setAvailableModels: (sessionId: SessionId, models: ModelInfo[]) => void;
   setCurrentModel: (sessionId: SessionId, model: string) => void;
@@ -157,6 +198,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
   sessions: new Map(),
   activeSessionId: null,
   activeWorkspacePath: null,
+  headerCompact: false,
 
   addWorkspace: (path) => {
     set((state) => {
@@ -210,6 +252,14 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         widgets: new Map(),
         toasts: [],
         availableModels: [],
+        // Worktree fields start unset
+        worktreeCreate: undefined,
+        worktreeBase: undefined,
+        worktreeCreating: undefined,
+        worktreePath: undefined,
+        worktreeBranch: undefined,
+        worktreeName: undefined,
+        worktreeFromBase: undefined,
         // Fresh sessions (no file yet) sort to the top; resumed sessions
         // leave this undefined and fall back to their file mtime.
         lastActivityAt: sessionFile ? undefined : Date.now(),
@@ -538,6 +588,69 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     });
   },
 
+  // ── Worktree actions ────────────────────────────────────────────
+
+  setWorktreeCreate: (sessionId, v) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      sessions.set(sessionId, { ...s, worktreeCreate: v });
+      return { sessions };
+    });
+  },
+
+  setWorktreeBase: (sessionId, base) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      sessions.set(sessionId, { ...s, worktreeBase: base });
+      return { sessions };
+    });
+  },
+
+  setWorktreeCreating: (sessionId, v) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      sessions.set(sessionId, { ...s, worktreeCreating: v });
+      return { sessions };
+    });
+  },
+
+  applyWorktree: (sessionId, result) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      sessions.set(sessionId, {
+        ...s,
+        worktreePath: result.worktreePath,
+        worktreeBranch: result.branch,
+        worktreeName: result.name,
+        worktreeFromBase: result.base,
+      });
+      return { sessions };
+    });
+  },
+
+  clearWorktreeIntent: (sessionId) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      sessions.set(sessionId, {
+        ...s,
+        worktreeCreate: undefined,
+        worktreeBase: undefined,
+        worktreeCreating: undefined,
+      });
+      return { sessions };
+    });
+  },
+
   setStats: (sessionId, stats) => {
     set((state) => {
       const sessions = new Map(state.sessions);
@@ -841,4 +954,18 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
   setActiveWorkspace: (path) => {
     set({ activeWorkspacePath: path });
   },
+  setHeaderCompact: (v) => {
+    set({ headerCompact: v });
+  },
 }));
+
+/**
+ * Derive the git root for a session — prefers the worktree path
+ * over the workspace path. Callers that need the root for git
+ * operations (diff viewer, changes badge) must use this.
+ */
+export function gitRootForSession(
+  session: Pick<SessionViewState, "worktreePath" | "workspacePath"> | undefined,
+): string | undefined {
+  return session?.worktreePath ?? session?.workspacePath;
+}

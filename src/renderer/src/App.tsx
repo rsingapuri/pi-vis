@@ -3,9 +3,11 @@ import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
 import { Composer } from "./components/composer/Composer.js";
+import { WorktreeBar } from "./components/composer/WorktreeBar.js";
 import { DiffViewerHost } from "./components/diff/DiffViewerHost.js";
 import { ExtensionDialogHost, ToastHost } from "./components/ext-ui/ExtensionDialogHost.js";
 import { AppPickerHost } from "./components/pickers/AppPickerHost.js";
+import { SessionSubBar } from "./components/session-header/SessionSubBar.js";
 import { SettingsView } from "./components/settings/SettingsView.js";
 import { PiNotFound } from "./components/setup/PiNotFound.js";
 import { Sidebar } from "./components/shell/Sidebar.js";
@@ -25,6 +27,7 @@ export function App(): React.ReactElement {
   const setSessionStatus = useSessionsStore((s) => s.setSessionStatus);
   const applyEvent = useSessionsStore((s) => s.applyEvent);
   const addUiRequest = useSessionsStore((s) => s.addUiRequest);
+  const compact = useSessionsStore((s) => s.headerCompact);
   const adoptSessionFile = useSessionsStore((s) => s.adoptSessionFile);
   const refreshCommands = useSessionsStore((s) => s.refreshCommands);
   const seedHistory = useSessionsStore((s) => s.seedHistory);
@@ -271,7 +274,11 @@ export function App(): React.ReactElement {
                 the window, not here. Keeping it out of the main column
                 reclaims the previously wasted vertical space below the
                 title bar. */}
+              {/* Sub-bar for compact mode — secondary controls below the title bar */}
+              {compact && <SessionSubBar sessionId={activeSessionId} />}
               <TranscriptView sessionId={activeSessionId} />
+              {/* WorktreeBar — appears only in new sessions (first-send bar) */}
+              <WorktreeBar sessionId={activeSessionId} />
               {/* Update notification: a compact, right-aligned, dismissible
                   card that sits just above the composer (in-flow, so it never
                   overlaps the input or relies on fragile fixed offsets). */}

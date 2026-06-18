@@ -68,6 +68,43 @@
   -webkit-app-region: no-drag;
 }
 
+/* ── Primary row (name + WorktreeChip) ────────────────────────────── */
+
+.session-header__primary {
+  display: flex;
+  align-items: center;
+  gap: 0.571rem;
+  min-width: 0;
+  flex: 1;
+  justify-content: space-between;
+}
+
+/* Worktree chip — shown next to the session name */
+
+.session-header__worktree-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.214rem;
+  border: none;
+  font-family: var(--font-code);
+  font-size: 0.786em;
+  color: var(--ctp-mauve);
+  background: color-mix(in srgb, var(--ctp-mauve) 12%, transparent);
+  padding: 0.071rem 0.429rem;
+  border-radius: var(--mcm-radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.session-header__worktree-chip:hover {
+  background: color-mix(in srgb, var(--ctp-mauve) 20%, transparent);
+}
+
+/* ── Controls cluster (shared by title bar and sub-bar) ───────────── */
+
 .session-header__controls {
   display: flex;
   align-items: center;

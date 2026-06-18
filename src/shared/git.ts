@@ -61,3 +61,18 @@ export type GitBranchesResult =
   | { kind: "not-a-repo" }
   | { kind: "git-missing" }
   | { kind: "error"; message: string };
+
+export interface GitWorktreeCreated {
+  /** Absolute path to the worktree directory. */
+  worktreePath: string;
+  /** Full branch name, e.g. "pivis/swift-otter". */
+  branch: string;
+  /** The friendly name portion, e.g. "swift-otter". */
+  name: string;
+  /** The base branch the worktree was cut from. */
+  base: string;
+}
+
+export type GitWorktreeResult =
+  | ({ kind: "ok" } & GitWorktreeCreated)
+  | { kind: "error"; message: string };

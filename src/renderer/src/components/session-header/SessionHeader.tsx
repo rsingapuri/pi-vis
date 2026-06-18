@@ -10,24 +10,12 @@ import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCost, formatTokens } from "../../lib/format.js";
 import { openDiffForSession, useDiffStore } from "../../stores/diff-store.js";
-import { useSessionsStore } from "../../stores/sessions-store.js";
+import { gitRootForSession, useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import "./SessionHeader.css";
 
 interface SessionHeaderProps {
   sessionId: SessionId;
-}
-
-function highlightMatch(text: string, query: string): React.ReactNode {
-  const idx = text.toLowerCase().indexOf(query.toLowerCase());
-  if (idx === -1) return text;
-  return (
-    <>
-      {text.slice(0, idx)}
-      <mark className="session-header__match">{text.slice(idx, idx + query.length)}</mark>
-      {text.slice(idx + query.length)}
-    </>
-  );
 }
 
 export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactElement {
@@ -39,28 +27,13 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
   const setSessionFile = useSessionsStore((s) => s.setSessionFile);
   const refreshWorkspaceSessions = useSessionsStore((s) => s.refreshWorkspaceSessions);
   const setThinkingLevel = useSessionsStore((s) => s.setThinkingLevel);
-  const addToast = useSessionsStore((s) => s.addToast);
-  const { settings, update: updateSettings } = useSettingsStore();
+  const { settings } = useSettingsStore();
 
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
-  const [modelOpen, setModelOpen] = useState(false);
-  const [modelSearch, setModelSearch] = useState("");
-  const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const [thinkingOpen, setThinkingOpen] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const thinkingDropdownRef = useRef<HTMLDivElement>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
 
   const modelAppliedRef = useRef(false);
-  // The thinking level the user most recently asked for, awaiting confirmation
-  // from pi (via a `thinking_level_changed` event or a `get_state` response).
-  // When the authoritative level differs, we surface a toast explaining the
-  // coercion. The dropdown itself always reflects what pi reports.
-  const lastRequestedThinkingLevelRef = useRef<ThinkingLevel | null>(null);
 
   // Cold-aware gate. A boolean on purpose: starting→ready doesn't re-fire
   // effects, but cold→starting does. Sessions whose process is alive get
@@ -200,159 +173,9 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
     });
   }, [sessionId, setStats]);
 
-  // Focus search input and reset state when dropdown opens
-  useEffect(() => {
-    if (!modelOpen) {
-      setModelSearch("");
-      setHighlightedIndex(0);
-      return;
-    }
-    setModelSearch("");
-    setHighlightedIndex(0);
-    setTimeout(() => searchInputRef.current?.focus(), 10);
-  }, [modelOpen]);
-
-  const filteredModels = (session?.availableModels ?? []).filter((m) => {
-    const q = modelSearch.toLowerCase();
-    if (!q) return true;
-    return (m.name ?? m.id).toLowerCase().includes(q) || m.id.toLowerCase().includes(q);
-  });
-
-  // Reset highlight when search/filter changes
-  // biome-ignore lint/correctness/useExhaustiveDependencies: depends on the filter value, not on identity
-  useEffect(() => {
-    setHighlightedIndex(0);
-  }, [modelSearch]);
-
-  // Scroll highlighted item into view
-  useEffect(() => {
-    if (!modelOpen) return;
-    const btn = itemRefs.current.get(highlightedIndex);
-    btn?.scrollIntoView({ block: "nearest" });
-  }, [highlightedIndex, modelOpen]);
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    if (!modelOpen) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (!dropdownRef.current?.contains(e.target as Node)) {
-        setModelOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onMouseDown, true);
-    return () => document.removeEventListener("mousedown", onMouseDown, true);
-  }, [modelOpen]);
-
-  // Close thinking dropdown on outside click
-  useEffect(() => {
-    if (!thinkingOpen) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (!thinkingDropdownRef.current?.contains(e.target as Node)) {
-        setThinkingOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onMouseDown, true);
-    return () => document.removeEventListener("mousedown", onMouseDown, true);
-  }, [thinkingOpen]);
-
-  const handleModelChange = useCallback(
-    async (model: ModelInfo) => {
-      setModelOpen(false);
-      if (!model.provider) return;
-      try {
-        await window.pivis.invoke("session.sendCommand", {
-          sessionId,
-          command: { type: "set_model", provider: model.provider, modelId: model.id },
-        });
-        setCurrentModel(sessionId, model.id);
-        void updateSettings({ lastUsedModel: { provider: model.provider, modelId: model.id } });
-      } catch (err) {
-        console.error("Failed to set model:", err);
-      }
-    },
-    [sessionId, setCurrentModel, updateSettings],
-  );
-
-  const handleThinkingLevel = useCallback(
-    async (level: string) => {
-      const parsed = ThinkingLevelSchema.safeParse(level);
-      if (!parsed.success) return;
-      const validated: ThinkingLevel = parsed.data;
-      // Remember what the user asked for so the toast effect can compare it
-      // against what pi actually applied. We can't rely solely on the effect
-      // because if pi coerces the value back to the *current* level (e.g.
-      // requesting "xhigh" while already on "high"), the store value never
-      // changes and the effect would never fire.
-      lastRequestedThinkingLevelRef.current = validated;
-      try {
-        await window.pivis.invoke("session.sendCommand", {
-          sessionId,
-          command: { type: "set_thinking_level", level: validated },
-        });
-        // Re-fetch authoritative state. Pi may have silently clamped the
-        // requested level to one the current model supports (e.g. xhigh -> high).
-        // Relying on the event alone misses the case where the effective level
-        // is unchanged, so get_state is the safety net for the dropdown.
-        const res = await window.pivis.invoke("session.sendCommand", {
-          sessionId,
-          command: { type: "get_state" },
-        });
-        const raw = res?.data as { thinkingLevel?: unknown } | undefined;
-        if (raw && typeof raw.thinkingLevel === "string") {
-          const confirmed = ThinkingLevelSchema.safeParse(raw.thinkingLevel);
-          if (confirmed.success) {
-            setThinkingLevel(sessionId, confirmed.data);
-            // Surface the coercion here, not via the effect, so the case
-            // where the confirmed value equals the current value still
-            // produces a toast (the store didn't change, the effect won't run).
-            if (confirmed.data !== validated) {
-              addToast(
-                sessionId,
-                `Model does not support thinking level: ${validated} — using ${confirmed.data} instead.`,
-                "warning",
-              );
-            }
-          }
-        }
-        lastRequestedThinkingLevelRef.current = null;
-      } catch (err) {
-        console.error("Failed to set thinking level:", err);
-        addToast(sessionId, `Failed to set thinking level: ${String(err)}`, "error");
-        lastRequestedThinkingLevelRef.current = null;
-      }
-    },
-    [sessionId, setThinkingLevel, addToast],
-  );
-
-  // The toast for a coerced thinking level is surfaced directly in
-  // `handleThinkingLevel` after `get_state` confirms what pi applied. The
-  // race against the `thinking_level_changed` event is resolved there too:
-  // whichever path lands first clears the ref, so the other path won't
-  // show a second toast. This effect only exists to clear the ref if pi
-  // emits the event without a corresponding user-initiated request.
-  useEffect(() => {
-    if (session?.thinkingLevel == null) return;
-    if (lastRequestedThinkingLevelRef.current != null) {
-      lastRequestedThinkingLevelRef.current = null;
-    }
-  }, [session?.thinkingLevel]);
-
-  // The model in the store is just an id; the dropdown's option set is
-  // derived from the model record in `availableModels`. Pi does not expose
-  // a per-model thinkingLevelMap over the wire, so the safe defaults are:
-  //   - non-reasoning models: only "off" is meaningful
-  //   - reasoning / unknown:  all universal levels (coercion + toast handle the rest)
-  const currentModelInfo = useMemo<ModelInfo | undefined>(
-    () => (session?.availableModels ?? []).find((m) => m.id === session?.currentModel),
-    [session?.availableModels, session?.currentModel],
-  );
-  const thinkingOptions: readonly ThinkingLevel[] = useMemo(() => {
-    if (currentModelInfo?.reasoning === false) {
-      return ["off"];
-    }
-    return THINKING_LEVELS;
-  }, [currentModelInfo]);
-  const thinkingDisabled = thinkingOptions.length <= 1;
+  // The model + thinking pickers (and their handlers) live in
+  // <SessionControls> — this component only owns the name, the worktree chip,
+  // the data-loading effects, and the compact-mode reflow.
 
   const handleRenameStart = useCallback(() => {
     setNameInput(session?.sessionName ?? session?.sessionTitle ?? "");
@@ -378,201 +201,439 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
     setEditingName(false);
   }, [nameInput, sessionId, setSessionName, refreshWorkspaceSessions, session?.workspacePath]);
 
+  // ── Compact mode (responsive reflow) ───────────────────────────────
+  const headerRef = useRef<HTMLDivElement>(null);
+  const setHeaderCompact = useSessionsStore((s) => s.setHeaderCompact);
+  const compact = useSessionsStore((s) => s.headerCompact);
+
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        setHeaderCompact(w < 500);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [setHeaderCompact]);
+
   const stats = session?.stats;
   const contextPct =
     stats?.contextUsage?.percent != null ? Math.round(stats.contextUsage.percent) : null;
 
   return (
-    <div className="session-header">
-      {/* Session name */}
-      <div className="session-header__name">
-        {editingName ? (
-          <input
-            ref={nameInputRef}
-            className="session-header__name-input"
-            value={nameInput}
-            onChange={(e) => setNameInput(e.target.value)}
-            onBlur={() => void handleRenameConfirm()}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void handleRenameConfirm();
-              if (e.key === "Escape") setEditingName(false);
-            }}
-          />
-        ) : (
-          <button type="button" className="session-header__name-btn" onClick={handleRenameStart}>
-            {session?.sessionName ?? session?.sessionTitle ?? "Untitled session"}
-          </button>
-        )}
+    <div className="session-header" ref={headerRef}>
+      {/* Primary row: name + WorktreeChip (always visible) */}
+      <div className="session-header__primary">
+        <div className="session-header__name">
+          {editingName ? (
+            <input
+              ref={nameInputRef}
+              className="session-header__name-input"
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              onBlur={() => void handleRenameConfirm()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleRenameConfirm();
+                if (e.key === "Escape") setEditingName(false);
+              }}
+            />
+          ) : (
+            <button type="button" className="session-header__name-btn" onClick={handleRenameStart}>
+              {session?.sessionName ?? session?.sessionTitle ?? "Untitled session"}
+            </button>
+          )}
+          {session?.worktreeName && (
+            <WorktreeChip
+              sessionId={sessionId}
+              name={session.worktreeName}
+              branch={session.worktreeBranch ?? session.worktreeName ?? ""}
+              base={session.worktreeFromBase}
+              path={session.worktreePath}
+            />
+          )}
+        </div>
+
+        {!compact && <SessionControls sessionId={sessionId} />}
       </div>
+    </div>
+  );
+}
 
-      <div className="session-header__controls">
-        {/* Changes button + live badge (WP5a) */}
-        <ChangesButton sessionId={sessionId} />
-        {/* Model picker */}
-        <div className="session-header__model-picker">
-          <button
-            type="button"
-            className="session-header__picker-btn"
-            onClick={() => setModelOpen((v) => !v)}
-          >
-            {session?.currentModel ?? "model"} ▾
-          </button>
-          {modelOpen && (
-            <div className="session-header__dropdown" ref={dropdownRef}>
-              <div className="session-header__dropdown-search">
-                <input
-                  ref={searchInputRef}
-                  className="session-header__dropdown-search-input"
-                  placeholder="Search models…"
-                  value={modelSearch}
-                  onChange={(e) => setModelSearch(e.target.value)}
-                  onKeyDown={(e) => {
-                    switch (e.key) {
-                      case "Escape":
-                        if (modelSearch) {
-                          setModelSearch("");
-                        } else {
-                          setModelOpen(false);
-                        }
-                        e.preventDefault();
-                        break;
-                      case "ArrowDown":
-                        e.preventDefault();
-                        setHighlightedIndex((i) => (i < filteredModels.length - 1 ? i + 1 : 0));
-                        break;
-                      case "ArrowUp":
-                        e.preventDefault();
-                        setHighlightedIndex((i) => (i > 0 ? i - 1 : filteredModels.length - 1));
-                        break;
-                      case "Home":
-                        e.preventDefault();
-                        setHighlightedIndex(0);
-                        break;
-                      case "End":
-                        e.preventDefault();
-                        setHighlightedIndex(filteredModels.length - 1);
-                        break;
-                      case "Enter":
-                        e.preventDefault();
-                        if (filteredModels[highlightedIndex]) {
-                          void handleModelChange(filteredModels[highlightedIndex]);
-                        }
-                        break;
-                    }
-                  }}
-                  role="combobox"
-                  aria-expanded={modelOpen}
-                  aria-controls="model-listbox"
-                  aria-activedescendant={
-                    filteredModels.length > 0
-                      ? `model-option-${filteredModels[highlightedIndex]?.id}`
-                      : undefined
-                  }
-                  aria-autocomplete="list"
-                />
-              </div>
-              {filteredModels.length === 0 ? (
-                <div className="session-header__dropdown-empty">No models found</div>
-              ) : (
-                <div ref={listRef} role="listbox" id="model-listbox">
-                  {filteredModels.map((m, idx) => {
-                    const label = m.name ?? m.id;
-                    const q = modelSearch;
-                    const active = idx === highlightedIndex;
-                    const selected = session?.currentModel === m.id;
-                    return (
-                      <button
-                        type="button"
-                        key={m.id}
-                        ref={(el) => {
-                          if (el) itemRefs.current.set(idx, el);
-                          else itemRefs.current.delete(idx);
-                        }}
-                        id={`model-option-${m.id}`}
-                        role="option"
-                        aria-selected={selected}
-                        className={`session-header__dropdown-item${active ? " session-header__dropdown-item--highlighted" : ""}${selected ? " session-header__dropdown-item--active" : ""}`}
-                        onClick={() => void handleModelChange(m)}
-                        onMouseEnter={() => setHighlightedIndex(idx)}
-                      >
-                        {q ? highlightMatch(label, q) : label}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+/**
+ * The secondary controls cluster — rendered in the title bar (wide) or
+ * in SessionSubBar (compact). Extracted so the same JSX renders in
+ * either position.
+ */
+export function SessionControls({
+  sessionId,
+}: {
+  sessionId: SessionId;
+}): React.ReactElement {
+  const session = useSessionsStore((s) => s.sessions.get(sessionId));
+  const setCurrentModel = useSessionsStore((s) => s.setCurrentModel);
+  const setThinkingLevel = useSessionsStore((s) => s.setThinkingLevel);
+  const addToast = useSessionsStore((s) => s.addToast);
 
-        {/* Thinking level — custom dropdown so its popup uses the
-            Catppuccin surface like the model selector, and its line-height
-            can accommodate descenders ('g' in "high") without clipping. */}
-        <div className="session-header__thinking">
-          <button
-            type="button"
-            className="session-header__picker-btn"
-            onClick={() => setThinkingOpen((v) => !v)}
-            disabled={thinkingDisabled}
-            title={
-              currentModelInfo?.reasoning === false
-                ? "Current model does not support reasoning."
-                : undefined
+  // ── Model picker state ────────────────────────────────────────────
+  const [modelOpen, setModelOpen] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
+
+  const filteredModels = useMemo(() => {
+    const q = modelSearch.toLowerCase();
+    return (session?.availableModels ?? []).filter((m) => {
+      if (!q) return true;
+      return (m.name ?? m.id).toLowerCase().includes(q);
+    });
+  }, [session?.availableModels, modelSearch]);
+
+  useEffect(() => {
+    if (!modelOpen) {
+      setModelSearch("");
+      setHighlightedIndex(0);
+      return;
+    }
+    setModelSearch("");
+    setHighlightedIndex(0);
+    setTimeout(() => searchInputRef.current?.focus(), 10);
+  }, [modelOpen]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: depends on search value
+  useEffect(() => {
+    setHighlightedIndex(0);
+  }, [modelSearch]);
+
+  useEffect(() => {
+    if (!modelOpen) return;
+    const btn = itemRefs.current.get(highlightedIndex);
+    btn?.scrollIntoView({ block: "nearest" });
+  }, [highlightedIndex, modelOpen]);
+
+  useEffect(() => {
+    if (!modelOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!dropdownRef.current?.contains(e.target as Node)) {
+        setModelOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onMouseDown, true);
+    return () => document.removeEventListener("mousedown", onMouseDown, true);
+  }, [modelOpen]);
+
+  const handleModelChange = useCallback(
+    async (model: ModelInfo) => {
+      setModelOpen(false);
+      setCurrentModel(sessionId, model.id);
+      try {
+        await window.pivis.invoke("session.sendCommand", {
+          sessionId,
+          command: {
+            type: "set_model",
+            provider: model.provider ?? model.id.split("/")[0] ?? "",
+            modelId: model.id,
+          },
+        });
+      } catch (err) {
+        console.error("Failed to set model:", err);
+        addToast(sessionId, `Failed to set model: ${String(err)}`, "error");
+      }
+    },
+    [sessionId, addToast, setCurrentModel],
+  );
+
+  // ── Thinking level picker state ───────────────────────────────────
+  const [thinkingOpen, setThinkingOpen] = useState(false);
+  const thinkingDropdownRef = useRef<HTMLDivElement>(null);
+
+  const currentModelInfo = useMemo<ModelInfo | undefined>(
+    () => (session?.availableModels ?? []).find((m) => m.id === session?.currentModel),
+    [session?.availableModels, session?.currentModel],
+  );
+  const thinkingOptions: readonly ThinkingLevel[] = useMemo(() => {
+    if (currentModelInfo?.reasoning === false) {
+      return ["off"];
+    }
+    return THINKING_LEVELS;
+  }, [currentModelInfo]);
+  const thinkingDisabled = thinkingOptions.length <= 1;
+
+  const lastRequestedThinkingLevelRef = useRef<ThinkingLevel | null>(null);
+
+  const handleThinkingLevel = useCallback(
+    async (level: ThinkingLevel) => {
+      setThinkingOpen(false);
+      lastRequestedThinkingLevelRef.current = level;
+      const validated = ThinkingLevelSchema.parse(level);
+      setThinkingLevel(sessionId, validated);
+      try {
+        await window.pivis.invoke("session.sendCommand", {
+          sessionId,
+          command: { type: "set_thinking_level", level: validated },
+        });
+        const res = await window.pivis.invoke("session.sendCommand", {
+          sessionId,
+          command: { type: "get_state" },
+        });
+        const raw = res?.data as { thinkingLevel?: unknown } | undefined;
+        if (raw && typeof raw.thinkingLevel === "string") {
+          const confirmed = ThinkingLevelSchema.safeParse(raw.thinkingLevel);
+          if (confirmed.success) {
+            setThinkingLevel(sessionId, confirmed.data);
+            if (confirmed.data !== validated) {
+              addToast(
+                sessionId,
+                `Model does not support thinking level: ${validated} — using ${confirmed.data} instead.`,
+                "warning",
+              );
             }
-          >
-            {session?.thinkingLevel ?? "off"} ▾
-          </button>
-          {thinkingOpen && !thinkingDisabled && (
-            <div className="session-header__dropdown" ref={thinkingDropdownRef}>
-              {thinkingOptions.map((l) => {
-                const selected = session?.thinkingLevel === l;
-                return (
-                  <button
-                    type="button"
-                    key={l}
-                    role="option"
-                    aria-selected={selected}
-                    className={`session-header__dropdown-item${selected ? " session-header__dropdown-item--active" : ""}`}
-                    onClick={() => {
-                      void handleThinkingLevel(l);
-                      setThinkingOpen(false);
-                    }}
-                  >
-                    {l}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
+          }
+        }
+        lastRequestedThinkingLevelRef.current = null;
+      } catch (err) {
+        console.error("Failed to set thinking level:", err);
+        addToast(sessionId, `Failed to set thinking level: ${String(err)}`, "error");
+        lastRequestedThinkingLevelRef.current = null;
+      }
+    },
+    [sessionId, setThinkingLevel, addToast],
+  );
 
-        {/* Context meter — always rendered while a session is active. It
-            used to be gated on `contextPct !== null`, so switching to a
-            session whose stats hadn't been fetched yet (new / resumed /
-            cold) unmounted the whole block. Because the controls are
-            right-aligned, that unmount reflowed the model + thinking
-            pickers — they'd visibly jump out and back as stats arrived.
-            Keeping the block mounted (meter at 0% until stats land, meta
-            width reserved in CSS) makes session switches reflow-free. */}
-        {session && (
-          <div className="session-header__context">
-            <div
-              className="context-meter"
-              title={contextPct !== null ? `${contextPct}% context used` : "Context usage"}
-            >
-              <div
-                className={`context-meter__fill${(contextPct ?? 0) >= 90 ? " context-meter__fill--danger" : (contextPct ?? 0) >= 80 ? " context-meter__fill--warn" : ""}`}
-                style={{ width: `${contextPct ?? 0}%` }}
+  useEffect(() => {
+    if (session?.thinkingLevel == null) return;
+    if (lastRequestedThinkingLevelRef.current != null) {
+      lastRequestedThinkingLevelRef.current = null;
+    }
+  }, [session?.thinkingLevel]);
+
+  useEffect(() => {
+    if (!thinkingOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!thinkingDropdownRef.current?.contains(e.target as Node)) {
+        setThinkingOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onMouseDown, true);
+    return () => document.removeEventListener("mousedown", onMouseDown, true);
+  }, [thinkingOpen]);
+
+  const highlightMatch = useCallback((text: string, query: string): React.ReactNode => {
+    const idx = text.toLowerCase().indexOf(query.toLowerCase());
+    if (idx === -1) return text;
+    return (
+      <>
+        {text.slice(0, idx)}
+        <mark className="session-header__match">{text.slice(idx, idx + query.length)}</mark>
+        {text.slice(idx + query.length)}
+      </>
+    );
+  }, []);
+
+  const stats = session?.stats;
+  const contextPct =
+    stats?.contextUsage?.percent != null ? Math.round(stats.contextUsage.percent) : null;
+
+  return (
+    <div className="session-header__controls">
+      <ChangesButton sessionId={sessionId} />
+      {/* Model picker */}
+      <div className="session-header__model-picker">
+        <button
+          type="button"
+          className="session-header__picker-btn"
+          onClick={() => setModelOpen((v) => !v)}
+        >
+          {session?.currentModel ?? "model"} ▾
+        </button>
+        {modelOpen && (
+          <div className="session-header__dropdown" ref={dropdownRef}>
+            <div className="session-header__dropdown-search">
+              <input
+                ref={searchInputRef}
+                className="session-header__dropdown-search-input"
+                placeholder="Search models…"
+                value={modelSearch}
+                onChange={(e) => setModelSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  switch (e.key) {
+                    case "Escape":
+                      if (modelSearch) {
+                        setModelSearch("");
+                      } else {
+                        setModelOpen(false);
+                      }
+                      e.preventDefault();
+                      break;
+                    case "ArrowDown":
+                      e.preventDefault();
+                      setHighlightedIndex((i) => (i < filteredModels.length - 1 ? i + 1 : 0));
+                      break;
+                    case "ArrowUp":
+                      e.preventDefault();
+                      setHighlightedIndex((i) => (i > 0 ? i - 1 : filteredModels.length - 1));
+                      break;
+                    case "Home":
+                      e.preventDefault();
+                      setHighlightedIndex(0);
+                      break;
+                    case "End":
+                      e.preventDefault();
+                      setHighlightedIndex(filteredModels.length - 1);
+                      break;
+                    case "Enter":
+                      e.preventDefault();
+                      if (filteredModels[highlightedIndex]) {
+                        void handleModelChange(filteredModels[highlightedIndex]);
+                      }
+                      break;
+                  }
+                }}
+                role="combobox"
+                aria-expanded={modelOpen}
+                aria-controls="model-listbox"
+                aria-activedescendant={
+                  filteredModels.length > 0
+                    ? `model-option-${filteredModels[highlightedIndex]?.id}`
+                    : undefined
+                }
+                aria-autocomplete="list"
               />
             </div>
-            <span className="session-header__meta">
-              {stats?.tokens?.total != null && formatTokens(stats.tokens.total)}
-              {stats?.cost != null && ` · ${formatCost(stats.cost)}`}
-            </span>
+            {filteredModels.length === 0 ? (
+              <div className="session-header__dropdown-empty">No models found</div>
+            ) : (
+              <div ref={listRef} role="listbox" id="model-listbox">
+                {filteredModels.map((m, idx) => {
+                  const label = m.name ?? m.id;
+                  const q = modelSearch;
+                  const active = idx === highlightedIndex;
+                  const selected = session?.currentModel === m.id;
+                  return (
+                    <button
+                      type="button"
+                      key={m.id}
+                      ref={(el) => {
+                        if (el) itemRefs.current.set(idx, el);
+                        else itemRefs.current.delete(idx);
+                      }}
+                      id={`model-option-${m.id}`}
+                      role="option"
+                      aria-selected={selected}
+                      className={`session-header__dropdown-item${active ? " session-header__dropdown-item--highlighted" : ""}${selected ? " session-header__dropdown-item--active" : ""}`}
+                      onClick={() => void handleModelChange(m)}
+                      onMouseEnter={() => setHighlightedIndex(idx)}
+                    >
+                      {q ? highlightMatch(label, q) : label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </div>
+
+      {/* Thinking level — custom dropdown so its popup uses the
+          Catppuccin surface like the model selector, and its line-height
+          can accommodate descenders ('g' in "high") without clipping. */}
+      <div className="session-header__thinking">
+        <button
+          type="button"
+          className="session-header__picker-btn"
+          onClick={() => setThinkingOpen((v) => !v)}
+          disabled={thinkingDisabled}
+          title={
+            currentModelInfo?.reasoning === false
+              ? "Current model does not support reasoning."
+              : undefined
+          }
+        >
+          {session?.thinkingLevel ?? "off"} ▾
+        </button>
+        {thinkingOpen && !thinkingDisabled && (
+          <div className="session-header__dropdown" ref={thinkingDropdownRef}>
+            {thinkingOptions.map((l) => {
+              const selected = session?.thinkingLevel === l;
+              return (
+                <button
+                  type="button"
+                  key={l}
+                  role="option"
+                  aria-selected={selected}
+                  className={`session-header__dropdown-item${selected ? " session-header__dropdown-item--active" : ""}`}
+                  onClick={() => {
+                    void handleThinkingLevel(l);
+                    setThinkingOpen(false);
+                  }}
+                >
+                  {l}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Context meter — always rendered while a session is active. */}
+      <div className="session-header__context">
+        <div
+          className="context-meter"
+          title={contextPct !== null ? `${contextPct}% context used` : "Context usage"}
+        >
+          <div
+            className={`context-meter__fill${(contextPct ?? 0) >= 90 ? " context-meter__fill--danger" : (contextPct ?? 0) >= 80 ? " context-meter__fill--warn" : ""}`}
+            style={{ width: `${contextPct ?? 0}%` }}
+          />
+        </div>
+        <span className="session-header__meta">
+          {stats?.tokens?.total != null && formatTokens(stats.tokens.total)}
+          {stats?.cost != null && ` · ${formatCost(stats.cost)}`}
+        </span>
+      </div>
     </div>
+  );
+}
+
+/**
+ * Worktree chip — shown next to the session name when the session is
+ * running in a git worktree.
+ */
+function WorktreeChip({
+  sessionId,
+  name,
+  branch,
+  base,
+  path,
+}: {
+  sessionId: SessionId;
+  name: string;
+  branch: string;
+  base?: string | undefined;
+  path?: string | undefined;
+}): React.ReactElement {
+  const addToast = useSessionsStore((s) => s.addToast);
+  const detail = `${branch}${base ? ` · from ${base}` : ""}${path ? ` · ${path}` : ""}`;
+  // A real <button> so it's keyboard-operable (Enter/Space) and screen-reader
+  // friendly without hand-rolling key handlers.
+  return (
+    <button
+      type="button"
+      className="session-header__worktree-chip"
+      title={path ? `${detail} · click to copy path` : detail}
+      onClick={() => {
+        if (!path) return;
+        void navigator.clipboard.writeText(path);
+        addToast(sessionId, "Worktree path copied", "info");
+      }}
+    >
+      ⑂ {name}
+    </button>
   );
 }
 
@@ -583,8 +644,17 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
 // badge showing the changed-file count, or just `±` dimmed when the
 // working tree is clean.
 function ChangesButton({ sessionId }: { sessionId: SessionId }): React.ReactElement | null {
-  const session = useSessionsStore((s) => s.sessions.get(sessionId));
-  const live = session?.status === "ready" || session?.status === "starting";
+  const live = useSessionsStore((s) => {
+    const st = s.sessions.get(sessionId)?.status;
+    return st === "ready" || st === "starting";
+  });
+  // The git root (worktree path when present, else workspace path). Derived
+  // via a selector so the effect can depend on the primitive root directly
+  // rather than the whole session object.
+  const root = useSessionsStore((s) => {
+    const sess = s.sessions.get(sessionId);
+    return sess ? gitRootForSession(sess) : undefined;
+  });
   const badge = useDiffStore((s) => s.badge);
   const badgeKind = useDiffStore((s) => s.badgeKind);
   const refreshBadge = useDiffStore((s) => s.refreshBadge);
@@ -595,9 +665,7 @@ function ChangesButton({ sessionId }: { sessionId: SessionId }): React.ReactElem
   // burst of tool calls collapses into one git invocation. Mirrors the
   // existing stats effect in this file.
   useEffect(() => {
-    if (!live) return;
-    const root = session?.workspacePath;
-    if (!root) return;
+    if (!live || !root) return;
     void refreshBadge(root);
 
     const unsubEvent = window.pivis.on("session.event", ({ sessionId: sid, event }) => {
@@ -614,7 +682,7 @@ function ChangesButton({ sessionId }: { sessionId: SessionId }): React.ReactElem
       unsubEvent();
       window.removeEventListener("focus", onFocus);
     };
-  }, [live, session?.workspacePath, sessionId, refreshBadge]);
+  }, [live, root, sessionId, refreshBadge]);
 
   // Don't render when the workspace is not a repo (badge resolved
   // "not-a-repo" or "git-missing") or when the badge is still loading.

@@ -22,7 +22,7 @@ import type { AnyDiffModel, DiffModel, GapState } from "../lib/diff/diff-model.j
 import { buildDiffModel } from "../lib/diff/diff-model.js";
 import { tokenizeLines } from "../lib/diff/highlight.js";
 import { langForPath } from "../lib/diff/highlight.js";
-import { useSessionsStore } from "./sessions-store.js";
+import { gitRootForSession, useSessionsStore } from "./sessions-store.js";
 import { useSettingsStore } from "./settings-store.js";
 
 // ── Phases / state shape ──────────────────────────────────────────────
@@ -577,6 +577,7 @@ function handleChangesResult(
 export function openDiffForSession(sessionId: SessionId): void {
   const session = useSessionsStore.getState().sessions.get(sessionId);
   if (!session) return;
-  const root = session.workspacePath;
+  const root = gitRootForSession(session);
+  if (!root) return;
   useDiffStore.getState().openViewer(sessionId, root);
 }

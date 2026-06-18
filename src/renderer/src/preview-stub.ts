@@ -423,6 +423,14 @@ const stub = {
       }
       case "session.close":
         return undefined;
+      case "session.createWorktree":
+        return {
+          ok: true,
+          worktreePath: "/tmp/stub-worktree/swift-otter",
+          branch: "pivis/swift-otter",
+          name: "swift-otter",
+          base: "main",
+        };
       case "session.sendCommand":
         return handleSendCommand(req);
       case "app.versions":

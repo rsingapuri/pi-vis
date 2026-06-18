@@ -1,0 +1,74 @@
+/* ── WorktreeBar — pre-send worktree creation bar ──────────────────── */
+
+.worktree-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.571rem;
+  padding: 0.429rem 0.857rem;
+  background: var(--ctp-mantle);
+  border-bottom: 1px solid var(--ctp-surface0);
+  font-family: var(--font-display);
+  font-size: 0.857em;
+  color: var(--ctp-subtext0);
+}
+
+.worktree-bar__checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.429rem;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+
+.worktree-bar__checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 0.929rem;
+  height: 0.929rem;
+  margin: 0;
+  border: 1px solid var(--ctp-surface2);
+  border-radius: var(--mcm-radius-sm);
+  background: var(--ctp-base);
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.worktree-bar__checkbox:checked {
+  background: var(--ctp-mauve);
+  border-color: var(--ctp-mauve);
+}
+
+.worktree-bar__checkbox:checked::after {
+  content: "";
+  position: absolute;
+  left: 0.286rem;
+  top: 0.107rem;
+  width: 0.214rem;
+  height: 0.45rem;
+  border: solid var(--ctp-base);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.worktree-bar__checkbox:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.worktree-bar__spinner {
+  font-size: 0.857em;
+  color: var(--ctp-mauve);
+  animation: worktree-bar__pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes worktree-bar__pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}

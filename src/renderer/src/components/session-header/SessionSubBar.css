@@ -1,0 +1,24 @@
+/* ── SessionSubBar — compact-mode secondary controls strip ────────── */
+
+.session-sub-bar {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  padding: 0 0.857rem;
+  background: var(--ctp-mantle);
+  border-bottom: 1px solid var(--ctp-surface0);
+  flex-shrink: 0;
+  overflow: hidden;
+  gap: 0.571rem;
+}
+
+/* The controls cluster inside the sub-bar uses the same layout. */
+.session-sub-bar .session-header__controls {
+  gap: 0.571rem;
+  flex-wrap: wrap;
+}
+
+/* In the sub-bar, the context span can shrink more aggressively. */
+.session-sub-bar .session-header__meta {
+  font-size: 0.786em;
+}
