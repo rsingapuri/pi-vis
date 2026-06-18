@@ -420,7 +420,6 @@ export function Sidebar({
                       >
                         <span className="status-dot status-dot--cold" title="Not running" />
                         <span className="sidebar__session-name">{entry.name}</span>
-                        <span className="sidebar__session-meta">{entry.messageCount}msg</span>
                         <button
                           type="button"
                           className="sidebar__session-archive"
