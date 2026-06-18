@@ -90,6 +90,21 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const isStreaming = session?.isStreaming ?? false;
   const live = session?.status === "starting" || session?.status === "ready";
 
+  // Image-attach gating. Pi only forwards image content to models whose
+  // registry record lists "image" as an input modality; for a text-only
+  // model the image is silently dropped before the provider call. Mirror
+  // pi's TUI by disabling the attach affordance when the active model can't
+  // accept images. Unknown capability (model not yet in availableModels)
+  // defaults to allowed so we never block a vision model on a data race.
+  const currentModelInfo = useMemo<ModelInfo | undefined>(
+    () => (session?.availableModels ?? []).find((m) => m.id === session?.currentModel),
+    [session?.availableModels, session?.currentModel],
+  );
+  const modelSupportsImages = currentModelInfo?.input
+    ? currentModelInfo.input.includes("image")
+    : true;
+  const modelLabel = currentModelInfo?.name ?? session?.currentModel ?? "This model";
+
   // Editor injection: a useEffect on the nonce (monotonic) re-picks up the
   // same text without thrashing on identical payloads.
   useEffect(() => {
@@ -133,8 +148,12 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   // ── Attachment handling ─────────────────────────────────────────────
 
   const handleAttachClick = useCallback(() => {
+    if (!modelSupportsImages) {
+      addToast(sessionId, `${modelLabel} doesn't support image input`, "warning");
+      return;
+    }
     fileInputRef.current?.click();
-  }, []);
+  }, [modelSupportsImages, modelLabel, addToast, sessionId]);
 
   const handleFilesSelected = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -240,7 +259,19 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       setSlashIndex(0);
 
       const action = parseComposerInput(content, { discovered });
-      const imgs = attachments;
+      // Drop attachments the active model can't accept (e.g. the user
+      // attached an image, then switched to a text-only model). Pi would
+      // silently discard them before the provider call, so warn and submit
+      // the text alone rather than letting the user believe the image went.
+      let imgs = attachments;
+      if (imgs.length > 0 && !modelSupportsImages) {
+        addToast(
+          sessionId,
+          `${modelLabel} doesn't support image input — sending text only`,
+          "warning",
+        );
+        imgs = [];
+      }
 
       const finalAction =
         action.kind === "send-prompt" && imgs.length > 0
@@ -355,6 +386,8 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     seedHistory,
     refreshWorkspaceSessions,
     attachments,
+    modelSupportsImages,
+    modelLabel,
   ]);
 
   // ── Abort ──────────────────────────────────────────────────────────
@@ -510,10 +543,14 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         <div className="composer__input-box">
           <button
             type="button"
-            className="composer__attach-btn"
+            className={`composer__attach-btn ${modelSupportsImages ? "" : "composer__attach-btn--unsupported"}`}
             onClick={handleAttachClick}
-            aria-label="Attach images"
-            title="Attach images"
+            aria-label={
+              modelSupportsImages ? "Attach images" : `${modelLabel} doesn't support image input`
+            }
+            title={
+              modelSupportsImages ? "Attach images" : `${modelLabel} doesn't support image input`
+            }
             disabled={!live}
           >
             <svg viewBox="0 0 16 16" aria-hidden="true">

@@ -214,6 +214,19 @@
   color: var(--ctp-text);
 }
 
+/* Active model can't accept images: dim the affordance and signal it's
+   not actionable. The button stays clickable so the click surfaces an
+   explanatory toast (disabled buttons don't fire events or show tooltips). */
+.composer__attach-btn--unsupported {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.composer__attach-btn--unsupported:hover {
+  background: none;
+  color: var(--ctp-overlay0);
+}
+
 .composer__textarea-wrap {
   flex: 1;
   min-width: 0;

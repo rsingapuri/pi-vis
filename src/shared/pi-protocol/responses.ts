@@ -51,6 +51,11 @@ export const ModelInfoSchema = z
     provider: z.string().optional(),
     baseUrl: z.string().optional(),
     reasoning: z.boolean().optional(),
+    // Accepted input modalities. Pi's model registry defaults this to
+    // ["text"]; vision-capable models also list "image". The composer
+    // uses it to gate image attachment — sending an image to a text-only
+    // model silently drops it before the provider API call.
+    input: z.array(z.enum(["text", "image"])).optional(),
     contextWindow: z.number().optional(),
     maxTokens: z.number().optional(),
   })

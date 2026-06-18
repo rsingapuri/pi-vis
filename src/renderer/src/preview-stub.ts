@@ -319,8 +319,19 @@ async function handleSendCommand(req: unknown): Promise<unknown> {
     case "get_available_models":
       return response("get_available_models", {
         models: [
-          { id: DEMO_MODEL, name: "DeepSeek V4 Flash", provider: "deepseek", reasoning: true },
-          { id: DEMO_NON_REASONING_MODEL, name: "Fable 5", provider: "anthropic" },
+          {
+            id: DEMO_MODEL,
+            name: "DeepSeek V4 Flash",
+            provider: "deepseek",
+            reasoning: true,
+            input: ["text"],
+          },
+          {
+            id: DEMO_NON_REASONING_MODEL,
+            name: "Fable 5",
+            provider: "anthropic",
+            input: ["text", "image"],
+          },
         ],
         currentModelId,
       });
