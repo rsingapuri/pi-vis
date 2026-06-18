@@ -221,7 +221,7 @@ describe("executeAction — send-prompt vs steer", () => {
     const { deps, calls } = makeDeps();
     await executeAction(
       SID,
-      { kind: "send-prompt", text: "hello", commandSource: undefined },
+      { kind: "send-prompt", text: "hello" },
       deps,
     );
     const invocations = (deps.invoke as ReturnType<typeof vi.fn>).mock.calls;
@@ -235,7 +235,7 @@ describe("executeAction — send-prompt vs steer", () => {
     const { deps, calls } = makeDeps({ isStreaming: () => true });
     await executeAction(
       SID,
-      { kind: "send-prompt", text: "actually do X", commandSource: undefined },
+      { kind: "send-prompt", text: "actually do X" },
       deps,
     );
     const invocations = (deps.invoke as ReturnType<typeof vi.fn>).mock.calls;
