@@ -134,6 +134,7 @@ export function WorktreeBar({ sessionId }: WorktreeBarProps): React.ReactElement
         onToggleRemote={handleToggleRemote}
         disabled={!checked || creating}
         triggerLabel={checked ? (base ?? "branch") : (currentBranch ?? "branch")}
+        placement="top"
       />
 
       {creating && <span className="worktree-bar__spinner">Creating worktree…</span>}

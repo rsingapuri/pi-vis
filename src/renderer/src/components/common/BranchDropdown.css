@@ -48,6 +48,15 @@
   box-shadow: 0 0.286rem 1.143rem var(--ctp-shadow);
 }
 
+/* Opens upward — for triggers near the bottom of the viewport (WorktreeBar)
+   so the panel isn't clipped. Anchors to the trigger's bottom edge instead of
+   top, and flips the shadow direction. */
+.branch-dropdown__dropdown--top {
+  top: auto;
+  bottom: calc(100% + 0.286rem);
+  box-shadow: 0 -0.286rem 1.143rem var(--ctp-shadow);
+}
+
 .branch-dropdown__search {
   position: sticky;
   top: 0;

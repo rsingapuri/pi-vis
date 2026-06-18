@@ -21,6 +21,14 @@ interface BranchDropdownProps {
   leadingItem?: { label: string } | undefined;
   disabled?: boolean;
   triggerLabel?: string;
+  /**
+   * Which side of the trigger the panel opens on.
+   * "bottom" (default) is correct for controls near the top of the window
+   * (e.g. the diff viewer's base-branch picker). "top" is for controls near
+   * the bottom (e.g. the WorktreeBar above the composer) so the panel isn't
+   * clipped by the viewport edge.
+   */
+  placement?: "bottom" | "top";
 }
 
 function highlightMatch(text: string, query: string): React.ReactNode {
@@ -45,6 +53,7 @@ export function BranchDropdown({
   leadingItem,
   disabled = false,
   triggerLabel,
+  placement = "bottom",
 }: BranchDropdownProps): React.ReactElement {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -187,7 +196,9 @@ export function BranchDropdown({
         {label} ▾
       </button>
       {open && (
-        <div className="branch-dropdown__dropdown">
+        <div
+          className={`branch-dropdown__dropdown${placement === "top" ? " branch-dropdown__dropdown--top" : ""}`}
+        >
           <div className="branch-dropdown__search">
             <input
               ref={searchInputRef}
