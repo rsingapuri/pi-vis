@@ -98,6 +98,9 @@ export interface ExecuteDeps {
   getSessionName: (sessionId: SessionId) => string | undefined;
   /** Look up the session's current model id (for last-used model echo). */
   getCurrentModel: (sessionId: SessionId) => string | undefined;
+  /** Whether the session is mid-turn (agent running). Used to send a
+   *  `steer` instead of queuing a new `prompt` while the model works. */
+  isStreaming: (sessionId: SessionId) => boolean;
   /** Look up the active session's workspace path (for /resume). */
   getSessionWorkspacePath: (sessionId: SessionId) => string | undefined;
   /** List sessions in a workspace (for /resume). */
@@ -221,6 +224,33 @@ async function executeSendPrompt(
       action.text,
       action.images?.map((i) => i.dataUrl),
     );
+  }
+
+  // If the model is mid-turn, send a `steer` instead of a new `prompt`.
+  // A `prompt` sent while busy is queued by pi and only runs after the
+  // current turn finishes; `steer` injects the message into the running
+  // turn so the user's course correction takes effect immediately.
+  if (deps.isStreaming(sessionId)) {
+    const steerCommand: {
+      type: "steer";
+      message: string;
+      images?: Array<{ type: "image"; data: string; mimeType: string }>;
+    } = {
+      type: "steer",
+      message: action.text,
+    };
+    if (action.images && action.images.length > 0) {
+      steerCommand.images = action.images.map((i) => ({
+        type: "image" as const,
+        data: i.data,
+        mimeType: i.mimeType,
+      }));
+    }
+    await deps.invoke("session.sendCommand", {
+      sessionId,
+      command: steerCommand,
+    });
+    return;
   }
 
   deps.setStreaming(sessionId, true);

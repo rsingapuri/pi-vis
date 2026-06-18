@@ -357,6 +357,8 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           useSessionsStore.getState().sessions.get(sid)?.sessionName,
         getCurrentModel: (sid: SessionId) =>
           useSessionsStore.getState().sessions.get(sid)?.currentModel,
+        isStreaming: (sid: SessionId) =>
+          useSessionsStore.getState().sessions.get(sid)?.isStreaming ?? false,
         getSessionWorkspacePath: (sid: SessionId) =>
           useSessionsStore.getState().sessions.get(sid)?.workspacePath,
         listSessions: (p: string) =>

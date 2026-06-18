@@ -51,6 +51,7 @@ function makeDeps(overrides: Partial<ExecuteDeps> = {}): {
       ] as never,
     getSessionName: () => "Existing Name",
     getCurrentModel: () => "claude-sonnet-4",
+    isStreaming: () => false,
     getSessionWorkspacePath: () => "/tmp/ws",
     listSessions: vi.fn(async () => []) as ExecuteDeps["listSessions"],
     ...overrides,
@@ -181,6 +182,38 @@ describe("executeAction — bash", () => {
     const { deps, calls } = makeDeps();
     await executeAction(SID, { kind: "bash", command: "ls", excludeFromContext: false }, deps);
     expect(calls["addBashCommand"]).toEqual([[SID, "ls"]]);
+  });
+});
+
+describe("executeAction — send-prompt vs steer", () => {
+  it("sends a `prompt` command when idle", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(
+      SID,
+      { kind: "send-prompt", text: "hello", commandSource: undefined },
+      deps,
+    );
+    const invocations = (deps.invoke as ReturnType<typeof vi.fn>).mock.calls;
+    const send = invocations.find((c) => c[0] === "session.sendCommand");
+    expect(send).toBeDefined();
+    expect(send![1].command.type).toBe("prompt");
+    expect(calls["setStreaming"]).toEqual([[SID, true]]);
+  });
+
+  it("sends a `steer` command (and does not set streaming) when already streaming", async () => {
+    const { deps, calls } = makeDeps({ isStreaming: () => true });
+    await executeAction(
+      SID,
+      { kind: "send-prompt", text: "actually do X", commandSource: undefined },
+      deps,
+    );
+    const invocations = (deps.invoke as ReturnType<typeof vi.fn>).mock.calls;
+    const send = invocations.find((c) => c[0] === "session.sendCommand");
+    expect(send).toBeDefined();
+    expect(send![1].command.type).toBe("steer");
+    expect(send![1].command.message).toBe("actually do X");
+    // Streaming state must not be re-toggled mid-turn.
+    expect(calls["setStreaming"]).toBeUndefined();
   });
 });
 
