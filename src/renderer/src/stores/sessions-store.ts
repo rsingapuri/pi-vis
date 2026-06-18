@@ -28,6 +28,14 @@ export interface SessionViewState {
   error?: string | undefined;
   transcript: TranscriptState;
   isStreaming: boolean;
+  /** Wall-clock timestamp (ms) when the current turn started running —
+   *  set on the *first* agent_start of a turn (when we weren't already
+   *  streaming) and cleared only on a final (non-retrying) agent_end. Auto
+   *  retries (agent_end with willRetry, and the agent_start pi re-emits for
+   *  the retry attempt) deliberately do NOT reset this, so the working
+   *  timer keeps counting across retries and stops only when the turn truly
+   *  finishes. */
+  runningSince?: number | undefined;
   /**
    * Unread turn-result marker for the sidebar status dot. Set to "done" or
    * "error" when a turn finishes (see applyEvent's agent_end handling). It
@@ -275,6 +283,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       let isStreaming = s.isStreaming;
       let unreadStatus = s.unreadStatus;
       let turnErrored = s.turnErrored;
+      let runningSince = s.runningSince;
       // Pi (and its extensions) drive the session name; it gets reported as
       // a `session_info_changed` event. Pi rejects empty names server-side,
       // so `name` is always a non-empty string.
@@ -286,6 +295,11 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         // actively engaging with the session again.
         turnErrored = false;
         unreadStatus = undefined;
+        // Stamp the timer on a genuinely new turn. A retrying turn keeps
+        // `isStreaming` true across its willRetry agent_end, so the retry's
+        // agent_start finds `isStreaming` already true and skips this —
+        // the timer keeps counting from the original start.
+        if (!s.isStreaming) runningSince = Date.now();
       }
       // Track provider/model failures within the turn so agent_end can decide
       // the dot color.
@@ -298,10 +312,12 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
           // agent is still going) and wipe the error flag so the next attempt
           // starts clean. The terminal dot is decided only by the final
           // (non-retrying) agent_end below, regardless of whether the retry
-          // re-emits agent_start.
+          // re-emits agent_start. The working timer also keeps counting.
           turnErrored = false;
         } else {
           isStreaming = false;
+          // The turn truly finished — stop the working timer.
+          runningSince = undefined;
           // A finished turn surfaces an unread "done"/"error" marker. For a
           // background session this is a notification that persists until the
           // user clicks in and then leaves (setActiveSession) or starts a new
@@ -319,6 +335,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         isStreaming,
         unreadStatus,
         turnErrored,
+        runningSince,
         sessionName,
         thinkingLevel,
       });
@@ -388,7 +405,18 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
       if (!s) return {};
-      sessions.set(sessionId, { ...s, isStreaming });
+      // Keep the working timer in lockstep with the optimistic streaming
+      // flag the composer sets at send time (ahead of the real agent_start):
+      // start it on the first send of a turn, stop it when streaming ends.
+      // The applyEvent path does the authoritative bookkeeping for retries;
+      // here we only stamp/clear when not already done so.
+      const runningSince =
+        isStreaming && s.runningSince == null
+          ? Date.now()
+          : !isStreaming
+            ? undefined
+            : s.runningSince;
+      sessions.set(sessionId, { ...s, isStreaming, runningSince });
       return { sessions };
     });
   },
@@ -596,6 +624,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         sessionFile,
         transcript: createTranscriptState(),
         isStreaming: false,
+        runningSince: undefined,
         unreadStatus: undefined,
         turnErrored: false,
         ...(sessionName !== undefined ? { sessionName } : {}),

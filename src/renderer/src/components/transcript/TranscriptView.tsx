@@ -1,6 +1,6 @@
 import type { SessionId } from "@shared/ids.js";
 import type React from "react";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../../lib/markdown.js";
 import { htmlToMarkdown } from "../../lib/turndown.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
@@ -107,6 +107,43 @@ function renderArgs(input: Record<string, unknown> | undefined): React.ReactNode
 
 function pluralLines(n: number): string {
   return n === 1 ? "line" : "lines";
+}
+
+/** Formats a millisecond duration as e.g. "12m 37s", "4s", or "1h 05m". */
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
+/** The working indicator row. Shows a spinner plus a live "Running for …"
+ *  countdown driven by `runningSince`. The timer is started on the first
+ *  agent_start of a turn and stopped only on a final agent_end; retries do
+ *  not reset it, so the elapsed time reflects the full wait across retries. */
+function WorkingRow({ sessionId }: { sessionId: SessionId }): React.ReactElement {
+  const runningSince = useSessionsStore((s) => s.sessions.get(sessionId)?.runningSince);
+  const [, setTick] = useState(0);
+  // Re-render once a second while a turn is actively running so the elapsed
+  // display stays live. `runningSince` is undefined between turns, in which
+  // case there's nothing to count and no interval is scheduled.
+  useEffect(() => {
+    if (runningSince == null) return;
+    const id = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [runningSince]);
+
+  const label =
+    runningSince != null ? `Running for ${formatDuration(Date.now() - runningSince)}` : "Working…";
+  return (
+    <div className="working-row">
+      <span className="spinner" />
+      <span className="working-row__label">{label}</span>
+    </div>
+  );
 }
 
 function Chevron(): React.ReactElement {
@@ -609,12 +646,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
               return null;
           }
         })}
-        {isStreaming && (
-          <div className="working-row">
-            <span className="spinner" />
-            <span className="working-row__label">Working…</span>
-          </div>
-        )}
+        {isStreaming && <WorkingRow sessionId={sessionId} />}
       </div>
     </div>
   );
