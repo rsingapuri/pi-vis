@@ -157,6 +157,9 @@ export async function executeAction(
     case "quit":
       await executeQuit(sessionId, deps);
       return;
+    case "reload":
+      await executeReload(sessionId, deps);
+      return;
     case "open-app-settings":
       deps.openAppSettings();
       return;
@@ -528,6 +531,27 @@ async function executeCopy(sessionId: SessionId, deps: ExecuteDeps): Promise<voi
 
 async function executeQuit(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
   await deps.closeSessionTab(sessionId);
+}
+
+async function executeReload(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
+  if (deps.isStreaming(sessionId)) {
+    deps.addToast(
+      sessionId,
+      "Wait for the current response to finish before reloading.",
+      "warning",
+    );
+    return;
+  }
+  const res = await deps.invoke("session.reload", { sessionId });
+  if (!res.success) {
+    deps.addToast(sessionId, res.error ?? "Failed to reload session", "error");
+    return;
+  }
+  deps.addToast(
+    sessionId,
+    "Reloaded settings, extensions, skills, prompts, and themes.",
+    "success",
+  );
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────

@@ -130,6 +130,19 @@ export function initIpc(win: BrowserWindow): void {
     registry?.activateSession(args.sessionId, piInfo.path, loginShellEnv);
   });
 
+  ipcMain.handle("session.reload", async (_evt, args: { sessionId: SessionId }) => {
+    const settings = getSettings();
+    const piInfo = await locatePi(settings.piBinaryPath);
+    if (!piInfo) return { success: false, error: "pi binary not found" };
+    const loginShellEnv = await getLoginShellEnv();
+    try {
+      registry?.reloadSession(args.sessionId, piInfo.path, loginShellEnv);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   ipcMain.handle("session.close", async (_evt, args: { sessionId: SessionId }) => {
     registry?.closeSession(args.sessionId);
   });

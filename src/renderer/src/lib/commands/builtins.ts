@@ -47,6 +47,12 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandDef[] = [
   { name: "settings", argHint: "", description: "Open app settings", takesArgs: false },
   { name: "diff", argHint: "", description: "View working tree changes", takesArgs: false },
   { name: "login", argHint: "", description: "Sign in to a provider", takesArgs: false },
+  {
+    name: "reload",
+    argHint: "",
+    description: "Reload settings, extensions, skills, prompts, and themes",
+    takesArgs: false,
+  },
 ];
 
 /**
@@ -64,7 +70,6 @@ export const UNSUPPORTED_TUI_COMMANDS: ReadonlySet<string> = new Set([
   "changelog",
   "hotkeys",
   "debug",
-  "reload",
   "scoped-models",
 ]);
 

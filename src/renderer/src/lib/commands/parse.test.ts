@@ -120,6 +120,12 @@ describe("parseComposerInput — built-ins", () => {
     expect(parseComposerInput("/quit", { discovered: new Map() })).toEqual({ kind: "quit" });
   });
 
+  it("/reload → reload", () => {
+    expect(parseComposerInput("/reload", { discovered: new Map() })).toEqual({
+      kind: "reload",
+    });
+  });
+
   it("/settings → open-app-settings", () => {
     expect(parseComposerInput("/settings", { discovered: new Map() })).toEqual({
       kind: "open-app-settings",
@@ -173,7 +179,6 @@ describe("parseComposerInput — unsupported TUI commands", () => {
     "changelog",
     "hotkeys",
     "debug",
-    "reload",
     "scoped-models",
   ])("/%s → unsupported", (name) => {
     expect(parseComposerInput(`/${name}`, { discovered: new Map() })).toEqual({

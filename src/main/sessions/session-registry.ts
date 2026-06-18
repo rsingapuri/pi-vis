@@ -226,6 +226,35 @@ export class SessionRegistry {
   }
 
   /**
+   * Reload a session: restart its pi process so settings, keybindings,
+   * extensions, skills, prompts, and themes are re-read from disk. The
+   * session record (and its sessionFile) is preserved, so pi resumes the
+   * same session; the renderer's transcript is untouched.
+   *
+   * pi's TUI `/reload` calls `session.reload()` in-process, but RPC mode
+   * does not expose `reload` as a sendable command — restarting the
+   * subprocess is the equivalent available over RPC. Refuses while the
+   * session is mid-turn (mirrors pi's "Wait for the current response to
+   * finish before reloading." guard).
+   */
+  reloadSession(sessionId: SessionId, piPath: string, env?: Record<string, string>): void {
+    const record = this.sessions.get(sessionId);
+    if (!record) {
+      throw new Error(`Unknown session: ${sessionId}`);
+    }
+    if (record.busy) {
+      throw new Error("Wait for the current response to finish before reloading.");
+    }
+    // Stop the current process. Clearing record.proc first means the
+    // generation guard in the exit/error handlers swallows the upcoming
+    // events, and activateSession sees no live proc and re-spawns.
+    const proc = record.proc;
+    record.proc = undefined;
+    proc?.stop();
+    this.activateSession(sessionId, piPath, env);
+  }
+
+  /**
    * Deactivate a session: stop its pi process and set status to "cold"
    * while keeping the record and byFile mapping intact so the session
    * stays resumable (re-activation spawns a fresh process).

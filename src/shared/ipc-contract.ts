@@ -55,6 +55,10 @@ export interface IpcInvokeContract {
       | { outcome: "missing" };
   };
   "session.activate": { req: { sessionId: SessionId }; res: undefined };
+  "session.reload": {
+    req: { sessionId: SessionId };
+    res: { success: true } | { success: false; error: string };
+  };
   "session.close": { req: { sessionId: SessionId }; res: undefined };
   "session.loadHistory": { req: { sessionId: SessionId }; res: TranscriptBlock[] };
   "session.sendCommand": {

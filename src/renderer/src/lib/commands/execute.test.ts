@@ -177,6 +177,37 @@ describe("executeAction — quit / settings / unsupported", () => {
   });
 });
 
+describe("executeAction — reload", () => {
+  it("/reload invokes session.reload and toasts success", async () => {
+    const { deps, calls } = makeDeps();
+    await executeAction(SID, { kind: "reload" }, deps);
+    expect(calls["invoke"]).toEqual([[{ sessionId: SID }]]);
+    expect(calls["addToast"]).toEqual([
+      [SID, "Reloaded settings, extensions, skills, prompts, and themes.", "success"],
+    ]);
+  });
+
+  it("/reload warns and does not invoke while streaming", async () => {
+    const { deps, calls } = makeDeps({ isStreaming: () => true });
+    await executeAction(SID, { kind: "reload" }, deps);
+    expect(calls["invoke"]).toBeUndefined();
+    expect(calls["addToast"]).toEqual([
+      [SID, "Wait for the current response to finish before reloading.", "warning"],
+    ]);
+  });
+
+  it("/reload toasts error when the reload fails", async () => {
+    const { deps, calls } = makeDeps({
+      invoke: vi.fn(async () => ({
+        success: false,
+        error: "pi binary not found",
+      })) as ExecuteDeps["invoke"],
+    });
+    await executeAction(SID, { kind: "reload" }, deps);
+    expect(calls["addToast"]).toEqual([[SID, "pi binary not found", "error"]]);
+  });
+});
+
 describe("executeAction — bash", () => {
   it("adds a bash block and runs the command", async () => {
     const { deps, calls } = makeDeps();
@@ -309,7 +340,6 @@ describe("executeAction — unsupported exposes nothing via invoke", () => {
     "changelog",
     "hotkeys",
     "debug",
-    "reload",
     "scoped-models",
   ])("always toasts for /%s", async (name) => {
     const { deps, calls } = makeDeps();

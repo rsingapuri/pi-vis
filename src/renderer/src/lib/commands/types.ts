@@ -36,6 +36,7 @@ export type ComposerAction =
   | { kind: "resume" }
   | { kind: "copy" }
   | { kind: "quit" }
+  | { kind: "reload" }
   | { kind: "open-app-settings" }
   | { kind: "open-login" }
   | { kind: "git-diff" }

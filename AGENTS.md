@@ -125,7 +125,7 @@ src/
 - `pi.locate` — find pi binary
 - `workspace.pick` / `workspace.recents` / `workspace.remove` / `workspace.listSessions`
 - `session.open` → `{ outcome: "opened"|"existing"|"missing", sessionId, ... }`
-- `session.activate` / `session.close` / `session.loadHistory`
+- `session.activate` / `session.reload` / `session.close` / `session.loadHistory`
 - `session.sendCommand` — sends PiRpcCommand, returns PiRpcResponse
 - `session.respondToUiRequest` — sends ExtensionUiResponse back to pi
 - `settings.get` / `settings.set`
@@ -171,11 +171,15 @@ All renderer state uses **Zustand** stores:
 5. **Close**: `session.close` → process killed, session record retained for resume
 6. **Idle eviction**: MAX_IDLE_PROCESSES = 10; oldest inactive process stopped when exceeded
 
+### Reload
+
+`/reload` restarts a session's pi subprocess so settings, keybindings, extensions, skills, prompts, and themes are re-read from disk. pi's TUI `/reload` calls `session.reload()` in-process, but **RPC mode does not expose `reload` as a sendable command** — it's only wired as an extension command-context action. Restarting the subprocess is the equivalent available over RPC. The session record and its `sessionFile` are preserved (so pi resumes the same session), and the renderer's transcript is untouched. Refuses while the session is mid-turn (mirrors pi's "Wait for the current response to finish before reloading." guard). On success, pi re-emits `session_info_changed` and the renderer refreshes commands.
+
 ### Command System (`renderer/src/lib/commands/`)
 
 The composer parses input into typed `ComposerAction` discriminated unions:
 - `!text` → bash command
-- `/command [args]` → slash command (builtins mirror pi's TUI: model, compact, name, session, new, export, fork, clone, resume, copy, quit, settings, diff, login)
+- `/command [args]` → slash command (builtins mirror pi's TUI: model, compact, name, session, new, export, fork, clone, resume, copy, quit, settings, diff, login, reload)
 - Otherwise → user prompt
 
 Builtins are defined in `builtins.ts` (mirrors pi's interactive-mode.js). Discovered commands (extensions/prompts/skills) come from `get_commands` RPC. `parse.ts` resolves input to an action; `execute.ts` dispatches it.

@@ -176,6 +176,54 @@ describe("SessionRegistry", () => {
     expect(registry.getSession(id)?.status).toBe("ready");
   }, 15_000);
 
+  it("reloadSession restarts the pi process and re-reaches ready", async () => {
+    const id = registry.openSession(workspaceDir);
+    registry.activateSession(id, FAKE_PI);
+    await waitFor(
+      () => statusChanges.some((s) => s.sessionId === id && s.status === "ready"),
+      5000,
+      "initial ready",
+    );
+    const first = registry.getSession(id)?.proc;
+    expect(first).toBeDefined();
+    if (!first) return;
+
+    statusChanges.length = 0;
+    registry.reloadSession(id, FAKE_PI);
+
+    // A fresh process is spawned (different instance)...
+    const second = registry.getSession(id)?.proc;
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+    // ...and it climbs back to ready.
+    await waitFor(
+      () => statusChanges.some((s) => s.sessionId === id && s.status === "ready"),
+      5000,
+      "ready after reload",
+    );
+    expect(registry.getSession(id)?.status).toBe("ready");
+
+    // Stale exit from the old proc must not perturb the reloaded session.
+    await new Promise((r) => setTimeout(r, 500));
+    const staleExited = statusChanges.filter((s) => s.sessionId === id && s.status === "exited");
+    expect(staleExited).toHaveLength(0);
+  }, 15_000);
+
+  it("reloadSession refuses while the session is mid-turn", async () => {
+    const id = registry.openSession(workspaceDir);
+    registry.activateSession(id, FAKE_PI);
+    const proc = registry.getSession(id)?.proc;
+    expect(proc).toBeDefined();
+    if (!proc) return;
+
+    void proc.sendCommand({ type: "prompt", message: "hello" });
+    await waitFor(() => registry.getSession(id)?.busy === true, 5000, "busy=true");
+
+    expect(() => registry.reloadSession(id, FAKE_PI)).toThrow(/finish before reloading/);
+    // The live proc is untouched.
+    expect(registry.getSession(id)?.proc).toBe(proc);
+  }, 15_000);
+
   it("closeSession removes the record and frees the byFile slot", async () => {
     const fileA = join(sessionsDir, "test-a.jsonl");
     fs.writeFileSync(fileA, "");

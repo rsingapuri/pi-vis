@@ -156,6 +156,8 @@ function dispatchArgless(name: string): ComposerAction {
       return { kind: "copy" };
     case "quit":
       return { kind: "quit" };
+    case "reload":
+      return { kind: "reload" };
     case "settings":
       return { kind: "open-app-settings" };
     case "login":
