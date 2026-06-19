@@ -27,30 +27,41 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
   const setSessionFile = useSessionsStore((s) => s.setSessionFile);
   const refreshWorkspaceSessions = useSessionsStore((s) => s.refreshWorkspaceSessions);
   const setThinkingLevel = useSessionsStore((s) => s.setThinkingLevel);
-  const { settings, update: updateSettings } = useSettingsStore();
   const resumed = session?.resumed ?? false;
 
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const nameInputRef = useRef<HTMLInputElement>(null);
 
-  const modelAppliedRef = useRef(false);
-
   // Cold-aware gate. A boolean on purpose: starting→ready doesn't re-fire
   // effects, but cold→starting does. Sessions whose process is alive get
   // to drive their models/stats/get_state effects.
   const live = session?.status === "starting" || session?.status === "ready";
 
-  // Load models and apply last-used model preference
+  // Load models and apply last-used model preference.
+  //
+  // The preference is captured ONCE, non-reactively, at session birth (the
+  // live transition) — it is deliberately NOT a reactive dependency. This is
+  // what makes "remember last selected model" per-session: picking a model in
+  // session A updates the global preference, but must NOT re-trigger this
+  // effect in other already-live new sessions and clobber a manual choice
+  // made there. Reading via getState() (instead of subscribing) keeps the
+  // effect from re-running on unrelated preference changes.
   useEffect(() => {
     if (!live) return;
-    modelAppliedRef.current = false;
+    // "Remember last selected model" applies ONLY to brand-new sessions.
+    // Resumed sessions keep the model pi restored from the session file
+    // (currentModelId below) — they must not be clobbered by the global
+    // last-used preference.
+    const lum = resumed ? undefined : useSettingsStore.getState().settings.lastUsedModel;
+    let cancelled = false;
     window.pivis
       .invoke("session.sendCommand", {
         sessionId,
         command: { type: "get_available_models" },
       })
       .then((res) => {
+        if (cancelled) return;
         const raw = res.data as { models?: unknown[]; currentModelId?: string } | undefined;
         const list = Array.isArray(raw?.models) ? raw.models : [];
         const models = list
@@ -61,14 +72,6 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
           .filter((m): m is ModelInfo => m !== null);
         setAvailableModels(sessionId, models);
 
-        if (modelAppliedRef.current) return;
-        modelAppliedRef.current = true;
-
-        // "Remember last selected model" applies ONLY to brand-new sessions.
-        // Resumed sessions keep the model pi restored from the session file
-        // (currentModelId below) — they must not be clobbered by the global
-        // last-used preference.
-        const lum = resumed ? undefined : settings.lastUsedModel;
         const match = lum ? models.find((m) => m.id === lum.modelId) : undefined;
 
         if (match?.provider) {
@@ -87,13 +90,25 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
         }
       })
       .catch(() => {});
-  }, [sessionId, live, resumed, settings.lastUsedModel, setAvailableModels, setCurrentModel]);
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, live, resumed, setAvailableModels, setCurrentModel]);
 
   // Authoritative state on mount / session switch: seed the store with pi's
   // current model and thinking level. This makes the dropdown match pi even
   // before any user interaction or `thinking_level_changed` event arrives.
+  //
+  // The last-used thinking-level preference is captured ONCE, non-reactively,
+  // at session birth (the live transition) — same rationale as the model
+  // effect above: a thinking-level change in another live session must not
+  // re-run this effect (which would both clobber a manual choice here AND
+  // needlessly repeat the get_state round-trip for every live session).
   useEffect(() => {
     if (!live) return;
+    // "Remember last selected thinking level" applies ONLY to new sessions;
+    // resumed sessions keep the level pi restored from the session file.
+    const ltl = resumed ? undefined : useSettingsStore.getState().settings.lastUsedThinkingLevel;
     let cancelled = false;
     void window.pivis
       .invoke("session.sendCommand", { sessionId, command: { type: "get_state" } })
@@ -114,16 +129,13 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
             setThinkingLevel(sessionId, parsed.data);
           }
         }
-        // "Remember last selected thinking level" applies ONLY to new
-        // sessions; resumed sessions keep the level pi restored from the
-        // session file (seeded above).
-        if (!resumed && settings.lastUsedThinkingLevel) {
+        if (ltl) {
           window.pivis
             .invoke("session.sendCommand", {
               sessionId,
-              command: { type: "set_thinking_level", level: settings.lastUsedThinkingLevel },
+              command: { type: "set_thinking_level", level: ltl },
             })
-            .then(() => setThinkingLevel(sessionId, settings.lastUsedThinkingLevel!))
+            .then(() => setThinkingLevel(sessionId, ltl))
             .catch(() => {});
         }
         if (raw.model && typeof raw.model.id === "string") {
@@ -140,16 +152,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
     return () => {
       cancelled = true;
     };
-  }, [
-    sessionId,
-    live,
-    resumed,
-    settings.lastUsedThinkingLevel,
-    setThinkingLevel,
-    setCurrentModel,
-    setSessionName,
-    setSessionFile,
-  ]);
+  }, [sessionId, live, resumed, setThinkingLevel, setCurrentModel, setSessionName, setSessionFile]);
 
   // Poll stats after each agent_end and periodically while streaming
   useEffect(() => {
