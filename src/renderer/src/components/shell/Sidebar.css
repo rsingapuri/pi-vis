@@ -272,20 +272,25 @@
 
 .sidebar__remove-workspace {
   position: absolute;
+  /* Anchored to the header's top padding and given the header content's
+     height (name + gap + path) so the icon centers vertically against the
+     workspace card — not the full workspace (which is taller when active). */
   top: 0.571rem;
   right: 0.571rem;
+  height: 2.214rem;
   background: none;
   border: none;
   cursor: pointer;
   color: var(--ctp-overlay0);
   font-size: 1.143em; /* ≈16px @ 14px root */
   line-height: 1;
-  padding: 0.143rem 0.286rem;
+  padding: 0 0.286rem;
   display: none;
+  align-items: center;
 }
 
 .sidebar__workspace:hover .sidebar__remove-workspace {
-  display: block;
+  display: flex;
 }
 
 .sidebar__remove-workspace:hover {
