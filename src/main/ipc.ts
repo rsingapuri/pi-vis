@@ -15,7 +15,13 @@ import {
   startAuthWatch,
   stopAuthWatch,
 } from "./auth.js";
-import { createWorktree, getBranches, getChanges, getFileDiff } from "./git/git.js";
+import {
+  createWorktree,
+  getBranches,
+  getChanges,
+  getChangesCount,
+  getFileDiff,
+} from "./git/git.js";
 import { clearPiLocationCache, locatePi } from "./pi/locate-pi.js";
 import { initPty, killAllPtys, killPty, resizePty, startPty, writePty } from "./pty.js";
 import { loadHistory } from "./sessions/history-loader.js";
@@ -317,6 +323,14 @@ export function initIpc(win: BrowserWindow): void {
   ipcMain.handle("git.changes", async (_evt, args: { root: string; base?: string }) => {
     try {
       return await getChanges(args.root, args.base);
+    } catch (err) {
+      return { kind: "error", message: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle("git.changesCount", async (_evt, args: { root: string }) => {
+    try {
+      return await getChangesCount(args.root);
     } catch (err) {
       return { kind: "error", message: err instanceof Error ? err.message : String(err) };
     }

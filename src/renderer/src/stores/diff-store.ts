@@ -11,6 +11,7 @@
 import type {
   GitBranchesResult,
   GitChangedFile,
+  GitChangesCountResult,
   GitChangesResult,
   GitFileDiffResult,
 } from "@shared/git.js";
@@ -96,7 +97,6 @@ export interface DiffStore {
   railWidth: number;
   setRailWidth: (w: number) => void;
   refreshBadge: (root: string) => Promise<void>;
-  clearBadge: () => void;
   loadBranches: () => Promise<void>;
   setBase: (base: string | null) => void;
   setIncludeRemoteBranches: (v: boolean) => void;
@@ -138,6 +138,13 @@ export const useDiffStore = create<DiffStore>((set, get) => {
   // Debounced badge refresh — coalesce multiple rapid calls into one.
   let badgeDebounce: ReturnType<typeof setTimeout> | null = null;
   let badgeGeneration = 0;
+  // Single-flight: at most one badge scan runs at a time. On a huge repo a
+  // scan can take seconds; without this guard, the every-tool-call refresh
+  // would spawn overlapping scans that contend for disk and pile up. A
+  // request arriving mid-scan just records the latest root; one trailing
+  // scan runs when the in-flight one finishes.
+  let badgeInFlight = false;
+  let badgePendingRoot: string | null = null;
 
   return {
     // ── viewer state ────────────────────────────────────────────────
@@ -389,21 +396,13 @@ export const useDiffStore = create<DiffStore>((set, get) => {
     },
 
     refreshBadge: async (root) => {
-      // Debounce: rapid calls (e.g. multiple agent_end events) collapse
-      // to a single IPC roundtrip.
+      // Debounce coalesces a burst (e.g. multiple agent_end events) into one
+      // scheduled scan; the single-flight runner then bounds concurrency.
       if (badgeDebounce !== null) clearTimeout(badgeDebounce);
       badgeDebounce = setTimeout(() => {
         badgeDebounce = null;
-        void doBadgeRefresh(root, ++badgeGeneration);
+        runBadge(root);
       }, 500);
-    },
-
-    clearBadge: () => {
-      if (badgeDebounce !== null) {
-        clearTimeout(badgeDebounce);
-        badgeDebounce = null;
-      }
-      set({ badge: null, badgeKind: "loading" });
     },
 
     // ── Base branch selection ──────────────────────────────────────
@@ -466,11 +465,61 @@ export const useDiffStore = create<DiffStore>((set, get) => {
     }, 0);
   }
 
+  // Single-flight wrapper around doBadgeRefresh: bounds badge scans to one at
+  // a time and coalesces requests that arrive mid-scan into a single trailing
+  // scan (using the latest root).
+  function runBadge(root: string): void {
+    if (badgeInFlight) {
+      badgePendingRoot = root;
+      return;
+    }
+    badgeInFlight = true;
+    void doBadgeRefresh(root, ++badgeGeneration).finally(() => {
+      badgeInFlight = false;
+      if (badgePendingRoot !== null) {
+        const next = badgePendingRoot;
+        badgePendingRoot = null;
+        runBadge(next);
+      }
+    });
+  }
+
   async function doBadgeRefresh(root: string, myGen: number): Promise<void> {
+    // When the viewer is CLOSED, the badge only needs a changed-file count —
+    // use the lightweight one-scan query (no line counts, fingerprint, or
+    // file reads). When OPEN, the refresh doubles as the staleness probe, so
+    // we need the full changes (including the fingerprint).
+    if (!get().open) {
+      let res: GitChangesCountResult;
+      try {
+        res = await window.pivis.invoke("git.changesCount", { root });
+      } catch {
+        if (myGen !== badgeGeneration) return;
+        set({ badge: null, badgeKind: "error" });
+        return;
+      }
+      if (myGen !== badgeGeneration) return;
+      if (res.kind === "not-a-repo" || res.kind === "git-missing") {
+        set({ badge: null, badgeKind: res.kind });
+        return;
+      }
+      if (res.kind === "error") {
+        set({ badge: null, badgeKind: "error" });
+        return;
+      }
+      // insertions/deletions aren't rendered on the badge; the count is all
+      // the closed-viewer path needs.
+      set({
+        badge: { root, fileCount: res.fileCount, insertions: 0, deletions: 0 },
+        badgeKind: "ready",
+      });
+      return;
+    }
+
     let res: GitChangesResult;
     try {
       res = await window.pivis.invoke("git.changes", { root });
-    } catch (err) {
+    } catch {
       if (myGen !== badgeGeneration) return;
       set({ badge: null, badgeKind: "error" });
       return;
@@ -494,12 +543,11 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       },
       badgeKind: "ready",
     });
-    // While the viewer is open, this per-tool-call refresh doubles as the
-    // staleness probe: the dot lights iff the working tree's fingerprint has
-    // moved off the baseline captured by the last full viewer refresh. The
-    // fingerprint is base-independent, so this holds even when the viewer is
-    // showing a branch-relative diff. It can also *clear* a false stale (an
-    // edit that was reverted returns to the baseline).
+    // The open viewer's per-tool-call refresh doubles as the staleness probe:
+    // the dot lights iff the working tree's fingerprint has moved off the
+    // baseline captured by the last full viewer refresh. The fingerprint is
+    // base-independent, so this holds even for a branch-relative diff, and it
+    // can also *clear* a false stale (a reverted edit returns to the baseline).
     const s = get();
     if (s.open) {
       const stale = s.baselineFingerprint !== null && res.fingerprint !== s.baselineFingerprint;

@@ -508,6 +508,8 @@ const stub = {
             },
           ],
         };
+      case "git.changesCount":
+        return { kind: "ok", fileCount: 2 };
       case "git.fileDiff":
         return {
           kind: "ok",

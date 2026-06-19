@@ -21,6 +21,7 @@ import path from "node:path";
 import type {
   GitBranchesResult,
   GitChangedFile,
+  GitChangesCountResult,
   GitChangesResult,
   GitFileDiffResult,
   GitFileStatus,
@@ -131,8 +132,18 @@ async function resolveBaseRef(
 }
 
 export async function getChanges(root: string, base?: string): Promise<GitChangesResult> {
+  // This is the heavyweight path: it computes the file list, per-file line
+  // counts, AND the working-tree fingerprint (a hash of the entire patch).
+  // The header badge while the viewer is closed only needs a file count, so
+  // it uses the much cheaper `getChangesCount` instead — this function is
+  // reserved for the open viewer (and its staleness probe), which needs all
+  // of it.
+  //
   // Step 1: confirm the binary is present and `root` is inside a repo.
-  const env = await getSubprocessEnv();
+  // GIT_OPTIONAL_LOCKS=0 keeps these read-only commands from taking
+  // index.lock to rewrite the index stat cache — it avoids contention now
+  // that the diffs below run concurrently, and trims a small write.
+  const env = { ...(await getSubprocessEnv()), GIT_OPTIONAL_LOCKS: "0" };
   let repoRoot: string;
   try {
     const r = await execGitText(["rev-parse", "--show-toplevel"], root, env);
@@ -151,6 +162,34 @@ export async function getChanges(root: string, base?: string): Promise<GitChange
     hasHead = false;
   }
 
+  // Working-tree content fingerprint. Always computed vs HEAD (never the
+  // display `base`), so a no-base badge refresh and a base-scoped viewer
+  // refresh produce identical, comparable fingerprints. Launched up front
+  // so it runs concurrently with the status/numstat/untracked reads — it's
+  // independent of all of them. (Untracked files never appear in `git
+  // diff`, so they're folded into the hash separately, in the read loop.)
+  const fpRef = hasHead ? "HEAD" : EMPTY_TREE_SHA;
+  const fpDiffPromise: Promise<string> = execGitText(
+    ["diff", "-M", "--no-color", fpRef],
+    repoRoot,
+    env,
+  )
+    .then((r) => r.stdout)
+    // Non-fatal (e.g. a pathologically large diff exceeding maxBuffer): fold
+    // the error in so the fingerprint is stable for an unchanged failing
+    // state rather than silently masking real edits.
+    .catch((err) => `__diff_error__:${errorMessage(err)}`);
+
+  // Untracked listing is independent of the tracked-file work below — kick
+  // it off now so it overlaps with merge-base resolution and the diffs.
+  const untrackedListPromise = execGitText(
+    ["ls-files", "--others", "--exclude-standard", "-z"],
+    repoRoot,
+    env,
+  )
+    .then((r) => ({ ok: true as const, out: r.stdout }))
+    .catch((err) => ({ ok: false as const, err }));
+
   // Build a destination-path → numstat tuple map. Renames have two
   // associated paths; we key by destination.
   type CountTuple = { insertions: number; deletions: number; binary: boolean };
@@ -160,29 +199,27 @@ export async function getChanges(root: string, base?: string): Promise<GitChange
   if (hasHead) {
     const baseRef = await resolveBaseRef(base, repoRoot, env);
 
-    // Step 3a: statuses.
-    let statusOut = "";
-    try {
-      const r = await execGitText(["diff", "--name-status", "-z", "-M", baseRef], repoRoot, env);
-      statusOut = r.stdout;
-    } catch (err) {
-      return { kind: "error", message: errorMessage(err) };
-    }
-    const parsed = parseNameStatus(statusOut);
-    tracked.push(...parsed);
+    // Step 3: name-status and numstat are independent reads → run them
+    // concurrently. Each resolves to a sentinel (never rejects) so a
+    // numstat failure on binary files doesn't sink the whole call.
+    const [statusR, numstatOut] = await Promise.all([
+      execGitText(["diff", "--name-status", "-z", "-M", baseRef], repoRoot, env)
+        .then((r) => ({ ok: true as const, out: r.stdout }))
+        .catch((err) => ({ ok: false as const, err })),
+      execGitText(["diff", "--numstat", "-z", "-M", baseRef], repoRoot, env)
+        .then((r) => r.stdout)
+        .catch((err) => {
+          // numstat on binary files can throw; we still have the statuses.
+          console.warn("git diff --numstat failed:", err);
+          return "";
+        }),
+    ]);
+    if (!statusR.ok) return { kind: "error", message: errorMessage(statusR.err) };
+    tracked.push(...parseNameStatus(statusR.out));
 
-    // Step 3b: numstat. Empty path before the NUL marks a two-path entry
-    // (rename or copy); in that case the FIRST path is the old path and
-    // the SECOND is the new path.
-    let numstatOut = "";
-    try {
-      const r = await execGitText(["diff", "--numstat", "-z", "-M", baseRef], repoRoot, env);
-      numstatOut = r.stdout;
-    } catch (err) {
-      // numstat on binary files can throw; we still have the statuses.
-      numstatOut = "";
-      console.warn("git diff --numstat failed:", err);
-    }
+    // numstat: empty path before the NUL marks a two-path entry (rename or
+    // copy); in that case the FIRST path is the old path and the SECOND is
+    // the new path.
     for (const e of parseNumstat(numstatOut)) {
       counts.set(e.path, { insertions: e.insertions, deletions: e.deletions, binary: e.binary });
     }
@@ -209,42 +246,22 @@ export async function getChanges(root: string, base?: string): Promise<GitChange
     }
   }
 
-  // Working-tree content fingerprint. Always computed vs HEAD (never the
-  // display `base`), so a no-base badge refresh and a base-scoped viewer
-  // refresh produce identical, comparable fingerprints. Hashing the full
-  // patch text — not just numstat — closes the line-count-collision case
-  // (an edit that preserves insertions/deletions but changes content).
-  // Untracked files never appear in `git diff`, so they're folded in
-  // separately during the read loop below.
+  // Fold the working-tree patch (launched concurrently above) into the
+  // fingerprint. Hashing the full patch text — not just numstat — closes the
+  // line-count-collision case (an edit that preserves insertions/deletions
+  // but changes content). Untracked files never appear in `git diff`, so
+  // their contents are folded in separately during the read loop below.
   const fpHash = createHash("sha1");
-  {
-    const fpRef = hasHead ? "HEAD" : EMPTY_TREE_SHA;
-    try {
-      const r = await execGitText(["diff", "-M", "--no-color", fpRef], repoRoot, env);
-      fpHash.update(r.stdout);
-    } catch (err) {
-      // Non-fatal (e.g. a pathologically large diff exceeding maxBuffer):
-      // fold the error in so the fingerprint is stable for an unchanged
-      // failing state rather than silently masking real edits.
-      fpHash.update(`__diff_error__:${errorMessage(err)}`);
-    }
-  }
+  fpHash.update(await fpDiffPromise);
   fpHash.update("\0untracked\0");
 
-  // Step 5: untracked files.
+  // Step 5: untracked files (listing launched concurrently above).
   const untracked: GitChangedFile[] = [];
-  let untrackedOut = "";
-  try {
-    const r = await execGitText(
-      ["ls-files", "--others", "--exclude-standard", "-z"],
-      repoRoot,
-      env,
-    );
-    untrackedOut = r.stdout;
-  } catch (err) {
-    return { kind: "error", message: errorMessage(err) };
+  const untrackedListed = await untrackedListPromise;
+  if (!untrackedListed.ok) {
+    return { kind: "error", message: errorMessage(untrackedListed.err) };
   }
-  const untrackedPaths = splitNul(untrackedOut).filter((p) => p.length > 0);
+  const untrackedPaths = splitNul(untrackedListed.out).filter((p) => p.length > 0);
   for (let i = 0; i < untrackedPaths.length; i++) {
     const p = untrackedPaths[i];
     if (p === undefined) continue;
@@ -337,6 +354,74 @@ export async function getChanges(root: string, base?: string): Promise<GitChange
   };
 }
 
+// ── Public: getChangesCount ────────────────────────────────────────────
+//
+// The header badge (while the diff viewer is closed) only needs a count of
+// changed files — not line counts, not a fingerprint, not file contents. On
+// a huge working tree, `getChanges` runs four tree scans (name-status,
+// numstat, the fingerprint patch, ls-files) plus up to 200 untracked file
+// reads; this needs exactly one.
+//
+// `git status --porcelain=v2` reports tracked changes AND untracked files in
+// a single working-tree walk, so we count its records and stop. Capped at
+// MAX_FILES to match the (capped) count `getChanges` returns for the viewer.
+export async function getChangesCount(root: string): Promise<GitChangesCountResult> {
+  const env = { ...(await getSubprocessEnv()), GIT_OPTIONAL_LOCKS: "0" };
+  let repoRoot: string;
+  try {
+    const r = await execGitText(["rev-parse", "--show-toplevel"], root, env);
+    repoRoot = r.stdout.trim();
+  } catch (err) {
+    return mapSpawnError(err);
+  }
+  if (!repoRoot) return { kind: "not-a-repo" };
+
+  let out: string;
+  try {
+    const r = await execGitText(
+      ["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+      repoRoot,
+      env,
+    );
+    out = r.stdout;
+  } catch (err) {
+    return mapSpawnError(err);
+  }
+  return { kind: "ok", fileCount: Math.min(countPorcelainV2(out), MAX_FILES) };
+}
+
+/**
+ * Count changed-file records in `git status --porcelain=v2 -z` output.
+ * Record types (first char of each NUL-delimited token):
+ *   '1' ordinary change · 'u' unmerged · '?' untracked — each one path.
+ *   '2' rename/copy — one path, but consumes an EXTRA token (the origPath).
+ * (No '#' header lines without --branch; no '!' without --ignored.)
+ */
+function countPorcelainV2(out: string): number {
+  const tokens = splitNul(out);
+  let count = 0;
+  for (let i = 0; i < tokens.length; ) {
+    const head = tokens[i];
+    if (head === undefined || head === "") {
+      i++;
+      continue;
+    }
+    const kind = head[0];
+    if (kind === "2") {
+      // Rename/copy: this record's path + a trailing origPath token.
+      count++;
+      i += 2;
+    } else if (kind === "1" || kind === "u" || kind === "?") {
+      count++;
+      i++;
+    } else {
+      // Unknown/header — skip defensively.
+      i++;
+    }
+  }
+  return count;
+}
+
 // ── Public: getFileDiff ────────────────────────────────────────────────
 
 export async function getFileDiff(
@@ -344,7 +429,10 @@ export async function getFileDiff(
   file: { path: string; oldPath?: string; status: GitFileStatus; untracked: boolean },
   base?: string,
 ): Promise<GitFileDiffResult> {
-  const env = await getSubprocessEnv();
+  // GIT_OPTIONAL_LOCKS=0: these are read-only commands; don't take
+  // index.lock (avoids contention with concurrent git reads and a stray
+  // index write).
+  const env = { ...(await getSubprocessEnv()), GIT_OPTIONAL_LOCKS: "0" };
   // Re-resolve the repo root so callers (incl. stale tabs) can pass an
   // arbitrary path. We re-do this rather than caching because git
   // status can change in a heartbeat.
@@ -357,65 +445,82 @@ export async function getFileDiff(
   }
   if (!repoRoot) return { kind: "error", message: "Not a git repository" };
 
-  // hasHead?
-  let hasHead = false;
-  try {
-    const code = await execGitQuiet(["rev-parse", "--verify", "--quiet", "HEAD"], repoRoot, env);
-    hasHead = code === 0;
-  } catch {
-    hasHead = false;
-  }
+  // hasHead and the base ref both depend only on repoRoot → resolve them
+  // concurrently. (resolveBaseRef is itself a merge-base spawn when a base
+  // branch is selected.)
+  const [hasHead, baseRef] = await Promise.all([
+    execGitQuiet(["rev-parse", "--verify", "--quiet", "HEAD"], repoRoot, env)
+      .then((code) => code === 0)
+      .catch(() => false),
+    resolveBaseRef(base, repoRoot, env),
+  ]);
 
-  // Resolve base ref for old-side reads.
-  const baseRef = await resolveBaseRef(base, repoRoot, env);
-
-  // Old side.
-  let oldText = "";
-  let oldMissingNewline = false;
+  // Old side: `git show <ref>:<path>`. Returns the text (+ trailing-newline
+  // flag), tolerating a vanished/renamed file by falling back to empty.
   const wantOld = !file.untracked && file.status !== "A" && hasHead;
-  if (wantOld) {
-    const showPath = file.oldPath ?? file.path;
-    try {
-      const r = await execGitText(["show", `${baseRef}:${showPath}`], repoRoot, env);
-      oldText = r.stdout;
-      oldMissingNewline = oldText.length > 0 && !oldText.endsWith("\n");
-    } catch (err) {
-      // Race tolerance: file may have been renamed/removed. Drop the
-      // old side, but still show a diff against an empty old.
-      console.warn(`git show ${baseRef}:${showPath} failed:`, err);
-      oldText = "";
-    }
-  }
+  const oldSidePromise: Promise<{ text: string; missingNewline: boolean }> = wantOld
+    ? (() => {
+        const showPath = file.oldPath ?? file.path;
+        return execGitText(["show", `${baseRef}:${showPath}`], repoRoot, env)
+          .then((r) => ({
+            text: r.stdout,
+            missingNewline: r.stdout.length > 0 && !r.stdout.endsWith("\n"),
+          }))
+          .catch((err) => {
+            // Race tolerance: file may have been renamed/removed. Drop the
+            // old side, but still show a diff against an empty old.
+            console.warn(`git show ${baseRef}:${showPath} failed:`, err);
+            return { text: "", missingNewline: false };
+          });
+      })()
+    : Promise.resolve({ text: "", missingNewline: false });
 
-  // New side.
-  let newText = "";
-  let newMissingNewline = false;
-  if (file.status !== "D") {
-    const filePath = path.join(repoRoot, file.path);
-    try {
-      const stat = await fs.stat(filePath);
-      if (stat.size > FILE_TOO_LARGE) {
-        return {
-          kind: "ok",
-          oldText,
-          newText: "",
-          binary: false,
-          tooLarge: true,
-          oldMissingNewline,
-          newMissingNewline,
-        };
-      }
-      newText = await fs.readFile(filePath, "utf8");
-      newMissingNewline = newText.length > 0 && !newText.endsWith("\n");
-    } catch (err) {
-      // ENOENT (or any other error) → empty new side. The file may have
-      // vanished between the list and the click.
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.warn(`readFile ${filePath} failed:`, err);
-      }
-      newText = "";
-    }
+  // New side: read the working-tree file. Resolves to a `tooLarge` marker
+  // rather than reading when the file exceeds the cap. Runs concurrently
+  // with the old-side `git show` above — they're independent.
+  const newSidePromise: Promise<{ text: string; missingNewline: boolean; tooLarge: boolean }> =
+    file.status !== "D"
+      ? (async () => {
+          const filePath = path.join(repoRoot, file.path);
+          try {
+            const stat = await fs.stat(filePath);
+            if (stat.size > FILE_TOO_LARGE) {
+              return { text: "", missingNewline: false, tooLarge: true };
+            }
+            const text = await fs.readFile(filePath, "utf8");
+            return {
+              text,
+              missingNewline: text.length > 0 && !text.endsWith("\n"),
+              tooLarge: false,
+            };
+          } catch (err) {
+            // ENOENT (or any other error) → empty new side. The file may
+            // have vanished between the list and the click.
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+              console.warn(`readFile ${filePath} failed:`, err);
+            }
+            return { text: "", missingNewline: false, tooLarge: false };
+          }
+        })()
+      : Promise.resolve({ text: "", missingNewline: false, tooLarge: false });
+
+  const [oldSide, newSide] = await Promise.all([oldSidePromise, newSidePromise]);
+  const oldText = oldSide.text;
+  const oldMissingNewline = oldSide.missingNewline;
+
+  if (newSide.tooLarge) {
+    return {
+      kind: "ok",
+      oldText,
+      newText: "",
+      binary: false,
+      tooLarge: true,
+      oldMissingNewline,
+      newMissingNewline: false,
+    };
   }
+  const newText = newSide.text;
+  const newMissingNewline = newSide.missingNewline;
 
   // Binary sniff on both sides. We operate on the *text* we already
   // loaded; if the file is binary and the OS read the bytes as utf8
@@ -739,7 +844,14 @@ export async function createWorktree(root: string, base: string): Promise<GitWor
   }
 }
 
-function mapSpawnError(err: unknown): GitChangesResult {
+/** The error variants shared by getChanges / getChangesCount — a subset of
+ *  both result unions, so either function can return this directly. */
+type GitErrorResult =
+  | { kind: "git-missing" }
+  | { kind: "not-a-repo" }
+  | { kind: "error"; message: string };
+
+function mapSpawnError(err: unknown): GitErrorResult {
   const code = (err as NodeJS.ErrnoException).code;
   if (code === "ENOENT") return { kind: "git-missing" };
   // "not a git repository" is the error we get from `rev-parse

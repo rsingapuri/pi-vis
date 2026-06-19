@@ -2,6 +2,7 @@ import type { ProviderAuthStatus } from "./auth.js";
 import type {
   GitBranchesResult,
   GitChangedFile,
+  GitChangesCountResult,
   GitChangesResult,
   GitFileDiffResult,
   GitFileStatus,
@@ -104,6 +105,9 @@ export interface IpcInvokeContract {
   // call site. The optional `oldPath` is set on renames; status is the
   // single-letter git code; `untracked` is true for new untracked files.
   "git.changes": { req: { root: string; base?: string }; res: GitChangesResult };
+  // Lightweight changed-file count for the header badge while the viewer is
+  // closed — one `git status` scan, no line counts / fingerprint / file reads.
+  "git.changesCount": { req: { root: string }; res: GitChangesCountResult };
   "git.fileDiff": {
     req: {
       root: string;

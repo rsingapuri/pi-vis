@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { getBranches, getChanges, getFileDiff } from "./git.js";
+import { getBranches, getChanges, getChangesCount, getFileDiff } from "./git.js";
 
 let tmpRoot = "";
 let workDir = "";
@@ -486,6 +486,44 @@ describe("getChanges fingerprint", () => {
     if (noBase.kind !== "ok" || withBase.kind !== "ok") throw new Error("not ok");
     expect(withBase.files.length).toBeGreaterThan(noBase.files.length);
     expect(withBase.fingerprint).toBe(noBase.fingerprint);
+  });
+});
+
+describe("getChangesCount", () => {
+  it("returns not-a-repo outside a git repo", async () => {
+    const dir = fs.mkdtempSync(path.join(tmpRoot, "not-a-repo-"));
+    const res = await getChangesCount(dir);
+    expect(res.kind).toBe("not-a-repo");
+  });
+
+  it("counts tracked modifications and untracked files in one scan", async () => {
+    makeRepo();
+    write(path.join(workDir, "a.ts"), "export const a = 2;\n"); // modify tracked
+    write(path.join(workDir, "untracked.ts"), "const x = 1;\n"); // new untracked
+
+    const res = await getChangesCount(workDir);
+    if (res.kind !== "ok") throw new Error(`not ok: ${res.kind}`);
+    // Should match getChanges' file count.
+    const full = await getChanges(workDir);
+    if (full.kind !== "ok") throw new Error("full not ok");
+    expect(res.fileCount).toBe(full.files.length);
+    expect(res.fileCount).toBe(2);
+  });
+
+  it("counts a rename as a single changed file", async () => {
+    makeRepo();
+    git(workDir, ["mv", "a.ts", "renamed.ts"]);
+
+    const res = await getChangesCount(workDir);
+    if (res.kind !== "ok") throw new Error(`not ok: ${res.kind}`);
+    expect(res.fileCount).toBe(1);
+  });
+
+  it("is clean (0) on an unmodified repo", async () => {
+    makeRepo();
+    const res = await getChangesCount(workDir);
+    if (res.kind !== "ok") throw new Error(`not ok: ${res.kind}`);
+    expect(res.fileCount).toBe(0);
   });
 });
 
