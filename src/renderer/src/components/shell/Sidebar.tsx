@@ -367,7 +367,6 @@ export function Sidebar({
                 <span className="sidebar__workspace-name">
                   {ws.path.split("/").pop() ?? ws.path}
                 </span>
-                <span className="sidebar__workspace-path">{ws.path}</span>
               </button>
 
               {isActiveWs && (

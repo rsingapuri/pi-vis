@@ -52,10 +52,24 @@
   background: none;
   border: none;
   cursor: pointer;
-  padding: 0.571rem 0.857rem;
+  /* Right padding reserves a slot for the hover-revealed remove (×) button
+     so the workspace name truncates with an ellipsis *before* it reaches the
+     × — no overlap, no fade needed. The × is positioned absolutely against
+     the workspace (right: 0.571rem, width ≈1.715rem = 2.286rem footprint),
+     so 2.5rem leaves a ~0.214rem gap to the name's clip edge. Reserving the
+     space unconditionally keeps the layout stable across hover (an on-hover
+     padding change would jump the ellipsis). */
+  padding: 0.571rem 2.5rem 0.571rem 0.857rem;
   text-align: left;
   display: flex;
   flex-direction: column;
+  /* <button> carries a UA-stylesheet default of align-items: flex-start, which
+     sizes flex children to their *content* width instead of the container's.
+     That lets the workspace name blow past the header's right padding and get
+     hard-clipped by the sidebar instead of ellipsizing inside the header.
+     stretch forces the name to fill the header's content box so the ellipsis
+     on .sidebar__workspace-name engages. */
+  align-items: stretch;
   gap: 0.143rem;
   font-family: var(--font-display);
 }
@@ -73,19 +87,13 @@
   font-size: 0.929em; /* ≈13px @ 14px root */
   font-weight: 600;
   color: var(--ctp-text);
+  line-height: 1.4; /* deterministic single-line height → see the × sizing below */
+  /* min-width: 0 lets the flex item shrink below its min-content width so the
+     ellipsis engages (same fix the session name uses). */
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.sidebar__workspace-path {
-  font-family: var(--font-code);
-  font-size: 0.786em; /* ≈11px @ 14px root */
-  color: var(--ctp-overlay0);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.4;
 }
 
 .sidebar__sessions {
@@ -283,12 +291,12 @@
 
 .sidebar__remove-workspace {
   position: absolute;
-  /* Anchored to the header's top padding and given the header content's
-     height (name + gap + path) so the icon centers vertically against the
-     workspace card — not the full workspace (which is taller when active). */
+  /* Anchored to the header's top padding and given the single name line's
+     height (line-height 1.4 × 0.929em = 1.3rem) so the icon centers on the
+     workspace name — not the full workspace (which is taller when active). */
   top: 0.571rem;
   right: 0.571rem;
-  height: 2.214rem;
+  height: 1.3rem;
   background: none;
   border: none;
   cursor: pointer;
