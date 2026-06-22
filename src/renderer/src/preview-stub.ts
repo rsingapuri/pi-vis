@@ -389,7 +389,8 @@ const settingsState = {
     display: { family: "system-ui", sizePx: 14 },
     code: { family: "monospace", sizePx: 13 },
   },
-  recentWorkspaces: [DEMO_WORKSPACE],
+  workspaceOrder: [DEMO_WORKSPACE],
+  expandedWorkspaces: [DEMO_WORKSPACE],
   lastUsedModel: null,
   colorScheme: "mocha" as const,
   statusBarVisible: true,
@@ -408,14 +409,17 @@ const stub = {
       case "settings.set":
         Object.assign(settingsState, req as Record<string, unknown>);
         return settingsState;
-      case "workspace.recents":
+      case "workspace.list":
         return [DEMO_WORKSPACE];
       case "workspace.remove": {
         const { workspacePath } = req as { workspacePath: string };
-        settingsState.recentWorkspaces = settingsState.recentWorkspaces.filter(
+        settingsState.workspaceOrder = settingsState.workspaceOrder.filter(
           (w) => w !== workspacePath,
         );
-        return settingsState.recentWorkspaces;
+        settingsState.expandedWorkspaces = settingsState.expandedWorkspaces.filter(
+          (w) => w !== workspacePath,
+        );
+        return settingsState.workspaceOrder;
       }
       case "workspace.listSessions":
         return [];

@@ -44,4 +44,29 @@ describe("AppSettingsSchema", () => {
     const result = AppSettingsSchema.safeParse({ colorScheme: "frappuccino" });
     expect(result.success).toBe(false);
   });
+
+  it("strips the legacy recentWorkspaces key and defaults workspaceOrder / expandedWorkspaces to empty", () => {
+    // Migration target: recentWorkspaces (recency-sorted) was replaced by
+    // workspaceOrder (manual order). Zod must drop the legacy key on parse;
+    // the settings-store migration carries its value into workspaceOrder.
+    const result = AppSettingsSchema.safeParse({
+      recentWorkspaces: ["/a", "/b"],
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect("recentWorkspaces" in result.data).toBe(false);
+    expect(result.data.workspaceOrder).toEqual([]);
+    expect(result.data.expandedWorkspaces).toEqual([]);
+  });
+
+  it("round-trips workspaceOrder and expandedWorkspaces", () => {
+    const result = AppSettingsSchema.safeParse({
+      workspaceOrder: ["/repo-a", "/repo-b"],
+      expandedWorkspaces: ["/repo-a"],
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.workspaceOrder).toEqual(["/repo-a", "/repo-b"]);
+    expect(result.data.expandedWorkspaces).toEqual(["/repo-a"]);
+  });
 });

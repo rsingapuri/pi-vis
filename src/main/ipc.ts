@@ -33,7 +33,7 @@ import {
 import { SessionRegistry } from "./sessions/session-registry.js";
 import { getSettings, saveSettings } from "./settings-store.js";
 import { checkForUpdates, startUpdate } from "./updates.js";
-import { getRecentWorkspaces, pickWorkspace, removeRecentWorkspace } from "./workspaces.js";
+import { getOrderedWorkspaces, pickWorkspace, removeWorkspace } from "./workspaces.js";
 
 let registry: SessionRegistry | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -82,12 +82,12 @@ export function initIpc(win: BrowserWindow): void {
     return pickWorkspace();
   });
 
-  ipcMain.handle("workspace.recents", async () => {
-    return getRecentWorkspaces();
+  ipcMain.handle("workspace.list", async () => {
+    return getOrderedWorkspaces();
   });
 
   ipcMain.handle("workspace.remove", async (_evt, args: { workspacePath: string }) => {
-    return removeRecentWorkspace(args.workspacePath);
+    return removeWorkspace(args.workspacePath);
   });
 
   ipcMain.handle("workspace.listSessions", async (_evt, args: { workspacePath: string }) => {

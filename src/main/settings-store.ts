@@ -21,9 +21,34 @@ export function loadSettings(): AppSettings {
   const filePath = getSettingsPath();
   try {
     const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = AppSettingsSchema.safeParse(JSON.parse(raw));
+    let json: unknown = JSON.parse(raw);
+    // Migration: `recentWorkspaces` (recency-sorted) was replaced by
+    // `workspaceOrder` (manual order). Carry over any saved value on first
+    // read so existing users don't lose their workspace list on upgrade.
+    // Zod strips the now-unknown `recentWorkspaces` key during parse.
+    if (
+      json &&
+      typeof json === "object" &&
+      !("workspaceOrder" in (json as Record<string, unknown>)) &&
+      Array.isArray((json as Record<string, unknown>).recentWorkspaces)
+    ) {
+      json = {
+        ...json,
+        workspaceOrder: (json as Record<string, unknown>).recentWorkspaces,
+      };
+    }
+    const parsed = AppSettingsSchema.safeParse(json);
     if (parsed.success) {
       current = parsed.data;
+      // Recovery: if the workspace list is empty but a last-active workspace
+      // survived, seed the order from it. This rescues users whose legacy
+      // `recentWorkspaces` was stripped by a build that shipped the
+      // `workspaceOrder` schema field *before* the migration above existed
+      // (the one-shot carry-over had nothing left to carry). Pruning on read
+      // (`getOrderedWorkspaces`) drops it again if the path no longer exists.
+      if (current.workspaceOrder.length === 0 && current.lastActiveWorkspace) {
+        current = { ...current, workspaceOrder: [current.lastActiveWorkspace] };
+      }
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {

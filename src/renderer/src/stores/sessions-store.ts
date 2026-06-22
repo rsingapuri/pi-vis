@@ -109,12 +109,25 @@ interface SessionsStore {
   sessions: Map<SessionId, SessionViewState>;
   activeSessionId: SessionId | null;
   activeWorkspacePath: string | null;
+  /** Workspace paths whose session lists are expanded in the sidebar.
+   * Multiple may be expanded at once; independent of activeWorkspacePath. */
+  expandedWorkspaces: string[];
   /** Whether the session header is in compact mode (controls in sub-bar). */
   headerCompact: boolean;
 
   addWorkspace: (path: string) => void;
   removeWorkspace: (path: string) => void;
   setWorkspaceSessions: (path: string, sessions: SessionSummary[]) => void;
+  /** Toggle a workspace's session-list expansion (chevron). Does not change
+   *  the active workspace. */
+  toggleWorkspaceExpanded: (path: string) => void;
+  /** Idempotently expand a workspace (no-op if already expanded). Used by the
+   *  boot/add flows where toggling would be wrong if it's already open. */
+  expandWorkspace: (path: string) => void;
+  /** Set the expanded set wholesale (e.g. when syncing from settings). */
+  setExpandedWorkspaces: (paths: string[]) => void;
+  /** Reorder workspaces: move `from` index to `to` index in workspaceOrder. */
+  reorderWorkspaces: (from: number, to: number) => void;
 
   createSession: (
     sessionId: SessionId,
@@ -204,6 +217,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
   sessions: new Map(),
   activeSessionId: null,
   activeWorkspacePath: null,
+  expandedWorkspaces: [],
   headerCompact: false,
 
   addWorkspace: (path) => {
@@ -223,6 +237,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       return {
         workspaces,
         activeWorkspacePath: state.activeWorkspacePath === path ? null : state.activeWorkspacePath,
+        expandedWorkspaces: state.expandedWorkspaces.filter((p) => p !== path),
       };
     });
   },
@@ -233,6 +248,41 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       const ws = workspaces.get(path);
       if (ws) {
         workspaces.set(path, { ...ws, sessions });
+      }
+      return { workspaces };
+    });
+  },
+
+  toggleWorkspaceExpanded: (path) => {
+    set((state) => ({
+      expandedWorkspaces: state.expandedWorkspaces.includes(path)
+        ? state.expandedWorkspaces.filter((p) => p !== path)
+        : [...state.expandedWorkspaces, path],
+    }));
+  },
+
+  expandWorkspace: (path) => {
+    set((state) =>
+      state.expandedWorkspaces.includes(path)
+        ? {}
+        : { expandedWorkspaces: [...state.expandedWorkspaces, path] },
+    );
+  },
+
+  setExpandedWorkspaces: (paths) => set({ expandedWorkspaces: paths }),
+
+  reorderWorkspaces: (from, to) => {
+    set((state) => {
+      const order = Array.from(state.workspaces.keys());
+      if (from < 0 || from >= order.length || to < 0 || to >= order.length || from === to) {
+        return {};
+      }
+      const [moved] = order.splice(from, 1);
+      if (moved) order.splice(to, 0, moved);
+      const workspaces = new Map<string, WorkspaceState>();
+      for (const p of order) {
+        const ws = state.workspaces.get(p);
+        if (ws) workspaces.set(p, ws);
       }
       return { workspaces };
     });
@@ -943,20 +993,29 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
   setActiveSession: (sessionId) => {
     set((state) => {
+      if (sessionId === null) {
+        return { activeSessionId: null, activeWorkspacePath: null };
+      }
       // Switching away from the previously-active session clears its unread
       // turn-result dot: the user has now "seen" it and moved on. Sessions
       // that were never activated (background notifications) are left alone
       // so their dot persists until the user actually visits them.
       const prev = state.activeSessionId;
+      const next = state.sessions.get(sessionId);
+      const nextWs = next?.workspacePath ?? null;
       if (prev && prev !== sessionId) {
         const prevSession = state.sessions.get(prev);
         if (prevSession?.unreadStatus) {
           const sessions = new Map(state.sessions);
           sessions.set(prev, { ...prevSession, unreadStatus: undefined });
-          return { sessions, activeSessionId: sessionId };
+          return {
+            sessions,
+            activeSessionId: sessionId,
+            activeWorkspacePath: nextWs,
+          };
         }
       }
-      return { activeSessionId: sessionId };
+      return { activeSessionId: sessionId, activeWorkspacePath: nextWs };
     });
     if (sessionId && typeof window !== "undefined" && window.pivis) {
       const s = get().sessions.get(sessionId);

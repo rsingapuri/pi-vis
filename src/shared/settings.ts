@@ -14,7 +14,17 @@ export const AppSettingsSchema = z.object({
       code: FontSettingsSchema.default({ family: "IBM Plex Mono", sizePx: 13 }),
     })
     .default({}),
-  recentWorkspaces: z.array(z.string()).default([]),
+  // Manual workspace ordering. The sidebar renders workspaces in this
+  // order; the user reorders via drag. A newly-picked workspace is appended
+  // to the end (never prepended) so it never displaces a manually-positioned
+  // entry. Capped at MAX_WORKSPACES. Supersedes the old `recentWorkspaces`
+  // field (recency-sorted); `loadSettings` migrates any saved
+  // `recentWorkspaces` into this on first read.
+  workspaceOrder: z.array(z.string()).default([]),
+  // Workspaces whose session lists are expanded in the sidebar. Multiple
+  // may be expanded at once so the user can monitor sessions across
+  // workspaces. Independent of `lastActiveWorkspace` (which tracks focus).
+  expandedWorkspaces: z.array(z.string()).default([]),
   lastActiveWorkspace: z.string().nullable().default(null),
   lastUsedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().default(null),
   lastUsedThinkingLevel: ThinkingLevelSchema.nullable().default(null),

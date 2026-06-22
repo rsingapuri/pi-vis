@@ -522,3 +522,82 @@ describe("sessions store - unread turn-result status dot", () => {
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("error");
   });
 });
+
+describe("sessions store - workspace expand / reorder model", () => {
+  const WS_A = "/tmp/ws-a";
+  const WS_B = "/tmp/ws-b";
+  const WS_C = "/tmp/ws-c";
+
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+      expandedWorkspaces: [],
+    });
+    useSessionsStore.getState().addWorkspace(WS_A);
+    useSessionsStore.getState().addWorkspace(WS_B);
+    useSessionsStore.getState().addWorkspace(WS_C);
+  });
+
+  it("toggleWorkspaceExpanded adds then removes a path without affecting others", () => {
+    const store = useSessionsStore.getState();
+    store.toggleWorkspaceExpanded(WS_A);
+    store.toggleWorkspaceExpanded(WS_C);
+    expect(useSessionsStore.getState().expandedWorkspaces).toEqual([WS_A, WS_C]);
+    // Active workspace is untouched by expand toggling.
+    expect(useSessionsStore.getState().activeWorkspacePath).toBeNull();
+    store.toggleWorkspaceExpanded(WS_A);
+    expect(useSessionsStore.getState().expandedWorkspaces).toEqual([WS_C]);
+  });
+
+  it("setExpandedWorkspaces replaces the set wholesale", () => {
+    useSessionsStore.getState().setExpandedWorkspaces([WS_B]);
+    expect(useSessionsStore.getState().expandedWorkspaces).toEqual([WS_B]);
+  });
+
+  it("expandWorkspace is idempotent: adds once, never collapses an already-expanded path", () => {
+    const store = useSessionsStore.getState();
+    store.expandWorkspace(WS_A);
+    expect(useSessionsStore.getState().expandedWorkspaces).toEqual([WS_A]);
+    // Re-expanding the same path must not toggle it back off.
+    store.expandWorkspace(WS_A);
+    expect(useSessionsStore.getState().expandedWorkspaces).toEqual([WS_A]);
+  });
+
+  it("reorderWorkspaces moves an entry and preserves the rest of the order", () => {
+    const store = useSessionsStore.getState();
+    store.reorderWorkspaces(0, 2); // A B C -> B C A
+    expect(Array.from(useSessionsStore.getState().workspaces.keys())).toEqual([WS_B, WS_C, WS_A]);
+    store.reorderWorkspaces(2, 0); // B C A -> A B C
+    expect(Array.from(useSessionsStore.getState().workspaces.keys())).toEqual([WS_A, WS_B, WS_C]);
+  });
+
+  it("reorderWorkspaces is a no-op for out-of-range or equal indices", () => {
+    const before = Array.from(useSessionsStore.getState().workspaces.keys());
+    useSessionsStore.getState().reorderWorkspaces(0, 0);
+    useSessionsStore.getState().reorderWorkspaces(-1, 1);
+    useSessionsStore.getState().reorderWorkspaces(0, 99);
+    expect(Array.from(useSessionsStore.getState().workspaces.keys())).toEqual(before);
+  });
+
+  it("removeWorkspace clears the entry from both workspaces and expandedWorkspaces", () => {
+    const store = useSessionsStore.getState();
+    store.toggleWorkspaceExpanded(WS_B);
+    store.removeWorkspace(WS_B);
+    const s = useSessionsStore.getState();
+    expect(Array.from(s.workspaces.keys())).toEqual([WS_A, WS_C]);
+    expect(s.expandedWorkspaces).toEqual([]);
+  });
+
+  it("setActiveSession derives activeWorkspacePath from the session's workspace", () => {
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WS_B);
+    store.setActiveSession(SESSION_A);
+    expect(useSessionsStore.getState().activeWorkspacePath).toBe(WS_B);
+    // Clearing the active session clears the active workspace too.
+    store.setActiveSession(null);
+    expect(useSessionsStore.getState().activeWorkspacePath).toBeNull();
+  });
+});

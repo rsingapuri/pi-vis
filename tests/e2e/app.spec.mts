@@ -18,7 +18,7 @@ test.describe("Pi-Vis e2e", () => {
       join(settingsDir, "settings.json"),
       JSON.stringify({
         piBinaryPath: `node ${FAKE_PI}`,
-        recentWorkspaces: [],
+        workspaceOrder: [],
         fonts: {
           display: { family: "system-ui", sizePx: 14 },
           code: { family: "monospace", sizePx: 13 },

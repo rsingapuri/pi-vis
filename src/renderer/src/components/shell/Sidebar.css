@@ -48,29 +48,21 @@
 }
 
 .sidebar__workspace-header {
+  position: relative;
   width: 100%;
   background: none;
   border: none;
-  cursor: pointer;
-  /* Right padding reserves a slot for the hover-revealed remove (×) button
-     so the workspace name truncates with an ellipsis *before* it reaches the
-     × — no overlap, no fade needed. The × is positioned absolutely against
-     the workspace (right: 0.571rem, width ≈1.715rem = 2.286rem footprint),
-     so 2.5rem leaves a ~0.214rem gap to the name's clip edge. Reserving the
-     space unconditionally keeps the layout stable across hover (an on-hover
-     padding change would jump the ellipsis). */
-  padding: 0.571rem 2.5rem 0.571rem 0.857rem;
+  /* Right padding reserves a single column for the hover-revealed actions
+     cluster (× above chevron, stacked vertically). One column instead of two
+     maximizes the name's truncation width. The cluster is absolutely
+     positioned (out of flow) at ~1.7rem wide, so 2rem reserves it with a
+     small gap to the name's clip edge. Reserving unconditionally keeps the
+     ellipsis stable across hover (an on-hover padding change would jump it). */
+  padding: 0.429rem 2rem 0.429rem 0.286rem;
   text-align: left;
   display: flex;
-  flex-direction: column;
-  /* <button> carries a UA-stylesheet default of align-items: flex-start, which
-     sizes flex children to their *content* width instead of the container's.
-     That lets the workspace name blow past the header's right padding and get
-     hard-clipped by the sidebar instead of ellipsizing inside the header.
-     stretch forces the name to fill the header's content box so the ellipsis
-     on .sidebar__workspace-name engages. */
-  align-items: stretch;
-  gap: 0.143rem;
+  align-items: center;
+  gap: 0.286rem;
   font-family: var(--font-display);
 }
 
@@ -82,7 +74,94 @@
   background: var(--ctp-surface0);
 }
 
+/* Drag grip: hidden by default, revealed on row hover. The draggable
+   initiator for manual reordering. */
+.sidebar__workspace-grip {
+  flex: 0 0 auto;
+  width: 0.857rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ctp-overlay0);
+  opacity: 0;
+  cursor: grab;
+  transition: opacity 0.12s ease;
+}
+.sidebar__workspace-grip svg {
+  width: 0.857rem;
+  height: 0.857rem;
+}
+.sidebar__workspace-grip:active {
+  cursor: grabbing;
+}
+.sidebar__workspace:hover .sidebar__workspace-grip {
+  opacity: 1;
+}
+
+/* Hover-revealed actions cluster: × (remove) stacked above the expand/collapse
+   chevron. Both hidden until the workspace row is hovered so the resting row
+   shows only the name (and the drag grip on the left). Absolutely positioned
+   against the workspace so it overlays the reserved right padding without
+   affecting layout. */
+.sidebar__workspace-actions {
+  position: absolute;
+  top: 50%;
+  right: 0.286rem;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.sidebar__workspace:hover .sidebar__workspace-actions {
+  opacity: 1;
+}
+/* Keep actions visible while hovering them (they're children of the header). */
+.sidebar__workspace-actions:hover {
+  opacity: 1;
+}
+
+.sidebar__remove-workspace,
+.sidebar__workspace-chevron {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ctp-overlay0);
+  /* Compact hit area — tight padding around the ~11px icon so the stacked
+     pair sits close together without crowding. */
+  width: 1.143rem;
+  height: 1rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.214rem;
+  transition: color 0.12s ease;
+}
+.sidebar__remove-workspace svg,
+.sidebar__workspace-chevron svg {
+  width: 0.786rem;
+  height: 0.786rem;
+}
+.sidebar__remove-workspace:hover {
+  color: var(--ctp-red);
+}
+.sidebar__workspace-chevron:hover {
+  color: var(--ctp-text);
+}
+/* Chevron rotates to point down when the workspace is expanded. */
+.sidebar__workspace-chevron--expanded {
+  transform: rotate(90deg);
+}
+
 .sidebar__workspace-name {
+  flex: 1 1 auto;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
   font-family: var(--font-code);
   font-size: 0.929em; /* ≈13px @ 14px root */
   font-weight: 600;
@@ -94,6 +173,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: left;
 }
 
 .sidebar__sessions {
@@ -287,39 +367,6 @@
 .sidebar__status-toggle:focus-visible,
 .sidebar__add-workspace:focus-visible {
   outline: none;
-}
-
-.sidebar__remove-workspace {
-  position: absolute;
-  /* Anchored to the header's top padding and given the single name line's
-     height (line-height 1.4 × 0.929em = 1.3rem) so the icon centers on the
-     workspace name — not the full workspace (which is taller when active). */
-  top: 0.571rem;
-  right: 0.571rem;
-  height: 1.3rem;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--ctp-overlay0);
-  font-size: 1.143em; /* ≈16px @ 14px root */
-  line-height: 1;
-  padding: 0 0.286rem;
-  display: none;
-  align-items: center;
-}
-
-.sidebar__workspace:hover .sidebar__remove-workspace {
-  display: flex;
-}
-
-.sidebar__remove-workspace:hover {
-  color: var(--ctp-red);
-}
-
-.sidebar__remove-workspace svg {
-  width: 1em;
-  height: 1em;
-  display: block;
 }
 
 /* Status dots — CSS shapes (font-independent, uniform size) */

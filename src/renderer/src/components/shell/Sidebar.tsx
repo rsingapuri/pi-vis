@@ -85,6 +85,7 @@ export function Sidebar({
   const sessions = useSessionsStore((s) => s.sessions);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
   const activeWorkspacePath = useSessionsStore((s) => s.activeWorkspacePath);
+  const expandedWorkspaces = useSessionsStore((s) => s.expandedWorkspaces);
   const addWorkspace = useSessionsStore((s) => s.addWorkspace);
   const removeWorkspace = useSessionsStore((s) => s.removeWorkspace);
   const refreshWorkspaceSessions = useSessionsStore((s) => s.refreshWorkspaceSessions);
@@ -93,12 +94,18 @@ export function Sidebar({
   const archiveSession = useSessionsStore((s) => s.archiveSession);
   const setActiveSession = useSessionsStore((s) => s.setActiveSession);
   const setActiveWorkspace = useSessionsStore((s) => s.setActiveWorkspace);
+  const toggleWorkspaceExpanded = useSessionsStore((s) => s.toggleWorkspaceExpanded);
+  const expandWorkspace = useSessionsStore((s) => s.expandWorkspace);
+  const setExpandedWorkspaces = useSessionsStore((s) => s.setExpandedWorkspaces);
+  const reorderWorkspaces = useSessionsStore((s) => s.reorderWorkspaces);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const statusBarVisible = useSettingsStore((s) => s.settings.statusBarVisible);
   const updateSettings = useSettingsStore((s) => s.update);
   const lastActiveWorkspace = useSettingsStore((s) => s.settings.lastActiveWorkspace);
+  const savedExpandedWorkspaces = useSettingsStore((s) => s.settings.expandedWorkspaces);
   const sidebarRef = useRef<HTMLElement>(null);
   const isDragging = useRef(false);
+  const dragIndexRef = useRef<number | null>(null);
 
   // Pagination: visible count per workspace
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
@@ -244,10 +251,17 @@ export function Sidebar({
     if (path) {
       addWorkspace(path);
       setActiveWorkspace(path);
-      void updateSettings({ lastActiveWorkspace: path });
+      // Auto-expand the newly-picked workspace so its sessions are visible.
+      // expandWorkspace is idempotent (re-picking an already-expanded
+      // workspace won't collapse it); persist the resulting live set.
+      expandWorkspace(path);
+      void updateSettings({
+        lastActiveWorkspace: path,
+        expandedWorkspaces: useSessionsStore.getState().expandedWorkspaces,
+      });
       void refreshWorkspaceSessions(path);
     }
-  }, [addWorkspace, setActiveWorkspace, refreshWorkspaceSessions, updateSettings]);
+  }, [addWorkspace, setActiveWorkspace, expandWorkspace, refreshWorkspaceSessions, updateSettings]);
 
   const handleNewSession = useCallback(
     (workspacePath: string) => {
@@ -256,21 +270,46 @@ export function Sidebar({
     [openSessionTab],
   );
 
-  // Selecting a different workspace should land you in a fresh session in
-  // the target workspace — launch parity. Selecting the already-active
-  // workspace collapses it (same as before).
+  // Clicking a workspace header activates it (sets focus + opens/switches
+  // to a session in it). It never collapses — collapse is via the chevron
+  // only, so an active workspace can stay expanded while the user works in
+  // another expanded one.
   const handleSelectWorkspace = useCallback(
     (path: string) => {
-      if (activeWorkspacePath === path) {
-        setActiveWorkspace(null);
-        void updateSettings({ lastActiveWorkspace: null });
-        return;
-      }
       setActiveWorkspace(path);
       void updateSettings({ lastActiveWorkspace: path });
       void openSessionTab(path);
     },
-    [activeWorkspacePath, setActiveWorkspace, openSessionTab, updateSettings],
+    [setActiveWorkspace, openSessionTab, updateSettings],
+  );
+
+  // Chevron toggle: expand/collapse a workspace's session list without
+  // changing the active workspace. Persisted to settings so it survives
+  // restart. Multiple workspaces may be expanded at once.
+  const handleToggleExpand = useCallback(
+    (path: string) => {
+      toggleWorkspaceExpanded(path);
+      const next = expandedWorkspaces.includes(path)
+        ? expandedWorkspaces.filter((p) => p !== path)
+        : [...expandedWorkspaces, path];
+      void updateSettings({ expandedWorkspaces: next });
+    },
+    [toggleWorkspaceExpanded, expandedWorkspaces, updateSettings],
+  );
+
+  // Drag-to-reorder: the store's reorderWorkspaces owns the move (bounds
+  // check + splice); persist whatever order it settles on to
+  // settings.workspaceOrder so it survives restart. The early self-drop
+  // return avoids a redundant settings write on the common no-op case.
+  const handleReorder = useCallback(
+    (from: number, to: number) => {
+      if (from === to) return;
+      reorderWorkspaces(from, to);
+      void updateSettings({
+        workspaceOrder: Array.from(useSessionsStore.getState().workspaces.keys()),
+      });
+    },
+    [reorderWorkspaces, updateSettings],
   );
 
   const handleResumeSession = useCallback(
@@ -294,23 +333,35 @@ export function Sidebar({
     setArchiveTarget(null);
   }, []);
 
-  // Load recents on mount
-  // NOTE: This effect MUST NOT select any workspace, even when one is not yet
-  // active. The stale-closure guard (!activeWorkspacePath) always passes under
-  // StrictMode's double-invoke, causing it to clobber the boot effect's restore.
-  // Selection is the sole responsibility of the boot effect below.
+  // Load the ordered workspace list on mount. NOTE: This effect MUST NOT
+  // select any workspace. Selection is the sole responsibility of the boot
+  // effect below.
   // biome-ignore lint/correctness/useExhaustiveDependencies: run-once boot effect
   useEffect(() => {
     window.pivis
-      .invoke("workspace.recents", undefined)
-      .then((recents) => {
-        for (const path of recents) {
+      .invoke("workspace.list", undefined)
+      .then((ordered) => {
+        for (const path of ordered) {
           addWorkspace(path);
           void refreshWorkspaceSessions(path);
         }
       })
       .catch(console.error);
   }, []);
+
+  // Sync persisted expansion state into the store once settings finish
+  // loading. This MUST wait for `settingsLoaded`: settings load asynchronously
+  // (App boot effect → IPC), so reading `savedExpandedWorkspaces` on mount
+  // would capture the empty default and silently drop the user's restored
+  // multi-expand set. Gated to run exactly once via a ref so later user
+  // toggles aren't clobbered.
+  const expandSyncedRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: one-shot sync gated by expandSyncedRef
+  useEffect(() => {
+    if (expandSyncedRef.current || !settingsLoaded) return;
+    expandSyncedRef.current = true;
+    setExpandedWorkspaces(savedExpandedWorkspaces);
+  }, [settingsLoaded]);
 
   // One-shot boot: restore the last-active workspace
   const bootSessionRef = useRef(false);
@@ -327,9 +378,27 @@ export function Sidebar({
         : undefined) ?? Array.from(workspaces.keys())[0];
     if (target) {
       setActiveWorkspace(target);
+      // Ensure the boot workspace is expanded so its sessions are visible.
+      // Read live store state (not a render snapshot) so this can't race the
+      // settings-sync effect above: if the sync already expanded `target`,
+      // this is a no-op and we skip the redundant settings write.
+      if (!useSessionsStore.getState().expandedWorkspaces.includes(target)) {
+        expandWorkspace(target);
+        void updateSettings({
+          expandedWorkspaces: useSessionsStore.getState().expandedWorkspaces,
+        });
+      }
       void openSessionTab(target);
     }
-  }, [settingsLoaded, workspaces.size, lastActiveWorkspace, openSessionTab, setActiveWorkspace]);
+  }, [
+    settingsLoaded,
+    workspaces.size,
+    lastActiveWorkspace,
+    openSessionTab,
+    setActiveWorkspace,
+    expandWorkspace,
+    updateSettings,
+  ]);
 
   return (
     <aside className="sidebar" ref={sidebarRef}>
@@ -346,8 +415,9 @@ export function Sidebar({
 
       <div className="sidebar__draghandle" onMouseDown={handleResizeStart} />
       <div className="sidebar__workspaces">
-        {Array.from(workspaces.values()).map((ws) => {
+        {Array.from(workspaces.values()).map((ws, index) => {
           const isActiveWs = activeWorkspacePath === ws.path;
+          const isExpanded = expandedWorkspaces.includes(ws.path);
           const unifiedSessions = getUnifiedSessions(ws.path);
           const visibleCount = getVisibleCount(ws.path);
           const visibleSessions = unifiedSessions.slice(0, visibleCount);
@@ -357,19 +427,98 @@ export function Sidebar({
             <div
               key={ws.path}
               className={`sidebar__workspace ${isActiveWs ? "sidebar__workspace--active" : ""}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const from = dragIndexRef.current;
+                if (from !== null) handleReorder(from, index);
+                dragIndexRef.current = null;
+              }}
             >
-              <button
-                type="button"
-                className="sidebar__workspace-header"
-                onClick={() => handleSelectWorkspace(ws.path)}
-                title={ws.path}
-              >
-                <span className="sidebar__workspace-name">
-                  {ws.path.split("/").pop() ?? ws.path}
+              <div className="sidebar__workspace-header">
+                <span
+                  className="sidebar__workspace-grip"
+                  draggable
+                  title="Drag to reorder"
+                  onDragStart={(e) => {
+                    dragIndexRef.current = index;
+                    e.dataTransfer.effectAllowed = "move";
+                    // Keep the drag image minimal; default is the grip itself.
+                  }}
+                  onDragEnd={() => {
+                    dragIndexRef.current = null;
+                  }}
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+                    <circle cx="5" cy="4" r="1.4" />
+                    <circle cx="11" cy="4" r="1.4" />
+                    <circle cx="5" cy="8" r="1.4" />
+                    <circle cx="11" cy="8" r="1.4" />
+                    <circle cx="5" cy="12" r="1.4" />
+                    <circle cx="11" cy="12" r="1.4" />
+                  </svg>
                 </span>
-              </button>
+                <button
+                  type="button"
+                  className="sidebar__workspace-name"
+                  onClick={() => handleSelectWorkspace(ws.path)}
+                  title={ws.path}
+                >
+                  {ws.path.split("/").pop() ?? ws.path}
+                </button>
 
-              {isActiveWs && (
+                <div className="sidebar__workspace-actions">
+                  <button
+                    type="button"
+                    className="sidebar__remove-workspace"
+                    onClick={() => {
+                      for (const s of Array.from(sessions.values())) {
+                        if (s.workspacePath === ws.path) void closeSessionTab(s.sessionId);
+                      }
+                      window.pivis
+                        .invoke("workspace.remove", { workspacePath: ws.path })
+                        .catch(console.error);
+                      removeWorkspace(ws.path);
+                    }}
+                    title="Remove workspace"
+                  >
+                    <svg
+                      viewBox="0 0 16 16"
+                      aria-hidden="true"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                    >
+                      <path d="M4 4l8 8M12 4l-8 8" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`sidebar__workspace-chevron ${isExpanded ? "sidebar__workspace-chevron--expanded" : ""}`}
+                    onClick={() => handleToggleExpand(ws.path)}
+                    title={isExpanded ? "Collapse" : "Expand"}
+                    aria-expanded={isExpanded}
+                  >
+                    <svg
+                      viewBox="0 0 16 16"
+                      aria-hidden="true"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M6 4l4 4-4 4" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              {isExpanded && (
                 <div className="sidebar__sessions">
                   <button
                     type="button"
@@ -479,32 +628,6 @@ export function Sidebar({
                   )}
                 </div>
               )}
-
-              <button
-                type="button"
-                className="sidebar__remove-workspace"
-                onClick={() => {
-                  for (const s of Array.from(sessions.values())) {
-                    if (s.workspacePath === ws.path) void closeSessionTab(s.sessionId);
-                  }
-                  window.pivis
-                    .invoke("workspace.remove", { workspacePath: ws.path })
-                    .catch(console.error);
-                  removeWorkspace(ws.path);
-                }}
-                title="Remove workspace"
-              >
-                <svg
-                  viewBox="0 0 16 16"
-                  aria-hidden="true"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                >
-                  <path d="M4 4l8 8M12 4l-8 8" />
-                </svg>
-              </button>
             </div>
           );
         })}

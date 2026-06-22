@@ -51,7 +51,7 @@ function resetSettings(): void {
           display: { family: "Inter", sizePx: 14 },
           code: { family: "IBM Plex Mono", sizePx: 14 },
         },
-        recentWorkspaces: [WORKSPACE],
+        workspaceOrder: [WORKSPACE],
       },
       null,
       2,

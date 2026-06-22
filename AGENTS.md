@@ -33,7 +33,7 @@ src/
 │   ├── pty.ts               # Embedded terminal (node-pty) for pi /login OAuth flow
 │   ├── updates.ts           # Update checker (pi.dev/api/latest-version) + runner (spawns `pi update`)
 │   ├── settings-store.ts    # Reads/writes ~/Library/Application Support/pi-vis/settings.json
-│   ├── workspaces.ts        # Workspace picker (OS dialog), recents management
+│   ├── workspaces.ts        # Workspace picker (OS dialog), manual ordering (workspaceOrder), multi-expand tracking
 │   ├── pi/                  # Pi subprocess management
 │   │   ├── pi-process.ts    # Wraps a single `pi --mode rpc` child process; spawned with login-shell env (PATH etc.); correlated RPC over JSONL
 │   │   ├── jsonl-stream.ts  # Byte-level JSONL parser (splits on \n only, never Unicode separators)
@@ -55,7 +55,7 @@ src/
 │   ├── components/
 │   │   ├── composer/        # Textarea input: prompts, !bash, /slash commands, image attach, autocomplete
 │   │   ├── transcript/      # TranscriptView, DiffBlock (renders user/assistant/tool_call/bash/compaction blocks)
-│   │   ├── shell/           # TitleBar, Sidebar (workspace switcher, session list, tabs, drag/drop), StatusBar,
+│   │   ├── shell/           # TitleBar, Sidebar (workspace switcher with manual drag-reorder + multi-expand chevrons, session list, tabs, drag/drop), StatusBar,
 │   │   │                   #   UpdateBanner (compact dismissible update card: above the composer in a session, floating bottom-right on the empty screen)
 │   │   ├── auth/            # LoginTerminal (embedded xterm.js terminal for pi's /login OAuth flow)
 │   │   ├── updates/         # UpdateProgress (modal with streaming `pi update` output via AnsiText)
@@ -67,7 +67,7 @@ src/
 │   │   ├── settings/        # SettingsView (fonts, pi path, color scheme, diff view mode, Account, Updates)
 │   │   └── setup/           # PiNotFound (shown when pi binary can't be located)
 │   ├── stores/              # Zustand stores
-│   │   ├── sessions-store.ts   # Primary store: SessionViewState per session, transcript, streaming, pickers
+│   │   ├── sessions-store.ts   # Primary store: SessionViewState per session, transcript, streaming, pickers, workspace order + multi-expand (workspaceOrder/expandedWorkspaces decoupled from activeWorkspacePath)
 │   │   ├── transcript.ts       # Reducer: PiEvent → TypedTranscriptBlock[] (pending-echo matching; O(1) per-token streaming patch; compaction-trimmed to bound memory)
 │   │   ├── diff-store.ts       # Diff viewer state: file list, Shiki tokenization, expand/collapse gaps
 │   │   ├── settings-store.ts   # Renderer mirror of AppSettings with font/scheme application
@@ -95,7 +95,7 @@ src/
     │   ├── messages.ts      # Wire message types
     │   └── thinking.ts      # ThinkingLevel enum + schema
     ├── ids.ts               # Branded types: SessionId, RpcRequestId; ID generators (timestamp+counter)
-    ├── settings.ts          # AppSettingsSchema (Zod): fonts, paths, recents, color scheme, diff mode, sidebar width/collapsed, window bounds
+    ├── settings.ts          # AppSettingsSchema (Zod): fonts, paths, workspaceOrder + expandedWorkspaces, lastActiveWorkspace, color scheme, diff mode, sidebar width/collapsed, window bounds
     ├── git.ts               # GitChangedFile, GitChangesResult, GitFileDiffResult types
     ├── result.ts            # Result<T,E> utility + assertNever
     └── session-file/        # Session file format schemas (header, message/model-change/snapshot entries)
@@ -123,7 +123,7 @@ src/
 
 **Invoke channels** (request/response):
 - `pi.locate` — find pi binary
-- `workspace.pick` / `workspace.recents` / `workspace.remove` / `workspace.listSessions`
+- `workspace.pick` / `workspace.list` / `workspace.remove` / `workspace.listSessions`
 - `session.open` → `{ outcome: "opened"|"existing"|"missing", sessionId, ... }`
 - `session.activate` / `session.reload` / `session.close` / `session.loadHistory`
 - `session.sendCommand` — sends PiRpcCommand, returns PiRpcResponse
@@ -200,6 +200,30 @@ controls push the header past the viewport and the breakpoint never fires; (2) t
 picker button is width-capped + ellipsized so one long model id can't blow out the
 cluster. The 560 threshold sits just above the cluster's realistic max (~540px) so
 controls reflow before they'd clip. See [Responsive layout system](#responsive-layout-system).
+
+### Workspace sidebar ordering & expand state
+
+The sidebar renders workspaces in **manual order** — the user drags a hover-revealed
+grip handle on a workspace row to reorder, and the new order is persisted to
+`settings.workspaceOrder` (`src/shared/settings.ts`). Ordering is **stable across
+restarts**: nothing reorders workspaces on close/reopen. A newly-picked workspace
+(via `+` → Open Workspace) is **appended to the bottom** and **auto-expanded** —
+never prepended to slot 0 (the old `recentWorkspaces` recency-sort behavior was
+dropped because ambient activity mutating order is a bug, not a feature). The main
+process (`src/main/workspaces.ts`) prunes paths that no longer exist on disk on read,
+without reordering survivors (pruning ≠ reordering).
+
+**Multiple workspaces can be expanded simultaneously** (`settings.expandedWorkspaces`):
+each workspace header has a chevron that toggles its session-list visibility
+independently, so the user can monitor recent sessions across workspaces at once.
+Expand state is decoupled from the active workspace: clicking the header **activates**
+a workspace (sets focus + opens/switches to a session in it) and **never collapses**
+it — collapse is via the chevron only, so an active workspace can stay expanded while
+the user works in another expanded one. `activeWorkspacePath` (focus/active CSS) and
+`expandedWorkspaces` (session-list visibility) are independent concerns in
+`sessions-store.ts`; `setActiveSession` derives `activeWorkspacePath` from the session's
+workspace. The `workspace.list` IPC channel (renamed from `workspace.recents`)
+returns the ordered, existence-pruned list.
 
 ### Responsive layout system
 

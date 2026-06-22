@@ -49,7 +49,7 @@ async function launchApp(folders: Folders): Promise<{ app: ElectronApplication; 
       settingsPath,
       JSON.stringify({
         piBinaryPath: FAKE_PI,
-        recentWorkspaces: [folders.workspaceDir],
+        workspaceOrder: [folders.workspaceDir],
         fonts: {
           display: { family: "system-ui", sizePx: 14 },
           code: { family: "monospace", sizePx: 13 },

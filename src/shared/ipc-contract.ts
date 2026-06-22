@@ -54,7 +54,7 @@ export interface TranscriptBlock {
 export interface IpcInvokeContract {
   "pi.locate": { req: undefined; res: { path: string; version: string } | null };
   "workspace.pick": { req: undefined; res: string | null };
-  "workspace.recents": { req: undefined; res: string[] };
+  "workspace.list": { req: undefined; res: string[] };
   "workspace.remove": { req: { workspacePath: string }; res: string[] };
   "workspace.listSessions": { req: { workspacePath: string }; res: SessionSummary[] };
   // Worktree identity attached to a session.open response when the
