@@ -320,12 +320,21 @@ export function App(): React.ReactElement {
               {/* Sub-bar for compact mode — secondary controls below the title bar */}
               {compact && <SessionSubBar sessionId={activeSessionId} />}
               <TranscriptView sessionId={activeSessionId} />
-              {/* WorktreeBar — appears only in new sessions (first-send bar) */}
-              <WorktreeBar sessionId={activeSessionId} />
-              {/* Update notification: a compact, right-aligned, dismissible
-                  card that sits just above the composer (in-flow, so it never
-                  overlaps the input or relies on fragile fixed offsets). */}
-              <UpdateBanner />
+              {/* Session dock — the rigid (non-shrinking) stack of bars that
+                  sits between the scrolling transcript and the composer. Both
+                  children are in-flow column rows here, so the update banner
+                  can never overlap or render beneath the WorktreeBar above it
+                  (their boxes are sequential, not positioned siblings of the
+                  flex column). See `.session-dock` in App.css. */}
+              <div className="session-dock">
+                {/* Update notification: a compact, right-aligned, dismissible
+                    card. Sits ABOVE the WorktreeBar (and thus above the
+                    composer) as an in-flow column row — never overlapping or
+                    rendering beneath the bar below it. */}
+                <UpdateBanner />
+                {/* WorktreeBar — appears only in new sessions (first-send bar) */}
+                <WorktreeBar sessionId={activeSessionId} />
+              </div>
               {/* Composer and the extension dialog share the same flex
                 slot: the dialog replaces the composer when a question is
                 pending, so they are never both visible. The dialog

@@ -263,7 +263,7 @@ Builtins are defined in `builtins.ts` (mirrors pi's interactive-mode.js). Discov
 - **Browser preview**: `npm run dev:renderer` loads `preview-stub.ts` which stubs `window.pivis` with a demo session and canned responses including streamed agent output.
 - **Auth**: API keys stored in `~/.pi/agent/auth.json` using `proper-lockfile` for mutual exclusion with pi's token-refresh writes. Environment variables detected via `$SHELL -ilc env` (GUI apps don't inherit shell env). `getSubprocessEnv()` combines `process.env` + login-shell env for consistent subprocess PATH — used across git, updates, pty, and locate-pi. Atomic writes with tmp+rename, chmod 0600.
 - **Login**: Native API-key sign-in (writes auth.json) + embedded xterm.js terminal for OAuth (spawns real `pi` in `node-pty`, watches `auth.json` for success detection).
-- **Updates**: Background check at launch (3s delay, non-blocking, respects `updateCheckEnabled` setting). `update.run` spawns `pi update --no-approve` via `spawn()` with 10-minute safety timeout, streams output via IPC events. New sessions automatically use the updated binary.
+- **Updates**: Background check at launch (3s delay, non-blocking, respects `updateCheckEnabled` setting). `update.run` spawns `pi update … --no-approve` via `spawn()` with 10-minute safety timeout, streams output via IPC events. The target maps to an explicit flag — `"all"` → `--all` (pi **and** extensions), `"pi"` → `--self`, `{extension}` → `--extension <src>`. This matters: bare `pi update` defaults to pi-only and **silently skips extensions** ("Run pi update --extensions to update extensions."), so the "Update now" button must pass `--all`. New sessions automatically use the updated binary.
 - **Dependencies**: `@homebridge/node-pty-prebuilt-multiarch` (native, externalized from main bundle, asarUnpack in electron-builder), `@xterm/xterm` + `@xterm/addon-fit` (renderer), `proper-lockfile` + `@types/proper-lockfile` (main).
 
 ## Testing
@@ -307,7 +307,7 @@ Builtins are defined in `builtins.ts` (mirrors pi's interactive-mode.js). Discov
 | `src/renderer/src/stores/updates-store.ts` | Update notification + progress state |
 | `src/renderer/src/lib/commands/` | Slash command definitions, parsing, and execution |
 | `src/renderer/src/components/auth/LoginTerminal.tsx` | Embedded xterm.js terminal for pi's /login OAuth flow |
-| `src/renderer/src/components/shell/UpdateBanner.tsx` | Dismissible update card — sits above the composer (session) or floats bottom-right (empty screen) |
+| `src/renderer/src/components/shell/UpdateBanner.tsx` | Dismissible update card — in a session it lives in the in-flow `.session-dock` (App.tsx/App.css), stacked ABOVE the WorktreeBar and the composer (dock is rigid `flex: 0 0 auto` so only the transcript absorbs vertical pressure; banner is `position: relative; z-index: 1`); floats bottom-right on the empty screen |
 | `src/renderer/src/components/updates/UpdateProgress.tsx` | Modal streaming `pi update` output |
 | `RELEASING.md` | macOS signing, notarization, and release build docs |
 | `build/notarize.cjs` | `afterSign` hook for macOS notarization (env-gated) |

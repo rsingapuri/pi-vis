@@ -202,6 +202,23 @@ describe("update flow (sandboxed fake pi)", () => {
     expect(status.pi).toMatchObject({ current: "2.0.0", updateAvailable: false });
   });
 
+  it("passes the right `pi update` flags per target", async () => {
+    stubLatestVersion({ version: "2.0.0" });
+
+    // "all" must use --all so extensions are updated too — bare `pi update`
+    // updates pi only and prints "Extensions are skipped."
+    const all = await runToCompletion("all");
+    expect(all.output).toContain("ARGV update --all --no-approve");
+
+    // "pi" updates pi only.
+    const pi = await runToCompletion("pi");
+    expect(pi.output).toContain("ARGV update --self --no-approve");
+
+    // A single extension targets just that package.
+    const ext = await runToCompletion({ extension: "npm:foo-ext" });
+    expect(ext.output).toContain("ARGV update --extension npm:foo-ext --no-approve");
+  });
+
   it("surfaces a non-zero exit code without bumping the version", async () => {
     vi.stubEnv("FAKE_PI_UPDATE_EXIT", "3");
     stubLatestVersion({ version: "2.0.0" });

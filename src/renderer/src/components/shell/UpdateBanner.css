@@ -4,10 +4,19 @@
 
 .update-banner {
   align-self: flex-end;
+  /* Rigid + own stacking context: never shrink against the WorktreeBar in the
+     session dock, and always paint *above* it (the bar has an opaque
+     background, so without this the banner could render beneath it during a
+     layout/animation transient). */
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   gap: 0.286rem;
-  margin: 0.286rem 0.857rem;
+  /* Extra room below so the inset card doesn't sit flush on the full-width
+     bar (WorktreeBar) / composer beneath it in the session dock. */
+  margin: 0.429rem 0.857rem 0.643rem;
   padding: 0.357rem 0.5rem 0.357rem 0.857rem;
   max-width: calc(100% - 1.714rem);
   background: var(--ctp-surface0);
@@ -104,6 +113,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* Stretch to the row height so the button's background matches the
+     "Update now" button beside it (its own padding is 0). */
+  align-self: stretch;
   width: 1.714rem;
   padding: 0;
 }

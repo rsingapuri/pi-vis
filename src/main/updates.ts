@@ -244,12 +244,19 @@ export async function runUpdate(
 
   const args: string[] = ["update"];
 
-  if (target === "pi") {
-    args.push("pi");
+  // pi's `update` defaults to pi-only when no target is given — bare
+  // `pi update` SKIPS extensions ("Run pi update --extensions to update
+  // extensions."). So each target must pass its explicit flag:
+  //   "all"        → --all          (pi + every installed extension)
+  //   "pi"         → --self         (pi only)
+  //   {extension}  → --extension X  (one package)
+  if (target === "all") {
+    args.push("--all");
+  } else if (target === "pi") {
+    args.push("--self");
   } else if (typeof target === "object" && "extension" in target) {
     args.push("--extension", target.extension);
   }
-  // "all" → just `pi update` (updates pi + all extensions)
 
   args.push("--no-approve");
 

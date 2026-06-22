@@ -63,6 +63,10 @@ if (process.argv.includes("--version")) {
 //   FAKE_PI_UPDATE_EXIT=<n>    → exit <n> without bumping the version
 //   FAKE_PI_UPDATE_TO=<ver>    → version to write on success (default "2.0.0")
 if (process.argv.includes("update")) {
+  // Echo the resolved argv so tests can assert the exact `update` flags
+  // (e.g. that "all" maps to `--all` and so includes extensions, not the
+  // bare `pi update` that silently skips them).
+  process.stdout.write(`ARGV ${process.argv.slice(2).join(" ")}\n`);
   process.stdout.write("Checking for updates...\n");
   if (process.env.FAKE_PI_UPDATE_HANG === "1") {
     // Hang forever; the parent's safety timeout should kill us.
