@@ -384,6 +384,23 @@ function ViewerHeader({
         )}
       </span>
       <span className="diff-viewer__spacer" />
+      {stale ? (
+        <span
+          className="diff-viewer__stale-dot"
+          role="img"
+          aria-label="Changes may be pending refresh"
+          title="Changes may be pending refresh"
+        />
+      ) : null}
+      <button
+        type="button"
+        className={`diff-viewer__icon-btn${phase === "loading" ? " diff-viewer__icon-btn--spinning" : ""}`}
+        onClick={onRefresh}
+        title="Refresh"
+        aria-label="Refresh"
+      >
+        <RefreshIcon />
+      </button>
       <div className="diff-viewer__seg" role="group" aria-label="Diff view mode">
         <button
           type="button"
@@ -402,23 +419,6 @@ function ViewerHeader({
           Split
         </button>
       </div>
-      <button
-        type="button"
-        className={`diff-viewer__icon-btn${phase === "loading" ? " diff-viewer__icon-btn--spinning" : ""}`}
-        onClick={onRefresh}
-        title="Refresh"
-        aria-label="Refresh"
-      >
-        <RefreshIcon />
-      </button>
-      {stale ? (
-        <span
-          className="diff-viewer__stale-dot"
-          role="img"
-          aria-label="Changes may be pending refresh"
-          title="Changes may be pending refresh"
-        />
-      ) : null}
       <button
         type="button"
         className="diff-viewer__icon-btn"
@@ -988,8 +988,8 @@ function RefreshIcon(): React.ReactElement {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M14 8a6 6 0 1 1-1.76-4.24" />
-      <polyline points="14 3 14 7 10 7" />
+      <path d="M14 8a6 6 0 1 1-6-6c1.7 0 3.3.7 4.5 1.8L14 6" />
+      <path d="M14 2v4h-4" />
     </svg>
   );
 }

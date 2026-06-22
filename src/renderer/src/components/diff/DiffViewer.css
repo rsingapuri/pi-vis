@@ -160,10 +160,13 @@
   animation: diff-spin 0.8s linear infinite;
 }
 
-/* Stale indicator — shown next to the refresh button when tool calls may
-   have changed the working tree since the last refresh. A steady mauve dot
-   (no pulse): the session streaming dot pulses, but this staleness marker
-   just needs to be noticed, not animated. */
+/* Stale indicator — a steady mauve dot (no pulse) shown to the left of the
+   refresh button when tool calls may have changed the working tree since the
+   last refresh. The header cluster is right-aligned via the flex spacer, so
+   conditionally rendering the dot (rather than reserving a slot) lets the
+   remaining controls stay anchored to the right edge with no gap. The session
+   streaming dot pulses, but this staleness marker just needs to be noticed,
+   not animated. */
 .diff-viewer__stale-dot {
   width: 0.5rem;
   height: 0.5rem;
