@@ -25,7 +25,15 @@
      same visual purpose at the same y. */
   display: flex;
   align-items: center;
-  padding: 0 0.857rem;
+  /* Asymmetric horizontal padding: the left padding (0.429rem) is tuned
+     so the visible session-title text sits the same distance from the
+     sidebar toggle as the toggle sits from the macOS traffic lights —
+     i.e. the gap on each side of the toggle reads as symmetric. The right
+     padding (0.857rem) is the breathing room between the rightmost control
+     and the window edge, which is a different visual context and stays
+     wider. The name button's own 0.429rem horizontal padding accounts for
+     the remaining offset between the header's content box and the text. */
+  padding: 0 0.857rem 0 0.429rem;
   gap: 0.857rem;
   flex-shrink: 0;
   position: relative;
