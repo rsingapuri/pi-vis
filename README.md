@@ -1,6 +1,27 @@
 # Pi-Vis
 
-Electron desktop GUI for the [pi.dev](https://pi.dev) coding agent — multiple parallel sessions, workspace sidebar, Catppuccin Mocha theme.
+A desktop app for the [pi.dev](https://pi.dev) coding agent. Run several agents
+at once, review their changes in a full-featured diff viewer, and let each one
+work on its own git worktree — all with full parity to the pi CLI and its
+extensions.
+
+## Features
+
+- **Run many agents in parallel.** Each session is an independent pi agent. Kick
+  off work across multiple projects from one workspace sidebar and switch between
+  them while they run — no juggling terminal tabs.
+- **Built-in diff viewer.** See exactly what an agent changed in a
+  syntax-highlighted unified or split diff, with branch-relative comparisons. A
+  live changed-files badge updates as the agent edits.
+- **Worktree per session.** Spin up an isolated git worktree on a fresh branch
+  before sending your first prompt, so parallel agents never step on each other or
+  your working tree. No manual `git worktree` setup.
+- **Full extension compatibility.** Every session runs the real `pi` binary, so
+  your extensions, skills, prompts, slash commands, and compaction behave exactly
+  as they do in the terminal — including their dialogs, toasts, status bar, and
+  widgets.
+- **Themes.** Four built-in Catppuccin variants (Latte, Frappé, Macchiato,
+  Mocha).
 
 ## Install (macOS, Apple Silicon)
 
