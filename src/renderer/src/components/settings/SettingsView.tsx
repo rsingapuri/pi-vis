@@ -14,6 +14,33 @@ interface FontFamily {
   fullName?: string;
 }
 
+/**
+ * Fonts shipped with the app (bundled via @fontsource in main.tsx). These are
+ * NOT installed system fonts, so `queryLocalFonts()` never lists them — yet
+ * they're the defaults and render correctly. They must still appear in the
+ * family <select>, otherwise the stored value ("Inter"/"IBM Plex Mono") matches
+ * no <option> and the browser silently displays the first option instead (e.g.
+ * "Academy Engraved LET"), making it look like the wrong font is selected.
+ */
+const BUNDLED_FONTS = ["Inter", "IBM Plex Mono"];
+
+/**
+ * Build the family-dropdown options: bundled fonts first, then the currently
+ * selected family (so a custom value the user typed always has a matching
+ * option), then the system fonts — all de-duplicated.
+ */
+function buildFontOptions(localFonts: FontFamily[], current: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const family of [...BUNDLED_FONTS, current, ...localFonts.map((f) => f.family)]) {
+    if (family && !seen.has(family)) {
+      seen.add(family);
+      out.push(family);
+    }
+  }
+  return out;
+}
+
 interface SettingsViewProps {
   onClose: () => void;
   initialSection?: "account" | undefined;
@@ -294,9 +321,9 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                       })
                     }
                   >
-                    {localFonts.map((f) => (
-                      <option key={f.family} value={f.family}>
-                        {f.family}
+                    {buildFontOptions(localFonts, settings.fonts.display.family).map((family) => (
+                      <option key={family} value={family}>
+                        {family}
                       </option>
                     ))}
                   </select>
@@ -375,9 +402,9 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                       })
                     }
                   >
-                    {localFonts.map((f) => (
-                      <option key={f.family} value={f.family}>
-                        {f.family}
+                    {buildFontOptions(localFonts, settings.fonts.code.family).map((family) => (
+                      <option key={family} value={family}>
+                        {family}
                       </option>
                     ))}
                   </select>

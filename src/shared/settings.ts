@@ -11,7 +11,7 @@ export const AppSettingsSchema = z.object({
   fonts: z
     .object({
       display: FontSettingsSchema.default({ family: "Inter", sizePx: 14 }),
-      code: FontSettingsSchema.default({ family: "IBM Plex Mono", sizePx: 13 }),
+      code: FontSettingsSchema.default({ family: "IBM Plex Mono", sizePx: 14 }),
     })
     .default({}),
   // Manual workspace ordering. The sidebar renders workspaces in this
