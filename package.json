@@ -1,6 +1,6 @@
 {
   "name": "pi-vis",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Electron GUI for pi.dev coding agent",
   "main": "./out/main/index.js",
   "author": "Pi-Vis",
