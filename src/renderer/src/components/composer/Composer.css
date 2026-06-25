@@ -112,7 +112,9 @@
   gap: 0.571rem;
 }
 
-.composer__suggestion:hover,
+/* Selection is driven solely by the JS-managed --selected class
+   (onMouseEnter → setSlashIndex), not by :hover — see the note in
+   AppPickerHost.css for why :hover causes dual-highlight. */
 .composer__suggestion--selected {
   background: var(--ctp-surface1);
   color: var(--ctp-text);

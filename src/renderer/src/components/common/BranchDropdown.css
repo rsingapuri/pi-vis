@@ -111,11 +111,9 @@
   -webkit-app-region: no-drag;
 }
 
-.branch-dropdown__item:hover {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
-}
-
+/* Hover/highlight is driven solely by the JS-managed --highlighted
+   class (onMouseEnter → setHighlightedIndex), not by :hover — see the
+   note in AppPickerHost.css for why :hover causes dual-highlight. */
 .branch-dropdown__item--active {
   color: var(--ctp-mauve);
 }

@@ -611,6 +611,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
               key={s.key}
               className={`composer__suggestion ${i === slashIndex ? "composer__suggestion--selected" : ""}`}
               onClick={() => handleSuggestionClick(s)}
+              onMouseEnter={() => setSlashIndex(i)}
               role="option"
               aria-selected={i === slashIndex}
             >

@@ -130,11 +130,11 @@
   transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
 
-/* Selected/hovered option: full mauve wash. The whole dialog already
-   has a mauve focus-within border, so the option's highlight needs to
-   read as a different visual layer — a flat surface2 + mauve-border
-   combo is too quiet and gets lost next to the surrounding chrome. */
-.ext-dialog__option:hover,
+/* Highlighted option (keyboard or mouse): full mauve wash. Hover is
+   driven by JS (onMouseEnter → setHighlightedIndex), NOT by the CSS
+   :hover pseudo-class — otherwise the cursor-resting item keeps its
+   :hover background after arrow-key nav moves the highlight elsewhere,
+   producing two simultaneously highlighted options. */
 .ext-dialog__option--highlighted {
   background: var(--ctp-mauve);
   color: var(--ctp-base);

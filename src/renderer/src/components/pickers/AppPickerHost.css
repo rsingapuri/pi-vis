@@ -99,7 +99,12 @@
   justify-content: space-between;
 }
 
-.picker__item:hover,
+/* Highlight (keyboard or mouse) is driven solely by the JS-managed
+   --highlighted class (onMouseEnter → setHighlightedIndex). The CSS
+   :hover pseudo-class is intentionally NOT used: while the cursor
+   rests on an item, :hover stays true even after arrow-key nav moves
+   the --highlighted class elsewhere, which would render two items as
+   highlighted at once. */
 .picker__item--highlighted {
   background: var(--ctp-surface1);
   border-color: var(--ctp-surface2);
