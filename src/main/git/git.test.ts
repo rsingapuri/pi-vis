@@ -362,7 +362,7 @@ describe("getChanges with base", () => {
     git(workDir, ["checkout", "-b", "feature"]);
     write(`${workDir}/feature-file.ts`, "// feature\n");
     git(workDir, ["add", "feature-file.ts"]);
-    git(workDir, ["commit", "-m", "feature commit"]);
+    git(workDir, [...COMMIT_C, "commit", "-m", "feature commit"]);
 
     // Working tree: same as HEAD (no uncommitted changes yet).
     let res = await getChanges(workDir, "main");
@@ -392,12 +392,12 @@ describe("getChanges with base", () => {
     // Write a.ts on main first.
     write(`${workDir}/a.ts`, "// content from main\n");
     git(workDir, ["add", "a.ts"]);
-    git(workDir, ["commit", "-m", "initial"]);
+    git(workDir, [...COMMIT_C, "commit", "-m", "initial"]);
 
     git(workDir, ["checkout", "-b", "feature"]);
     write(`${workDir}/a.ts`, "// content from main\n// feature addition\n");
     git(workDir, ["add", "a.ts"]);
-    git(workDir, ["commit", "-m", "feature commit"]);
+    git(workDir, [...COMMIT_C, "commit", "-m", "feature commit"]);
 
     const res = await getFileDiff(workDir, { path: "a.ts", status: "M", untracked: false }, "main");
     expect(res.kind).toBe("ok");
