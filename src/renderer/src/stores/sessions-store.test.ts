@@ -1,7 +1,9 @@
 import type { SessionId } from "@shared/ids.js";
 import { ExtensionUiRequestSchema } from "@shared/pi-protocol/extension-ui.js";
-import { beforeEach, describe, expect, it } from "vitest";
+import type { ModelInfo } from "@shared/pi-protocol/responses.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { shouldShowWorkingIndicator, useSessionsStore } from "./sessions-store.js";
+import { useSettingsStore } from "./settings-store.js";
 
 const SESSION_A = "session-a" as SessionId;
 const SESSION_B = "session-b" as SessionId;
@@ -776,5 +778,318 @@ describe("sessions store - shouldShowWorkingIndicator", () => {
 
   it("is false for an unknown/undefined session", () => {
     expect(shouldShowWorkingIndicator(undefined)).toBe(false);
+  });
+});
+
+/**
+ * These tests pin the two model/thinking-level invariants:
+ *
+ *   1. The dropdown reflects the session's current (or just-requested) model /
+ *      thinking level — i.e. `state.sessions.get(id).currentModel` /
+ *      `.thinkingLevel`, which only the bootstrap, pi events, and the user's
+ *      own actions in THAT session ever write.
+ *   2. A session's model / level NEVER changes unless the user changes it in
+ *      that same session. In particular, switching to another session, picking
+ *      a model there (which updates the GLOBAL last-used preference), and
+ *      switching back must not re-apply that preference to the first session.
+ *
+ * `bootstrapModelState` is the single place the global preference is applied,
+ * guarded by `modelInitialized` so it runs at most once per session no matter
+ * how many times the SessionHeader remounts (every tab switch remounts it).
+ */
+describe("sessions store - bootstrapModelState (model/thinking invariants)", () => {
+  let setModelCalls: Array<{ sessionId: string; modelId: string }>;
+  let setThinkingCalls: Array<{ sessionId: string; level: string }>;
+  // Per-session pi-side current model so get_state / get_available_models
+  // reflect earlier set_model calls (mirrors real pi switching the model).
+  let piModel: Map<string, string>;
+
+  type Cmd = { type: string; modelId?: string; level?: string };
+  type Payload = { sessionId: string; command: Cmd };
+
+  function makeInvoke() {
+    return vi.fn(async (_channel: string, payload: Payload) => {
+      const { sessionId, command } = payload;
+      switch (command.type) {
+        case "get_available_models":
+          return {
+            success: true,
+            data: {
+              models: [
+                { id: "openrouter/model-x", provider: "openrouter" },
+                { id: "openrouter/model-y", provider: "openrouter" },
+              ],
+              currentModelId: piModel.get(sessionId) ?? "openrouter/model-x",
+            },
+          };
+        case "set_model":
+          piModel.set(sessionId, command.modelId as string);
+          setModelCalls.push({ sessionId, modelId: command.modelId as string });
+          return { success: true };
+        case "get_state":
+          return {
+            success: true,
+            data: {
+              model: { id: piModel.get(sessionId) ?? "openrouter/model-x" },
+              thinkingLevel: "off",
+              sessionId,
+            },
+          };
+        case "set_thinking_level":
+          setThinkingCalls.push({ sessionId, level: command.level as string });
+          return { success: true };
+        default:
+          return { success: true, data: {} };
+      }
+    });
+  }
+
+  beforeEach(() => {
+    setModelCalls = [];
+    setThinkingCalls = [];
+    piModel = new Map();
+    vi.stubGlobal("window", { pivis: { invoke: makeInvoke() } });
+    useSettingsStore.setState({
+      settings: {
+        ...useSettingsStore.getState().settings,
+        lastUsedModel: null,
+        lastUsedThinkingLevel: null,
+      },
+    });
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const setLastUsedModel = (modelId: string) =>
+    useSettingsStore.setState({
+      settings: {
+        ...useSettingsStore.getState().settings,
+        lastUsedModel: { provider: "openrouter", modelId },
+      },
+    });
+
+  it("a brand-new session starts un-initialized", () => {
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.modelInitialized).toBe(false);
+  });
+
+  it("applies the global last-used model preference once for a new session", async () => {
+    setLastUsedModel("openrouter/model-y");
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+
+    expect(setModelCalls).toEqual([{ sessionId: SESSION_A, modelId: "openrouter/model-y" }]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
+      "openrouter/model-y",
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.modelInitialized).toBe(true);
+  });
+
+  it("is a no-op on re-invocation — a remount cannot re-apply the preference", async () => {
+    setLastUsedModel("openrouter/model-y");
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+    const callsAfterFirst = setModelCalls.length;
+
+    // Simulate the SessionHeader remounting (every tab switch) firing it again.
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+
+    expect(setModelCalls.length).toBe(callsAfterFirst);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
+      "openrouter/model-y",
+    );
+  });
+
+  it("switching away, changing the global preference, and returning does NOT change the first session's model", async () => {
+    // Session A is created and bootstrapped while no preference is set, so it
+    // keeps pi's default (model-x).
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
+      "openrouter/model-x",
+    );
+    expect(setModelCalls).toEqual([]);
+
+    // The user opens session B and picks model-y there — which writes the
+    // GLOBAL last-used preference.
+    useSessionsStore.getState().createSession(SESSION_B, WORKSPACE);
+    setLastUsedModel("openrouter/model-y");
+    await useSessionsStore.getState().bootstrapModelState(SESSION_B);
+    expect(useSessionsStore.getState().sessions.get(SESSION_B)?.currentModel).toBe(
+      "openrouter/model-y",
+    );
+
+    // Switching back to A remounts A's header → re-invokes bootstrap. A must
+    // be untouched: no set_model to A, and its model is still model-x.
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+    expect(setModelCalls.some((c) => c.sessionId === SESSION_A)).toBe(false);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
+      "openrouter/model-x",
+    );
+  });
+
+  it("never applies the global preference to a resumed session", async () => {
+    setLastUsedModel("openrouter/model-y");
+    // Resumed session: created WITH a file → resumed=true.
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+
+    expect(setModelCalls).toEqual([]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
+      "openrouter/model-x",
+    );
+  });
+
+  it("applies the global last-used thinking level once for a new session", async () => {
+    useSettingsStore.setState({
+      settings: {
+        ...useSettingsStore.getState().settings,
+        lastUsedThinkingLevel: "high",
+      },
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+
+    expect(setThinkingCalls).toEqual([{ sessionId: SESSION_A, level: "high" }]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("high");
+
+    // Remount: no second set_thinking_level.
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+    expect(setThinkingCalls).toEqual([{ sessionId: SESSION_A, level: "high" }]);
+  });
+
+  it("seeds thinking level from pi (no preference) without sending set_thinking_level", async () => {
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+    expect(setThinkingCalls).toEqual([]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("off");
+  });
+});
+
+/**
+ * `applyModelChange` / `applyThinkingLevel` are the single mutation paths for
+ * the model / thinking dropdowns. They update the store optimistically (so the
+ * dropdown shows the requested value immediately — invariant #1's "queued
+ * change about to be sent") but MUST revert to the prior value if pi rejects
+ * the change, so the dropdown never lingers on something not actually in
+ * effect. The global last-used preference is persisted only on success.
+ */
+describe("sessions store - applyModelChange / applyThinkingLevel (revert on failure)", () => {
+  let updateSpy: ReturnType<typeof vi.fn>;
+
+  type Cmd = { type: string };
+  type Payload = { sessionId: string; command: Cmd };
+
+  function stubInvoke(impl: (channel: string, payload: Payload) => Promise<unknown>) {
+    vi.stubGlobal("window", { pivis: { invoke: vi.fn(impl) } });
+  }
+
+  const MODEL_Y = { id: "openrouter/model-y", provider: "openrouter" } as ModelInfo;
+
+  beforeEach(() => {
+    // Override settings-store's `update` with a spy so we can assert exactly
+    // when the global last-used preference is (and isn't) persisted.
+    updateSpy = vi.fn(async () => {});
+    useSettingsStore.setState({ update: updateSpy as unknown as () => Promise<void> });
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    useSessionsStore.getState().setCurrentModel(SESSION_A, "openrouter/model-x");
+    useSessionsStore.getState().setThinkingLevel(SESSION_A, "low");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("applyModelChange commits the model and persists last-used on success", async () => {
+    stubInvoke(async () => ({ success: true, data: {} }));
+    const res = await useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y);
+    expect(res.ok).toBe(true);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
+      "openrouter/model-y",
+    );
+    expect(updateSpy).toHaveBeenCalledWith({
+      lastUsedModel: { provider: "openrouter", modelId: "openrouter/model-y" },
+    });
+  });
+
+  it("applyModelChange reverts to the prior model when pi returns success:false", async () => {
+    stubInvoke(async (_c, p) =>
+      p.command.type === "set_model"
+        ? { success: false, error: "nope" }
+        : { success: true, data: {} },
+    );
+    const res = await useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y);
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain("nope");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
+      "openrouter/model-x",
+    );
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("applyModelChange reverts when the IPC throws", async () => {
+    stubInvoke(async (_c, p) => {
+      if (p.command.type === "set_model") throw new Error("boom");
+      return { success: true, data: {} };
+    });
+    const res = await useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y);
+    expect(res.ok).toBe(false);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
+      "openrouter/model-x",
+    );
+  });
+
+  it("applyModelChange does NOT clobber a newer model that landed during a failed switch", async () => {
+    stubInvoke(async (_c, p) => {
+      if (p.command.type === "set_model") {
+        // A concurrent change lands while set_model is in flight.
+        useSessionsStore.getState().setCurrentModel(SESSION_A, "openrouter/model-z");
+        throw new Error("boom");
+      }
+      return { success: true, data: {} };
+    });
+    await useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y);
+    // Revert is skipped because our optimistic value was already superseded.
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
+      "openrouter/model-z",
+    );
+  });
+
+  it("applyThinkingLevel commits and reports the clamped level pi applied", async () => {
+    stubInvoke(async (_c, p) => {
+      if (p.command.type === "get_state") return { success: true, data: { thinkingLevel: "off" } };
+      return { success: true, data: {} };
+    });
+    const res = await useSessionsStore.getState().applyThinkingLevel(SESSION_A, "high");
+    expect(res.ok).toBe(true);
+    expect(res.clampedTo).toBe("off");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("off");
+    expect(updateSpy).toHaveBeenCalledWith({ lastUsedThinkingLevel: "high" });
+  });
+
+  it("applyThinkingLevel reverts to the prior level on failure and does not persist", async () => {
+    stubInvoke(async (_c, p) =>
+      p.command.type === "set_thinking_level"
+        ? { success: false, error: "no" }
+        : { success: true, data: {} },
+    );
+    const res = await useSessionsStore.getState().applyThinkingLevel(SESSION_A, "high");
+    expect(res.ok).toBe(false);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("low");
+    expect(updateSpy).not.toHaveBeenCalled();
   });
 });

@@ -1,17 +1,12 @@
 import type { SessionId } from "@shared/ids.js";
 import type { ModelInfo, SessionStats } from "@shared/pi-protocol/responses.js";
-import { ModelInfoSchema, SessionStatsSchema } from "@shared/pi-protocol/responses.js";
-import {
-  THINKING_LEVELS,
-  type ThinkingLevel,
-  ThinkingLevelSchema,
-} from "@shared/pi-protocol/thinking.js";
+import { SessionStatsSchema } from "@shared/pi-protocol/responses.js";
+import { THINKING_LEVELS, type ThinkingLevel } from "@shared/pi-protocol/thinking.js";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCost, formatTokens } from "../../lib/format.js";
 import { openDiffForSession, useDiffStore } from "../../stores/diff-store.js";
 import { gitRootForSession, useSessionsStore } from "../../stores/sessions-store.js";
-import { useSettingsStore } from "../../stores/settings-store.js";
 import "./SessionHeader.css";
 
 interface SessionHeaderProps {
@@ -20,14 +15,11 @@ interface SessionHeaderProps {
 
 export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
-  const setAvailableModels = useSessionsStore((s) => s.setAvailableModels);
-  const setCurrentModel = useSessionsStore((s) => s.setCurrentModel);
   const setStats = useSessionsStore((s) => s.setStats);
   const setSessionName = useSessionsStore((s) => s.setSessionName);
   const setSessionFile = useSessionsStore((s) => s.setSessionFile);
   const refreshWorkspaceSessions = useSessionsStore((s) => s.refreshWorkspaceSessions);
-  const setThinkingLevel = useSessionsStore((s) => s.setThinkingLevel);
-  const resumed = session?.resumed ?? false;
+  const bootstrapModelState = useSessionsStore((s) => s.bootstrapModelState);
 
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
@@ -38,121 +30,26 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
   // to drive their models/stats/get_state effects.
   const live = session?.status === "starting" || session?.status === "ready";
 
-  // Load models and apply last-used model preference.
+  // Seed the store with pi's authoritative model + thinking level for this
+  // session, and (for brand-new sessions) apply the global last-used
+  // preference — ONCE per session.
   //
-  // The preference is captured ONCE, non-reactively, at session birth (the
-  // live transition) — it is deliberately NOT a reactive dependency. This is
-  // what makes "remember last selected model" per-session: picking a model in
-  // session A updates the global preference, but must NOT re-trigger this
-  // effect in other already-live new sessions and clobber a manual choice
-  // made there. Reading via getState() (instead of subscribing) keeps the
-  // effect from re-running on unrelated preference changes.
+  // This effect re-runs on every header mount, which includes every tab
+  // switch back to this session (only the active session's SessionHeader is
+  // mounted; see TitleBar). The actual work is idempotent and guarded inside
+  // `bootstrapModelState` by the session's `modelInitialized` flag, so a
+  // remount is a no-op. That guard — living in the store, not in this
+  // component — is what structurally enforces invariant #2: switching to
+  // another session, changing its model, and switching back can NEVER
+  // re-apply that now-global preference and silently change this session's
+  // model. The dropdown reads `session.currentModel` / `session.thinkingLevel`
+  // straight from the store (invariant #1), and those only change via this
+  // one-time bootstrap, pi events for this session, or the user's explicit
+  // dropdown / slash-command actions in this session.
   useEffect(() => {
     if (!live) return;
-    // "Remember last selected model" applies ONLY to brand-new sessions.
-    // Resumed sessions keep the model pi restored from the session file
-    // (currentModelId below) — they must not be clobbered by the global
-    // last-used preference.
-    const lum = resumed ? undefined : useSettingsStore.getState().settings.lastUsedModel;
-    let cancelled = false;
-    window.pivis
-      .invoke("session.sendCommand", {
-        sessionId,
-        command: { type: "get_available_models" },
-      })
-      .then((res) => {
-        if (cancelled) return;
-        const raw = res.data as { models?: unknown[]; currentModelId?: string } | undefined;
-        const list = Array.isArray(raw?.models) ? raw.models : [];
-        const models = list
-          .map((m) => {
-            const r = ModelInfoSchema.safeParse(m);
-            return r.success ? r.data : null;
-          })
-          .filter((m): m is ModelInfo => m !== null);
-        setAvailableModels(sessionId, models);
-
-        const match = lum ? models.find((m) => m.id === lum.modelId) : undefined;
-
-        if (match?.provider) {
-          window.pivis
-            .invoke("session.sendCommand", {
-              sessionId,
-              command: { type: "set_model", provider: match.provider, modelId: match.id },
-            })
-            .then(() => setCurrentModel(sessionId, match.id))
-            .catch(() => {});
-        } else if (raw?.currentModelId) {
-          setCurrentModel(sessionId, raw.currentModelId);
-        } else {
-          const active = models.find((m) => (m as Record<string, unknown>)["current"] === true);
-          if (active) setCurrentModel(sessionId, active.id);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, live, resumed, setAvailableModels, setCurrentModel]);
-
-  // Authoritative state on mount / session switch: seed the store with pi's
-  // current model and thinking level. This makes the dropdown match pi even
-  // before any user interaction or `thinking_level_changed` event arrives.
-  //
-  // The last-used thinking-level preference is captured ONCE, non-reactively,
-  // at session birth (the live transition) — same rationale as the model
-  // effect above: a thinking-level change in another live session must not
-  // re-run this effect (which would both clobber a manual choice here AND
-  // needlessly repeat the get_state round-trip for every live session).
-  useEffect(() => {
-    if (!live) return;
-    // "Remember last selected thinking level" applies ONLY to new sessions;
-    // resumed sessions keep the level pi restored from the session file.
-    const ltl = resumed ? undefined : useSettingsStore.getState().settings.lastUsedThinkingLevel;
-    let cancelled = false;
-    void window.pivis
-      .invoke("session.sendCommand", { sessionId, command: { type: "get_state" } })
-      .then((res) => {
-        if (cancelled) return;
-        const raw = res?.data as
-          | {
-              thinkingLevel?: unknown;
-              model?: { id?: unknown };
-              sessionName?: unknown;
-              sessionFile?: unknown;
-            }
-          | undefined;
-        if (!raw) return;
-        if (typeof raw.thinkingLevel === "string") {
-          const parsed = ThinkingLevelSchema.safeParse(raw.thinkingLevel);
-          if (parsed.success) {
-            setThinkingLevel(sessionId, parsed.data);
-          }
-        }
-        if (ltl) {
-          window.pivis
-            .invoke("session.sendCommand", {
-              sessionId,
-              command: { type: "set_thinking_level", level: ltl },
-            })
-            .then(() => setThinkingLevel(sessionId, ltl))
-            .catch(() => {});
-        }
-        if (raw.model && typeof raw.model.id === "string") {
-          setCurrentModel(sessionId, raw.model.id);
-        }
-        if (typeof raw.sessionName === "string" && raw.sessionName) {
-          setSessionName(sessionId, raw.sessionName);
-        }
-        if (typeof raw.sessionFile === "string" && raw.sessionFile) {
-          setSessionFile(sessionId, raw.sessionFile);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, live, resumed, setThinkingLevel, setCurrentModel, setSessionName, setSessionFile]);
+    void bootstrapModelState(sessionId);
+  }, [sessionId, live, bootstrapModelState]);
 
   // Poll stats after each agent_end and periodically while streaming
   useEffect(() => {
@@ -316,10 +213,9 @@ export function SessionControls({
   sessionId: SessionId;
 }): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
-  const setCurrentModel = useSessionsStore((s) => s.setCurrentModel);
-  const setThinkingLevel = useSessionsStore((s) => s.setThinkingLevel);
+  const applyModelChange = useSessionsStore((s) => s.applyModelChange);
+  const applyThinkingLevel = useSessionsStore((s) => s.applyThinkingLevel);
   const addToast = useSessionsStore((s) => s.addToast);
-  const updateSettings = useSettingsStore((s) => s.update);
 
   // ── Model picker state ────────────────────────────────────────────
   const [modelOpen, setModelOpen] = useState(false);
@@ -374,31 +270,12 @@ export function SessionControls({
   const handleModelChange = useCallback(
     async (model: ModelInfo) => {
       setModelOpen(false);
-      setCurrentModel(sessionId, model.id);
-      // Persist as the global "last selected" so the NEXT new session
-      // picks it up. (Doesn't affect resumed sessions — those keep their
-      // own persisted model.)
-      void updateSettings({
-        lastUsedModel: {
-          provider: model.provider ?? model.id.split("/")[0] ?? "",
-          modelId: model.id,
-        },
-      });
-      try {
-        await window.pivis.invoke("session.sendCommand", {
-          sessionId,
-          command: {
-            type: "set_model",
-            provider: model.provider ?? model.id.split("/")[0] ?? "",
-            modelId: model.id,
-          },
-        });
-      } catch (err) {
-        console.error("Failed to set model:", err);
-        addToast(sessionId, `Failed to set model: ${String(err)}`, "error");
+      const res = await applyModelChange(sessionId, model);
+      if (!res.ok) {
+        addToast(sessionId, `Failed to set model: ${res.error}`, "error");
       }
     },
-    [sessionId, addToast, setCurrentModel, updateSettings],
+    [sessionId, addToast, applyModelChange],
   );
 
   // ── Thinking level picker state ───────────────────────────────────
@@ -417,55 +294,22 @@ export function SessionControls({
   }, [currentModelInfo]);
   const thinkingDisabled = thinkingOptions.length <= 1;
 
-  const lastRequestedThinkingLevelRef = useRef<ThinkingLevel | null>(null);
-
   const handleThinkingLevel = useCallback(
     async (level: ThinkingLevel) => {
       setThinkingOpen(false);
-      lastRequestedThinkingLevelRef.current = level;
-      const validated = ThinkingLevelSchema.parse(level);
-      setThinkingLevel(sessionId, validated);
-      // Persist as the global "last selected" so the next new session uses it.
-      void updateSettings({ lastUsedThinkingLevel: validated });
-      try {
-        await window.pivis.invoke("session.sendCommand", {
+      const res = await applyThinkingLevel(sessionId, level);
+      if (!res.ok) {
+        addToast(sessionId, `Failed to set thinking level: ${res.error}`, "error");
+      } else if (res.clampedTo) {
+        addToast(
           sessionId,
-          command: { type: "set_thinking_level", level: validated },
-        });
-        const res = await window.pivis.invoke("session.sendCommand", {
-          sessionId,
-          command: { type: "get_state" },
-        });
-        const raw = res?.data as { thinkingLevel?: unknown } | undefined;
-        if (raw && typeof raw.thinkingLevel === "string") {
-          const confirmed = ThinkingLevelSchema.safeParse(raw.thinkingLevel);
-          if (confirmed.success) {
-            setThinkingLevel(sessionId, confirmed.data);
-            if (confirmed.data !== validated) {
-              addToast(
-                sessionId,
-                `Model does not support thinking level: ${validated} — using ${confirmed.data} instead.`,
-                "warning",
-              );
-            }
-          }
-        }
-        lastRequestedThinkingLevelRef.current = null;
-      } catch (err) {
-        console.error("Failed to set thinking level:", err);
-        addToast(sessionId, `Failed to set thinking level: ${String(err)}`, "error");
-        lastRequestedThinkingLevelRef.current = null;
+          `Model does not support thinking level: ${level} — using ${res.clampedTo} instead.`,
+          "warning",
+        );
       }
     },
-    [sessionId, setThinkingLevel, addToast, updateSettings],
+    [sessionId, applyThinkingLevel, addToast],
   );
-
-  useEffect(() => {
-    if (session?.thinkingLevel == null) return;
-    if (lastRequestedThinkingLevelRef.current != null) {
-      lastRequestedThinkingLevelRef.current = null;
-    }
-  }, [session?.thinkingLevel]);
 
   useEffect(() => {
     if (!thinkingOpen) return;

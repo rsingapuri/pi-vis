@@ -5,7 +5,6 @@ import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PickerRequest } from "../../lib/commands/execute.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
-import { useSettingsStore } from "../../stores/settings-store.js";
 import "./AppPickerHost.css";
 
 interface PickerHostProps {
@@ -33,8 +32,7 @@ interface PickerHostProps {
 export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElement | null {
   const picker = useSessionsStore((s) => s.sessions.get(sessionId)?.pendingPicker);
   const closePicker = useSessionsStore((s) => s.closePicker);
-  const setCurrentModel = useSessionsStore((s) => s.setCurrentModel);
-  const updateSettings = useSettingsStore((s) => s.update);
+  const applyModelChange = useSessionsStore((s) => s.applyModelChange);
   const addToast = useSessionsStore((s) => s.addToast);
   const injectEditorText = useSessionsStore((s) => s.injectEditorText);
   const openSessionTab = useSessionsStore((s) => s.openSessionTab);
@@ -60,15 +58,12 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
             onClose={() => closePicker(sessionId)}
             onPick={async (model) => {
               if (!model.provider) return;
-              await window.pivis.invoke("session.sendCommand", {
-                sessionId,
-                command: { type: "set_model", provider: model.provider, modelId: model.id },
-              });
-              setCurrentModel(sessionId, model.id);
-              await updateSettings({
-                lastUsedModel: { provider: model.provider, modelId: model.id },
-              });
-              addToast(sessionId, `Model: ${model.id}`);
+              const res = await applyModelChange(sessionId, model);
+              if (res.ok) {
+                addToast(sessionId, `Model: ${model.id}`);
+              } else {
+                addToast(sessionId, `Failed to set model: ${res.error}`, "error");
+              }
               closePicker(sessionId);
             }}
           />

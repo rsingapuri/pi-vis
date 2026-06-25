@@ -6,10 +6,13 @@ import type { KnownPiEvent } from "@shared/pi-protocol/events.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
 import type { PanelEvent } from "@shared/pi-protocol/panel-events.js";
 import type { ModelInfo, SessionStats, SlashCommandInfo } from "@shared/pi-protocol/responses.js";
+import { ModelInfoSchema } from "@shared/pi-protocol/responses.js";
 import type { ThinkingLevel } from "@shared/pi-protocol/thinking.js";
+import { ThinkingLevelSchema } from "@shared/pi-protocol/thinking.js";
 import { detectTurnError } from "@shared/pi-protocol/turn-error.js";
 import { create } from "zustand";
 import type { PickerRequest } from "../lib/commands/execute.js";
+import { useSettingsStore } from "./settings-store.js";
 import {
   type TranscriptState,
   addBashBlock,
@@ -103,6 +106,21 @@ export interface SessionViewState {
    *  sessions; resumed sessions keep the model/thinking level they had when
    *  last active (restored by pi from the session file). */
   resumed: boolean;
+  /**
+   * True once the one-time model + thinking-level bootstrap has run for this
+   * session (see `bootstrapModelState`). It seeds pi's authoritative
+   * model/level into the store and — for brand-new sessions only — applies
+   * the global last-used preference.
+   *
+   * This flag is the structural guard for invariant #2 ("a session's model /
+   * thinking level NEVER changes unless the user changes it in THAT session").
+   * It lives in the store, not in the `SessionHeader` component, precisely so
+   * it survives the header's unmount/remount on every tab switch — a
+   * component-local guard would reset and let a remount re-apply the global
+   * preference, silently changing this session's model to whatever another
+   * session last picked.
+   */
+  modelInitialized: boolean;
 }
 
 interface WorkspaceState {
@@ -216,6 +234,39 @@ interface SessionsStore {
   setAvailableModels: (sessionId: SessionId, models: ModelInfo[]) => void;
   setCurrentModel: (sessionId: SessionId, model: string) => void;
   setThinkingLevel: (sessionId: SessionId, level: ThinkingLevel) => void;
+  /**
+   * One-time, idempotent model/thinking-level bootstrap for a session. Seeds
+   * the store with pi's authoritative model + level (from `get_available_models`
+   * / `get_state`) and, for brand-new (non-resumed) sessions ONLY, applies the
+   * global last-used preference. Guarded by `modelInitialized` so it runs at
+   * most once per session no matter how many times the caller fires it (header
+   * remounts, StrictMode double-invoke, concurrent callers). This is the sole
+   * place the global preference is ever applied to a session — see the
+   * model/thinking invariants on `modelInitialized`.
+   */
+  bootstrapModelState: (sessionId: SessionId) => Promise<void>;
+  /**
+   * Switch a session's model: optimistically update the store (so the dropdown
+   * reflects the requested model immediately — the "queued change about to be
+   * sent" half of invariant #1), send `set_model`, and **revert** to the prior
+   * model if the command fails (so the dropdown never lingers on a model pi
+   * didn't accept). The global last-used preference is persisted ONLY on
+   * success. The single mutation path for the model dropdown / `/model`.
+   */
+  applyModelChange: (
+    sessionId: SessionId,
+    model: ModelInfo,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Switch a session's thinking level: optimistic update, send
+   * `set_thinking_level`, reconcile with pi's actually-applied level (a model
+   * may clamp it), and **revert** on failure. Persists last-used only on
+   * success. Returns `clampedTo` when pi applied a different level than asked.
+   */
+  applyThinkingLevel: (
+    sessionId: SessionId,
+    level: ThinkingLevel,
+  ) => Promise<{ ok: boolean; error?: string; clampedTo?: ThinkingLevel }>;
   setSessionName: (sessionId: SessionId, name: string) => void;
   /** Re-point the session to a new file (overrides the only-if-unset guard). */
   adoptSessionFile: (
@@ -357,6 +408,8 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         // Resumed sessions had a file at open time; new sessions did not.
         // Gates last-used model/thinking-level preference (new sessions only).
         resumed: !!sessionFile,
+        // Bootstrap hasn't run yet — it fires once when the session goes live.
+        modelInitialized: false,
       });
       const workspaces = new Map(state.workspaces);
       const ws = workspaces.get(workspacePath);
@@ -868,6 +921,200 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       sessions.set(sessionId, { ...s, thinkingLevel: level });
       return { sessions };
     });
+  },
+
+  bootstrapModelState: async (sessionId) => {
+    if (typeof window === "undefined" || !window.pivis) return;
+    const existing = get().sessions.get(sessionId);
+    // Run at most once per session. Bailing on `modelInitialized` here is what
+    // structurally enforces invariant #2: a SessionHeader remount (every tab
+    // switch) re-invokes this, but after the first run it is a no-op, so the
+    // global last-used preference can NEVER be re-applied to an already-live
+    // session and silently change its model.
+    if (!existing || existing.modelInitialized) return;
+    const resumed = existing.resumed;
+
+    // Claim the bootstrap synchronously, BEFORE any await, so a concurrent
+    // caller (StrictMode double-invoke, a racing remount) sees the flag set
+    // and returns early instead of double-applying the preference.
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      sessions.set(sessionId, { ...s, modelInitialized: true });
+      return { sessions };
+    });
+
+    // The global "last selected" preference applies ONLY to brand-new sessions.
+    // Resumed sessions keep the model/level pi restored from the session file,
+    // so they read no preference here.
+    const settings = useSettingsStore.getState().settings;
+    const lum = resumed ? null : settings.lastUsedModel;
+    const ltl = resumed ? null : settings.lastUsedThinkingLevel;
+
+    // 1. Available models + current model. All writes target THIS sessionId.
+    try {
+      const res = await window.pivis.invoke("session.sendCommand", {
+        sessionId,
+        command: { type: "get_available_models" },
+      });
+      const raw = res.data as { models?: unknown[]; currentModelId?: string } | undefined;
+      const list = Array.isArray(raw?.models) ? raw.models : [];
+      const models = list
+        .map((m) => {
+          const r = ModelInfoSchema.safeParse(m);
+          return r.success ? r.data : null;
+        })
+        .filter((m): m is ModelInfo => m !== null);
+      get().setAvailableModels(sessionId, models);
+
+      const match = lum ? models.find((m) => m.id === lum.modelId) : undefined;
+      if (match?.provider) {
+        await window.pivis
+          .invoke("session.sendCommand", {
+            sessionId,
+            command: { type: "set_model", provider: match.provider, modelId: match.id },
+          })
+          .then(() => get().setCurrentModel(sessionId, match.id))
+          .catch(() => {});
+      } else if (raw?.currentModelId) {
+        get().setCurrentModel(sessionId, raw.currentModelId);
+      } else {
+        const active = models.find((m) => (m as Record<string, unknown>)["current"] === true);
+        if (active) get().setCurrentModel(sessionId, active.id);
+      }
+    } catch {
+      /* best effort — leave the dropdown showing whatever the store already has */
+    }
+
+    // 2. Thinking level + session name/file (get_state).
+    try {
+      const res = await window.pivis.invoke("session.sendCommand", {
+        sessionId,
+        command: { type: "get_state" },
+      });
+      const raw = res?.data as
+        | {
+            thinkingLevel?: unknown;
+            model?: { id?: unknown };
+            sessionName?: unknown;
+            sessionFile?: unknown;
+          }
+        | undefined;
+      if (!raw) return;
+      if (typeof raw.thinkingLevel === "string") {
+        const parsed = ThinkingLevelSchema.safeParse(raw.thinkingLevel);
+        if (parsed.success) get().setThinkingLevel(sessionId, parsed.data);
+      }
+      if (ltl) {
+        await window.pivis
+          .invoke("session.sendCommand", {
+            sessionId,
+            command: { type: "set_thinking_level", level: ltl },
+          })
+          .then(() => get().setThinkingLevel(sessionId, ltl))
+          .catch(() => {});
+      }
+      if (raw.model && typeof raw.model.id === "string") {
+        get().setCurrentModel(sessionId, raw.model.id);
+      }
+      if (typeof raw.sessionName === "string" && raw.sessionName) {
+        get().setSessionName(sessionId, raw.sessionName);
+      }
+      if (typeof raw.sessionFile === "string" && raw.sessionFile) {
+        get().setSessionFile(sessionId, raw.sessionFile);
+      }
+    } catch {
+      /* best effort */
+    }
+  },
+
+  applyModelChange: async (sessionId, model) => {
+    if (typeof window === "undefined" || !window.pivis) {
+      return { ok: false, error: "Unavailable" };
+    }
+    const before = get().sessions.get(sessionId);
+    if (!before) return { ok: false, error: "Unknown session" };
+    const prevModel = before.currentModel;
+    const provider = model.provider ?? model.id.split("/")[0] ?? "";
+
+    // Optimistic: show the requested model right away (invariant #1's "queued
+    // change about to be sent").
+    get().setCurrentModel(sessionId, model.id);
+
+    try {
+      const res = await window.pivis.invoke("session.sendCommand", {
+        sessionId,
+        command: { type: "set_model", provider, modelId: model.id },
+      });
+      if (!res.success) throw new Error(res.error ?? "set_model failed");
+    } catch (err) {
+      // Revert so the dropdown reflects the model still actually in effect —
+      // but only if our optimistic value is still the one showing. A newer
+      // change (or a pi event) that landed in the meantime wins.
+      set((state) => {
+        const sessions = new Map(state.sessions);
+        const s = sessions.get(sessionId);
+        if (!s || s.currentModel !== model.id) return {};
+        sessions.set(sessionId, { ...s, currentModel: prevModel });
+        return { sessions };
+      });
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    // Persist the global last-used preference ONLY on success — a failed
+    // switch must not leak into the next new session's default.
+    void useSettingsStore.getState().update({ lastUsedModel: { provider, modelId: model.id } });
+    return { ok: true };
+  },
+
+  applyThinkingLevel: async (sessionId, level) => {
+    if (typeof window === "undefined" || !window.pivis) {
+      return { ok: false, error: "Unavailable" };
+    }
+    const before = get().sessions.get(sessionId);
+    if (!before) return { ok: false, error: "Unknown session" };
+    const prevLevel = before.thinkingLevel;
+
+    // Optimistic update.
+    get().setThinkingLevel(sessionId, level);
+
+    try {
+      const res = await window.pivis.invoke("session.sendCommand", {
+        sessionId,
+        command: { type: "set_thinking_level", level },
+      });
+      if (!res.success) throw new Error(res.error ?? "set_thinking_level failed");
+
+      // Reconcile with the level pi actually applied (a model may clamp it).
+      let clampedTo: ThinkingLevel | undefined;
+      const stateRes = await window.pivis.invoke("session.sendCommand", {
+        sessionId,
+        command: { type: "get_state" },
+      });
+      const raw = stateRes?.data as { thinkingLevel?: unknown } | undefined;
+      if (raw && typeof raw.thinkingLevel === "string") {
+        const confirmed = ThinkingLevelSchema.safeParse(raw.thinkingLevel);
+        // Only adopt pi's value if our optimistic value is still in effect
+        // (not superseded by a newer change).
+        if (confirmed.success && get().sessions.get(sessionId)?.thinkingLevel === level) {
+          get().setThinkingLevel(sessionId, confirmed.data);
+          if (confirmed.data !== level) clampedTo = confirmed.data;
+        }
+      }
+
+      void useSettingsStore.getState().update({ lastUsedThinkingLevel: level });
+      return clampedTo ? { ok: true, clampedTo } : { ok: true };
+    } catch (err) {
+      set((state) => {
+        const sessions = new Map(state.sessions);
+        const s = sessions.get(sessionId);
+        if (!s || s.thinkingLevel !== level) return {};
+        sessions.set(sessionId, { ...s, thinkingLevel: prevLevel });
+        return { sessions };
+      });
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
   },
 
   setSessionName: (sessionId, name) => {

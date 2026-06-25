@@ -351,10 +351,17 @@ async function executeModel(
       );
     const exact = findExactModelReferenceMatch(action.search, candidates);
     if (exact) {
-      await deps.invoke("session.sendCommand", {
+      const res = await deps.invoke("session.sendCommand", {
         sessionId,
         command: { type: "set_model", provider: exact.provider, modelId: exact.id },
       });
+      // Only commit the model (store + last-used preference) once pi confirms.
+      // A failed switch must not move the dropdown or leak into the next
+      // session's default — mirrors applyModelChange's revert-on-failure.
+      if (!res.success) {
+        deps.addToast(sessionId, `Failed to set model: ${res.error ?? "unknown error"}`, "error");
+        return;
+      }
       deps.setCurrentModel(sessionId, exact.id);
       await deps.updateLastUsedModel(exact.provider, exact.id);
       deps.addToast(sessionId, `Model: ${exact.id}`);
