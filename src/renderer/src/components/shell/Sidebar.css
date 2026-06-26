@@ -39,7 +39,9 @@
      ellipsis at the *visible* edge. Clipping x keeps every row sized to the
      visible width so the ellipsis engages. */
   overflow-x: hidden;
-  padding: 0 0 0.571rem 0; /* bottom only — top spacing handled by the divider above */
+  /* A little top breathing room so the first workspace name isn't crammed
+     against the title-bar divider; bottom keeps the list off the footer. */
+  padding: 0.357rem 0 0.571rem 0;
 }
 
 .sidebar__workspace {
@@ -58,7 +60,7 @@
      positioned (out of flow) at ~1.7rem wide, so 2rem reserves it with a
      small gap to the name's clip edge. Reserving unconditionally keeps the
      ellipsis stable across hover (an on-hover padding change would jump it). */
-  padding: 0.429rem 2rem 0.429rem 0.286rem;
+  padding: 0.571rem 2rem 0.571rem 0.286rem;
   text-align: left;
   display: flex;
   align-items: center;
@@ -66,12 +68,17 @@
   font-family: var(--font-display);
 }
 
-.sidebar__workspace-header:hover {
-  background: var(--ctp-surface0);
+/* The workspace header is the top tier — a section header, not a list row.
+   It conveys state with text color only (no background block / spine): the
+   name is muted at rest, brightens on hover, and takes the mauve accent when
+   the workspace is active. This keeps the heavy filled-block look off the top
+   tier and reserves the rounded "pill" fill for the session rows below. */
+.sidebar__workspace-header:hover .sidebar__workspace-name {
+  color: var(--ctp-text);
 }
 
-.sidebar__workspace--active .sidebar__workspace-header {
-  background: var(--ctp-surface0);
+.sidebar__workspace--active .sidebar__workspace-name {
+  color: var(--ctp-mauve);
 }
 
 /* Drag grip: hidden by default, revealed on row hover. The draggable
@@ -165,7 +172,7 @@
   font-family: var(--font-code);
   font-size: 0.929em; /* ≈13px @ 14px root */
   font-weight: 600;
-  color: var(--ctp-text);
+  color: var(--ctp-subtext0); /* muted at rest; brightens on hover, mauve when active */
   line-height: 1.4; /* deterministic single-line height → see the × sizing below */
   /* min-width: 0 lets the flex item shrink below its min-content width so the
      ellipsis engages (same fix the session name uses). */
@@ -177,7 +184,10 @@
 }
 
 .sidebar__sessions {
-  padding: 0.286rem 0; /* ≈4px */
+  /* Horizontal padding insets the session rows from the sidebar edges so the
+     hover/active highlight reads as a rounded "pill" floating inside the
+     column instead of a flat, edge-to-edge block. */
+  padding: 0.143rem 0.429rem 0.286rem;
   background: var(--ctp-mantle);
 }
 
@@ -186,7 +196,10 @@
   background: none;
   border: none;
   cursor: pointer;
-  padding: 0.429rem 0.857rem 0.429rem 1.429rem; /* 6/12/6/20 */
+  /* Left pad (container inset 0.429 + this 1 ≈ 1.429rem) keeps the row content
+     aligned under the workspace name; the container inset lets the rounded
+     highlight float clear of the edges. */
+  padding: 0.429rem 0.643rem 0.429rem 1rem;
   text-align: left;
   display: flex;
   align-items: center;
@@ -196,6 +209,8 @@
   font-size: 0.857em; /* ≈12px @ 14px root */
   font-weight: 500;
   line-height: var(--mcm-line-label);
+  border-radius: var(--mcm-radius-md);
+  transition: background 0.1s ease, color 0.1s ease, box-shadow 0.1s ease;
 }
 
 .sidebar__session:hover {
@@ -206,6 +221,9 @@
 .sidebar__session--active {
   background: var(--ctp-surface0);
   color: var(--ctp-text);
+  /* Mauve spine = "this is the open session" (matches the diff tree's active
+     row). Reads as identity, not just another hovered block. */
+  box-shadow: inset 2px 0 0 var(--ctp-mauve);
 }
 
 .sidebar__session-name {
@@ -264,36 +282,38 @@
   width: 100%;
   display: inline-flex;
   align-items: center;
-  gap: 0.5em;
+  gap: 0.429rem; /* match the session rows' dot→name gap so the label lines up */
   background: none;
   border: none;
   cursor: pointer;
-  padding: 0.429rem 0.857rem 0.429rem 1.429rem;
+  padding: 0.429rem 0.643rem 0.429rem 1rem;
   text-align: left;
   font-family: var(--font-display);
   font-size: 0.857em;
   color: var(--ctp-overlay1);
   line-height: var(--mcm-line-label);
+  border-radius: var(--mcm-radius-md);
+  transition: background 0.1s ease, color 0.1s ease, box-shadow 0.1s ease;
 }
 
 .sidebar__new-session:hover {
   color: var(--ctp-mauve);
-}
-
-.sidebar__new-session--selected {
-  color: var(--ctp-mauve);
   background: var(--ctp-surface0);
 }
 
+.sidebar__new-session--selected,
 .sidebar__new-session--selected:hover {
+  /* The mauve text + icon already read as "compose"; a neutral rounded fill
+     (same as the session pills) marks it as the current selection without
+     piling accent on accent. */
   color: var(--ctp-mauve);
   background: var(--ctp-surface0);
 }
 
 /* Show more button */
 .sidebar__show-more {
-  width: calc(100% - 1.714rem);
-  margin: 0.286rem 0.857rem;
+  width: 100%;
+  margin: 0.286rem 0 0.143rem;
   background: var(--ctp-surface0);
   border: 1px solid var(--ctp-surface1);
   border-radius: var(--mcm-radius-sm);
@@ -324,6 +344,19 @@
   flex-shrink: 0;
   stroke: currentColor;
   fill: none;
+}
+
+/* The "+ New session" leading icon renders larger than the status dots, but
+   its flex footprint is pinned to the dot column's 0.6em width (centered via
+   symmetric negative margins). The icon overflows that slot evenly on both
+   sides, so the "+" center stays on the dot column and the label still lines
+   up with the session names below. (The shared .sidebar__add-icon stays its
+   default size for the footer's "Add workspace".) */
+.sidebar__new-session .sidebar__add-icon {
+  width: 0.857em;
+  height: 0.857em;
+  stroke-width: 2;
+  margin: 0 calc((0.857em - 0.6em) / -2);
 }
 
 .sidebar__add-workspace {
