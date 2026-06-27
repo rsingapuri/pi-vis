@@ -18,7 +18,6 @@
 
 .diff-viewer {
   width: 100%;
-  max-width: 114rem;
   height: 100%;
   display: flex;
   flex-direction: column;
