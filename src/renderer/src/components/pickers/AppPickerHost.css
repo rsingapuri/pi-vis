@@ -1,42 +1,71 @@
-/* Built-in picker host — modals for /model, /fork, /resume. Visually
-   consistent with ExtensionDialogHost but simpler: no queue, no timeout,
-   no request/response RPC. The host is single-slot (a new picker replaces
-   the active one) and the user is the one driving the choice. */
+/* Built-in picker host — /model, /fork, /resume. The picker replaces the
+   Composer in the same flex slot (same in-place treatment as
+   ExtensionDialogHost and CustomPanelHost) rather than opening as a modal
+   scrim. No queue, no timeout, no request/response RPC. The host is
+   single-slot (a new picker replaces the active one) and the user is the
+   one driving the choice. */
 
-.picker-overlay {
-  position: absolute;
-  inset: 0;
-  background: var(--ctp-scrim);
-  backdrop-filter: blur(0.286rem);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 250;
-  padding: var(--space-5);
+/* Invisible chrome wrapping the picker card — mirrors the Composer's
+   slot treatment exactly (`.ext-dialog-slot` / `.custom-panel` use the
+   same): transparent `--color-bg` background, no top border, asymmetric
+   padding (0.857rem sides + bottom) matching `.composer__input-row` so
+   the composer region reads as one consistent inset regardless of which
+   component occupies the slot. No scrim, no blur — the transcript above
+   stays visible and scrollable. */
+.picker-slot {
+  background: var(--color-bg);
+  padding: 0 0.857rem 0.857rem;
+  flex-shrink: 1;
+  min-height: 0;
+  font-size: var(--font-size-base);
+  line-height: 1.5;
+  /* Safety net: if a picker is taller than the available space, scroll
+     the slot rather than clipping the StatusBar. min-height:0 +
+     flex-shrink:1 let the slot yield to the TranscriptView first. */
+  overflow-y: auto;
+  /* Soft entry: the picker swaps in where the composer was. Mirrors
+     ExtensionDialogHost's slot-in so the swap reads the same. */
+  animation: picker-slot-in 0.18s ease-out;
 }
 
-.picker-host {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
+@keyframes picker-slot-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.357rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
+/* Suppress the global keyboard-focus ring inside the picker slot — the
+   picker's own search field and highlighted option are the focus
+   affordances (mirrors `.ext-dialog-slot :focus-visible` and
+   `.custom-panel :focus-visible`). */
+.picker-slot :focus-visible {
+  outline: none;
+}
+
+/* The picker sub-components (`ModelPicker`, `ForkPicker`, `ResumePicker`)
+   each render a `.picker` card. In the slot it behaves as an in-flow card
+   (no absolute positioning, no scrim, no elevation-3 modal shadow) — a
+   raised surface0 card over the base background, matching the Composer's
+   input-row card. It still scrolls internally if the list is long. */
 .picker {
   background: var(--ctp-surface0);
   border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  padding: 1rem;
-  min-width: 26.857rem; /* ≈376px */
-  max-width: 38.571rem; /* ≈540px */
-  max-height: 32.857rem; /* ≈460px */
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  /* The card fills the slot width (matching how the dialog/panel cards
+     behave) and bounds its height so the internal list scrolls instead
+     of the whole session. */
+  min-width: 0;
+  max-height: 60vh;
   display: flex;
   flex-direction: column;
-  box-shadow: var(--elevation-3);
-  pointer-events: all;
-  gap: 0.571rem;
+  box-shadow: var(--elevation-1);
+  gap: var(--space-2);
 }
 
 .picker__title {

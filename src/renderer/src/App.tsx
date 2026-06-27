@@ -76,12 +76,9 @@ export function App(): React.ReactElement {
       // the raw clientX, snapping the edge leftward by the gap on the first
       // move and shrinking the card.
       const sidebarEl = document.querySelector(".sidebar");
-      const sidebarRight = sidebarEl
-        ? sidebarEl.getBoundingClientRect().right
-        : e.clientX;
+      const sidebarRight = sidebarEl ? sidebarEl.getBoundingClientRect().right : e.clientX;
       const grabOffset = e.clientX - sidebarRight; // >= 0 (cursor is right of sidebar edge)
-      const compute = (clientX: number) =>
-        Math.max(160, Math.min(500, clientX - grabOffset));
+      const compute = (clientX: number) => Math.max(160, Math.min(500, clientX - grabOffset));
       let latest = compute(e.clientX);
       const onMove = (ev: MouseEvent) => {
         if (!sidebarDragRef.current) return;
@@ -156,6 +153,16 @@ export function App(): React.ReactElement {
     const id = s.activeSessionId;
     if (!id) return false;
     return s.sessions.get(id)?.panel !== undefined;
+  });
+
+  // Built-in pickers (/model, /fork, /resume) also replace the Composer
+  // in the flex slot — same in-place treatment as extension dialogs and
+  // custom panels, instead of a modal scrim. Priority below extension
+  // dialogs (which block pi) and panels, above the plain Composer.
+  const hasPendingPicker = useSessionsStore((s) => {
+    const id = s.activeSessionId;
+    if (!id) return false;
+    return s.sessions.get(id)?.pendingPicker !== undefined;
   });
 
   // Boot: load settings and check for pi
@@ -453,15 +460,24 @@ export function App(): React.ReactElement {
                 transcript above stays scrollable, the header (model +
                 thinking level) stays clickable, and the diff viewer
                 (Cmd+G) still works while the question is open. */}
+              {/* Composer, extension dialogs, custom panels, and built-in
+                  pickers all share the same flex slot: whichever is active
+                  replaces the composer, so they are never both visible.
+                  Priority: extension dialogs (block pi) > custom panels >
+                  built-in pickers (/model, /fork, /resume) > composer.
+                  None block the rest of the UI — the transcript above
+                  stays scrollable, the header stays clickable, and the
+                  diff viewer (Cmd+G) still works while any is open. */}
               {hasPendingDialog ? (
                 <ExtensionDialogHost sessionId={activeSessionId} />
               ) : hasOpenPanel ? (
                 <CustomPanelHost sessionId={activeSessionId} />
+              ) : hasPendingPicker ? (
+                <AppPickerHost sessionId={activeSessionId} />
               ) : (
                 <Composer sessionId={activeSessionId} />
               )}
               {statusBarVisible && <StatusBar sessionId={activeSessionId} />}
-              <AppPickerHost sessionId={activeSessionId} />
               <ToastHost sessionId={activeSessionId} />
             </ErrorBoundary>
           </div>

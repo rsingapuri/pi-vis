@@ -23,6 +23,19 @@ interface PickerHostProps {
  *   - Extension dialogs can have a server-side timeout; built-in pickers
  *     have no timeout — the user is the one driving the choice.
  *
+ * The picker replaces the Composer in the flex slot (same in-place
+ * treatment as ExtensionDialogHost and CustomPanelHost) rather than
+ * opening as a modal scrim. The slot is invisible chrome (transparent,
+ * no top border, matching the Composer's outer treatment) and the inner
+ * `.picker` card mirrors the Composer's surface0 / border / radius —
+ * so the layout doesn't shift when a picker opens. The transcript
+ * above stays scrollable, the session header stays clickable, and the
+ * diff viewer (Cmd+G) still works while a picker is open.
+ *
+ * The host is mounted in place of the Composer by App.tsx when a
+ * picker is pending, so the Composer and the picker are never both
+ * visible.
+ *
  * The model picker mirrors SessionHeader's dropdown behaviour: same
  * search/highlight/keyboard pattern, but standalone (we deliberately do
  * not programmatically open the header dropdown — its anchor sits on the
@@ -43,99 +56,91 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
   // The picker sub-components are mounted when a picker is active. They
   // each receive the same close-on-cancel pattern.
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard Escape is handled inside the focused picker root
-    <div
-      className="picker-overlay"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) closePicker(sessionId);
-      }}
-    >
-      <div className="picker-host" role="dialog" aria-modal="true">
-        {picker.kind === "model" && (
-          <ModelPicker
-            sessionId={sessionId}
-            {...(picker.search !== undefined ? { search: picker.search } : {})}
-            onClose={() => closePicker(sessionId)}
-            onPick={async (model) => {
-              if (!model.provider) return;
-              const res = await applyModelChange(sessionId, model);
-              if (res.ok) {
-                addToast(sessionId, `Model: ${model.id}`);
-              } else {
-                addToast(sessionId, `Failed to set model: ${res.error}`, "error");
-              }
+    <div className="picker-slot" role="dialog" aria-label="Picker">
+      {picker.kind === "model" && (
+        <ModelPicker
+          sessionId={sessionId}
+          {...(picker.search !== undefined ? { search: picker.search } : {})}
+          onClose={() => closePicker(sessionId)}
+          onPick={async (model) => {
+            if (!model.provider) return;
+            const res = await applyModelChange(sessionId, model);
+            if (res.ok) {
+              addToast(sessionId, `Model: ${model.id}`);
+            } else {
+              addToast(sessionId, `Failed to set model: ${res.error}`, "error");
+            }
+            closePicker(sessionId);
+          }}
+        />
+      )}
+      {picker.kind === "fork" && (
+        <ForkPicker
+          messages={picker.messages}
+          onClose={() => closePicker(sessionId)}
+          onPick={async (entryId) => {
+            const res = (await window.pivis.invoke("session.sendCommand", {
+              sessionId,
+              command: { type: "fork", entryId },
+            })) as {
+              success: boolean;
+              data?: { text?: string; cancelled?: boolean };
+              error?: string;
+            };
+            if (!res.success) {
+              addToast(sessionId, res.error ?? "Failed to fork", "error");
               closePicker(sessionId);
-            }}
-          />
-        )}
-        {picker.kind === "fork" && (
-          <ForkPicker
-            messages={picker.messages}
-            onClose={() => closePicker(sessionId)}
-            onPick={async (entryId) => {
-              const res = (await window.pivis.invoke("session.sendCommand", {
-                sessionId,
-                command: { type: "fork", entryId },
-              })) as {
-                success: boolean;
-                data?: { text?: string; cancelled?: boolean };
-                error?: string;
-              };
-              if (!res.success) {
-                addToast(sessionId, res.error ?? "Failed to fork", "error");
-                closePicker(sessionId);
-                return;
-              }
-              if (res.data?.cancelled) {
-                closePicker(sessionId);
-                return;
-              }
-              // TUI prefills the editor with the forked-from text. The
-              // fileChanged event (emitted by main) takes care of the
-              // transcript reset and tab re-pointing; we only need to
-              // prefill the composer.
-              if (res.data?.text) {
-                injectEditorText(sessionId, res.data.text);
-              }
-              addToast(sessionId, "Forked to new session");
-              // The fileChanged event will close the picker via state
-              // replacement (adoptSessionFile resets the session but
-              // doesn't clear pendingPicker). Close it manually for the
-              // in-place UX.
+              return;
+            }
+            if (res.data?.cancelled) {
               closePicker(sessionId);
-            }}
-          />
-        )}
-        {picker.kind === "resume" && (
-          <ResumePicker
-            sessions={picker.sessions}
-            onClose={() => closePicker(sessionId)}
-            onPick={async (target) => {
-              // Focus an existing tab if the file is already open, else
-              // open a new tab. `openSessionTab` returns the id either way.
-              const liveTab = Array.from(useSessionsStore.getState().sessions.values()).find(
-                (s) => s.sessionFile === target.filePath,
-              );
-              if (liveTab) {
-                setActiveSession(liveTab.sessionId);
-                closePicker(sessionId);
-                return;
-              }
-              const workspacePath = useSessionsStore
-                .getState()
-                .sessions.get(sessionId)?.workspacePath;
-              if (!workspacePath) {
-                addToast(sessionId, "No active workspace", "error");
-                closePicker(sessionId);
-                return;
-              }
-              const id = await openSessionTab(workspacePath, target.filePath, { focus: true });
-              if (id) setActiveSession(id);
+              return;
+            }
+            // TUI prefills the editor with the forked-from text. The
+            // fileChanged event (emitted by main) takes care of the
+            // transcript reset and tab re-pointing; we only need to
+            // prefill the composer.
+            if (res.data?.text) {
+              injectEditorText(sessionId, res.data.text);
+            }
+            addToast(sessionId, "Forked to new session");
+            // The fileChanged event will close the picker via state
+            // replacement (adoptSessionFile resets the session but
+            // doesn't clear pendingPicker). Close it manually for the
+            // in-place UX.
+            closePicker(sessionId);
+          }}
+        />
+      )}
+      {picker.kind === "resume" && (
+        <ResumePicker
+          sessions={picker.sessions}
+          onClose={() => closePicker(sessionId)}
+          onPick={async (target) => {
+            // Focus an existing tab if the file is already open, else
+            // open a new tab. `openSessionTab` returns the id either way.
+            const liveTab = Array.from(useSessionsStore.getState().sessions.values()).find(
+              (s) => s.sessionFile === target.filePath,
+            );
+            if (liveTab) {
+              setActiveSession(liveTab.sessionId);
               closePicker(sessionId);
-            }}
-          />
-        )}
-      </div>
+              return;
+            }
+            const workspacePath = useSessionsStore
+              .getState()
+              .sessions.get(sessionId)?.workspacePath;
+            if (!workspacePath) {
+              addToast(sessionId, "No active workspace", "error");
+              closePicker(sessionId);
+              return;
+            }
+            const id = await openSessionTab(workspacePath, target.filePath, { focus: true });
+            if (id) setActiveSession(id);
+            closePicker(sessionId);
+          }}
+        />
+      )}
     </div>
   );
 }
