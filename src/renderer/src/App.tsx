@@ -34,6 +34,7 @@ export function App(): React.ReactElement {
   const refreshCommands = useSessionsStore((s) => s.refreshCommands);
   const seedHistory = useSessionsStore((s) => s.seedHistory);
   const refreshWorkspaceSessions = useSessionsStore((s) => s.refreshWorkspaceSessions);
+  const setActiveSession = useSessionsStore((s) => s.setActiveSession);
   const loadSettings = useSettingsStore((s) => s.load);
   const statusBarVisible = useSettingsStore((s) => s.settings.statusBarVisible);
   const persistedSidebarWidth = useSettingsStore((s) => s.settings.sidebarWidth);
@@ -228,6 +229,12 @@ export function App(): React.ReactElement {
         void (async () => {
           const sid = sessionId as SessionId;
           await adoptSessionFile(sid, sessionFile, sessionName);
+          // Re-assert the session as active. Same sessionId re-points to the new
+          // file, so activeSessionId is usually already correct — but explicitly
+          // setting it clears any stale unreadStatus on the previously-active
+          // session and keeps the sidebar highlight in sync (mirrors the
+          // pattern used by /resume's picker).
+          setActiveSession(sid);
           if (sessionFile) {
             const history = await window.pivis.invoke("session.loadHistory", { sessionId: sid });
             seedHistory(sid, history ?? []);
