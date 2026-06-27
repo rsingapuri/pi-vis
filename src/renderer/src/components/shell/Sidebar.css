@@ -42,8 +42,24 @@
      visible width so the ellipsis engages. */
   overflow-x: hidden;
   /* A little top breathing room so the first workspace name isn't crammed
-     against the title-bar divider; bottom keeps the list off the footer. */
+     against the title-bar divider; bottom keeps the list off the footer.
+     Right margin insets every workspace row by the content column so its
+     border-bottom (the horizontal separator between workspaces) lines up
+     vertically with the right edge of the session pills / show-more /
+     workspace actions / settings button — the single alignment line for the
+     sidebar's right edge. */
+  margin-right: 0.429rem;
   padding: 0.357rem 0 0.571rem 0;
+}
+
+/* Non-last workspaces get a consistent padding-bottom so the gap between
+   the last visible child (header, last session row, or show-more button) and
+   the border-bottom separator is constant — 0.571rem regardless of what sits
+   above. The sessions container and show-more button no longer carry their
+   own bottom padding/margin, so all three "what sits above" cases resolve to
+   the same vertical gap before the separator. */
+.sidebar__workspaces > .sidebar__workspace:not(:last-child) {
+  padding-bottom: 0.571rem;
 }
 
 .sidebar__workspace {
@@ -111,11 +127,13 @@
    chevron. Both hidden until the workspace row is hovered so the resting row
    shows only the name (and the drag grip on the left). Absolutely positioned
    against the workspace so it overlays the reserved right padding without
-   affecting layout. */
+   affecting layout. `right: 0` (was 0.286rem) so the cluster's right edge
+   sits on the workspace's right edge — which is itself the content column
+   (workspaces container is inset by 0.429rem from the sidebar edge). */
 .sidebar__workspace-actions {
   position: absolute;
   top: 50%;
-  right: 0.286rem;
+  right: 0;
   transform: translateY(-50%);
   display: flex;
   flex-direction: column;
@@ -186,10 +204,19 @@
 }
 
 .sidebar__sessions {
-  /* Horizontal padding insets the session rows from the sidebar edges so the
+  /* Left padding insets the session rows from the sidebar edge so the
      hover/active highlight reads as a rounded "pill" floating inside the
-     column instead of a flat, edge-to-edge block. */
-  padding: 0.143rem 0.429rem 0.286rem;
+     column instead of a flat, edge-to-edge block. The 0.858rem inset
+     (12px) creates breathing room on the left — twice the 6px right inset
+     (the sidebar's right alignment line, applied via .sidebar__workspaces'
+     margin-right) — so the pills feel like they sit comfortably inside the
+     column rather than cramped against the sidebar edge.
+     Right padding is 0 so the pill's highlighted background block aligns
+     vertically with the workspace border-bottom / workspace actions /
+     settings button on the right alignment line.
+     Bottom padding is 0 — the workspace row owns the consistent
+     gap-to-separator (see .sidebar__workspace:not(:last-child)). */
+  padding: 0.143rem 0 0 0.858rem;
   background: var(--ctp-mantle);
 }
 
@@ -315,7 +342,10 @@
 /* Show more button */
 .sidebar__show-more {
   width: 100%;
-  margin: 0.286rem 0 0.143rem;
+  /* Top margin still creates breathing room above the button (separates it
+     from the last session row); bottom margin removed — the workspace row's
+     padding-bottom now owns the gap to the separator. */
+  margin: 0.286rem 0 0;
   background: var(--ctp-surface0);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -337,6 +367,11 @@
 .sidebar__footer {
   display: flex;
   align-items: center;
+  /* Right margin insets the footer — and therefore its border-top separator
+     and the settings button — by the content column (0.429rem) so they line
+     up vertically with the workspace separators and the settings button
+     glyph on the right edge. */
+  margin-right: 0.429rem;
   border-top: 1px solid var(--border);
 }
 
