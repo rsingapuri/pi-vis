@@ -5,7 +5,12 @@
   /* Shares the content card's surface with the composer above — no divider,
      no background shift. It reads as a quiet footer line, not a separate band. */
   background: transparent;
-  padding: 0.286rem 1rem 0.5rem; /* tight to the composer above */
+  /* No top padding — the composer slot above provides the gap via its
+     own bottom padding (Composer / ExtensionDialogHost / CustomPanelHost
+     all use `0 0.857rem 0.857rem`). Adding top padding here would double
+     it up and make the status bar sit too low. Removing it keeps the
+     total gap identical whether the status bar is visible or hidden. */
+  padding: 0 1rem 0.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.143rem;

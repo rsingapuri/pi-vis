@@ -178,13 +178,15 @@
    With align-items: flex-end, a one-line box is perfectly centered and a
    grown box keeps the button anchored to the bottom.  The textarea sizes
    itself via field-sizing — no JS measurement anywhere.
-   Asymmetric padding (no top, 0.286rem bottom): the input sits flush with
-   the composer's top edge so the input box is the *first* thing the eye
-   reads after the transcript fade above. The small bottom gap is enough
-   to clear the content card's rounded corner at the bottom of the slot
-   (WorktreeBar above uses the same asymmetry, mirroring the pattern). */
+   Asymmetric padding (no top, 0.857rem sides + bottom): the input sits
+   flush with the composer's top edge so the input box is the *first*
+   thing the eye reads after the transcript fade above. The sides and
+   bottom share the same value (0.857rem) so the box is inset evenly on
+   three sides — matching the ExtensionDialogHost and CustomPanelHost
+   slots that replace the composer, so the whole region reads as one
+   consistent inset regardless of which component occupies it. */
 .composer__input-row {
-  padding: 0 0.857rem 0.286rem;
+  padding: 0 0.857rem 0.857rem;
 }
 
 .composer__input-box {

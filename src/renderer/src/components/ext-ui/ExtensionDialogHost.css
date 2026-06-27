@@ -30,12 +30,12 @@
   background: var(--color-bg);
   /* No top border — the modernized Composer slot has no end-to-end
      divider, so neither does the slot that replaces it. The dialog
-     card below is the only boundary the eye needs. The asymmetric
-     padding (no top, 0.286rem bottom) mirrors the Composer's
-     `.composer__input-row` exactly: the card sits flush with the
-     slot's top edge, and the small bottom gap clears the content
-     card's rounded corner at the bottom of the slot. */
-  padding: 0 0.857rem 0.286rem;
+     card below is the only boundary the eye needs. Asymmetric padding
+     (no top, 0.857rem sides + bottom) mirrors the Composer's
+     `.composer__input-row` exactly, so the composer region reads as
+     one consistent inset regardless of which component occupies the
+     slot. */
+  padding: 0 0.857rem 0.857rem;
   flex-shrink: 1;
   min-height: 0;
   font-size: var(--font-size-base);

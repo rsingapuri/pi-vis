@@ -8,6 +8,15 @@
    button's hover state are the user's affordances inside the panel. */
 
 .custom-panel {
+  /* The card is both the root element and the bordered card (unlike
+     the ExtensionDialogHost, which has a padded slot wrapper with the
+     card inside). So `padding` here would inset the *contents* from
+     the border, not the card from the slot edges. Use `margin` instead
+     so the gap appears outside the bordered card — matching the inset
+     the Composer's `.composer__input-row` and the dialog slot get via
+     their padding. No top margin (card sits flush under the dock /
+     transcript above), 0.857rem sides + bottom. */
+  margin: 0 0.857rem 0.857rem;
   display: flex;
   flex-direction: column;
   background: var(--ctp-base);
