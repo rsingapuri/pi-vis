@@ -55,6 +55,11 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [text, setText] = useState("");
   const [slashIndex, setSlashIndex] = useState(0);
+  // Container for the slash-suggestion list. Used to scroll the
+  // keyboard-selected row into view during arrow-key navigation so the
+  // highlight can't outrun the visible viewport (the list scrolls, not the
+  // whole pane — see .composer__suggestion-list's internal overflow-y).
+  const suggestionListRef = useRef<HTMLDivElement>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Re-entrancy guard for `handleSubmit`. Without this, a rapid/auto-repeat
   // keydown can read the stale `text` closure before `setText("")` commits
@@ -305,6 +310,50 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   useEffect(() => {
     setSlashIndex(0);
   }, [suggestions.length, text]);
+
+  // Keep the keyboard-selected suggestion scrolled into view during
+  // arrow-key navigation. Rather than scrollIntoView({block:"nearest"}) —
+  // which, when the list's height isn't an exact multiple of a row's
+  // height, leaves a fractional row at one viewport edge and then swaps
+  // it to the opposite edge when you cross the boundary (items visibly
+  // shift) — we scroll manually and snap the viewport's *top* edge to an
+  // item boundary. That way a partial row can only ever sit at the bottom
+  // edge, so the row grid never reflows as you arrow up/down. Scrolls the
+  // list's own viewport, never the pane.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deps are intentional re-trigger flags; the body reads the rendered selection from the DOM, not the values directly
+  useEffect(() => {
+    const list = suggestionListRef.current;
+    if (!list) return;
+    const sel = list.querySelector<HTMLElement>(".composer__suggestion--selected");
+    if (!sel) return;
+    const listRect = list.getBoundingClientRect();
+    const selRect = sel.getBoundingClientRect();
+    const EPS = 1; // tolerate sub-pixel rounding
+    if (selRect.top < listRect.top - EPS) {
+      // Selected is above the viewport — align its top to the viewport's
+      // top. sel's top is itself an item boundary, so the top edge stays
+      // flush with a row (no partial row introduced).
+      list.scrollTop += selRect.top - listRect.top;
+    } else if (selRect.bottom > listRect.bottom + EPS) {
+      // Selected is below the viewport. First compute the minimal scroll
+      // that brings its bottom flush with the viewport's bottom, then snap
+      // that scroll position *down* to the nearest following item-top
+      // boundary so the viewport's top edge lands flush with a row instead
+      // of mid-item. The extra nudge is < one row, so sel stays visible.
+      const minScroll = list.scrollTop + (selRect.bottom - listRect.bottom);
+      const items = list.querySelectorAll<HTMLElement>(".composer__suggestion");
+      let target = minScroll;
+      for (const it of items) {
+        const r = it.getBoundingClientRect();
+        const itTopInScroll = list.scrollTop + (r.top - listRect.top);
+        if (itTopInScroll >= minScroll - EPS) {
+          target = itTopInScroll;
+          break;
+        }
+      }
+      list.scrollTop = target;
+    }
+  }, [slashIndex, suggestions]);
 
   // ── Submit ─────────────────────────────────────────────────────────
 
@@ -785,31 +834,6 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         </div>
       )}
 
-      {/* Slash suggestions */}
-      {suggestions.length > 0 && (
-        <div className="composer__suggestions" role="listbox">
-          {suggestions.map((s, i) => (
-            <button
-              type="button"
-              key={s.key}
-              className={`composer__suggestion ${i === slashIndex ? "composer__suggestion--selected" : ""}`}
-              onClick={() => handleSuggestionClick(s)}
-              onMouseEnter={() => setSlashIndex(i)}
-              role="option"
-              aria-selected={i === slashIndex}
-            >
-              <span className="composer__suggestion-name">/{s.name}</span>
-              <span className="composer__suggestion-arg">{s.argHint ?? ""}</span>
-              <span className="composer__suggestion-desc">{s.description ?? ""}</span>
-              <span className={`composer__suggestion-badge composer__suggestion-badge--${s.badge}`}>
-                {s.badge}
-                {s.scope ? `:${s.scope}` : ""}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-
       <input
         ref={fileInputRef}
         type="file"
@@ -821,6 +845,38 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       <div
         className={`composer__input-row ${isBashMode ? "composer__input-row--bash" : ""} ${isSlashMode ? "composer__input-row--slash" : ""}`}
       >
+        {/* Slash suggestions — a detached floating popover anchored above
+            the input box. Mirrors the app's picker card language
+            (.picker / .picker__list in AppPickerHost.css): a padded card
+            wrapping an inner scrolling list of rounded rows. See
+            .composer__suggestions in Composer.css. */}
+        {suggestions.length > 0 && (
+          <div className="composer__suggestions">
+            <div className="composer__suggestion-list" role="listbox" ref={suggestionListRef}>
+              {suggestions.map((s, i) => (
+                <button
+                  type="button"
+                  key={s.key}
+                  className={`composer__suggestion ${i === slashIndex ? "composer__suggestion--selected" : ""}`}
+                  onClick={() => handleSuggestionClick(s)}
+                  onMouseEnter={() => setSlashIndex(i)}
+                  role="option"
+                  aria-selected={i === slashIndex}
+                >
+                  <span className="composer__suggestion-name">/{s.name}</span>
+                  <span className="composer__suggestion-arg">{s.argHint ?? ""}</span>
+                  <span className="composer__suggestion-desc">{s.description ?? ""}</span>
+                  <span
+                    className={`composer__suggestion-badge composer__suggestion-badge--${s.badge}`}
+                  >
+                    {s.badge}
+                    {s.scope ? `:${s.scope}` : ""}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="composer__input-box">
           <button
             type="button"

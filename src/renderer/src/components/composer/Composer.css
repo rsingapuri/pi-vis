@@ -95,19 +95,49 @@
 }
 
 .composer__suggestions {
-  border-bottom: 1px solid var(--border);
+  /* Detached floating popover anchored above the input box. Speaks the
+     same visual language as the app's command pickers (.picker in
+     AppPickerHost.css): a raised surface0 card, hairline border,
+     radius-lg, elevation. The card carries the padding (not the list) so
+     the rows and the scrollbar are inset from the rounded edges — a
+     selected row never kisses the card's corners, and the thin scrollbar
+     never jams against them. */
+  position: absolute;
+  left: 0.857rem;
+  right: 0.857rem;
+  bottom: 100%;
+  margin-bottom: 0.429rem;
+  z-index: 2; /* sit above the input box's focus ring */
+  background: var(--ctp-surface0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-2);
+  padding: var(--space-2);
+}
+
+.composer__suggestion-list {
+  /* Inner scroll area — separated from the card's padding so the rows and
+     the scrollbar never collide. The horizontal padding (both sides, so the
+     first/last row is inset from the card's rounded corners) doubles as a
+     gutter for the scrollbar: on macOS Chromium uses *overlay* scrollbars
+     that float over the content rather than reserving space, so a thumb
+     styled surface1 would sit directly atop a surface1 highlighted row and
+     merge with it. The padding keeps the thumb over empty surface0 card
+     background, giving a clean visual gap. Mirrors .picker__list. */
   display: flex;
   flex-direction: column;
-  background: var(--ctp-surface0);
-  max-height: 14.286em; /* ≈200px @ 14px root */
+  gap: 0.143rem;
   overflow-y: auto;
+  max-height: 13.571em; /* ≈190px @ 14px root, leaves room for card padding */
+  padding: 0.143rem var(--space-2);
 }
 
 .composer__suggestion {
-  background: none;
-  border: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  padding: 0.429rem 1rem;
+  padding: 0.357rem 0.571rem;
   text-align: left;
   font-family: var(--font-code);
   font-size: 0.929em;
@@ -120,9 +150,14 @@
 
 /* Selection is driven solely by the JS-managed --selected class
    (onMouseEnter → setSlashIndex), not by :hover — see the note in
-   AppPickerHost.css for why :hover causes dual-highlight. */
+   AppPickerHost.css for why :hover causes dual-highlight. Matches
+   .picker__item--highlighted: a neutral surface1 fill with a subtle
+   surface2 edge, so the highlight is a rounded inset row — consistent
+   with the /model, /fork, /resume pickers — never a full-bleed strip
+   butting into the card's rounded corners. */
 .composer__suggestion--selected {
   background: var(--ctp-surface1);
+  border-color: var(--ctp-surface2);
   color: var(--ctp-text);
 }
 
@@ -186,6 +221,7 @@
    slots that replace the composer, so the whole region reads as one
    consistent inset regardless of which component occupies it. */
 .composer__input-row {
+  position: relative; /* containing block for the floating suggestions popover */
   padding: 0 0.857rem 0.857rem;
 }
 
