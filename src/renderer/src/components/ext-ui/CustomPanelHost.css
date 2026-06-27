@@ -1,4 +1,11 @@
-/* CustomPanelHost — inline xterm.js overlay for extension custom() panels */
+/* CustomPanelHost — inline xterm.js overlay for extension custom() panels.
+
+   Focus rings: the panel replaces the Composer in the same slot, so it
+   inherits no focus affordances from the global `:focus-visible` rule.
+   The Composer's mauve input box is the *only* focus indicator in this
+   slot; the panel card's visual presence is the focus context. The
+   xterm.js cursor (managed by the terminal itself) and the close
+   button's hover state are the user's affordances inside the panel. */
 
 .custom-panel {
   display: flex;
@@ -69,4 +76,12 @@
 
 .custom-panel__xterm .xterm-screen {
   /* Ensure the terminal text rendering uses the code font */
+}
+
+/* No focus rings on internal elements — the panel card is the focus
+   context (it replaces the Composer's mauve input ring in the same
+   slot), so its close button, any focusable xterm wrapper, and the
+   card itself carry no focus indicators. */
+.custom-panel :focus-visible {
+  outline: none;
 }
