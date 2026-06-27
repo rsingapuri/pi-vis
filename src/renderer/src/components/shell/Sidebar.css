@@ -50,17 +50,16 @@
      the viewport to transparent; the bottom edge also carries the overflow
      cue. The two edges serve different roles, so they need different sizes.
 
-     Top padding and the top fade size are deliberately *decoupled*: the
-     fade zone is larger than the padding so the dissolution is clearly
-     visible, but the padding stays small so the first workspace name isn't
-     pushed down. The first item lands near the opaque end of a gradual
-     transition, so it reads as fully present at rest — only content
-     scrolling *up out of view* passes through the full fade.
+     The top padding == the top fade zone (re-coupled). This is load-bearing:
+     it guarantees the first workspace name rests at the *opaque end* of the
+     ramp (fully visible at rest, never washed out) AND that the ramp reaches
+     0% exactly at the overflow clip edge — so content fully dissolves before
+     being hard-clipped, instead of fading halfway and abruptly cutting off.
+     (An earlier version decoupled them — fade > padding — which left the
+     first item at ~60% opacity at rest and looked broken.)
 
-     - Top (the start of the list): the first workspace name sits as close
-       to the top as possible. The fade zone is larger than the top padding,
-       so the gradient is well into opacity by the time it reaches the first
-       item; content above it (scrolling away) dissolves visibly.
+     - Top (the start of the list): modest; the first name sits as close to
+       the top as possible while staying fully opaque at rest.
      - Bottom (the overflow indicator): substantially larger. This is the
        only cue that more content exists below, and the list is full of
        inter-row gaps (e.g. the space between a workspace header and the
@@ -68,12 +67,15 @@
        entirely inside one of those gaps and vanish — no visible content is
        being faded, so the indicator disappears. A taller bottom zone spans
        past the gaps and reliably catches a row, keeping the "more below"
-       cue legible at any scroll position. Here the bottom padding matches
-       the bottom fade so the last item can scroll clear of the fade. */
-  --sidebar-fade-top: 2rem;
-  --sidebar-pad-top: 1.25rem;
-  --sidebar-fade-bottom: 3.5rem;
-  padding: var(--sidebar-pad-top) 0 var(--sidebar-fade-bottom) 0;
+       cue legible at any scroll position. Bottom padding == bottom fade so
+       the last item can scroll clear of the fade.
+
+     The gradient uses an eased (multi-stop) ramp so the dissolve is
+     perceptually smooth across the full invisible→visible range — a plain
+     two-stop linear ramp looks like it stalls halfway then snaps. */
+  --sidebar-fade-top: 1.5rem;
+  --sidebar-fade-bottom: 3rem;
+  padding: var(--sidebar-fade-top) 0 var(--sidebar-fade-bottom) 0;
   -webkit-mask-image: linear-gradient(
     to bottom,
     transparent 0,

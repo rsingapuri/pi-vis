@@ -1,11 +1,44 @@
 /* DiffViewerHost — modal-style diff viewer overlay.
    The overlay sits on top of the session area (z-index 150, below
    dialogs at 200 and pickers at 250 — agent questions always win).
-   The panel uses the base color for content and mantle for chrome. */
+   The panel uses the base color for content and mantle for chrome.
+
+   Rendered as a direct child of `.app` (sibling of <main> and <TitleBar>)
+   so it can cover the floating title-bar pill in sidebar-collapsed mode
+   (the pill sits outside `.app__main`). Placed in the grid's `main` area
+   with `position: absolute`, the grid cell is the containing block.
+
+   In sidebar-visible mode the inset sits *inside* `.app__main`'s 1px border
+   and the radius matches the card's (minus the border), so the scrim fills
+   the card's content box and the card's own border + rounded corners paint
+   *around* the scrim and stay visible — the floating-card frame is preserved
+   (the scrim is the backdrop *inside* the card, not a rectangle covering its
+   frame). In sidebar-collapsed mode (below) it spans the full window to
+   shadow the pill, with a symmetric top/bottom inset clearing the traffic
+   lights. */
 
 .diff-overlay {
+  /* The overlay is a direct child of `.app` (sibling of <main> and
+     <TitleBar>), so it can cover the floating title-bar pill in
+     sidebar-collapsed mode. Placing it in the `main` grid area makes the
+     grid the containing block for `position: absolute`: sidebar-visible →
+     the overlay is bounded to the content cell; sidebar-collapsed →
+     overridden below to span the full window so the scrim shadows the pill.
+
+     The inset sits *inside* `.app__main`'s 1px border (margin + 1px on each
+     side) and the radius is the card radius minus the border width, so the
+     scrim fills the card's content box exactly — the card's own frame
+     (border + rounded corners + elevation shadow) stays visible around the
+     scrim, preserving the floating-card look. Without this the scrim would
+     cover the border and the card would visually disappear into one opaque
+     rounded blob. */
+  grid-area: main;
   position: absolute;
-  inset: 0;
+  --card-border-w: 1px;
+  inset: var(--card-border-w) calc(var(--space-2) + var(--card-border-w))
+    calc(var(--space-2) + var(--card-border-w)) calc(var(--space-2) + var(--card-border-w));
+  border-radius: calc(var(--radius-lg) - var(--card-border-w));
+  overflow: hidden;
   z-index: 150;
   background: var(--ctp-scrim);
   backdrop-filter: blur(0.286rem);
@@ -13,6 +46,37 @@
   justify-content: center;
   padding: var(--space-5);
   animation: diff-overlay-in 120ms ease-out;
+}
+
+/* Sidebar-collapsed: the title bar is a floating pill above the content,
+   not a full-width strip, so the overlay must span the whole window to
+   shadow it. `grid-area: titlebar / titlebar / main / main` spans from the
+   title-bar row through the main row, so the scrim covers the pill.
+
+   The scrim goes full-width (left/right 0). The panel (`.diff-viewer`)
+   inside it is sized by its own top/bottom margins, set so the gap above
+   the panel — clearing the macOS traffic lights, which sit ~12px from the
+   window's top-left and are ~14px tall — equals the gap below the panel at
+   the window bottom. The scrim itself extends nearly to the window edges so
+   it shadows the pill; only the panel is symmetric. Square corners — the
+   full-window scrim isn't a floating card in this mode. */
+.app--sidebar-collapsed .diff-overlay {
+  grid-area: titlebar / titlebar / main / main;
+  inset: var(--space-2) 0;
+  border-radius: 0;
+  /* Reset the sidebar-visible padding; the panel's top/bottom gaps are
+     driven by its own margins below so they're symmetric and explicit. */
+  padding: 0;
+}
+
+/* In collapsed mode the panel's top gap must clear the traffic lights
+   (≈38px title-bar row + a gap), and the bottom gap must match it. Using
+   matching top/bottom margins (instead of the scrim's padding) keeps the
+   gap sizes legible and equal regardless of the scrim's own inset. */
+.app--sidebar-collapsed .diff-viewer {
+  height: auto;
+  margin: var(--space-8) var(--space-5) var(--space-8);
+  flex: 1;
 }
 
 .diff-viewer {

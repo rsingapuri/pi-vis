@@ -18,8 +18,6 @@
      size container), so the side margins only open up once there's room for
      it. On a narrow pane it collapses toward --space-5 instead of eating
      ~100px and crushing the text into a 2-words-per-line column. */
-  padding: var(--transcript-fade-top) clamp(var(--space-5), 6cqi, var(--space-8))
-    var(--transcript-fade-bottom);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -29,33 +27,54 @@
      emitting scroll events the handler can misread as a user scrolling up —
      which drifts the view off the bottom. Opt the scroller out entirely. */
   overflow-anchor: none;
-  /* Edge-fade scroll (bottom-only). The transcript lives inside the rounded
-     floating content card (`.app__main`): the top is a crisp, deliberate
-     boundary (card border + radius), so content should hard-cut there — a top
-     fade would fight the card's own visual edge and read as a muddy seam
-     rather than a clean frame. Fading the top only makes sense where there's
-     no clean edge to dissolve *into*, which isn't the case here.
+  /* Edge-fade scroll. The mask dissolves content as it nears the top/bottom
+     of the viewport instead of hard-cutting at the card edges.
 
-     The bottom is different: it abuts the composer, which has no shared
+     --transcript-fade-top defaults to 0 (no top fade). In the normal
+     sidebar-visible layout the transcript lives inside the rounded floating
+     content card (`.app__main`): the top is a crisp, deliberate boundary
+     (card border + radius), so content should hard-cut there — a top fade
+     would fight the card's own visual edge and read as a muddy seam rather
+     than a clean frame. App.css re-enables a top fade only in the
+     sidebar-collapsed (full-bleed) layout, where the title bar becomes a
+     floating pill over the content and content must dissolve *under* it.
+
+     The bottom always fades: it abuts the composer, which has no shared
      border with the transcript — content used to hard-cut against the
      composer's top. A bottom fade spans that junction so the dissolution is
      always visible, the cue that older content continues below when scrolled
      up. When bottom-pinned the latest message sits *above* this zone (the
      matching bottom padding is empty), so the current response stays fully
-     opaque and readable; only scrolled-up history passes through the fade. */
+     opaque and readable; only scrolled-up history passes through the fade.
+
+     Top padding and the top fade size are *decoupled* (as in the sidebar):
+     the fade zone can be larger than the padding so dissolution is visible
+     without pushing the first message down. The *bottom* padding, however,
+     is re-coupled to the bottom fade zone: this guarantees the latest
+     message rests at the opaque end of the ramp (fully readable when
+     bottom-pinned) AND that the ramp reaches 0% exactly at the overflow
+     clip edge — so content fully dissolves before being hard-clipped,
+     instead of fading halfway and abruptly cutting off.
+
+     The gradient uses an eased (multi-stop) ramp so the dissolve is
+     perceptually smooth across the full invisible→visible range — a plain
+     two-stop linear ramp looks like it stalls halfway then snaps. */
+  --transcript-fade-top: 0;
   --transcript-pad-top: 1.25rem;
   --transcript-fade-bottom: 3rem;
   padding: var(--transcript-pad-top) clamp(var(--space-5), 6cqi, var(--space-8))
     var(--transcript-fade-bottom);
   -webkit-mask-image: linear-gradient(
     to bottom,
-    #000 0,
+    transparent 0,
+    #000 var(--transcript-fade-top),
     #000 calc(100% - var(--transcript-fade-bottom)),
     transparent 100%
   );
   mask-image: linear-gradient(
     to bottom,
-    #000 0,
+    transparent 0,
+    #000 var(--transcript-fade-top),
     #000 calc(100% - var(--transcript-fade-bottom)),
     transparent 100%
   );

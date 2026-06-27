@@ -34,6 +34,14 @@
   background: var(--color-sidebar);
   user-select: none;
   -webkit-app-region: drag;
+  /* No `overflow: hidden` — the model/thinking dropdowns anchored to
+     controls in this bar (`.session-header__dropdown`) open *below* the
+     title bar and must overflow it. The session-header's rectangular
+     mantle fill, which would otherwise poke out of the pill's rounded
+     corners in sidebar-collapsed mode, is rounded with
+     `border-radius: inherit` on `.session-header` instead. The toggle
+     button already has its own `border-radius`, so its hover wash stays
+     in-bounds. */
 }
 
 /* Sidebar collapse toggle — leftmost interactive element, just past the

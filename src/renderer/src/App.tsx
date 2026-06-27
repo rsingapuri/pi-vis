@@ -1,6 +1,6 @@
 import type { SessionId } from "@shared/ids.js";
 import type React from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
 import { Composer } from "./components/composer/Composer.js";
 import { WorktreeBar } from "./components/composer/WorktreeBar.js";
@@ -68,6 +68,39 @@ export function App(): React.ReactElement {
       sidebarCollapsed: !useSettingsStore.getState().settings.sidebarCollapsed,
     });
   }, [updateSettings]);
+
+  // Auto-reveal sidebar overlay (collapsed mode): when the sidebar is
+  // collapsed, hovering the very left edge of the window slides it in as a
+  // floating pill over the content. It slides back out when the mouse leaves
+  // it (after a short delay, so the user can move between the trigger edge
+  // and the sidebar without it snapping shut). This is the VS Code / macOS
+  // Dock auto-reveal pattern — the collapsed state keeps the full-width
+  // layout while still making the sidebar reachable without a click.
+  const [sidebarPeek, setSidebarPeek] = useState(false);
+  const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const peekSidebar = useCallback(() => {
+    if (peekTimer.current) {
+      clearTimeout(peekTimer.current);
+      peekTimer.current = null;
+    }
+    setSidebarPeek(true);
+  }, []);
+  const scheduleHideSidebar = useCallback(() => {
+    if (peekTimer.current) clearTimeout(peekTimer.current);
+    peekTimer.current = setTimeout(() => setSidebarPeek(false), 350);
+  }, []);
+  // When the sidebar is un-collapsed (toggle button), drop any lingering peek
+  // state so it doesn't re-appear if the user collapses again without
+  // hovering.
+  useEffect(() => {
+    if (!sidebarCollapsed) setSidebarPeek(false);
+  }, [sidebarCollapsed]);
+  useEffect(
+    () => () => {
+      if (peekTimer.current) clearTimeout(peekTimer.current);
+    },
+    [],
+  );
 
   // Whether the active session has an unanswered extension_ui_request.
   // When true, the dialog replaces the Composer in the flex slot below.
@@ -321,7 +354,7 @@ export function App(): React.ReactElement {
 
   return (
     <div
-      className={`app${sidebarCollapsed ? " app--sidebar-collapsed" : ""}`}
+      className={`app${sidebarCollapsed ? " app--sidebar-collapsed" : ""}${sidebarCollapsed && sidebarPeek ? " app--sidebar-peek" : ""}`}
       style={
         {
           "--sidebar-width": `${sidebarWidth}px`,
@@ -329,10 +362,15 @@ export function App(): React.ReactElement {
       }
     >
       <TitleBar sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
+      {sidebarCollapsed && (
+        <div className="sidebar-trigger" onMouseEnter={peekSidebar} aria-hidden="true" />
+      )}
       <Sidebar
         onOpenSettings={() => setShowSettings(true)}
         onResize={setSidebarWidth}
         onResizeEnd={handleSidebarResizeEnd}
+        onMouseEnter={peekSidebar}
+        onMouseLeave={scheduleHideSidebar}
       />
       <main className="app__main">
         {activeSessionId ? (
@@ -377,7 +415,6 @@ export function App(): React.ReactElement {
               {statusBarVisible && <StatusBar sessionId={activeSessionId} />}
               <AppPickerHost sessionId={activeSessionId} />
               <ToastHost sessionId={activeSessionId} />
-              <DiffViewerHost sessionId={activeSessionId} />
             </ErrorBoundary>
           </div>
         ) : (
@@ -396,6 +433,15 @@ export function App(): React.ReactElement {
           </div>
         )}
       </main>
+      {/* Diff viewer overlay — rendered as a direct child of .app (sibling
+        of <main> and <TitleBar>), not inside .app__session/.app__main.
+        .app is `position: relative` and is the intended positioning
+        ancestor for the overlay's `position: absolute; inset: 0`, so the
+        scrim covers the full window — including the floating title-bar pill
+        in sidebar-collapsed mode. (Inside .app__main, `overflow: hidden`
+        would clip the overlay to the content card and the title pill would
+        float above the scrim, unshadowed.) */}
+      {activeSessionId && <DiffViewerHost sessionId={activeSessionId} />}
       {showSettings && (
         <SettingsView
           onClose={() => {

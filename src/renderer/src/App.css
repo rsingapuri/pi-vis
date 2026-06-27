@@ -11,6 +11,10 @@
      as one rounded, inset card. This replaces the old flush rectangular
      grid — the source of the hard 90° seams between chrome regions. */
   background: var(--ctp-mantle);
+  /* The title bar floats as a pill in sidebar-collapsed mode, inset from the
+     window edges; this positioning context is no longer needed for an
+     absolutely-positioned overlay (the pill is in flow now) but is harmless. */
+  position: relative;
   /* The first row is a constant 38px — the title bar is always that
      tall regardless of whether a session is selected. 38px matches
      the macOS standard window-chrome height (the same height Safari
@@ -31,14 +35,127 @@
     "sidebar main";
 }
 
-/* Collapsed sidebar: the column vanishes and the main area spans the full
-   width below the title bar. The title bar's toggle button brings it back. */
+/* Collapsed sidebar: two layouts diverge. The sidebar-visible layout (above)
+   is a floating rounded content card inset from a mantle canvas, with the
+   title bar as a full-width top strip. The collapsed layout drops the card:
+   the main area goes full-bleed (edge-to-edge, no margins/border/radius) so
+   the session fills the window, and the title bar floats as a pill *above*
+   the content (in flow, not overlapping). This avoids the awkward look of a
+   lone floating card with a border when there's no sidebar to balance it.
+
+   The canvas background switches from mantle to base (the transcript's own
+   background) so the strip behind/around the pill matches the content — the
+   pill floats as mantle chrome on a base field, with a border + shadow for
+   separation instead of relying on canvas contrast.
+
+   The grid keeps two rows — title bar (auto) then content (1fr) — but the
+   sidebar column is gone. The title bar is no longer a full-width strip; it's
+   a floating pill inset from the window edges. */
 .app--sidebar-collapsed {
-  grid-template-columns: 0 1fr;
+  background: var(--ctp-base);
+  grid-template-columns: 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "titlebar"
+    "main";
 }
 
+/* Full-bleed content: no floating margins/border/radius/shadow — the
+   session fills the window edge-to-edge below the pill. */
+.app--sidebar-collapsed .app__main {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Floating title-bar pill. Sits in flow above the content (not overlapping).
+   Inset from the window edges on all sides so it reads as floating, with
+   rounded corners, border, and elevation. Clears the macOS traffic lights on
+   the left (left margin ~80px) so native buttons never overlap the pill
+   chrome. Keeps the drag region (`-webkit-app-region: drag` inherited from
+   .titlebar) so the window is still movable by dragging the pill. */
+.app--sidebar-collapsed .titlebar {
+  margin: var(--space-2) var(--space-2) 0 80px;
+  /* Pill chrome: rounded, bordered, elevated. Background stays mantle
+     (inherited) so it reads as the same chrome canvas as the sidebar-visible
+     title bar — continuity between the two layouts. */
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-2);
+  /* The full-width strip clears the traffic lights via 80px left padding
+     (so its content starts after the native buttons). The pill already
+     clears them via its left margin, so the internal left padding collapses
+     to the toggle button's own spacing. */
+  padding: 0 var(--space-2);
+}
+
+/* Edge-reveal trigger: an invisible strip at the very left edge of the
+   window. Hovering it (when the sidebar is collapsed) peeks the sidebar in
+   as a floating overlay pill — the VS Code / macOS Dock auto-reveal pattern.
+   It's only rendered when collapsed (App.tsx gates it), and it's tall enough
+   to be an easy target without being so tall it swallows hovers meant for
+   the title pill or the composer. Sits above the title pill (z-index) so the
+   reveal works even at the top-left corner. */
+.sidebar-trigger {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 6px;
+  height: 100%;
+  z-index: 30;
+  cursor: default;
+}
+
+/* The collapsed sidebar floats as an overlay pill *within* the content
+   region — inset from the window's top, bottom, and left edges so it reads
+   as a floating pill over the transcript (matching the title-bar pill's
+   floating aesthetic), not a full-height panel docked to the edge. By
+   default it's hidden off the left edge; `.app--sidebar-peek` slides it in.
+   Absolutely positioned (lifted out of grid flow) so it overlays the content
+   rather than pushing it — the content stays edge-to-edge. Rounded on all
+   corners, bordered, elevated, on the sidebar canvas color. */
 .app--sidebar-collapsed .sidebar {
+  position: absolute;
+  /* Top clears the floating title-bar pill: the pill sits at top:
+     --space-2 and is 38px tall (+ border), so this lands just below it
+     with a matching gap. Bottom stays inset to the content area. */
+  top: calc(38px + var(--space-2) * 2);
+  bottom: var(--space-2);
+  left: var(--space-2);
+  width: min(var(--sidebar-width, 15.714rem), 38%);
+  max-width: 35.714rem;
+  z-index: 25;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-2);
+  transform: translateX(calc(-100% - var(--space-2)));
+  transition: transform 0.2s ease;
+  pointer-events: none;
+}
+
+/* Peek: slide the sidebar in and make it interactive. */
+.app--sidebar-peek .sidebar {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+/* While the sidebar overlay is open, the trigger strip is no longer needed
+   (the sidebar itself holds the hover); hide it so it doesn't intercept
+   hovers on the content under it. */
+.app--sidebar-peek .sidebar-trigger {
   display: none;
+}
+
+/* Content starts below the pill (in flow, no overlap). A top fade dissolves
+   content in beneath the pill: the transcript's top padding == the top fade
+   zone, so the first message rests at the opaque boundary (fully visible at
+   rest), while the band just below the pill is the fade zone — empty padding
+   at rest, the cue that older content continues above when scrolled. The
+   fade-top is sized as a clearly visible band, not a sliver. */
+.app--sidebar-collapsed .transcript-view {
+  --transcript-fade-top: 2rem;
+  --transcript-pad-top: 2rem;
 }
 
 .app--setup {

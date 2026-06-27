@@ -77,10 +77,14 @@ export function Sidebar({
   onOpenSettings,
   onResize,
   onResizeEnd,
+  onMouseEnter,
+  onMouseLeave,
 }: {
   onOpenSettings: () => void;
   onResize: (width: number) => void;
   onResizeEnd: (width: number) => void;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
 }): React.ReactElement {
   const workspaces = useSessionsStore((s) => s.workspaces);
   const sessions = useSessionsStore((s) => s.sessions);
@@ -412,7 +416,12 @@ export function Sidebar({
   ]);
 
   return (
-    <aside className="sidebar" ref={sidebarRef}>
+    <aside
+      className="sidebar"
+      ref={sidebarRef}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       {archiveTarget && (
         <ConfirmDialog
           title="Archive session"

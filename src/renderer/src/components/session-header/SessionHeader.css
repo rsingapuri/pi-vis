@@ -20,6 +20,14 @@
   min-width: 0;
   height: 100%;
   background: var(--ctp-mantle);
+  /* Inherit the parent titlebar's border-radius so the rectangular mantle
+     fill follows the pill's rounded corners in the sidebar-collapsed layout
+     (where the titlebar is a floating pill with `border-radius:
+     var(--radius-lg)`). The parent has no border-radius in the
+     sidebar-visible full-width strip, so the fill stays rectangular there.
+     This replaces the old `overflow: hidden` on the titlebar, which also
+     clipped the model / thinking dropdowns that open below the bar. */
+  border-radius: inherit;
   /* No border-bottom: the parent titlebar's border-bottom serves the
      same visual purpose at the same y. */
   display: flex;
@@ -140,6 +148,14 @@
 }
 
 .session-header__model-picker {
+  position: relative;
+}
+
+.session-header__thinking {
+  /* Mirror `.session-header__model-picker` so the dropdown anchors to the
+     thinking button (top: 100%, right: 0), not to `.session-header`
+     (the next nearest positioned ancestor), which would place it at the
+     far-right of the title bar instead of under the thinking button. */
   position: relative;
 }
 
