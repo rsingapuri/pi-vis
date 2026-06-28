@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ProjectTrustOptionSchema } from "./commands.js";
 import { ThinkingLevelSchema } from "./thinking.js";
 
 export const PiRpcResponseSchema = z.object({
@@ -162,3 +163,50 @@ export const CancellationDataSchema = z
   .passthrough();
 
 export type CancellationData = z.infer<typeof CancellationDataSchema>;
+
+// ── Trust state response (host-only /trust support) ──────────────────────
+// Returned by the get_trust_state host bridge command. `currentOptions`
+// mirrors pi's getProjectTrustOptions choice set (buildProjectTrustOptions
+// in bootstrap.mjs). `hasTrustRequiringResources` gates whether /trust is
+// meaningful at all (false → the renderer toasts and skips the picker).
+export const TrustStateDataSchema = z.object({
+  cwd: z.string(),
+  hasTrustRequiringResources: z.boolean(),
+  // The cwd's currently-saved trust decision (null = no saved entry).
+  // Lets the picker show the current state (pi's TrustSelectorComponent does).
+  savedDecision: z.boolean().nullable(),
+  // Whether pi's settings.json has projectTrusted=true (the global default).
+  projectTrusted: z.boolean(),
+  currentOptions: z.array(ProjectTrustOptionSchema),
+});
+
+export type TrustStateData = z.infer<typeof TrustStateDataSchema>;
+
+// Scoped-models data: get_scoped_models returns all available models plus
+// the pre-checked provider/id list. enabledIds is null when nothing is
+// scoped (all models available) — mirrors pi's showModelsSelector initial
+// state (null = check-all).
+export const ScopedModelsDataSchema = z
+  .object({
+    models: z.array(ModelInfoSchema),
+    enabledIds: z.array(z.string()).nullable(),
+  })
+  .passthrough();
+
+export type ScopedModelsData = z.infer<typeof ScopedModelsDataSchema>;
+
+// Logout-providers data: get_logout_providers returns providers with stored
+// auth, each tagged oauth vs api_key so the picker can show a badge.
+export const LogoutProvidersDataSchema = z
+  .object({
+    providers: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        authType: z.enum(["oauth", "api_key"]),
+      }),
+    ),
+  })
+  .passthrough();
+
+export type LogoutProvidersData = z.infer<typeof LogoutProvidersDataSchema>;

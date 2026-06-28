@@ -6,10 +6,10 @@ import { AnsiText } from "../../lib/ansi.js";
 import {
   BUILTIN_COMMANDS,
   type PickerRequest,
-  UNSUPPORTED_TUI_COMMANDS,
   executeAction,
   parseComposerInput,
 } from "../../lib/commands/index.js";
+import { useChangelogStore } from "../../stores/changelog-store.js";
 import { openDiffForSession } from "../../stores/diff-store.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { isNewSessionPending } from "../../stores/sessions-store.js";
@@ -264,10 +264,15 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     const hasSpace = text.includes(" ");
     if (hasSpace) return []; // suggestions only for the bare command token
 
+    // pi's TUI (createBaseAutocompleteProvider) lists ALL builtins first,
+    // then prompt templates, then extension commands, then skill commands,
+    // and truncates by autocompleteMaxVisible (default 8) with the menu
+    // scrolling. Mirror that: build the full ordered list (builtins →
+    // discovered), then cap — don't cap builtins before discovered, or
+    // the discovered commands never surface on a bare `/`.
     const entries: SuggestionEntry[] = [];
-    // Built-ins first. We filter out unsupported TUI commands from the
-    // suggestions list — they have a dedicated toast on invocation, not
-    // a "click to fill" entry.
+    // Built-ins first. pi's TUI lists EVERY built-in slash command in
+    // autocomplete (it has no "unsupported" category); we match that.
     for (const b of BUILTIN_COMMANDS) {
       if (!b.name.toLowerCase().startsWith(prefix)) continue;
       entries.push({
@@ -278,12 +283,14 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         key: `builtin:${b.name}`,
       });
     }
-    // Discovered (extension / prompt / skill). Skip names that collide with
-    // built-ins (TUI priority: built-in wins for discoverability, the parser
-    // also gives built-ins precedence; surfacing both would be confusing).
+    // Discovered (prompt / extension / skill, in pi's order). pi's TUI
+    // includes all of these in autocomplete too (promptTemplates +
+    // getRegisteredCommands + skills), skipping only names that collide
+    // with built-ins (built-in wins for discoverability; the parser still
+    // routes the discovered one at execute time since it carries the
+    // actual extension data).
     for (const c of commands) {
       if (!c.name.toLowerCase().startsWith(prefix)) continue;
-      if (UNSUPPORTED_TUI_COMMANDS.has(c.name)) continue;
       // If the same name appears as both a built-in and discovered, the
       // built-in is the user-facing entry. The parser's shadowing rule
       // makes the discovered one take effect at execute time (it carries
@@ -302,7 +309,11 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         key: `disc:${c.source ?? "x"}:${c.name}`,
       });
     }
-    return entries.slice(0, 8);
+    // pi's TUI doesn't hard-truncate the command list — it builds all
+    // matches and lets the menu scroll (autocompleteMaxVisible is a
+    // visible-rows hint, not a list cap). The suggestion-list already
+    // scrolls (max-height + overflow-y: auto), so return the full list.
+    return entries;
   }, [text, commands]);
 
   // Reset highlight when the suggestion list shape changes.
@@ -537,6 +548,12 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
             await updateSettings({ lastUsedModel: { provider, modelId } });
           },
           addCustomMessage,
+          openChangelog: (markdown: string) => {
+            // The changelog modal is mounted at the App level (overlay over
+            // the session area). The store owns its state; we just call
+            // the action — same pattern as openDiffViewer / openLogin.
+            useChangelogStore.getState().openChangelog(markdown);
+          },
           openPicker: (sid: SessionId, picker: PickerRequest) => openPicker(sid, picker),
           adoptSessionFile: async (sid: SessionId, file?: string, name?: string) => {
             await adoptSessionFile(sid, file, name);

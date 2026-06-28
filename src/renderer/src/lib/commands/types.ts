@@ -37,9 +37,14 @@ export type ComposerAction =
   | { kind: "copy" }
   | { kind: "quit" }
   | { kind: "reload" }
+  | { kind: "scoped-models" }
+  | { kind: "logout" }
   | { kind: "open-app-settings" }
   | { kind: "open-login" }
   | { kind: "git-diff" }
+  | { kind: "trust" }
+  | { kind: "share" }
+  | { kind: "changelog" }
   // TUI-only commands we deliberately do not surface. The renderer toasts
   // an "unsupported" notice unless a discovered command shadows the name.
   | { kind: "unsupported"; name: string };

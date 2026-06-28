@@ -182,3 +182,123 @@
   background: var(--ctp-surface2);
   color: var(--ctp-text);
 }
+
+/* ── /trust picker ───────────────────────────────────────────────────── */
+/* The cwd sits under the title so the user knows which folder a trust
+   decision applies to. Ellipsized so a long path never blows out the card. */
+.picker__trust-cwd {
+  font-family: var(--font-mono);
+  font-size: 0.857em;
+  color: var(--ctp-overlay0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker__trust-status {
+  font-size: 0.857em;
+  color: var(--ctp-subtext0);
+  margin-bottom: var(--space-2);
+}
+
+/* /scoped-models: checkbox multi-select rows. The checkbox is a
+   hairline-bordered surface well that fills with mauve when checked — no
+   native checkbox chrome, matching the hairlines + surface-elevation
+   aesthetic (no high-contrast outlines). */
+.picker__item--check {
+  align-items: center;
+  gap: 0.571rem;
+}
+
+.picker__checkbox {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  display: inline-block;
+  position: relative;
+}
+
+.picker__checkbox--checked {
+  background: var(--ctp-mauve);
+  border-color: var(--ctp-mauve);
+}
+
+.picker__checkbox--checked::after {
+  content: "";
+  position: absolute;
+  left: 0.322rem;
+  top: 0.107rem;
+  width: 0.286rem;
+  height: 0.571rem;
+  border: solid var(--ctp-base);
+  border-width: 0 0.143rem 0.143rem 0;
+  transform: rotate(45deg);
+}
+
+/* Selected-count caption on the scoped-models footer. */
+.picker__count {
+  margin-right: auto;
+  color: var(--ctp-overlay0);
+  font-size: 0.857em;
+  font-family: var(--font-display);
+}
+
+/* Primary Apply button — mauve fill, the one filled affordance in the
+   footer (cancel stays a quiet surface button). */
+.picker__btn--primary {
+  background: var(--ctp-mauve);
+  color: var(--ctp-base);
+}
+
+.picker__btn--primary:hover {
+  filter: brightness(1.08);
+}
+
+/* "Save to settings" — global persistence (mirrors pi's TUI Ctrl-S). A
+   secondary filled affordance distinct from the session-only Apply: green
+   (green) over the mauve primary, so the two scopes read at a glance
+   without high-contrast outlines. */
+.picker__btn--save {
+  background: var(--ctp-green);
+  color: var(--ctp-base);
+}
+
+.picker__btn--save:hover {
+  filter: brightness(1.08);
+}
+
+/* Bulk toggle helpers ("Select all" / "Select none") sit between the
+   count and the action buttons as quiet surface buttons, disabled when
+   already in that state. */
+.picker__btn--bulk:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* /logout: auth-type badge. A small surface-pill tag — oauth is blue
+   (sapphire), api_key is mauve, both low-contrast (translucent fills over
+   real swatches, not invented hues). */
+.picker__badge {
+  flex: 0 0 auto;
+  font-size: 0.786em;
+  font-family: var(--font-display);
+  line-height: 1;
+  padding: 0.214rem 0.5rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+}
+
+.picker__badge--oauth {
+  color: var(--ctp-sapphire);
+  background: color-mix(in srgb, var(--ctp-sapphire) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ctp-sapphire) 30%, transparent);
+}
+
+.picker__badge--api_key {
+  color: var(--ctp-mauve);
+  background: color-mix(in srgb, var(--ctp-mauve) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ctp-mauve) 30%, transparent);
+}

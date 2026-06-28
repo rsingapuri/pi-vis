@@ -39,12 +39,16 @@
 
 import type { SessionId } from "@shared/ids.js";
 import type { SessionSummary } from "@shared/ipc-contract.js";
+import type { ProjectTrustOption } from "@shared/pi-protocol/commands.js";
 import type {
   CancellationData,
   ExportHtmlData,
   ForkMessagesData,
   LastAssistantTextData,
+  LogoutProvidersData,
   ModelInfo,
+  ScopedModelsData,
+  TrustStateData,
 } from "@shared/pi-protocol/responses.js";
 import { findExactModelReferenceMatch } from "./model-resolver.js";
 import type { ComposerAction } from "./types.js";
@@ -74,6 +78,8 @@ export interface ExecuteDeps {
   updateLastUsedModel: (provider: string, modelId: string) => Promise<void>;
   /** Persist a custom_message block (TUI parity for /session). */
   addCustomMessage: (sessionId: SessionId, content: string) => void;
+  /** Open the changelog in a modal overlay (for /changelog). */
+  openChangelog: (markdown: string) => void;
   /** Drop a picker request (model/fork/resume). The App renders the host. */
   openPicker: (sessionId: SessionId, picker: PickerRequest) => void;
   /** Adopt a new sessionFile (overrides the only-if-unset guard) and reseed. */
@@ -110,7 +116,19 @@ export interface ExecuteDeps {
 export type PickerRequest =
   | { kind: "model"; search?: string }
   | { kind: "fork"; messages: Array<{ entryId: string; text: string }> }
-  | { kind: "resume"; sessions: SessionSummary[] };
+  | { kind: "resume"; sessions: SessionSummary[] }
+  | { kind: "scoped-models"; models: ModelInfo[]; enabledIds: string[] | null }
+  | {
+      kind: "logout";
+      providers: Array<{ id: string; name: string; authType: "oauth" | "api_key" }>;
+    }
+  | {
+      kind: "trust";
+      cwd: string;
+      savedDecision: boolean | null;
+      projectTrusted: boolean;
+      options: ProjectTrustOption[];
+    };
 
 export async function executeAction(
   sessionId: SessionId,
@@ -160,6 +178,12 @@ export async function executeAction(
     case "reload":
       await executeReload(sessionId, deps);
       return;
+    case "scoped-models":
+      await executeScopedModels(sessionId, deps);
+      return;
+    case "logout":
+      await executeLogout(sessionId, deps);
+      return;
     case "open-app-settings":
       deps.openAppSettings();
       return;
@@ -168,6 +192,15 @@ export async function executeAction(
       return;
     case "git-diff":
       deps.openDiffViewer(sessionId);
+      return;
+    case "trust":
+      await executeTrust(sessionId, deps);
+      return;
+    case "share":
+      await executeShare(sessionId, deps);
+      return;
+    case "changelog":
+      await executeChangelog(sessionId, deps);
       return;
     case "unsupported":
       deps.addToast(
@@ -578,6 +611,157 @@ async function executeReload(sessionId: SessionId, deps: ExecuteDeps): Promise<v
     "Reloaded settings, extensions, skills, prompts, and themes.",
     "success",
   );
+}
+
+// ── /trust ─────────────────────────────────────────────────────────────
+// Mirrors pi's TUI showTrustSelector: fetch the project-trust choice set
+// for the session's cwd and open a single-select picker. On selection,
+// persist the chosen option's updates via the host's set_trust bridge
+// command and reload the session so the new decision takes effect (pi's
+// TUI also tells the user "Restart pi for this to take effect.").
+//
+// /trust only makes sense when the cwd has trust-requiring project-local
+// pi resources; otherwise toast and skip (no picker).
+
+async function executeTrust(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
+  const res = await deps.invoke<TrustStateData>("session.sendCommand", {
+    sessionId,
+    command: { type: "get_trust_state" },
+  });
+  if (!res.success) {
+    deps.addToast(sessionId, res.error ?? "Failed to load trust state", "error");
+    return;
+  }
+  const state = res.data;
+  if (!state) {
+    deps.addToast(sessionId, "Failed to load trust state", "error");
+    return;
+  }
+  if (!state.hasTrustRequiringResources) {
+    deps.addToast(
+      sessionId,
+      "This workspace has no project-local pi resources that require trust.",
+      "info",
+    );
+    return;
+  }
+  deps.openPicker(sessionId, {
+    kind: "trust",
+    cwd: state.cwd,
+    savedDecision: state.savedDecision,
+    projectTrusted: state.projectTrusted,
+    options: state.currentOptions,
+  });
+}
+
+// ── /share ─────────────────────────────────────────────────────────────
+// Mirrors pi's TUI handleShareCommand: export the session to a secret
+// GitHub gist (via `gh`) and surface the pi.dev share viewer URL. The gh
+// spawn + temp file live in the main process (see share.ts); the renderer
+// toasts the URL and copies it to the clipboard. The two gh error cases
+// (missing / not logged in) surface with pi's EXACT messages, returned
+// verbatim from main.
+
+async function executeShare(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
+  const res = await deps.invoke<{
+    ok: boolean;
+    url?: string;
+    gistUrl?: string;
+    error?: string;
+  }>("session.share", { sessionId });
+  // `invoke` returns { success, data, error }; session.share's own result is
+  // { ok, url, gistUrl | error }. Reconcile the two layers explicitly rather
+  // than `res.data ?? res` (which would cast the wrapper shape on a miss).
+  if (!res.success) {
+    deps.addToast(sessionId, res.error ?? "Failed to share session", "error");
+    return;
+  }
+  const result = res.data ?? { ok: false };
+  if (!result.ok) {
+    deps.addToast(sessionId, result.error ?? "Failed to share session", "error");
+    return;
+  }
+  const url = result.url ?? "";
+  if (url) await deps.copyToClipboard(url);
+  // Mirror pi's TUI, which surfaces both the viewer URL and the raw gist
+  // URL (so the user has the gist itself for inspection/deletion).
+  const gistUrl = result.gistUrl ?? "";
+  deps.addToast(
+    sessionId,
+    gistUrl ? `Share URL: ${url}\nGist: ${gistUrl}` : `Share URL: ${url}`,
+    "success",
+  );
+}
+
+// ── /changelog ─────────────────────────────────────────────────────────
+// Mirrors pi's TUI handleChangelogCommand: read pi's shipped CHANGELOG.md
+// and render it in a closeable modal overlay (the closest analog to pi's
+// in-TUI changelog rendering). The markdown read happens in main
+// (pi.changelog IPC) since it reads from the located pi package dir; the
+// renderer renders the raw markdown via the existing markdown renderer.
+
+async function executeChangelog(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
+  const res = await deps.invoke<{ ok: boolean; markdown?: string; error?: string }>(
+    "pi.changelog",
+    undefined,
+  );
+  if (!res.success) {
+    deps.addToast(sessionId, res.error ?? "Failed to load changelog", "error");
+    return;
+  }
+  const result = res.data ?? { ok: false };
+  if (!result.ok) {
+    deps.addToast(sessionId, result.error ?? "Failed to load changelog", "error");
+    return;
+  }
+  const markdown = result.markdown ?? "";
+  deps.openChangelog(markdown);
+}
+
+// ── /scoped-models ─────────────────────────────────────────────────────
+
+async function executeScopedModels(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
+  const res = await deps.invoke<ScopedModelsData>("session.sendCommand", {
+    sessionId,
+    command: { type: "get_scoped_models" },
+  });
+  if (!res.success) {
+    deps.addToast(sessionId, res.error ?? "Failed to load scoped models", "error");
+    return;
+  }
+  const models = res.data?.models ?? [];
+  if (models.length === 0) {
+    deps.addToast(sessionId, "No models available", "warning");
+    return;
+  }
+  deps.openPicker(sessionId, {
+    kind: "scoped-models",
+    models,
+    enabledIds: res.data?.enabledIds ?? null,
+  });
+}
+
+// ── /logout ────────────────────────────────────────────────────────────
+
+async function executeLogout(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
+  const res = await deps.invoke<LogoutProvidersData>("session.sendCommand", {
+    sessionId,
+    command: { type: "get_logout_providers" },
+  });
+  if (!res.success) {
+    deps.addToast(sessionId, res.error ?? "Failed to list providers", "error");
+    return;
+  }
+  const providers = res.data?.providers ?? [];
+  if (providers.length === 0) {
+    deps.addToast(
+      sessionId,
+      "No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
+      "warning",
+    );
+    return;
+  }
+  deps.openPicker(sessionId, { kind: "logout", providers });
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────

@@ -158,12 +158,22 @@ function dispatchArgless(name: string): ComposerAction {
       return { kind: "quit" };
     case "reload":
       return { kind: "reload" };
+    case "scoped-models":
+      return { kind: "scoped-models" };
+    case "logout":
+      return { kind: "logout" };
     case "settings":
       return { kind: "open-app-settings" };
     case "login":
       return { kind: "open-login" };
     case "diff":
       return { kind: "git-diff" };
+    case "trust":
+      return { kind: "trust" };
+    case "share":
+      return { kind: "share" };
+    case "changelog":
+      return { kind: "changelog" };
     default:
       return { kind: "send-prompt", text: `/${name}` };
   }

@@ -32,6 +32,7 @@ function makeDeps(overrides: Partial<ExecuteDeps> = {}): {
     setCurrentModel: make("setCurrentModel") as ExecuteDeps["setCurrentModel"],
     updateLastUsedModel: vi.fn(async () => {}) as ExecuteDeps["updateLastUsedModel"],
     addCustomMessage: make("addCustomMessage") as ExecuteDeps["addCustomMessage"],
+    openChangelog: make("openChangelog") as ExecuteDeps["openChangelog"],
     openPicker: make("openPicker") as ExecuteDeps["openPicker"],
     adoptSessionFile: (async (...args: unknown[]) => {
       (calls["adoptSessionFile"] ??= []).push(args);
@@ -272,6 +273,33 @@ describe("executeAction — session-info", () => {
   });
 });
 
+describe("executeAction — changelog", () => {
+  it("/changelog opens the modal with the fetched markdown (not inline)", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (ch: string) => {
+      if (ch === "pi.changelog") {
+        return { success: true, data: { ok: true, markdown: "# v1.2.3\n- change" } };
+      }
+      return { success: true, data: {} };
+    });
+    await executeAction(SID, { kind: "changelog" }, deps);
+    expect(calls["openChangelog"]).toEqual([["# v1.2.3\n- change"]]);
+    // Must NOT dump inline in the transcript anymore.
+    expect(calls["addCustomMessage"]).toBeUndefined();
+  });
+
+  it("/changelog toasts on failure and does not open the modal", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      data: { ok: false, error: "changelog not found" },
+    });
+    await executeAction(SID, { kind: "changelog" }, deps);
+    expect(calls["addToast"]).toEqual([[SID, "changelog not found", "error"]]);
+    expect(calls["openChangelog"]).toBeUndefined();
+  });
+});
+
 describe("executeAction — new-session / fork", () => {
   it("/new without cancellation toasts; fileChanged handles the rest", async () => {
     const { deps, calls } = makeDeps();
@@ -322,18 +350,7 @@ describe("executeAction — new-session / fork", () => {
 });
 
 describe("executeAction — unsupported exposes nothing via invoke", () => {
-  it.each([
-    "login",
-    "logout",
-    "trust",
-    "share",
-    "import",
-    "tree",
-    "changelog",
-    "hotkeys",
-    "debug",
-    "scoped-models",
-  ])("always toasts for /%s", async (name) => {
+  it.each(["import", "tree", "hotkeys", "debug"])("always toasts for /%s", async (name) => {
     const { deps, calls } = makeDeps();
     await executeAction(SID, { kind: "unsupported", name } as ComposerAction, deps);
     expect(calls["invoke"]).toBeUndefined();

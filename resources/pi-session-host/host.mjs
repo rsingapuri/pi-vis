@@ -310,6 +310,9 @@ async function handleInit(msg) {
       uiContext,
       send,
       panelBridge,
+      pi,
+      agentDir,
+      cwd,
     });
 
     // Step 7: Bind extensions (initial session)

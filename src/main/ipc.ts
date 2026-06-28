@@ -24,6 +24,7 @@ import {
   getFileDiff,
   inspectWorktree,
 } from "./git/git.js";
+import { readPiChangelog } from "./pi-changelog.js";
 import { clearPiLocationCache, locatePi } from "./pi/locate-pi.js";
 import { isSessionHost } from "./pi/session-host.js";
 import { initPty, killAllPtys, killPty, resizePty, startPty, writePty } from "./pty.js";
@@ -35,6 +36,7 @@ import {
 } from "./sessions/session-discovery.js";
 import { SessionRegistry } from "./sessions/session-registry.js";
 import { getSettings, saveSettings } from "./settings-store.js";
+import { createGistForSession } from "./share.js";
 import { checkForUpdates, startUpdate } from "./updates.js";
 import {
   getOrderedWorkspaces,
@@ -292,6 +294,31 @@ export function initIpc(win: BrowserWindow): void {
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
+  });
+
+  // ── /share: export session to a secret GitHub gist ─────────────────
+  // Implemented in main (see share.ts) because it shells out to `gh` and
+  // writes a temp file; the HTML content comes from the host's export_html
+  // bridge command, routed through the registry. Error strings match pi's
+  // TUI verbatim for the gh-missing / gh-not-logged-in cases.
+  ipcMain.handle("session.share", async (_evt, args: { sessionId: SessionId }) => {
+    if (!registry) return { ok: false, error: "Session registry not initialized" };
+    try {
+      return await createGistForSession(args.sessionId, registry);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── /changelog: read pi's shipped CHANGELOG.md ──────────────────────
+  // Locates the pi package dir from the cached pi binary path and reads
+  // CHANGELOG.md from the package root. Returns raw markdown; the renderer
+  // renders it as a custom_message block.
+  ipcMain.handle("pi.changelog", async () => {
+    const settings = getSettings();
+    const piInfo = await locatePi(settings.piBinaryPath);
+    if (!piInfo) return { ok: false, error: "pi binary not found" };
+    return readPiChangelog(piInfo.path);
   });
 
   ipcMain.handle("session.close", async (_evt, args: { sessionId: SessionId }) => {

@@ -1,0 +1,187 @@
+/* Changelog modal — full-screen overlay with rendered markdown */
+
+.changelog-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--ctp-scrim);
+  backdrop-filter: blur(0.286rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 600;
+  padding: var(--space-5);
+}
+
+.changelog-modal {
+  background: var(--ctp-surface0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  width: 100%;
+  max-width: 48rem;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--elevation-3);
+}
+
+.changelog-modal__header {
+  display: flex;
+  align-items: center;
+  padding: 0.857rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.changelog-modal__title {
+  flex: 1;
+  font-family: var(--font-display);
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--ctp-text);
+}
+
+.changelog-modal__close {
+  background: none;
+  border: none;
+  color: var(--ctp-overlay0);
+  cursor: pointer;
+  font-size: 1.429em;
+  line-height: 1;
+  padding: 0.143rem 0.429rem;
+}
+
+.changelog-modal__close:hover {
+  color: var(--ctp-text);
+}
+
+.changelog-modal__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.143rem 1.286rem;
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  line-height: var(--leading-body);
+  letter-spacing: var(--tracking-body);
+  color: var(--ctp-text);
+  min-height: 8rem;
+}
+
+.changelog-modal__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.857rem;
+  padding: 0.857rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.changelog-modal__btn {
+  background: var(--ctp-mauve);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--ctp-base);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  font-weight: 500;
+  line-height: var(--leading-label);
+  padding: 0.571rem 1.143rem;
+}
+
+.changelog-modal__btn:hover {
+  background: var(--ctp-lavender);
+}
+
+/* ── Markdown content (mirrors transcript markdown styling) ────────── */
+
+.changelog-modal__body p {
+  margin: 0 0 var(--space-2);
+}
+.changelog-modal__body p:last-child {
+  margin-bottom: 0;
+}
+
+.changelog-modal__body ul,
+.changelog-modal__body ol {
+  padding-left: 1.4em;
+  margin: 0 0 var(--space-2);
+}
+
+.changelog-modal__body li {
+  margin: 0.2em 0;
+}
+
+.changelog-modal__body blockquote {
+  border-left: 2px solid var(--ctp-surface1);
+  padding-left: 0.714rem;
+  color: var(--ctp-subtext0);
+  margin: 0 0 var(--space-2);
+  font-style: italic;
+}
+
+.changelog-modal__body h1,
+.changelog-modal__body h2,
+.changelog-modal__body h3 {
+  color: var(--ctp-text);
+  margin: 0.8em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.changelog-modal__body a {
+  color: var(--ctp-blue);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--ctp-blue) 30%, transparent);
+}
+
+.changelog-modal__body a:hover {
+  border-bottom-color: var(--ctp-blue);
+}
+
+.changelog-modal__body table {
+  border-collapse: collapse;
+  font-size: 0.929em;
+  margin: var(--space-2) 0;
+  font-family: var(--font-code);
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.changelog-modal__body th,
+.changelog-modal__body td {
+  border: 1px solid var(--border);
+  padding: 0.286rem 0.571rem;
+  text-align: left;
+}
+
+.changelog-modal__body th {
+  background: var(--ctp-mantle);
+  font-weight: 600;
+}
+
+/* Shiki code blocks: override the inline theme background so the block
+   reads as a distinct surface (mirrors the transcript treatment). */
+.changelog-modal__body .shiki {
+  background: var(--ctp-mantle) !important;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+  padding: 0.857rem;
+  overflow-x: auto;
+  margin: var(--space-2) 0;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: var(--leading-code);
+}
+
+.changelog-modal__body .code-block--plain {
+  background: var(--ctp-mantle);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+  padding: 0.857rem;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: var(--leading-code);
+  margin: var(--space-2) 0;
+  color: var(--ctp-text);
+}

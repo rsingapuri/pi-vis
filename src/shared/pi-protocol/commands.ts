@@ -62,6 +62,29 @@ export const GetAvailableModelsCommandSchema = BaseCommand.extend({
   type: z.literal("get_available_models"),
 });
 
+export const GetScopedModelsCommandSchema = BaseCommand.extend({
+  type: z.literal("get_scoped_models"),
+});
+
+export const SetScopedModelsCommandSchema = BaseCommand.extend({
+  type: z.literal("set_scoped_models"),
+  enabledIds: z.array(z.string()).nullable(),
+});
+
+export const SaveScopedModelsCommandSchema = BaseCommand.extend({
+  type: z.literal("save_scoped_models"),
+  enabledIds: z.array(z.string()).nullable(),
+});
+
+export const GetLogoutProvidersCommandSchema = BaseCommand.extend({
+  type: z.literal("get_logout_providers"),
+});
+
+export const LogoutProviderCommandSchema = BaseCommand.extend({
+  type: z.literal("logout_provider"),
+  provider: z.string(),
+});
+
 export const SetThinkingLevelCommandSchema = BaseCommand.extend({
   type: z.literal("set_thinking_level"),
   level: ThinkingLevelSchema,
@@ -153,6 +176,40 @@ export const ExportHtmlCommandSchema = BaseCommand.extend({
   outputPath: z.string().optional(),
 });
 
+// ── Trust (pi-vis host-only; mirrors pi's TUI showTrustSelector) ─────────
+// get_trust_state returns the cwd, whether the cwd has trust-requiring
+// project resources, and pi's full project-trust choice set (each with a
+// label, the `trusted` answer, and the `updates` to persist). Used by the
+// /trust picker. NOT part of pi's RPC protocol — host-only; the pi --mode
+// rpc fallback surfaces these as errors (handled gracefully by the renderer).
+export const ProjectTrustUpdateSchema = z.object({
+  path: z.string(),
+  // null = clear the entry so a broader (parent) grant takes over —
+  // matches pi's ProjectTrustStore semantics.
+  decision: z.boolean().nullable(),
+});
+
+export type ProjectTrustUpdate = z.infer<typeof ProjectTrustUpdateSchema>;
+
+export const ProjectTrustOptionSchema = z.object({
+  label: z.string(),
+  trusted: z.boolean(),
+  updates: z.array(ProjectTrustUpdateSchema),
+});
+
+export type ProjectTrustOption = z.infer<typeof ProjectTrustOptionSchema>;
+
+export const GetTrustStateCommandSchema = BaseCommand.extend({
+  type: z.literal("get_trust_state"),
+});
+
+export const SetTrustCommandSchema = BaseCommand.extend({
+  type: z.literal("set_trust"),
+  // The chosen option's updates to persist + the trusted answer to apply.
+  updates: z.array(ProjectTrustUpdateSchema),
+  trusted: z.boolean(),
+});
+
 export const PiRpcCommandSchema = z.discriminatedUnion("type", [
   PromptCommandSchema,
   SteerCommandSchema,
@@ -163,6 +220,11 @@ export const PiRpcCommandSchema = z.discriminatedUnion("type", [
   SetModelCommandSchema,
   CycleModelCommandSchema,
   GetAvailableModelsCommandSchema,
+  GetScopedModelsCommandSchema,
+  SetScopedModelsCommandSchema,
+  SaveScopedModelsCommandSchema,
+  GetLogoutProvidersCommandSchema,
+  LogoutProviderCommandSchema,
   SetThinkingLevelCommandSchema,
   CycleThinkingLevelCommandSchema,
   NewSessionCommandSchema,
@@ -183,10 +245,17 @@ export const PiRpcCommandSchema = z.discriminatedUnion("type", [
   SetSteeringModeCommandSchema,
   SetFollowUpModeCommandSchema,
   ExportHtmlCommandSchema,
+  GetTrustStateCommandSchema,
+  SetTrustCommandSchema,
 ]);
 
 export type PiRpcCommand = z.infer<typeof PiRpcCommandSchema>;
 export type PromptCommand = z.infer<typeof PromptCommandSchema>;
 export type BashCommand = z.infer<typeof BashCommandSchema>;
 export type SetModelCommand = z.infer<typeof SetModelCommandSchema>;
+export type GetScopedModelsCommand = z.infer<typeof GetScopedModelsCommandSchema>;
+export type SetScopedModelsCommand = z.infer<typeof SetScopedModelsCommandSchema>;
+export type SaveScopedModelsCommand = z.infer<typeof SaveScopedModelsCommandSchema>;
+export type GetLogoutProvidersCommand = z.infer<typeof GetLogoutProvidersCommandSchema>;
+export type LogoutProviderCommand = z.infer<typeof LogoutProviderCommandSchema>;
 export type SetThinkingLevelCommand = z.infer<typeof SetThinkingLevelCommandSchema>;

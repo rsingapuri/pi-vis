@@ -170,20 +170,38 @@ describe("parseComposerInput — arg-less built-ins with trailing text fall thro
 });
 
 describe("parseComposerInput — unsupported TUI commands", () => {
-  it.each([
-    "logout",
-    "trust",
-    "share",
-    "import",
-    "tree",
-    "changelog",
-    "hotkeys",
-    "debug",
-    "scoped-models",
-  ])("/%s → unsupported", (name) => {
+  it.each(["import", "tree", "hotkeys", "debug"])("/%s → unsupported", (name) => {
     expect(parseComposerInput(`/${name}`, { discovered: new Map() })).toEqual({
       kind: "unsupported",
       name,
+    });
+  });
+});
+
+describe("parseComposerInput — scoped-models & logout", () => {
+  it("/scoped-models → scoped-models picker", () => {
+    expect(parseComposerInput("/scoped-models", { discovered: new Map() })).toEqual({
+      kind: "scoped-models",
+    });
+  });
+
+  it("/logout → logout picker", () => {
+    expect(parseComposerInput("/logout", { discovered: new Map() })).toEqual({
+      kind: "logout",
+    });
+  });
+
+  it("/scoped-models trailing text → send-prompt (arg-less)", () => {
+    expect(parseComposerInput("/scoped-models extra", { discovered: new Map() })).toEqual({
+      kind: "send-prompt",
+      text: "/scoped-models extra",
+    });
+  });
+
+  it("/logout trailing text → send-prompt (arg-less)", () => {
+    expect(parseComposerInput("/logout extra", { discovered: new Map() })).toEqual({
+      kind: "send-prompt",
+      text: "/logout extra",
     });
   });
 });

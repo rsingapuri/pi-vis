@@ -80,6 +80,22 @@ export interface IpcInvokeContract {
     req: { sessionId: SessionId };
     res: { success: true } | { success: false; error: string };
   };
+  // /share: export the session to a secret GitHub gist (via `gh`) and
+  // return the pi.dev share viewer URL. Implemented in main because it
+  // shells out to `gh` and writes a temp file; the HTML content comes from
+  // the host's export_html bridge command. Error strings match pi's TUI
+  // messages verbatim for the gh-missing / gh-not-logged-in cases.
+  "session.share": {
+    req: { sessionId: SessionId };
+    res: { ok: true; url: string; gistUrl: string } | { ok: false; error: string };
+  };
+  // /changelog: read pi's shipped CHANGELOG.md from the located pi
+  // package dir and return the raw markdown. The renderer renders it as a
+  // custom_message block (mirrors pi's in-TUI changelog rendering).
+  "pi.changelog": {
+    req: undefined;
+    res: { ok: true; markdown: string } | { ok: false; error: string };
+  };
   "session.createWorktree": {
     req: { sessionId: SessionId; base: string };
     res:

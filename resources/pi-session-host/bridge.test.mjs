@@ -50,6 +50,9 @@ function makeSession(overrides = {}) {
     extensionRunner: { getRegisteredCommands: vi.fn(() => []) },
     resourceLoader: { getSkills: vi.fn(() => ({ skills: [] })) },
     sessionManager: { getLeafId: vi.fn(() => "leaf-9") },
+    settingsManager: { setEnabledModels: vi.fn(), getEnabledModels: vi.fn(() => undefined) },
+    scopedModels: [],
+    setScopedModels: vi.fn(),
     ...overrides,
   };
 }
@@ -159,6 +162,63 @@ describe("setupCommandBridge — command mapping", () => {
     expect(res.error).toMatch(/Model not found/);
   });
 
+  it("save_scoped_models persists patterns to settingsManager and applies to session", async () => {
+    const { session, run } = setup({
+      modelRegistry: {
+        getAvailable: vi.fn(async () => [
+          { provider: "anthropic", id: "claude-x", name: "Claude X" },
+          { provider: "openai", id: "gpt-5", name: "GPT-5" },
+        ]),
+      },
+    });
+    // A proper subset (1 of 2) is persisted as patterns; == all clears.
+    const res = await run({
+      type: "save_scoped_models",
+      enabledIds: ["anthropic/claude-x"],
+    });
+    expect(session.settingsManager.setEnabledModels).toHaveBeenCalledWith(["anthropic/claude-x"]);
+    expect(session.setScopedModels).toHaveBeenCalled();
+    expect(res.success).toBe(true);
+  });
+
+  it("save_scoped_models clears settings (undefined) when all are enabled", async () => {
+    const { session, run } = setup({
+      modelRegistry: {
+        getAvailable: vi.fn(async () => [
+          { provider: "anthropic", id: "claude-x", name: "Claude X" },
+          { provider: "openai", id: "gpt-5", name: "GPT-5" },
+        ]),
+      },
+    });
+    // enabledIds === null → clear the settings filter (all enabled).
+    const res = await run({ type: "save_scoped_models", enabledIds: null });
+    expect(session.settingsManager.setEnabledModels).toHaveBeenCalledWith(undefined);
+    expect(res.success).toBe(true);
+  });
+
+  it("get_available_models returns scoped subset when scopedModels is set", async () => {
+    const { session, run } = setup();
+    // Simulate pi's AgentSession after setScopedModels was applied: the
+    // scoped entry's `.model` is the plain data object returned to /model.
+    session.scopedModels = [
+      {
+        model: { provider: "anthropic", id: "claude-x", name: "Claude X" },
+      },
+    ];
+    const res = await run({ type: "get_available_models" });
+    expect(res.success).toBe(true);
+    expect(res.data.models).toEqual([{ provider: "anthropic", id: "claude-x", name: "Claude X" }]);
+    // modelRegistry.getAvailable() must NOT be called when a scope is active.
+    expect(session.modelRegistry.getAvailable).not.toHaveBeenCalled();
+  });
+
+  it("get_available_models returns all from registry when no scope is set", async () => {
+    const { session, run } = setup();
+    const res = await run({ type: "get_available_models" });
+    expect(res.success).toBe(true);
+    expect(session.modelRegistry.getAvailable).toHaveBeenCalled();
+    expect(res.data.models).toEqual([{ provider: "anthropic", id: "claude-x", name: "Claude X" }]);
+  });
   it("compact passes the customInstructions STRING (not an object)", async () => {
     const { session, run } = setup();
     await run({ type: "compact", customInstructions: "be brief" });

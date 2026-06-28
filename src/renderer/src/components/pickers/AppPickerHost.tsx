@@ -1,5 +1,6 @@
 import type { SessionId } from "@shared/ids.js";
 import type { SessionSummary } from "@shared/ipc-contract.js";
+import type { ProjectTrustOption } from "@shared/pi-protocol/commands.js";
 import type { ModelInfo } from "@shared/pi-protocol/responses.js";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -139,6 +140,73 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
             if (id) setActiveSession(id);
             closePicker(sessionId);
           }}
+        />
+      )}
+      {picker.kind === "scoped-models" && (
+        <ScopedModelsPicker
+          models={picker.models}
+          enabledIds={picker.enabledIds}
+          onClose={() => closePicker(sessionId)}
+          onApply={async (enabledIds, persist) => {
+            const commandType = persist ? "save_scoped_models" : "set_scoped_models";
+            const res = (await window.pivis.invoke("session.sendCommand", {
+              sessionId,
+              command: { type: commandType, enabledIds },
+            })) as { success: boolean; error?: string };
+            if (!res.success) {
+              addToast(sessionId, res.error ?? "Failed to update model scope", "error");
+              return;
+            }
+            addToast(
+              sessionId,
+              persist ? "Model selection saved to settings" : "Model scope updated (this session)",
+              "success",
+            );
+            // Re-fetch the effective available-models list so the /model
+            // dropdown reflects the new scope live (mirrors pi's
+            // getAvailableModels returning the scoped subset). Best-effort:
+            // refreshAvailableModels swallows errors.
+            await useSessionsStore.getState().refreshAvailableModels(sessionId);
+            closePicker(sessionId);
+          }}
+        />
+      )}
+      {picker.kind === "logout" && (
+        <LogoutPicker
+          providers={picker.providers}
+          onClose={() => closePicker(sessionId)}
+          onPick={async (provider) => {
+            const res = (await window.pivis.invoke("session.sendCommand", {
+              sessionId,
+              command: { type: "logout_provider", provider: provider.id },
+            })) as { success: boolean; error?: string };
+            if (!res.success) {
+              addToast(sessionId, res.error ?? "Failed to log out", "error");
+              return;
+            }
+            const msg =
+              provider.authType === "oauth"
+                ? `Logged out of ${provider.name}`
+                : `Removed stored API key for ${provider.name}. Environment variables and models.json config are unchanged.`;
+            addToast(sessionId, msg, "success");
+            // Refresh the model dropdown so a logged-out provider's models
+            // (available only via the stored credential) disappear from
+            // /model. Mirrors pi's modelRegistry.refresh() +
+            // updateAvailableProviderCount() (the bridge already awaits
+            // modelRegistry.refresh() inside logout_provider).
+            await useSessionsStore.getState().refreshAvailableModels(sessionId);
+            closePicker(sessionId);
+          }}
+        />
+      )}
+      {picker.kind === "trust" && (
+        <TrustPicker
+          sessionId={sessionId}
+          cwd={picker.cwd}
+          savedDecision={picker.savedDecision}
+          projectTrusted={picker.projectTrusted}
+          options={picker.options}
+          onClose={() => closePicker(sessionId)}
         />
       )}
     </div>
@@ -434,6 +502,464 @@ function ResumePicker({
       </div>
       <div className="picker__footer">
         <button type="button" className="picker__btn picker__btn--cancel" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── /scoped-models picker ──────────────────────────────────────────────────
+// Multi-select checkbox list of models. Pre-checks enabledIds (or all when
+// enabledIds === null, meaning no scope = everything available). Two submit
+// actions mirror pi's TUI showModelsSelector:
+//   - Apply (persist=false): set_scoped_models — THIS session only, lost on
+//     /reload (a fresh process rebuilds from settingsManager.getEnabledModels()).
+//   - Save to settings (persist=true): save_scoped_models — persists to pi's
+//     settings.json so ALL sessions (current + future + after reload) honor
+//     it, AND applies to the current session immediately.
+// "Select all" / "Select none" are bulk-toggle helpers that update only the
+// local checked set (no submit). On submit, sends the checked provider/id
+// strings, or null if everything is checked (mirrors pi's submit logic).
+function ScopedModelsPicker({
+  models,
+  enabledIds,
+  onClose,
+  onApply,
+}: {
+  models: ModelInfo[];
+  enabledIds: string[] | null;
+  onClose: () => void;
+  onApply: (enabledIds: string[] | null, persist: boolean) => void;
+}): React.ReactElement {
+  const allIds = useMemo(() => models.map((m) => `${m.provider ?? ""}/${m.id}`), [models]);
+  const [checked, setChecked] = useState<Set<string>>(() => {
+    if (enabledIds === null) return new Set(allIds);
+    return new Set(enabledIds);
+  });
+  const [query, setQuery] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
+
+  useEffect(() => {
+    setTimeout(() => searchRef.current?.focus(), 10);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return models;
+    return models.filter((m) => {
+      const label = m.name ?? m.id;
+      return (
+        label.toLowerCase().includes(q) ||
+        m.id.toLowerCase().includes(q) ||
+        (m.provider ?? "").toLowerCase().includes(q)
+      );
+    });
+  }, [models, query]);
+
+  // Reset highlight when the filter changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: depends on the filter value, not on identity
+  useEffect(() => {
+    setHighlightedIndex(0);
+  }, [query]);
+
+  useEffect(() => {
+    const btn = itemRefs.current.get(highlightedIndex);
+    btn?.scrollIntoView({ block: "nearest" });
+  }, [highlightedIndex]);
+
+  const toggle = (id: string) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allChecked = checked.size === allIds.length;
+  const noneChecked = checked.size === 0;
+  const selectedCount = checked.size;
+
+  const handleApply = (persist: boolean) => {
+    // pi convention: all checked → setScopedModels([]) (empty = no scope).
+    if (allChecked || checked.size === 0) {
+      onApply(null, persist);
+      return;
+    }
+    onApply([...checked], persist);
+  };
+
+  return (
+    <div className="picker picker--scoped-models">
+      <div className="picker__title">Model scope</div>
+      <div className="picker__search">
+        <input
+          ref={searchRef}
+          className="picker__search-input"
+          placeholder="Search models…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setHighlightedIndex((i) => Math.min(i + 1, filtered.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setHighlightedIndex((i) => Math.max(i - 1, 0));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              const m = filtered[highlightedIndex];
+              if (m) toggle(`${m.provider ?? ""}/${m.id}`);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
+          }}
+        />
+      </div>
+      <div className="picker__list" role="listbox">
+        {filtered.length === 0 && <div className="picker__empty">No models found</div>}
+        {filtered.map((m, idx) => {
+          const id = `${m.provider ?? ""}/${m.id}`;
+          const isChecked = checked.has(id);
+          const label = m.name ?? m.id;
+          return (
+            <button
+              type="button"
+              key={id}
+              ref={(el) => {
+                if (el) itemRefs.current.set(idx, el);
+                else itemRefs.current.delete(idx);
+              }}
+              className={`picker__item picker__item--check ${idx === highlightedIndex ? "picker__item--highlighted" : ""}`}
+              onClick={() => toggle(id)}
+              onMouseEnter={() => setHighlightedIndex(idx)}
+              role="option"
+              aria-selected={isChecked}
+            >
+              <span
+                className={`picker__checkbox ${isChecked ? "picker__checkbox--checked" : ""}`}
+                aria-hidden="true"
+              />
+              <span className="picker__item-name">{label}</span>
+              <span className="picker__item-meta">{id}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="picker__footer">
+        <span className="picker__count">
+          {selectedCount} of {models.length} selected
+        </span>
+        <button
+          type="button"
+          className="picker__btn picker__btn--cancel picker__btn--bulk"
+          onClick={() => setChecked(new Set(allIds))}
+          disabled={allChecked}
+        >
+          Select all
+        </button>
+        <button
+          type="button"
+          className="picker__btn picker__btn--cancel picker__btn--bulk"
+          onClick={() => setChecked(new Set())}
+          disabled={noneChecked}
+        >
+          Select none
+        </button>
+        <button type="button" className="picker__btn picker__btn--cancel" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="picker__btn picker__btn--primary"
+          onClick={() => handleApply(false)}
+        >
+          Apply
+        </button>
+        <button
+          type="button"
+          className="picker__btn picker__btn--save"
+          onClick={() => handleApply(true)}
+        >
+          Save to settings
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── /logout picker ──────────────────────────────────────────────────────────
+// Single-select list of providers with stored auth. On pick, sends
+// logout_provider and toasts the result (the message differs for oauth vs
+// api_key, mirroring pi's TUI).
+function LogoutPicker({
+  providers,
+  onClose,
+  onPick,
+}: {
+  providers: Array<{ id: string; name: string; authType: "oauth" | "api_key" }>;
+  onClose: () => void;
+  onPick: (provider: { id: string; name: string; authType: "oauth" | "api_key" }) => void;
+}): React.ReactElement {
+  const [query, setQuery] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
+
+  useEffect(() => {
+    setTimeout(() => searchRef.current?.focus(), 10);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return providers;
+    return providers.filter((p) => {
+      return p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q);
+    });
+  }, [providers, query]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: depends on the filter value, not on identity
+  useEffect(() => {
+    setHighlightedIndex(0);
+  }, [query]);
+
+  useEffect(() => {
+    const btn = itemRefs.current.get(highlightedIndex);
+    btn?.scrollIntoView({ block: "nearest" });
+  }, [highlightedIndex]);
+
+  return (
+    <div className="picker picker--logout">
+      <div className="picker__title">Sign out</div>
+      <div className="picker__search">
+        <input
+          ref={searchRef}
+          className="picker__search-input"
+          placeholder="Search providers…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setHighlightedIndex((i) => Math.min(i + 1, filtered.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setHighlightedIndex((i) => Math.max(i - 1, 0));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              const p = filtered[highlightedIndex];
+              if (p) onPick(p);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
+          }}
+        />
+      </div>
+      <div className="picker__list" role="listbox">
+        {filtered.length === 0 && <div className="picker__empty">No providers found</div>}
+        {filtered.map((p, idx) => (
+          <button
+            type="button"
+            key={p.id}
+            ref={(el) => {
+              if (el) itemRefs.current.set(idx, el);
+              else itemRefs.current.delete(idx);
+            }}
+            className={`picker__item ${idx === highlightedIndex ? "picker__item--highlighted" : ""}`}
+            onClick={() => onPick(p)}
+            onMouseEnter={() => setHighlightedIndex(idx)}
+            role="option"
+            aria-selected={idx === highlightedIndex}
+          >
+            <span className="picker__item-name">{p.name}</span>
+            <span className={`picker__badge picker__badge--${p.authType}`}>
+              {p.authType === "oauth" ? "OAuth" : "API Key"}
+            </span>
+          </button>
+        ))}
+      </div>
+      <div className="picker__footer">
+        <button type="button" className="picker__btn picker__btn--cancel" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── /trust picker ───────────────────────────────────────────────────────────
+// Single-select list of pi's project-trust options for the session cwd
+// (mirrors pi's TUI TrustSelectorComponent). On pick, persists the chosen
+// option's updates via the host's set_trust bridge command and reloads the
+// session so the new decision takes effect (pi's TUI also tells the user
+// "Restart pi for this to take effect.").
+//
+// Reload rather than live re-bind: re-running createAgentSessionServices
+// mid-session would risk the transcript/session identity. The persisted
+// decision is read by resolveProjectTrust on the next session start, so a
+// /reload (which re-spawns the host) honors it immediately — faithful to
+// pi's TUI, which likewise requires a restart.
+function TrustPicker({
+  sessionId,
+  cwd,
+  savedDecision,
+  projectTrusted,
+  options,
+  onClose,
+}: {
+  sessionId: SessionId;
+  cwd: string;
+  savedDecision: boolean | null;
+  projectTrusted: boolean;
+  options: ProjectTrustOption[];
+  onClose: () => void;
+}): React.ReactElement {
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
+  const addToast = useSessionsStore((s) => s.addToast);
+  const closePicker = useSessionsStore((s) => s.closePicker);
+
+  // Mirror pi-vis's other pickers: auto-focus the list so arrow-key nav
+  // works without a search field (the trust option set is small and fixed).
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    setTimeout(() => listRef.current?.focus(), 10);
+  }, []);
+
+  useEffect(() => {
+    const btn = itemRefs.current.get(highlightedIndex);
+    btn?.scrollIntoView({ block: "nearest" });
+  }, [highlightedIndex]);
+
+  const choose = useCallback(
+    async (idx: number) => {
+      const option = options[idx];
+      if (!option || saving) return;
+      // Session-only options have updates === []: set_trust persists nothing,
+      // so a reload re-runs resolveProjectTrust with no saved decision and
+      // re-prompts — destroying the session-only choice. Session-only trust
+      // is a runtime override pi applies only during the initial resolve;
+      // it can't be toggled post-startup via /trust. Surface that without a
+      // no-op RPC round-trip.
+      if (Array.isArray(option.updates) && option.updates.length === 0) {
+        addToast(
+          sessionId,
+          "Session-only trust can't be changed after startup — choose a persistent option.",
+          "warning",
+        );
+        return;
+      }
+      setSaving(true);
+      try {
+        const res = (await window.pivis.invoke("session.sendCommand", {
+          sessionId,
+          command: {
+            type: "set_trust",
+            updates: option.updates,
+            trusted: option.trusted,
+          },
+        })) as { success: boolean; error?: string };
+        if (!res.success) {
+          addToast(sessionId, res.error ?? "Failed to save trust decision", "error");
+          setSaving(false);
+          return;
+        }
+        addToast(
+          sessionId,
+          `Saved trust decision: ${option.trusted ? "trusted" : "untrusted"}.`,
+          "success",
+        );
+        closePicker(sessionId);
+        // Reload so the new decision takes effect (mirrors pi's "Restart pi
+        // for this to take effect."). Refused mid-turn by the registry, but
+        // /trust is user-initiated and unlikely to race a turn; a refusal
+        // surfaces as a toast.
+        const reloadRes = (await window.pivis.invoke("session.reload", { sessionId })) as {
+          success: boolean;
+          error?: string;
+        };
+        if (!reloadRes.success) {
+          addToast(
+            sessionId,
+            reloadRes.error ?? "Reload failed; trust applies on next session start.",
+            "warning",
+          );
+        }
+      } catch (err) {
+        addToast(sessionId, err instanceof Error ? err.message : String(err), "error");
+        setSaving(false);
+      }
+    },
+    [options, saving, sessionId, addToast, closePicker],
+  );
+
+  return (
+    <div className="picker picker--trust">
+      <div className="picker__title">Project trust</div>
+      <div className="picker__trust-cwd" title={cwd}>
+        {cwd}
+      </div>
+      <div className="picker__trust-status">
+        {savedDecision === null
+          ? "No saved decision"
+          : savedDecision
+            ? "Currently trusted (this folder)"
+            : "Currently untrusted (this folder)"}
+        {!projectTrusted && " · global default: untrusted"}
+      </div>
+      <div
+        ref={listRef}
+        className="picker__list"
+        role="listbox"
+        aria-label="Trust options"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setHighlightedIndex((i) => Math.min(i + 1, options.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setHighlightedIndex((i) => Math.max(i - 1, 0));
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            void choose(highlightedIndex);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onClose();
+          }
+        }}
+      >
+        {options.map((option, idx) => (
+          <button
+            key={option.label}
+            ref={(el) => {
+              if (el) itemRefs.current.set(idx, el);
+              else itemRefs.current.delete(idx);
+            }}
+            type="button"
+            className={`picker__item ${idx === highlightedIndex ? "picker__item--highlighted" : ""}`}
+            disabled={saving}
+            onMouseEnter={() => setHighlightedIndex(idx)}
+            onClick={() => void choose(idx)}
+          >
+            <span className="picker__item-name">{option.label}</span>
+            <span className="picker__item-meta">{option.trusted ? "trusted" : "untrusted"}</span>
+          </button>
+        ))}
+      </div>
+      <div className="picker__footer">
+        <button
+          type="button"
+          className="picker__btn picker__btn--cancel"
+          onClick={onClose}
+          disabled={saving}
+        >
           Cancel
         </button>
       </div>

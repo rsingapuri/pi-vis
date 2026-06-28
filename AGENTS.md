@@ -196,7 +196,7 @@ src/
 
 Pi runs in `--mode rpc` with JSONL on stdin/stdout. Every command has a unique `id` for correlation. Key types:
 
-- **Commands** (renderer → pi): `prompt`, `steer`, `follow_up`, `abort`, `bash`, `set_model`, `set_thinking_level`, `new_session`, `fork`, `clone`, `compact`, `get_commands`, `get_state`, `get_session_stats`, etc.
+- **Commands** (renderer → pi): `prompt`, `steer`, `follow_up`, `abort`, `bash`, `set_model`, `set_thinking_level`, `new_session`, `fork`, `clone`, `compact`, `get_commands`, `get_state`, `get_session_stats`, `get_available_models` (returns scoped subset when `scopedModels` is non-empty, else all), `get_scoped_models`, `set_scoped_models` (session-only scope), `save_scoped_models` (persists scope to pi's `settings.json` via `settingsManager.setEnabledModels` AND applies to the current session), etc.
 - **Events** (pi → renderer): `agent_start/end`, `turn_start/end`, `message_start/update/end` (with nested `text_delta`/`thinking_delta` streaming), `tool_execution_start/update/end`, `compaction_start/end`, `queue_update`, `thinking_level_changed`, `session_info_changed`, `extension_error`
 - **Extension UI**: pi extensions request UI via `ExtensionUiRequest` (select/confirm/input/editor dialogs, or fire-and-forget notify/setStatus/setWidget/setTitle/set_editor_text). Dialogs block until renderer responds via `session.respondToUiRequest`.
 
@@ -421,6 +421,8 @@ The composer parses input into typed `ComposerAction` discriminated unions:
 Builtins are defined in `builtins.ts` (mirrors pi's interactive-mode.js). Discovered commands (extensions/prompts/skills) come from `get_commands` RPC. `parse.ts` resolves input to an action; `execute.ts` dispatches it.
 
 **`/login`** dispatches `{ kind: "open-login" }` → the composer fires a `pivis:open-login` CustomEvent → `App.tsx` opens Settings scrolled to the Account section.
+
+**`/scoped-models`** opens the `ScopedModelsPicker` (a multi-select checkbox list mirroring pi's TUI `showModelsSelector`). Two submit actions match pi's TUI: **Apply** (`set_scoped_models`, session-only — lost on `/reload` since a fresh process rebuilds from `settingsManager.getEnabledModels()`), and **Save to settings** (`save_scoped_models`, global — persists to pi's `settings.json` via `settingsManager.setEnabledModels` AND applies to the current session immediately). After either action the renderer re-fetches `get_available_models` (the bridge returns the scoped subset when `scopedModels` is non-empty) so the `/model` dropdown reflects the new scope live. Footer also has **Select all** / **Select none** bulk toggles.
 
 ## Key Patterns
 

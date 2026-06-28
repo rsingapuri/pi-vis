@@ -357,6 +357,17 @@ interface SessionsStore {
   clearWorktreeIntent: (sessionId: SessionId) => void;
   setStats: (sessionId: SessionId, stats: SessionStats) => void;
   setAvailableModels: (sessionId: SessionId, models: ModelInfo[]) => void;
+  /** Re-fetch the session's effective available-models list from pi and
+   *  update the store. This is the refresh path used after actions that
+   *  change the effective scope (`set_scoped_models`, `save_scoped_models`)
+   *  so the `/model` dropdown reflects the scoped subset live, mirroring
+   *  pi's `getAvailableModels` which returns scoped models when scope is
+   *  non-empty. Same fetch + parse dance `bootstrapModelState` runs in
+   *  step 1; factored out so both callers stay in sync. Returns the parsed
+   *  models so the bootstrap caller can reuse them for its last-used match
+   *  without a second fetch. Best-effort: swallows fetch errors (the
+   *  dropdown keeps whatever it had) and returns []. */
+  refreshAvailableModels: (sessionId: SessionId) => Promise<ModelInfo[]>;
   setCurrentModel: (sessionId: SessionId, model: string) => void;
   setThinkingLevel: (sessionId: SessionId, level: ThinkingLevel) => void;
   /**
@@ -1157,6 +1168,29 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     });
   },
 
+  refreshAvailableModels: async (sessionId) => {
+    if (typeof window === "undefined" || !window.pivis) return [];
+    try {
+      const res = await window.pivis.invoke("session.sendCommand", {
+        sessionId,
+        command: { type: "get_available_models" },
+      });
+      const raw = res.data as { models?: unknown[]; currentModelId?: string } | undefined;
+      const list = Array.isArray(raw?.models) ? raw.models : [];
+      const models = list
+        .map((m) => {
+          const r = ModelInfoSchema.safeParse(m);
+          return r.success ? r.data : null;
+        })
+        .filter((m): m is ModelInfo => m !== null);
+      get().setAvailableModels(sessionId, models);
+      return models;
+    } catch {
+      /* best effort — leave the dropdown showing whatever the store already has */
+      return [];
+    }
+  },
+
   setCurrentModel: (sessionId, model) => {
     set((state) => {
       const sessions = new Map(state.sessions);
@@ -1207,21 +1241,11 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     const ltl = resumed ? null : settings.lastUsedThinkingLevel;
 
     // 1. Available models + current model. All writes target THIS sessionId.
+    // `refreshAvailableModels` fetches the effective list (scoped subset when
+    // a scope is active) and stores it; the current-model id is established
+    // in step 2 from `get_state` (the authoritative source).
     try {
-      const res = await window.pivis.invoke("session.sendCommand", {
-        sessionId,
-        command: { type: "get_available_models" },
-      });
-      const raw = res.data as { models?: unknown[]; currentModelId?: string } | undefined;
-      const list = Array.isArray(raw?.models) ? raw.models : [];
-      const models = list
-        .map((m) => {
-          const r = ModelInfoSchema.safeParse(m);
-          return r.success ? r.data : null;
-        })
-        .filter((m): m is ModelInfo => m !== null);
-      get().setAvailableModels(sessionId, models);
-
+      const models = await get().refreshAvailableModels(sessionId);
       const match = lum ? models.find((m) => m.id === lum.modelId) : undefined;
       if (match?.provider) {
         await window.pivis
@@ -1231,9 +1255,10 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
           })
           .then(() => get().setCurrentModel(sessionId, match.id))
           .catch(() => {});
-      } else if (raw?.currentModelId) {
-        get().setCurrentModel(sessionId, raw.currentModelId);
       } else {
+        // No last-used match: fall back to pi's reported current model. The
+        // list endpoint tags the active model with `current: true`; step 2's
+        // `get_state` is the authoritative source and will overwrite this.
         const active = models.find((m) => (m as Record<string, unknown>)["current"] === true);
         if (active) get().setCurrentModel(sessionId, active.id);
       }

@@ -106,9 +106,22 @@ export function assertHostCapabilities(session, runtime) {
  *   on every session swap and would lose the uiContext reference)
  * @param {object} ctx.send - process.send (IPC to main)
  * @param {object} ctx.panelBridge - the host panel bridge (for closeAll on swap)
+ * @param {object} ctx.pi - the imported pi SDK (for /trust: ProjectTrustStore,
+ *   hasTrustRequiringProjectResources)
+ * @param {string} ctx.agentDir - pi.getAgentDir() (for the ProjectTrustStore)
+ * @param {string} ctx.cwd - the session cwd (for /trust state + options)
  * @returns {{ handleCommand: Function, bindExtensions: Function }}
  */
-export function setupCommandBridge({ runtime, session, uiContext, send, panelBridge }) {
+export function setupCommandBridge({
+  runtime,
+  session,
+  uiContext,
+  send,
+  panelBridge,
+  pi,
+  agentDir,
+  cwd,
+}) {
   let _session = session;
   let _unsubscribe = null;
 
@@ -319,8 +332,81 @@ export function setupCommandBridge({ runtime, session, uiContext, send, panelBri
         }
 
         case "get_available_models": {
+          // Mirror pi's effective available-models logic (AgentSession's
+          // cycleModel filters to scoped models when scopedModels is
+          // non-empty): when the session has a scope, the /model dropdown
+          // must cycle only the scoped subset, NOT every enabled model. The
+          // scoped entry's `.model` is a plain data Model object safe for
+          // IPC, matching the existing shape returned by getAvailable().
+          const scoped = _session.scopedModels;
+          if (Array.isArray(scoped) && scoped.length > 0) {
+            const scopedModels = scoped
+              .map((entry) => entry?.model)
+              .filter((m) => m && typeof m === "object");
+            send({ type: "response", id, success: true, data: { models: scopedModels } });
+          } else {
+            const models = await _session.modelRegistry.getAvailable();
+            send({ type: "response", id, success: true, data: { models } });
+          }
+          break;
+        }
+
+        // ── Scoped models / login state ──────────────────────────────────
+        // These mirror pi's TUI /scoped-models and /logout flows but over
+        // the SDK host. They are NOT supported by the `pi --mode rpc` fallback
+        // (no RPC command exists), so a host_fallback session surfaces the
+        // failure as an error toast at session.sendCommand time.
+        case "get_scoped_models": {
+          // Refresh so a freshly-added credential (e.g. /login) is reflected
+          // immediately — mirrors pi's showModelsSelector, which calls
+          // modelRegistry.refresh() before getAvailable().
+          await _session.modelRegistry.refresh?.();
           const models = await _session.modelRegistry.getAvailable();
-          send({ type: "response", id, success: true, data: { models } });
+          const enabledIds = resolveEnabledModelIds(_session, models);
+          send({ type: "response", id, success: true, data: { models, enabledIds } });
+          break;
+        }
+
+        case "set_scoped_models": {
+          const models = await _session.modelRegistry.getAvailable();
+          const scoped = buildScopedModels(_session, models, command.enabledIds);
+          _session.setScopedModels(scoped);
+          send({ type: "response", id, success: true });
+          break;
+        }
+
+        // ── Global persistence (Ctrl-S in pi's TUI) ──────────────────────
+        // save_scoped_models persists the scope to pi's settings.json via
+        // settingsManager.setEnabledModels(patterns) so ALL sessions
+        // (current + future + after /reload) honor it, AND applies it to the
+        // current session immediately via setScopedModels (mirrors pi's TUI
+        // onPersist following its live onChange updates). patterns=undefined
+        // clears the settings filter (all enabled / empty / == all).
+        case "save_scoped_models": {
+          const models = await _session.modelRegistry.getAvailable();
+          const isAll =
+            command.enabledIds === null ||
+            command.enabledIds.length === 0 ||
+            command.enabledIds.length >= models.length;
+          const patterns = isAll ? undefined : [...command.enabledIds];
+          _session.settingsManager.setEnabledModels(patterns);
+          // Apply to the current session so it takes effect immediately.
+          const scoped = buildScopedModels(_session, models, command.enabledIds);
+          _session.setScopedModels(scoped);
+          send({ type: "response", id, success: true });
+          break;
+        }
+
+        case "get_logout_providers": {
+          const providers = await collectLogoutProviders(_session);
+          send({ type: "response", id, success: true, data: { providers } });
+          break;
+        }
+
+        case "logout_provider": {
+          _session.modelRegistry.authStorage.logout(command.provider);
+          await _session.modelRegistry.refresh();
+          send({ type: "response", id, success: true });
           break;
         }
 
@@ -377,6 +463,67 @@ export function setupCommandBridge({ runtime, session, uiContext, send, panelBri
         case "export_html": {
           const outPath = await _session.exportToHtml(command.outputPath);
           send({ type: "response", id, success: true, data: { path: outPath } });
+          break;
+        }
+
+        // ── Trust (pi-vis host-only /trust) ─────────────────────────────
+        // get_trust_state returns the cwd, whether it has trust-requiring
+        // project resources, and pi's full project-trust choice set (each
+        // option carries the `trusted` answer + the `updates` to persist).
+        // The renderer uses this to render the /trust picker; if
+        // hasTrustRequiringResources is false it toasts and skips.
+        case "get_trust_state": {
+          // Lazily import so the bridge's startup surface check
+          // (assertHostCapabilities) doesn't need to know about trust.
+          const { buildProjectTrustOptions } = await import("./bootstrap.mjs");
+          // Derive cwd from the LIVE session (not the closure `cwd`, which
+          // is stale after a worktree respawn uses a different cwd and a
+          // /new//fork//switch rebind keeps it). sessionManager.getCwd() is
+          // the authoritative current cwd.
+          const liveCwd =
+            typeof _session.sessionManager?.getCwd === "function"
+              ? _session.sessionManager.getCwd()
+              : cwd;
+          const hasTrustRequiringResources = pi.hasTrustRequiringProjectResources(liveCwd);
+          const currentOptions = buildProjectTrustOptions(liveCwd);
+          // Surface the cwd's saved decision + the global projectTrusted
+          // setting so the picker can show current state (pi's
+          // TrustSelectorComponent does the same).
+          const trustStore = new pi.ProjectTrustStore(agentDir);
+          const savedDecision = trustStore.getEntry(liveCwd)?.decision ?? null;
+          const projectTrusted = _session.settingsManager?.isProjectTrusted?.() ?? true;
+          send({
+            type: "response",
+            id,
+            success: true,
+            data: {
+              cwd: liveCwd,
+              hasTrustRequiringResources,
+              savedDecision,
+              projectTrusted,
+              currentOptions,
+            },
+          });
+          break;
+        }
+
+        // set_trust persists the chosen option's updates via the public
+        // ProjectTrustStore and returns. The persisted decision takes effect
+        // on the NEXT session start (resolveProjectTrust reads the store); a
+        // live re-apply would require re-running createAgentSessionServices
+        // mid-session, which risks the transcript/session identity. The
+        // renderer triggers a /reload after a successful set_trust so the
+        // new decision is honored — mirroring pi's TUI, which also tells the
+        // user "Restart pi for this to take effect."
+        case "set_trust": {
+          const trustStore = new pi.ProjectTrustStore(agentDir);
+          trustStore.setMany(command.updates);
+          send({
+            type: "response",
+            id,
+            success: true,
+            data: { trusted: command.trusted },
+          });
           break;
         }
 
@@ -478,6 +625,181 @@ export function setupCommandBridge({ runtime, session, uiContext, send, panelBri
   }
 
   return { handleCommand, bindExtensions };
+}
+
+// ── Scoped-models helpers ────────────────────────────────────────────────
+
+/**
+ * Resolve the pre-checked `provider/id` ids for the scoped-models picker,
+ * mirroring pi's showModelsSelector initial-state derivation (interactive-mode):
+ *   1. session.scopedModels (non-empty) → those ids directly.
+ *   2. else settingsManager.getEnabledModels() patterns → resolve patterns
+ *      locally (we cannot import pi's private resolveModelScope).
+ *   3. else → null (all models checked = no scope).
+ *
+ * Returns `null` when nothing is scoped (the picker checks everything).
+ */
+function resolveEnabledModelIds(session, models) {
+  const scoped = session.scopedModels;
+  if (Array.isArray(scoped) && scoped.length > 0) {
+    return scoped
+      .map((entry) => {
+        const m = entry?.model;
+        return m ? `${m.provider}/${m.id}` : null;
+      })
+      .filter((s) => typeof s === "string");
+  }
+  const settingsPatterns = session.settingsManager?.getEnabledModels?.();
+  if (Array.isArray(settingsPatterns) && settingsPatterns.length > 0) {
+    return resolveModelScopePatterns(settingsPatterns, models);
+  }
+  return null;
+}
+
+/**
+ * Minimal local replacement for pi's (private) resolveModelScope.
+ *
+ * For each pattern, match against the available models where a match is:
+ *   - exact `provider/id` equality (case-insensitive), OR
+ *   - exact `id` equality (case-insensitive), OR
+ *   - if the pattern contains glob chars (* ? [), a minimatch-style match
+ *     against both `provider/id` and bare `id`.
+ *
+ * An optional `:thinkingLevel` suffix is stripped before matching
+ * (valid levels: off, minimal, low, medium, high, xhigh).
+ *
+ * This is best-effort for the *initial checkbox state*; the authoritative
+ * scope is what the user submits (set_scoped_models).
+ */
+function resolveModelScopePatterns(patterns, models) {
+  const VALID_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+  const matched = new Set();
+  for (const raw of patterns) {
+    if (typeof raw !== "string") continue;
+    let pattern = raw.trim();
+    if (!pattern) continue;
+    // Strip optional ":thinkingLevel" suffix.
+    const colon = pattern.lastIndexOf(":");
+    if (colon !== -1) {
+      const suffix = pattern.slice(colon + 1).toLowerCase();
+      if (VALID_LEVELS.has(suffix)) pattern = pattern.slice(0, colon);
+    }
+    const lower = pattern.toLowerCase();
+    const hasGlob = /[\*\?\[]/.test(pattern);
+    for (const m of models) {
+      const providerId = `${m.provider}/${m.id}`.toLowerCase();
+      const id = String(m.id).toLowerCase();
+      let isMatch = providerId === lower || id === lower;
+      if (!isMatch && hasGlob) {
+        // Match against both the canonical "provider/id" and the bare id
+        // (so "*sonnet*" matches without requiring "anthropic/*sonnet*").
+        isMatch = minimatchSimple(pattern, providerId) || minimatchSimple(pattern, id);
+      }
+      if (isMatch) matched.add(providerId);
+    }
+  }
+  return [...matched];
+}
+
+/**
+ * Minimal glob: supports `*` (any chars), `?` (one char), `[...]` (char class).
+ * Faithful enough for the enabled-models pattern list; not a full minimatch.
+ */
+function minimatchSimple(pattern, str) {
+  // Case-insensitive, like the exact-match branches above.
+  const re = globToRegExp(pattern.toLowerCase());
+  return re.test(str.toLowerCase());
+}
+
+function globToRegExp(glob) {
+  let out = "^";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") out += ".*";
+    else if (c === "?") out += ".";
+    else if (c === "[") {
+      // Pass through a char class (closing ] is the next ] after a leading !
+      const end = glob.indexOf("]", i + 1);
+      if (end === -1) {
+        out += "\\[";
+      } else {
+        out += glob.slice(i, end + 1);
+        i = end;
+      }
+    } else if (".+^$(){}|\\".includes(c)) {
+      out += `\\${c}`;
+    } else {
+      out += c;
+    }
+  }
+  out += "$";
+  return new RegExp(out);
+}
+
+/**
+ * Build the scoped-models array for setScopedModels().
+ * - enabledIds null / empty / == all available → [] (no scope).
+ * - otherwise → [{ model, thinkingLevel? }], preserving an existing
+ *   scoped entry's thinkingLevel for a model that was already scoped.
+ */
+function buildScopedModels(session, models, enabledIds) {
+  const prevScoped = new Map();
+  if (Array.isArray(session.scopedModels)) {
+    for (const entry of session.scopedModels) {
+      const m = entry?.model;
+      if (m) prevScoped.set(`${m.provider}/${m.id}`, entry.thinkingLevel);
+    }
+  }
+  if (enabledIds === null || enabledIds.length === 0 || enabledIds.length >= models.length) {
+    return [];
+  }
+  const wanted = new Set(enabledIds);
+  const scoped = [];
+  for (const m of models) {
+    const providerId = `${m.provider}/${m.id}`;
+    if (!wanted.has(providerId)) continue;
+    const entry = { model: m };
+    const prev = prevScoped.get(providerId);
+    if (prev !== undefined) entry.thinkingLevel = prev;
+    scoped.push(entry);
+  }
+  return scoped;
+}
+
+/**
+ * Collect providers with stored auth for the /logout picker.
+ * Returns [{ id, name, authType }] where name is a best-effort title-case
+ * (pi's provider display names aren't a public export).
+ */
+async function collectLogoutProviders(session) {
+  // Mirror pi's getLogoutProviderOptions (interactive-mode.js:3868):
+  // iterate authStorage.list() — the authoritative set of stored
+  // credentials — rather than scanning available models. A provider with
+  // stored auth but no currently-listed model (e.g. expired key) is still
+  // surfaced. Name comes from modelRegistry.getProviderDisplayName()
+  // (pi's BUILT_IN_PROVIDER_DISPLAY_NAMES), not a hand-rolled title-case.
+  const modelRegistry = session.modelRegistry;
+  const authStorage = modelRegistry?.authStorage;
+  if (!authStorage || typeof authStorage.list !== "function") return [];
+  const out = [];
+  for (const providerId of authStorage.list()) {
+    let credential;
+    try {
+      credential = authStorage.get?.(providerId);
+    } catch {
+      continue;
+    }
+    if (!credential) continue;
+    let name = providerId;
+    try {
+      name = modelRegistry.getProviderDisplayName?.(providerId) ?? providerId;
+    } catch {
+      /* fall back to the raw id */
+    }
+    out.push({ id: providerId, name, authType: credential.type });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
 }
 
 /**

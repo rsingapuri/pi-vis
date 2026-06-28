@@ -48,9 +48,34 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandDef[] = [
   { name: "diff", argHint: "", description: "View working tree changes", takesArgs: false },
   { name: "login", argHint: "", description: "Sign in to a provider", takesArgs: false },
   {
+    name: "logout",
+    argHint: "",
+    description: "Sign out of a provider",
+    takesArgs: false,
+  },
+  {
+    name: "scoped-models",
+    argHint: "",
+    description: "Choose which models are available in this session",
+    takesArgs: false,
+  },
+  {
     name: "reload",
     argHint: "",
     description: "Reload settings, extensions, skills, prompts, and themes",
+    takesArgs: false,
+  },
+  {
+    name: "trust",
+    argHint: "",
+    description: "Change project trust for this workspace",
+    takesArgs: false,
+  },
+  { name: "share", argHint: "", description: "Share the session as a gist", takesArgs: false },
+  {
+    name: "changelog",
+    argHint: "",
+    description: "Show the pi changelog",
     takesArgs: false,
   },
 ];
@@ -62,15 +87,10 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandDef[] = [
  * which case the discovered command wins (the user has installed a drop-in).
  */
 export const UNSUPPORTED_TUI_COMMANDS: ReadonlySet<string> = new Set([
-  "logout",
-  "trust",
-  "share",
   "import",
   "tree",
-  "changelog",
   "hotkeys",
   "debug",
-  "scoped-models",
 ]);
 
 /**
