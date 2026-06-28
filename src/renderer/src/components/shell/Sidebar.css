@@ -287,7 +287,11 @@
 }
 
 .sidebar__session:hover {
-  background: var(--ctp-surface0);
+  /* Dimmer than the active session's solid surface0 fill: a translucent blend
+     reads as a hover affordance rather than duplicating the active row's
+     highlight intensity. The active row keeps its full-intensity fill on hover
+     (see .sidebar__session--active:hover below). */
+  background: color-mix(in srgb, var(--ctp-surface0) 50%, transparent);
   color: var(--ctp-text);
 }
 
@@ -297,6 +301,10 @@
   /* Mauve spine = "this is the open session" (matches the diff tree's active
      row). Reads as identity, not just another hovered block. */
   box-shadow: inset 2px 0 0 var(--ctp-mauve);
+}
+
+.sidebar__session--active:hover {
+  background: var(--ctp-surface0);
 }
 
 .sidebar__session-name {
