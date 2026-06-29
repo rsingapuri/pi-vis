@@ -64,6 +64,13 @@ export function App(): React.ReactElement {
     setSidebarWidth(persistedSidebarWidth ?? 220);
   }, [persistedSidebarWidth]);
 
+  // Whether the window is in macOS fullscreen. In fullscreen the native
+  // traffic-light buttons disappear, so the title bar (and the
+  // sidebar-collapsed pill) can drop the 80px left clearance they reserve
+  // for them and reclaim that space. Initial state is synced from the main
+  // process on ready-to-show.
+  const [fullscreen, setFullscreen] = useState(false);
+
   // Sidebar resize drag. Mirrors the original Sidebar.tsx handler: clamp to
   // the 160–500px range, update live width per mousemove (jank-free, no disk
   // writes), persist on mouseup. Lives here because the drag handle was
@@ -386,6 +393,12 @@ export function App(): React.ReactElement {
       // Auth changes are handled by the SettingsView component
     });
 
+    // Fullscreen transitions: drop the title bar's traffic-light clearance
+    // when the native buttons aren't shown (macOS fullscreen).
+    const unsubFullscreen = window.pivis.on("window.fullscreenChange", ({ fullscreen: fs }) => {
+      setFullscreen(fs);
+    });
+
     return () => {
       unsubEvent();
       unsubUiReq();
@@ -397,6 +410,7 @@ export function App(): React.ReactElement {
       unsubAuthChanged();
       unsubPanel();
       unsubUnifiedSubmit();
+      unsubFullscreen();
     };
   }, [
     applyEvent,
@@ -432,7 +446,7 @@ export function App(): React.ReactElement {
 
   return (
     <div
-      className={`app${sidebarCollapsed ? " app--sidebar-collapsed" : ""}${sidebarCollapsed && sidebarPeek ? " app--sidebar-peek" : ""}`}
+      className={`app${sidebarCollapsed ? " app--sidebar-collapsed" : ""}${sidebarCollapsed && sidebarPeek ? " app--sidebar-peek" : ""}${fullscreen ? " app--fullscreen" : ""}`}
       style={
         {
           "--sidebar-width": `${sidebarWidth}px`,

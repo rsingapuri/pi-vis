@@ -44,6 +44,14 @@
      in-bounds. */
 }
 
+/* macOS fullscreen: the native traffic-light buttons disappear, so the
+   80px left clearance they require is dead space. Reclaim it by matching
+   the right padding (16px) so the title bar content stretches back to the
+   window edge. */
+.app--fullscreen .titlebar {
+  padding-left: 16px;
+}
+
 /* Sidebar collapse toggle — leftmost interactive element, just past the
    traffic lights. Always present (even on the empty screen) so the sidebar
    can always be brought back. */

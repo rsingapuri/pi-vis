@@ -270,6 +270,13 @@ export interface IpcEventContract {
   "update.progress": { runId: string; chunk: string };
   "update.done": { runId: string; exitCode: number; status: UpdateStatus };
 
+  // ── Window ─────────────────────────────────────────────────────────
+  /** Window entered/left macOS fullscreen. In fullscreen the native
+   *  traffic-light buttons disappear, so the renderer can drop the 80px
+   *  left clearance the title bar reserves for them and reclaim that
+   *  space. Fired on `enter-full-screen` / `leave-full-screen`. */
+  "window.fullscreenChange": { fullscreen: boolean };
+
   // ── Panels (custom() rendering) ────────────────────────────────────
   "session.panelEvent": { sessionId: SessionId; event: PanelEvent };
   /** The unified-TUI editor submitted a prompt (host→renderer). The renderer

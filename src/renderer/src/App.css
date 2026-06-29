@@ -90,6 +90,15 @@
   padding: 0 var(--space-2);
 }
 
+/* macOS fullscreen + collapsed sidebar: the native traffic lights are
+   gone, so the floating title-bar pill no longer needs the 80px left
+   margin that cleared them — it insets uniformly on the left like the
+   other sides. (Override must come after the base pill rule, which it
+   does since it's both more specific and later in source order.) */
+.app--fullscreen.app--sidebar-collapsed .titlebar {
+  margin-left: var(--space-2);
+}
+
 /* Edge-reveal trigger: an invisible strip at the very left edge of the
    window. Hovering it (when the sidebar is collapsed) peeks the sidebar in
    as a floating overlay pill — the VS Code / macOS Dock auto-reveal pattern.

@@ -98,7 +98,24 @@ if (!app.requestSingleInstanceLock()) {
 
     win.once("ready-to-show", () => {
       win.show();
+      // Sync the initial fullscreen state so the title bar reserves
+      // (or reclaims) the traffic-light clearance correctly if the app
+      // launches already in fullscreen (e.g. relaunch while fullscreen).
+      win.webContents.send("window.fullscreenChange", {
+        fullscreen: win.isFullScreen(),
+      });
     });
+
+    // Forward macOS fullscreen transitions. In fullscreen the native
+    // traffic-light buttons are gone, so the renderer drops the 80px left
+    // clearance the title bar reserves for them — the title bar and the
+    // sidebar-collapsed pill both stretch back to the window edge.
+    const sendFullscreen = () =>
+      win.webContents.send("window.fullscreenChange", {
+        fullscreen: win.isFullScreen(),
+      });
+    win.on("enter-full-screen", sendFullscreen);
+    win.on("leave-full-screen", sendFullscreen);
 
     win.on("close", () => {
       const b = win.getBounds();
