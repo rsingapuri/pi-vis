@@ -599,11 +599,14 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   const blockCount = allBlocks.length;
   const prevBlockCountRef = useRef(blockCount);
   const prevScrollHeightRef = useRef(0);
+  const prevClientHeightRef = useRef(0);
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const prevHeight = prevScrollHeightRef.current;
+    const prevClientHeight = prevClientHeightRef.current;
     prevScrollHeightRef.current = el.scrollHeight;
+    prevClientHeightRef.current = el.clientHeight;
 
     // The user's own send re-pins unconditionally ("I'm caught up"), even if
     // they'd scrolled up.
@@ -618,7 +621,21 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     // Only react to growth; a shrink (collapse, working-row removed) clamps to
     // the bottom on its own and the ResizeObserver re-pins if needed.
     if (el.scrollHeight <= prevHeight) return;
-    const wasAtBottom = prevHeight - el.scrollTop - el.clientHeight <= SCROLL_RESTICK_PX;
+    // Use the PREVIOUS clientHeight (the viewport size when the user was
+    // last at the bottom), NOT the live one. A viewport shrink — the
+    // composer growing, or a custom/unified panel replacing it — arrives
+    // in the same batched React render as a streaming token, so the live
+    // `clientHeight` is already shrunk here while `scrollTop` still sits
+    // at the OLD bottom. Mixing old `prevHeight` with the new (smaller)
+    // clientHeight makes `wasAtBottom` read the shrink as a scroll-up and
+    // silently drop the bottom-follow — and because it also flips
+    // `pinnedRef` false, the ResizeObserver backstop (which only re-pins
+    // while pinned) won't correct it, so the view stays unpinned for the
+    // rest of the stream. Measuring against `prevClientHeight` keeps the
+    // detection purely about CONTENT position: a real scroll-up still
+    // moves `scrollTop` below the prior bottom and reads as "not at
+    // bottom", while a pure viewport change leaves it pinned.
+    const wasAtBottom = prevHeight - el.scrollTop - prevClientHeight <= SCROLL_RESTICK_PX;
     pinnedRef.current = wasAtBottom;
     if (wasAtBottom) pinToBottom();
   });
