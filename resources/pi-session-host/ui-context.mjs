@@ -402,22 +402,34 @@ export function createUIContext({
         components.set(key, { component, placement });
         tui.requestRender();
       } else if (content === undefined) {
-        // Remove widget
-        if (!unifiedTuiState) return;
-        const { widgetFactories, widgetAbove, widgetBelow, tui, components } = unifiedTuiState;
-        widgetFactories.delete(key);
-        const existing = components.get(key);
-        if (existing) {
-          if (existing.placement === "aboveEditor") widgetAbove.removeChild(existing.component);
-          else widgetBelow.removeChild(existing.component);
-          existing.component.dispose?.();
-          components.delete(key);
-          tui.requestRender();
-        }
+        // Remove widget. Always tell the renderer to drop the static key
+        // (the clear-on-undefined contract; widgetLines omitted ⇒ delete),
+        // so a static string[] widget turned off via setWidget(key, undefined)
+        // actually disappears from the Dock — not just factory widgets.
+        sendToMain({
+          type: "extension_ui_request",
+          method: "setWidget",
+          widgetKey: key,
+          widgetLines: undefined,
+          widgetPlacement: undefined,
+        });
+        // Additionally tear down any factory component in the unified TUI.
+        if (unifiedTuiState) {
+          const { widgetFactories, widgetAbove, widgetBelow, tui, components } = unifiedTuiState;
+          widgetFactories.delete(key);
+          const existing = components.get(key);
+          if (existing) {
+            if (existing.placement === "aboveEditor") widgetAbove.removeChild(existing.component);
+            else widgetBelow.removeChild(existing.component);
+            existing.component.dispose?.();
+            components.delete(key);
+            tui.requestRender();
+          }
 
-        // Tear down unified TUI if no factories remain
-        if (widgetFactories.size === 0) {
-          disposeUnifiedTui();
+          // Tear down unified TUI if no factories remain
+          if (widgetFactories.size === 0) {
+            disposeUnifiedTui();
+          }
         }
       } else if (Array.isArray(content)) {
         // Static string[] widget: existing behavior
