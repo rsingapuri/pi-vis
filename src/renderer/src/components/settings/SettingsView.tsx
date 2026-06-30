@@ -1,12 +1,12 @@
 import type { ProviderAuthStatus } from "@shared/auth.js";
 import { PROVIDERS } from "@shared/auth.js";
-import type { AppSettings } from "@shared/settings.js";
 import type { UpdateStatus } from "@shared/updates.js";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatMiB, parseSizeToMiB } from "../../lib/file-size.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUpdatesStore } from "../../stores/updates-store.js";
+import { listThemes } from "../../theme/registry.js";
 import { LoginTerminal } from "../auth/LoginTerminal.js";
 import "./SettingsView.css";
 
@@ -372,14 +372,13 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                 <select
                   className="settings-select"
                   value={settings.colorScheme}
-                  onChange={(e) =>
-                    update({ colorScheme: e.target.value as AppSettings["colorScheme"] })
-                  }
+                  onChange={(e) => update({ colorScheme: e.target.value })}
                 >
-                  <option value="mocha">Catppuccin Mocha (dark)</option>
-                  <option value="macchiato">Catppuccin Macchiato (dark)</option>
-                  <option value="frappe">Catppuccin Frappé (dark)</option>
-                  <option value="latte">Catppuccin Latte (light)</option>
+                  {listThemes().map((theme) => (
+                    <option key={theme.id} value={theme.id}>
+                      {theme.name} ({theme.appearance})
+                    </option>
+                  ))}
                 </select>
               </div>
             </section>

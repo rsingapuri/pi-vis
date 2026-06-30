@@ -1,8 +1,8 @@
 import type { AppSettings } from "@shared/settings.js";
 import { defaultSettings } from "@shared/settings.js";
 import { create } from "zustand";
-import { setShikiScheme } from "../lib/shiki.js";
-import { palettes } from "../theme/catppuccin.js";
+import { setShikiTheme } from "../lib/shiki.js";
+import { getTheme, setUserThemes } from "../theme/registry.js";
 
 interface SettingsStore {
   settings: AppSettings;
@@ -16,6 +16,17 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
   loaded: false,
 
   load: async () => {
+    // Install user-droppable themes BEFORE the first paint so a saved
+    // colorScheme pointing at a user theme resolves on load (not after a
+    // flash of the default). Best-effort: a failed/empty fetch just leaves
+    // the bundled themes in place.
+    try {
+      const userThemes = await window.pivis.invoke("themes.listUser", undefined);
+      setUserThemes(userThemes);
+    } catch {
+      /* user themes unavailable — bundled themes still apply */
+    }
+
     const settings = await window.pivis.invoke("settings.get", undefined);
     set({ settings, loaded: true });
 
@@ -65,20 +76,21 @@ function applyFonts(settings: AppSettings): void {
 }
 
 /**
- * Apply the active Catppuccin flavor to the document root. Each
- * palette key maps 1:1 to a `--ctp-<key>` CSS variable (e.g. `surface0`
- * → `--ctp-surface0`); the semantic `--color-*` tokens in theme.css
+ * Apply the active theme to the document root. Each semantic role in the
+ * resolved Theme's `colors` map is written as a `--<token>` CSS variable
+ * (e.g. `accent` → `--accent`); the composite `--color-*` tokens in theme.css
  * reference those, so a single pass recolors every component.
  *
- * Shiki is updated in the same call so its tokenized HTML uses the
- * matching `catppuccin-<flavor>` theme; CSS variables don't touch
- * Shiki's baked-in hex tokens.
+ * Shiki is updated in the same call so its tokenized HTML uses the theme's
+ * syntax theme (CSS variables don't touch Shiki's baked-in hex tokens).
  */
 function applyColorScheme(settings: AppSettings): void {
-  const palette = palettes[settings.colorScheme] ?? palettes.mocha;
+  const theme = getTheme(settings.colorScheme);
   const root = document.documentElement;
-  for (const [token, hex] of Object.entries(palette)) {
-    root.style.setProperty(`--ctp-${token}`, hex);
+  for (const [token, value] of Object.entries(theme.colors)) {
+    root.style.setProperty(`--${token}`, value);
   }
-  setShikiScheme(settings.colorScheme);
+  // Best-effort: a user theme's syntax may need an async Shiki load. CSS is
+  // already applied above, so highlighting catches up on the next tokenize.
+  void setShikiTheme(theme);
 }

@@ -25,9 +25,9 @@ export class ErrorBoundary extends React.Component<Props, State> {
           style={{
             padding: "24px",
             margin: "16px",
-            border: "1px solid var(--ctp-red, #f38ba8)",
+            border: "1px solid var(--danger, #f38ba8)",
             borderRadius: "8px",
-            color: "var(--ctp-text, #cdd6f4)",
+            color: "var(--text, #cdd6f4)",
             fontFamily: "var(--font-mono, monospace)",
             overflow: "auto",
           }}

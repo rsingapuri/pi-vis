@@ -53,7 +53,7 @@
    raised surface0 card over the base background, matching the Composer's
    input-row card. It still scrolls internally if the list is long. */
 .picker {
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: var(--space-3);
@@ -73,21 +73,21 @@
   font-size: 1.071em;
   font-weight: 600;
   line-height: var(--leading-label);
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .picker__search {
   display: flex;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
 }
 
 .picker__search-input {
   flex: 1;
   background: transparent;
   border: none;
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: 0.929em;
   outline: none;
@@ -95,11 +95,11 @@
 }
 
 .picker__search-input::placeholder {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 
 .picker__search:focus-within {
-  border-color: var(--ctp-mauve);
+  border-color: var(--accent);
 }
 
 .picker__list {
@@ -116,7 +116,7 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
-  color: var(--ctp-text);
+  color: var(--text);
   cursor: pointer;
   font-family: var(--font-display);
   font-size: 0.929em;
@@ -135,8 +135,8 @@
    the --highlighted class elsewhere, which would render two items as
    highlighted at once. */
 .picker__item--highlighted {
-  background: var(--ctp-surface1);
-  border-color: var(--ctp-surface2);
+  background: var(--surface-2);
+  border-color: var(--surface-3);
 }
 
 /* The leading ✓ on the session's active model in the /model picker. A
@@ -147,11 +147,11 @@
   display: inline-block;
   width: 1em;
   flex: 0 0 1em;
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 .picker__item--selected .picker__item-name {
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 .picker__item-name {
@@ -162,12 +162,12 @@
 }
 
 .picker__item-meta {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   font-size: 0.857em;
 }
 
 .picker__empty {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   font-family: var(--font-display);
   font-size: 0.929em;
   text-align: center;
@@ -181,10 +181,10 @@
 }
 
 .picker__btn {
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
   border: none;
   border-radius: var(--radius-md);
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   cursor: pointer;
   font-family: var(--font-display);
   font-size: 0.929em;
@@ -194,8 +194,8 @@
 }
 
 .picker__btn--cancel:hover {
-  background: var(--ctp-surface2);
-  color: var(--ctp-text);
+  background: var(--surface-3);
+  color: var(--text);
 }
 
 /* ── /trust picker ───────────────────────────────────────────────────── */
@@ -204,7 +204,7 @@
 .picker__trust-cwd {
   font-family: var(--font-mono);
   font-size: 0.857em;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -212,7 +212,7 @@
 
 .picker__trust-status {
   font-size: 0.857em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   margin-bottom: var(--space-2);
 }
 
@@ -237,8 +237,8 @@
 }
 
 .picker__checkbox--checked {
-  background: var(--ctp-mauve);
-  border-color: var(--ctp-mauve);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .picker__checkbox--checked::after {
@@ -248,7 +248,7 @@
   top: 0.107rem;
   width: 0.286rem;
   height: 0.571rem;
-  border: solid var(--ctp-base);
+  border: solid var(--bg);
   border-width: 0 0.143rem 0.143rem 0;
   transform: rotate(45deg);
 }
@@ -256,7 +256,7 @@
 /* Selected-count caption on the scoped-models footer. */
 .picker__count {
   margin-right: auto;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   font-size: 0.857em;
   font-family: var(--font-display);
 }
@@ -264,8 +264,8 @@
 /* Primary Apply button — mauve fill, the one filled affordance in the
    footer (cancel stays a quiet surface button). */
 .picker__btn--primary {
-  background: var(--ctp-mauve);
-  color: var(--ctp-base);
+  background: var(--accent);
+  color: var(--bg);
 }
 
 .picker__btn--primary:hover {
@@ -277,8 +277,8 @@
    (green) over the mauve primary, so the two scopes read at a glance
    without high-contrast outlines. */
 .picker__btn--save {
-  background: var(--ctp-green);
-  color: var(--ctp-base);
+  background: var(--success);
+  color: var(--bg);
 }
 
 .picker__btn--save:hover {
@@ -307,13 +307,13 @@
 }
 
 .picker__badge--oauth {
-  color: var(--ctp-sapphire);
-  background: color-mix(in srgb, var(--ctp-sapphire) 14%, transparent);
-  border-color: color-mix(in srgb, var(--ctp-sapphire) 30%, transparent);
+  color: var(--info-soft);
+  background: color-mix(in srgb, var(--info-soft) 14%, transparent);
+  border-color: color-mix(in srgb, var(--info-soft) 30%, transparent);
 }
 
 .picker__badge--api_key {
-  color: var(--ctp-mauve);
-  background: color-mix(in srgb, var(--ctp-mauve) 14%, transparent);
-  border-color: color-mix(in srgb, var(--ctp-mauve) 30%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }

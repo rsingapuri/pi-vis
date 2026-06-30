@@ -21,6 +21,7 @@
     "src/main/**/*",
     "src/preload/**/*",
     "src/shared/**/*",
+    "src/shared/theme/themes/*.json",
     "tests/fixtures/**/*",
     "resources/pi-session-host/**/*",
     "electron.vite.config.ts"

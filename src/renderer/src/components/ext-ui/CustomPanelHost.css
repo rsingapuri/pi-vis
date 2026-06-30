@@ -19,7 +19,7 @@
   margin: 0 0.857rem 0.857rem;
   display: flex;
   flex-direction: column;
-  background: var(--ctp-base);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
@@ -33,7 +33,7 @@
   gap: 0.571rem;
   padding: 0.571rem 0.857rem;
   border-bottom: 1px solid var(--border);
-  background: var(--ctp-surface0);
+  background: var(--surface);
   flex-shrink: 0;
 }
 
@@ -41,20 +41,20 @@
   font-family: var(--font-display);
   font-size: 0.929em;
   font-weight: 600;
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .custom-panel__hint {
   font-family: var(--font-display);
   font-size: 0.786em;
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
 }
 
 .custom-panel__close {
   margin-left: auto;
   font-family: var(--font-display);
   font-size: 0.786em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -63,8 +63,8 @@
 }
 
 .custom-panel__close:hover {
-  color: var(--ctp-text);
-  background: var(--ctp-surface1);
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 .custom-panel__xterm {
@@ -80,7 +80,7 @@
 
 .custom-panel__xterm .xterm-viewport {
   scrollbar-width: thin;
-  scrollbar-color: var(--ctp-surface1) transparent;
+  scrollbar-color: var(--surface-2) transparent;
 }
 
 .custom-panel__xterm .xterm-screen {
@@ -138,12 +138,12 @@
    cap) — the card scrolls, not xterm's own viewport. */
 .unified-panel {
   scrollbar-width: thin;
-  scrollbar-color: var(--ctp-surface1) transparent;
+  scrollbar-color: var(--surface-2) transparent;
 }
 .unified-panel::-webkit-scrollbar {
   width: 8px;
 }
 .unified-panel::-webkit-scrollbar-thumb {
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
   border-radius: var(--radius-pill);
 }

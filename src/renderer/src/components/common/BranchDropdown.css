@@ -6,10 +6,10 @@
 }
 
 .branch-dropdown__trigger {
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-family: var(--font-code);
   font-size: 0.857em;
   line-height: 1.4;
@@ -20,7 +20,7 @@
 
 .branch-dropdown__trigger:hover {
   border-color: var(--border-strong);
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .branch-dropdown__trigger:focus-visible {
@@ -30,14 +30,14 @@
 .branch-dropdown__trigger:disabled {
   cursor: not-allowed;
   opacity: 0.6;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 
 .branch-dropdown__dropdown {
   position: absolute;
   top: calc(100% + 0.429rem);
   left: 0;
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   min-width: 16rem;
@@ -61,15 +61,15 @@
   position: sticky;
   top: 0;
   padding: 0.571rem 0.571rem 0.286rem;
-  background: var(--ctp-surface0);
+  background: var(--surface);
 }
 
 .branch-dropdown__search-input {
   width: 100%;
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: 0.857em;
   padding: 0.429rem 0.571rem;
@@ -79,18 +79,18 @@
 }
 
 .branch-dropdown__search-input:focus {
-  border-color: var(--ctp-mauve);
+  border-color: var(--accent);
 }
 
 .branch-dropdown__search-input::placeholder {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 
 .branch-dropdown__empty {
   padding: 0.857rem;
   font-family: var(--font-code);
   font-size: 0.857em;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   text-align: center;
 }
 
@@ -107,7 +107,7 @@
   font-family: var(--font-code);
   font-size: 0.857em;
   line-height: 1.3;
-  color: var(--ctp-text);
+  color: var(--text);
   -webkit-app-region: no-drag;
 }
 
@@ -115,24 +115,24 @@
    class (onMouseEnter → setHighlightedIndex), not by :hover — see the
    note in AppPickerHost.css for why :hover causes dual-highlight. */
 .branch-dropdown__item--active {
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 .branch-dropdown__item--highlighted {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .branch-dropdown__check {
   margin-left: auto;
   flex-shrink: 0;
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 .branch-dropdown__current {
   font-size: 0.786em;
-  color: var(--ctp-overlay0);
-  background: var(--ctp-surface0);
+  color: var(--text-ghost);
+  background: var(--surface);
   padding: 0.071rem 0.357rem;
   border-radius: var(--radius-sm);
   flex-shrink: 0;
@@ -152,7 +152,7 @@
   gap: 0.429rem;
   font-family: var(--font-display);
   font-size: 0.857em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   cursor: pointer;
   -webkit-app-region: no-drag;
 }
@@ -165,15 +165,15 @@
   margin: 0;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   cursor: pointer;
   position: relative;
   flex-shrink: 0;
 }
 
 .branch-dropdown__checkbox-label input[type="checkbox"]:checked {
-  background: var(--ctp-mauve);
-  border-color: var(--ctp-mauve);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .branch-dropdown__checkbox-label input[type="checkbox"]:checked::after {
@@ -183,14 +183,14 @@
   top: 0.107rem;
   width: 0.214rem;
   height: 0.45rem;
-  border: solid var(--ctp-base);
+  border: solid var(--bg);
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
 }
 
 .branch-dropdown__match {
-  background: var(--ctp-surface2);
-  color: var(--ctp-mauve);
+  background: var(--surface-3);
+  color: var(--accent);
   border-radius: 0.143em;
   padding: 0 0.071em;
 }

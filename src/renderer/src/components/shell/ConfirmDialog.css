@@ -23,7 +23,7 @@
 }
 
 .confirm-dialog {
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   padding: 1.143rem 1.429rem;
@@ -51,13 +51,13 @@
   font-family: var(--font-display);
   font-size: 1.071em;
   font-weight: 600;
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .confirm-dialog__message {
   font-family: var(--font-display);
   font-size: 0.929em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   line-height: var(--leading-body);
 }
 
@@ -80,19 +80,19 @@
 }
 
 .confirm-dialog__btn--confirm {
-  background: var(--ctp-mauve);
-  color: var(--ctp-base);
+  background: var(--accent);
+  color: var(--bg);
 }
 
 .confirm-dialog__btn--confirm:hover {
-  background: var(--ctp-lavender);
+  background: var(--accent-soft);
 }
 
 .confirm-dialog__btn--cancel {
-  background: var(--ctp-surface1);
-  color: var(--ctp-subtext0);
+  background: var(--surface-2);
+  color: var(--text-muted);
 }
 
 .confirm-dialog__btn--cancel:hover {
-  background: var(--ctp-surface2);
+  background: var(--surface-3);
 }

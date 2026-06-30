@@ -5,7 +5,7 @@
 
 .diff-file {
   margin: 0.857rem;
-  border: 1px solid var(--ctp-surface0);
+  border: 1px solid var(--surface);
   border-radius: var(--radius-sm);
   overflow: hidden;
   scroll-margin-top: 0.571rem;
@@ -19,14 +19,14 @@
   align-items: center;
   gap: 0.571rem;
   padding: 0.429rem 0.714rem;
-  background: var(--ctp-mantle);
-  border-bottom: 1px solid var(--ctp-surface0);
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--surface);
   cursor: pointer;
   user-select: none;
 }
 
 .diff-file__chevron {
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   font-family: var(--font-code);
   font-size: 0.857em;
   width: 0.857rem;
@@ -49,7 +49,7 @@
 }
 
 .diff-file__dirname {
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -64,18 +64,18 @@
      neutral `/` is never reordered to the front (which would produce
      a stray leading slash + missing separator like
      `…/settingsSettingsView.tsx`). */
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   flex-shrink: 0;
 }
 
 .diff-file__basename {
-  color: var(--ctp-text);
+  color: var(--text);
   font-weight: 500;
   flex-shrink: 0;
 }
 
 .diff-file__arrow {
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   margin: 0 0.286rem;
   flex-shrink: 0;
 }
@@ -89,17 +89,17 @@
 }
 
 .diff-file__count--add {
-  color: var(--ctp-green);
+  color: var(--success);
 }
 .diff-file__count--del {
-  color: var(--ctp-red);
+  color: var(--danger);
 }
 .diff-file__count--bin {
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
 }
 
 .diff-file__body {
-  background: var(--ctp-base);
+  background: var(--bg);
   font-family: var(--font-code);
   font-size: var(--font-size-code);
   line-height: var(--leading-code);
@@ -130,24 +130,24 @@
 }
 
 .diff-status-badge--M {
-  color: var(--ctp-yellow);
-  background: color-mix(in srgb, var(--ctp-yellow) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ctp-yellow) 30%, transparent);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
 }
 .diff-status-badge--A {
-  color: var(--ctp-green);
-  background: color-mix(in srgb, var(--ctp-green) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ctp-green) 30%, transparent);
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
 }
 .diff-status-badge--D {
-  color: var(--ctp-red);
-  background: color-mix(in srgb, var(--ctp-red) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ctp-red) 30%, transparent);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
 }
 .diff-status-badge--R {
-  color: var(--ctp-mauve);
-  background: color-mix(in srgb, var(--ctp-mauve) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ctp-mauve) 30%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 /* ── Row grid ────────────────────────────────────────────────────── */
@@ -168,14 +168,14 @@
 .diff-row__num {
   text-align: right;
   padding-right: 0.571rem;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   user-select: none;
   font-variant-numeric: tabular-nums;
   font-size: 0.929em;
 }
 
 .diff-row__num--empty {
-  background: color-mix(in srgb, var(--ctp-surface0) 40%, transparent);
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
 }
 
 .diff-row__marker {
@@ -189,25 +189,25 @@
 
 .diff-row--add .diff-row__marker::before {
   content: "+";
-  color: var(--ctp-green);
+  color: var(--success);
 }
 .diff-row--del .diff-row__marker::before {
   content: "−";
-  color: var(--ctp-red);
+  color: var(--danger);
 }
 .diff-row--add .diff-row__num {
-  color: var(--ctp-green);
-  background: color-mix(in srgb, var(--ctp-green) 12%, transparent);
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
 }
 .diff-row--del .diff-row__num {
-  color: var(--ctp-red);
-  background: color-mix(in srgb, var(--ctp-red) 12%, transparent);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 .diff-row--add .diff-row__code {
-  background: color-mix(in srgb, var(--ctp-green) 8%, transparent);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
 }
 .diff-row--del .diff-row__code {
-  background: color-mix(in srgb, var(--ctp-red) 8%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
 .diff-row__code {
@@ -219,22 +219,22 @@
 }
 
 .diff-row__code--empty {
-  background: color-mix(in srgb, var(--ctp-surface0) 40%, transparent);
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
 }
 
 /* Split view: side-by-side columns. One CSS grid row holds both sides
    so wrapped-line heights align automatically. */
 .diff-row--split .diff-row__num--right {
-  border-left: 1px solid var(--ctp-surface0);
+  border-left: 1px solid var(--surface);
 }
 
 /* Intraline emphasis: background tint on the changed characters. */
 .diff-row__em {
-  background: color-mix(in srgb, var(--ctp-green) 12%, transparent);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
   border-radius: 2px;
 }
 .diff-row--del .diff-row__em {
-  background: color-mix(in srgb, var(--ctp-red) 12%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 /* ── Find highlights ─────────────────────────────────────────────── */
@@ -243,30 +243,30 @@
    immediately. These come after .diff-row__em so they win the background on
    a character that is both changed and matched. */
 .diff-search-mark {
-  background: color-mix(in srgb, var(--ctp-yellow) 30%, transparent);
+  background: color-mix(in srgb, var(--warning) 30%, transparent);
   border-radius: 2px;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ctp-yellow) 28%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 28%, transparent);
 }
 .diff-row--del .diff-search-mark,
 .diff-row--add .diff-search-mark {
   /* Override the green/red em tint on changed lines too. */
-  background: color-mix(in srgb, var(--ctp-yellow) 30%, transparent);
+  background: color-mix(in srgb, var(--warning) 30%, transparent);
 }
 
 .diff-search-mark--current {
-  background: var(--ctp-peach);
-  color: var(--ctp-crust) !important;
-  box-shadow: 0 0 0 1px var(--ctp-peach);
+  background: var(--warning-soft);
+  color: var(--bg-deep) !important;
+  box-shadow: 0 0 0 1px var(--warning-soft);
   border-radius: 2px;
 }
 .diff-row--del .diff-search-mark--current,
 .diff-row--add .diff-search-mark--current {
-  background: var(--ctp-peach);
+  background: var(--warning-soft);
 }
 
 /* Row hover overlay (subtle — aids horizontal tracking in split view). */
 .diff-row:hover {
-  background: color-mix(in srgb, var(--ctp-surface1) 30%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 30%, transparent);
 }
 /* .diff-row--split:hover removed: .diff-row:hover already covers it */
 
@@ -284,8 +284,8 @@
   align-items: center;
   gap: 0.571rem;
   padding: 0.143rem 0.714rem;
-  background: color-mix(in srgb, var(--ctp-surface0) 55%, transparent);
-  border-block: 1px solid var(--ctp-surface0);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  border-block: 1px solid var(--surface);
   user-select: none;
   font-family: var(--font-code);
   font-size: var(--font-size-small);
@@ -297,7 +297,7 @@
      stays aligned. */
   width: calc(var(--gutter-w) * 2 + 1.143rem);
   text-align: center;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   flex-shrink: 0;
   font-size: 0.929em;
 }
@@ -306,7 +306,7 @@
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   cursor: pointer;
   width: 1.714rem;
   height: 1.714rem;
@@ -320,14 +320,14 @@
 }
 
 .diff-gap__btn:hover {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .diff-gap__label {
   background: transparent;
   border: none;
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   cursor: pointer;
   font-family: var(--font-code);
   font-size: var(--font-size-small);
@@ -337,7 +337,7 @@
 }
 
 .diff-gap__label:hover {
-  color: var(--ctp-text);
+  color: var(--text);
   text-decoration: underline;
 }
 
@@ -345,7 +345,7 @@
 
 .diff-file__notice {
   padding: 1.429rem;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-family: var(--font-display);
   font-size: 0.929em;
   text-align: center;
@@ -360,8 +360,8 @@
 }
 
 .diff-file__notice__retry {
-  background: var(--ctp-mauve);
-  color: var(--ctp-base);
+  background: var(--accent);
+  color: var(--bg);
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -373,7 +373,7 @@
 }
 
 .diff-file__notice__retry:hover {
-  background: var(--ctp-lavender);
+  background: var(--accent-soft);
 }
 
 @keyframes diff-pulse {

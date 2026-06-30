@@ -1,78 +1,87 @@
 :root {
-  /* Catppuccin Mocha palette */
-  --ctp-base: #1e1e2e;
-  --ctp-mantle: #181825;
-  --ctp-crust: #11111b;
-  --ctp-surface0: #313244;
-  --ctp-surface1: #45475a;
-  --ctp-surface2: #585b70;
-  --ctp-overlay0: #6c7086;
-  --ctp-overlay1: #7f849c;
-  --ctp-overlay2: #9399b2;
-  --ctp-subtext0: #a6adc8;
-  --ctp-subtext1: #bac2de;
-  --ctp-text: #cdd6f4;
-  --ctp-lavender: #b4befe;
-  --ctp-blue: #89b4fa;
-  --ctp-sapphire: #74c7ec;
-  --ctp-sky: #89dceb;
-  --ctp-teal: #94e2d5;
-  --ctp-green: #a6e3a1;
-  --ctp-yellow: #f9e2af;
-  --ctp-peach: #fab387;
-  --ctp-maroon: #eba0ac;
-  --ctp-red: #f38ba8;
-  --ctp-mauve: #cba6f7;
-  --ctp-pink: #f5c2e7;
-  --ctp-flamingo: #f2cdcd;
-  --ctp-rosewater: #f5e0dc;
+  /* ── Theme palette (semantic roles) ──────────────────────────────────
+     The active theme writes these 26 `--<token>` vars at runtime
+     (settings-store.applyColorScheme, from the chosen Theme.colors). The
+     values here are the Catppuccin Mocha defaults so the bundled
+     stylesheet paints correctly before JS runs.
 
-  /* Theme-aware UI colors (overridden per palette by applyColorScheme).
-     Defaults match Mocha so the bundled stylesheet renders correctly
-     before JS runs. */
-  --ctp-shadow: rgba(0, 0, 0, 0.5);
-  --ctp-scrim: rgba(17, 17, 27, 0.7);
-  --ctp-input-bg: #313244;
+     NOTHING in the app references a palette-specific swatch name anymore
+     (the old `--ctp-mauve`, `--ctp-surface0`, …). Every component reaches
+     for a semantic role below — or one of the composite tokens built on
+     them — so a new colorscheme is purely a single config file. The
+     canonical vocabulary lives in src/shared/theme/tokens.ts. */
 
-  /* Semantic tokens */
-  --color-bg: var(--ctp-base);
-  --color-sidebar: var(--ctp-mantle);
-  --color-modal: var(--ctp-surface0);
-  --color-text: var(--ctp-text);
-  --color-subtext: var(--ctp-subtext0);
-  --color-accent: var(--ctp-mauve);
-  --color-accent2: var(--ctp-blue);
-  --color-tool-bg: var(--ctp-surface0);
-  --color-diff-add: var(--ctp-green);
-  --color-diff-del: var(--ctp-red);
-  --color-error: var(--ctp-red);
-  --color-thinking: var(--ctp-subtext0);
-  --color-user-accent: var(--ctp-blue);
+  /* Backgrounds (page planes, deepest → base) */
+  --bg-deep: #11111b;
+  --bg-sunken: #181825;
+  --bg: #1e1e2e;
+  /* Surfaces (raised planes, low → high) */
+  --surface: #313244;
+  --surface-2: #45475a;
+  --surface-3: #585b70;
+  /* Text (foreground emphasis ramp, faint → strong) */
+  --text-ghost: #6c7086;
+  --text-faint: #7f849c;
+  --text-disabled: #9399b2;
+  --text-muted: #a6adc8;
+  --text-secondary: #bac2de;
+  --text: #cdd6f4;
+  /* Accents / status */
+  --accent: #cba6f7;
+  --accent-soft: #b4befe;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --warning-soft: #fab387;
+  --danger: #f38ba8;
+  --info: #89b4fa;
+  --info-soft: #74c7ec;
+  --cyan: #94e2d5;
+  --magenta: #f5c2e7;
+  /* Misc UI (shadow/scrim tuned per theme luminance) */
+  --cursor: #f5e0dc;
+  --shadow: rgba(0, 0, 0, 0.5);
+  --scrim: rgba(17, 17, 27, 0.7);
+  --input-bg: #313244;
+
+  /* ── Composite semantic tokens ───────────────────────────────────────
+     Theme-independent structural decisions, expressed on top of the
+     palette roles above. Themes never set these; they set the palette. */
+  --color-bg: var(--bg);
+  --color-sidebar: var(--bg-sunken);
+  --color-modal: var(--surface);
+  --color-text: var(--text);
+  --color-subtext: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent2: var(--info);
+  --color-tool-bg: var(--surface);
+  --color-diff-add: var(--success);
+  --color-diff-del: var(--danger);
+  --color-error: var(--danger);
+  --color-thinking: var(--text-muted);
+  --color-user-accent: var(--info);
 
   /* ── Hairline borders ────────────────────────────────────────────────
      Modern separation comes from low-contrast hairlines + surface
-     elevation, NOT high-contrast outlines. These map straight onto the
-     canonical Catppuccin surface ramp — surface0 for soft resting edges
-     and quiet dividers, surface1 for hover/focus and structural
-     separators. The old chrome leaned on `overlay0`, which is a full step
-     brighter and is what made every panel read as a hard box. */
-  --border-faint: var(--ctp-surface0);
-  --border: var(--ctp-surface0);
-  --border-strong: var(--ctp-surface1);
-  --color-border: var(--ctp-surface0);
+     elevation, NOT high-contrast outlines. These map onto the surface
+     ramp — `surface` for soft resting edges and quiet dividers,
+     `surface-2` for hover/focus and structural separators. */
+  --border-faint: var(--surface);
+  --border: var(--surface);
+  --border-strong: var(--surface-2);
+  --color-border: var(--surface);
 
   /* ── Surface elevation ───────────────────────────────────────────────
-     Depth comes from the canonical surface ramp, not invented tints: a
-     raised panel sits on surface0 (the standard Catppuccin "raised" swatch,
-     one step above base) and a recessed well drops to mantle (one step
-     below base), so a card → inner-well pair reads as two real planes.
-     Floating layers (menus, dialogs, toasts) add a soft shadow so they
-     read as lifted; --ctp-shadow is tuned per flavor (softer on Latte). */
-  --surface-raised: var(--ctp-surface0);
-  --surface-inset: var(--ctp-mantle);
+     Depth comes from the surface ramp, not invented tints: a raised panel
+     sits on `surface` (one step above the base) and a recessed well drops
+     to `bg-sunken` (one step below), so a card → inner-well pair reads as
+     two real planes. Floating layers (menus, dialogs, toasts) add a soft
+     shadow so they read as lifted; --shadow is tuned per theme (softer on
+     light themes). */
+  --surface-raised: var(--surface);
+  --surface-inset: var(--bg-sunken);
   --elevation-1: 0 1px 2px rgba(0, 0, 0, 0.18);
-  --elevation-2: 0 6px 20px -4px var(--ctp-shadow);
-  --elevation-3: 0 16px 44px -8px var(--ctp-shadow);
+  --elevation-2: 0 6px 20px -4px var(--shadow);
+  --elevation-3: 0 16px 44px -8px var(--shadow);
 
   /* ── Font variables (overridden by settings) ──────────────────────────
      --font-size-base is applied to the <html> root from JS, so 1rem = the
@@ -175,12 +184,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
   border-radius: var(--radius-sm);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--ctp-surface2);
+  background: var(--surface-3);
 }
 
 /* The corner where a horizontal and vertical scrollbar meet. Unstyled, it

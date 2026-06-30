@@ -6,7 +6,6 @@ import type { PiEvent } from "@shared/pi-protocol/events.js";
 import type { ExtensionUiRequest, ExtensionUiResponse } from "@shared/pi-protocol/extension-ui.js";
 import type { PanelEvent } from "@shared/pi-protocol/panel-events.js";
 import type { PiRpcResponse, SessionTreeEntry } from "@shared/pi-protocol/responses.js";
-import { piThemeForColorScheme } from "@shared/settings.js";
 import { app, clipboard, ipcMain } from "electron";
 import type { BrowserWindow } from "electron";
 import {
@@ -38,6 +37,7 @@ import {
 import { SessionRegistry } from "./sessions/session-registry.js";
 import { getSettings, saveSettings } from "./settings-store.js";
 import { createGistForSession } from "./share.js";
+import { getUserThemes, piThemeForSchemeId } from "./theme-loader.js";
 import { checkForUpdates, startUpdate } from "./updates.js";
 import {
   getOrderedWorkspaces,
@@ -56,7 +56,7 @@ let handlersRegistered = false;
 // the UI. Read fresh on each spawn so reloads pick up a scheme change.
 async function getHostEnv(): Promise<Record<string, string>> {
   const env = await getLoginShellEnv();
-  return { ...env, PIVIS_PI_THEME: piThemeForColorScheme(getSettings().colorScheme) };
+  return { ...env, PIVIS_PI_THEME: piThemeForSchemeId(getSettings().colorScheme) };
 }
 
 // During quit, pi processes are SIGTERMed and emit final events/exits after
@@ -472,6 +472,10 @@ export function initIpc(win: BrowserWindow): void {
 
   ipcMain.handle("settings.get", async () => {
     return getSettings();
+  });
+
+  ipcMain.handle("themes.listUser", async () => {
+    return getUserThemes();
   });
 
   ipcMain.handle("settings.set", async (_evt, updates: Partial<ReturnType<typeof getSettings>>) => {

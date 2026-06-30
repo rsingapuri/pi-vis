@@ -23,27 +23,27 @@ export interface AnsiSpan {
 // Theme-aware ANSI named colors — resolved via CSS custom properties so
 // they adapt to the active Catppuccin flavor (Latte/Frappé/Macchiato/Mocha).
 const NAMED_COLORS: Record<number, string> = {
-  0: "var(--ctp-surface1)", // black
-  1: "var(--ctp-red)",
-  2: "var(--ctp-green)",
-  3: "var(--ctp-yellow)",
-  4: "var(--ctp-blue)",
-  5: "var(--ctp-pink)", // magenta
-  6: "var(--ctp-teal)", // cyan
-  7: "var(--ctp-subtext1)", // white
-  8: "var(--ctp-surface2)", // bright black
-  9: "var(--ctp-red)",
-  10: "var(--ctp-green)",
-  11: "var(--ctp-yellow)",
-  12: "var(--ctp-blue)",
-  13: "var(--ctp-pink)",
-  14: "var(--ctp-teal)",
-  15: "var(--ctp-subtext0)", // bright white
+  0: "var(--surface-2)", // black
+  1: "var(--danger)",
+  2: "var(--success)",
+  3: "var(--warning)",
+  4: "var(--info)",
+  5: "var(--magenta)", // magenta
+  6: "var(--cyan)", // cyan
+  7: "var(--text-secondary)", // white
+  8: "var(--surface-3)", // bright black
+  9: "var(--danger)",
+  10: "var(--success)",
+  11: "var(--warning)",
+  12: "var(--info)",
+  13: "var(--magenta)",
+  14: "var(--cyan)",
+  15: "var(--text-muted)", // bright white
 };
 
 // Standard xterm 256-color → rgb
 function color256(n: number): string {
-  if (n < 16) return NAMED_COLORS[n] ?? "var(--ctp-text)";
+  if (n < 16) return NAMED_COLORS[n] ?? "var(--text)";
   if (n >= 232) {
     const v = 8 + (n - 232) * 10;
     return `rgb(${v},${v},${v})`;
@@ -81,15 +81,15 @@ function applySgr(style: AnsiStyle, params: number[]): AnsiStyle {
     } else if (p === 24) {
       delete next.textDecoration;
     } else if (p >= 30 && p <= 37) {
-      next.color = NAMED_COLORS[p - 30] ?? "var(--ctp-text)";
+      next.color = NAMED_COLORS[p - 30] ?? "var(--text)";
     } else if (p >= 90 && p <= 97) {
-      next.color = NAMED_COLORS[p - 90 + 8] ?? "var(--ctp-text)";
+      next.color = NAMED_COLORS[p - 90 + 8] ?? "var(--text)";
     } else if (p === 39) {
       delete next.color;
     } else if (p >= 40 && p <= 47) {
-      next.backgroundColor = NAMED_COLORS[p - 40] ?? "var(--ctp-base)";
+      next.backgroundColor = NAMED_COLORS[p - 40] ?? "var(--bg)";
     } else if (p >= 100 && p <= 107) {
-      next.backgroundColor = NAMED_COLORS[p - 100 + 8] ?? "var(--ctp-base)";
+      next.backgroundColor = NAMED_COLORS[p - 100 + 8] ?? "var(--bg)";
     } else if (p === 49) {
       delete next.backgroundColor;
     } else if (p === 38 || p === 48) {

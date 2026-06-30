@@ -5,7 +5,7 @@
 .diff-block {
   font-family: var(--font-code);
   font-size: var(--font-size-code);
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -15,7 +15,7 @@
 .diff-block__line {
   padding: 0 0.857rem;
   white-space: pre;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   /* 1.43em ≈ 20px @ 14px root — fits the 1.5 line-height in code */
   min-height: 1.43em;
   line-height: 1.5;
@@ -23,16 +23,16 @@
 
 .diff-block__line--add {
   background: rgba(166, 227, 161, 0.12);
-  color: var(--ctp-green);
+  color: var(--success);
 }
 
 .diff-block__line--del {
   background: rgba(243, 139, 168, 0.12);
-  color: var(--ctp-red);
+  color: var(--danger);
 }
 
 .diff-block__line--hunk {
-  color: var(--ctp-sapphire);
+  color: var(--info-soft);
   background: rgba(116, 199, 236, 0.06);
 }
 

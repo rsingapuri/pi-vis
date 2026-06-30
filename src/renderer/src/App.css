@@ -10,7 +10,7 @@
      sidebar blend into it (no borders), and the content area floats on top
      as one rounded, inset card. This replaces the old flush rectangular
      grid — the source of the hard 90° seams between chrome regions. */
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   /* The title bar floats as a pill in sidebar-collapsed mode, inset from the
      window edges; this positioning context is no longer needed for an
      absolutely-positioned overlay (the pill is in flow now) but is harmless. */
@@ -52,7 +52,7 @@
    sidebar column is gone. The title bar is no longer a full-width strip; it's
    a floating pill inset from the window edges. */
 .app--sidebar-collapsed {
-  background: var(--ctp-base);
+  background: var(--bg);
   grid-template-columns: 1fr;
   grid-template-rows: auto 1fr;
   grid-template-areas:
@@ -230,7 +230,7 @@
      full-width strip inside it — transcript, worktree bar, composer, status
      bar — to the rounded corners, so none of them form hard outer 90° seams. */
   margin: 0 var(--space-2) var(--space-2) var(--space-2);
-  background: var(--ctp-base);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--elevation-1);
@@ -294,9 +294,9 @@
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-xl);
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
-  color: var(--ctp-mauve);
+  color: var(--accent);
   font-family: var(--font-display);
   font-size: 2rem;
   font-weight: 600;
@@ -307,7 +307,7 @@
 .app__empty-hint {
   font-size: 1em;
   line-height: var(--leading-body);
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   margin: 0;
 }
 
@@ -316,10 +316,10 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  background: var(--ctp-base);
+  background: var(--bg);
 }
 
 .app-loading__text {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   font-size: 1em;
 }

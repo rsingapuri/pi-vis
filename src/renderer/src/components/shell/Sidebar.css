@@ -136,11 +136,11 @@
    the workspace is active. This keeps the heavy filled-block look off the top
    tier and reserves the rounded "pill" fill for the session rows below. */
 .sidebar__workspace-header:hover .sidebar__workspace-name {
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .sidebar__workspace--active .sidebar__workspace-name {
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 /* Drag grip: hidden by default, revealed on row hover. The draggable
@@ -151,7 +151,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   opacity: 0;
   cursor: grab;
   transition: opacity 0.12s ease;
@@ -199,7 +199,7 @@
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   /* Compact hit area — tight padding around the ~11px icon so the stacked
      pair sits close together without crowding. */
   width: 1.143rem;
@@ -217,10 +217,10 @@
   height: 0.786rem;
 }
 .sidebar__remove-workspace:hover {
-  color: var(--ctp-red);
+  color: var(--danger);
 }
 .sidebar__workspace-chevron:hover {
-  color: var(--ctp-text);
+  color: var(--text);
 }
 /* Chevron rotates to point down when the workspace is expanded. */
 .sidebar__workspace-chevron--expanded {
@@ -236,7 +236,7 @@
   font-family: var(--font-code);
   font-size: 0.929em; /* ≈13px @ 14px root */
   font-weight: 600;
-  color: var(--ctp-subtext0); /* muted at rest; brightens on hover, mauve when active */
+  color: var(--text-muted); /* muted at rest; brightens on hover, mauve when active */
   line-height: 1.4; /* deterministic single-line height → see the × sizing below */
   /* min-width: 0 lets the flex item shrink below its min-content width so the
      ellipsis engages (same fix the session name uses). */
@@ -261,7 +261,7 @@
      Bottom padding is 0 — the workspace row owns the consistent
      gap-to-separator (see .sidebar__workspace:not(:last-child)). */
   padding: 0.143rem 0 0 0.858rem;
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
 }
 
 .sidebar__session {
@@ -277,7 +277,7 @@
   display: flex;
   align-items: center;
   gap: 0.429rem;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-family: var(--font-display);
   font-size: 0.857em; /* ≈12px @ 14px root */
   font-weight: 500;
@@ -291,20 +291,20 @@
      reads as a hover affordance rather than duplicating the active row's
      highlight intensity. The active row keeps its full-intensity fill on hover
      (see .sidebar__session--active:hover below). */
-  background: color-mix(in srgb, var(--ctp-surface0) 50%, transparent);
-  color: var(--ctp-text);
+  background: color-mix(in srgb, var(--surface) 50%, transparent);
+  color: var(--text);
 }
 
 .sidebar__session--active {
-  background: var(--ctp-surface0);
-  color: var(--ctp-text);
+  background: var(--surface);
+  color: var(--text);
   /* Mauve spine = "this is the open session" (matches the diff tree's active
      row). Reads as identity, not just another hovered block. */
-  box-shadow: inset 2px 0 0 var(--ctp-mauve);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .sidebar__session--active:hover {
-  background: var(--ctp-surface0);
+  background: var(--surface);
 }
 
 .sidebar__session-name {
@@ -321,7 +321,7 @@
   opacity: 0;
   background: none;
   border: none;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   cursor: pointer;
   font-size: 0.929em;
   padding: 0.143rem 0.286rem;
@@ -334,8 +334,8 @@
   opacity: 1;
 }
 .sidebar__session-archive:hover {
-  background: var(--ctp-surface2);
-  color: var(--ctp-red);
+  background: var(--surface-3);
+  color: var(--danger);
 }
 .sidebar__session-archive svg {
   width: 0.95em;
@@ -348,12 +348,12 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
 }
 
 .sidebar__session-meta {
   font-size: 0.857em;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   flex-shrink: 0;
   letter-spacing: 0;
   text-transform: none;
@@ -371,7 +371,7 @@
   text-align: left;
   font-family: var(--font-display);
   font-size: 0.857em;
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   line-height: var(--leading-label);
   border-radius: var(--radius-md);
   transition: background 0.1s ease, color 0.1s ease, box-shadow 0.1s ease;
@@ -381,8 +381,8 @@
   /* Mirror the session rows' hover affordance: a translucent blend reads as
      hover, the solid surface0 fill is reserved for the selected state (see
      .sidebar__new-session--selected below). */
-  color: var(--ctp-mauve);
-  background: color-mix(in srgb, var(--ctp-surface0) 50%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--surface) 50%, transparent);
 }
 
 .sidebar__new-session--selected,
@@ -390,8 +390,8 @@
   /* The mauve text + icon already read as "compose"; a neutral rounded fill
      (same as the session pills) marks it as the current selection without
      piling accent on accent. */
-  color: var(--ctp-mauve);
-  background: var(--ctp-surface0);
+  color: var(--accent);
+  background: var(--surface);
 }
 
 /* Show more — a quiet text link, not a bordered button. It's a secondary
@@ -410,14 +410,14 @@
   text-align: left;
   font-family: var(--font-display);
   font-size: 0.786em;
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   line-height: var(--leading-label);
   transition: background 0.1s, color 0.1s;
 }
 
 .sidebar__show-more:hover {
-  color: var(--ctp-text);
-  background: var(--ctp-surface0);
+  color: var(--text);
+  background: var(--surface);
 }
 
 .sidebar__footer {
@@ -461,7 +461,7 @@
   font-family: var(--font-display);
   font-size: 0.857em;
   line-height: var(--leading-label);
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   flex: 1;
   display: inline-flex;
   align-items: center;
@@ -469,7 +469,7 @@
 }
 
 .sidebar__add-workspace:hover {
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 .sidebar__settings-btn {
@@ -478,7 +478,7 @@
   cursor: pointer;
   padding: 0.857rem 0.571rem 0.857rem 0.286rem;
   font-size: 1.3em;
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   line-height: 1;
   flex-shrink: 0;
 }
@@ -490,7 +490,7 @@
 }
 
 .sidebar__settings-btn:hover {
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 /* Chrome icon buttons signal interaction via the hover color change; the
@@ -508,13 +508,13 @@
   cursor: pointer;
   padding: 0.857rem 0.571rem 0.857rem 0.286rem;
   font-size: 1.3em;
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   line-height: 1;
   flex-shrink: 0;
 }
 
 .sidebar__statusbar-toggle:hover {
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 .sidebar__statusbar-toggle:focus-visible {
@@ -556,32 +556,32 @@
 
 /* filled circle — streaming */
 .status-dot--streaming {
-  background: var(--ctp-mauve);
+  background: var(--accent);
   animation: pulse 1s ease-in-out infinite;
 }
 
 /* filled circle — turn finished (unread sidebar notification) */
 .status-dot--done {
-  background: var(--ctp-green);
+  background: var(--success);
 }
 .status-dot--error {
-  background: var(--ctp-red);
+  background: var(--danger);
 }
 
 /* hollow rings (color-coded) */
 .status-dot--idle {
-  border: 1.5px solid var(--ctp-overlay0);
+  border: 1.5px solid var(--text-ghost);
 }
 .status-dot--starting {
-  border: 1.5px solid var(--ctp-yellow);
+  border: 1.5px solid var(--warning);
 }
 .status-dot--cold {
-  border: 1.5px solid var(--ctp-surface2);
+  border: 1.5px solid var(--surface-3);
 }
 
 /* triangle = needs attention */
 .status-dot--attention {
-  background: var(--ctp-peach);
+  background: var(--warning-soft);
   border-radius: 0;
   clip-path: polygon(50% 0, 100% 100%, 0 100%);
 }
@@ -593,10 +593,10 @@
   position: relative;
 }
 .status-dot--exited {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 .status-dot--failed {
-  color: var(--ctp-red);
+  color: var(--danger);
 }
 .status-dot--exited::before,
 .status-dot--exited::after,

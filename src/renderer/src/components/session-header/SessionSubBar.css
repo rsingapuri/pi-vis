@@ -8,8 +8,8 @@
   display: flex;
   align-items: center;
   padding: 0.286rem 0.857rem;
-  background: var(--ctp-mantle);
-  border-bottom: 1px solid var(--ctp-surface0);
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--surface);
   flex-shrink: 0;
   gap: 0.571rem;
 }

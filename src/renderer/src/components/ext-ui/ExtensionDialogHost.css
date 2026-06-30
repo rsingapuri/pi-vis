@@ -78,7 +78,7 @@
 }
 
 .ext-dialog {
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   /* Tighter than the original modal (1.429rem) but still a touch
@@ -108,7 +108,7 @@
   font-size: 1em;
   font-weight: 500;
   line-height: var(--leading-body);
-  color: var(--ctp-text);
+  color: var(--text);
   display: flex;
   align-items: baseline;
   gap: 0.571rem;
@@ -120,7 +120,7 @@
   font-family: var(--font-display);
   font-size: 0.857em; /* ≈12px @ 14px root */
   font-weight: 400;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   text-transform: none;
   letter-spacing: 0.02em;
 }
@@ -128,7 +128,7 @@
 .ext-dialog__message {
   font-family: var(--font-display);
   font-size: 0.929em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   line-height: var(--leading-body);
   word-break: break-word;
 }
@@ -142,10 +142,10 @@
 }
 
 .ext-dialog__option {
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  color: var(--ctp-text);
+  color: var(--text);
   cursor: pointer;
   font-family: var(--font-display);
   font-size: 0.929em;
@@ -161,15 +161,15 @@
    :hover background after arrow-key nav moves the highlight elsewhere,
    producing two simultaneously highlighted options. */
 .ext-dialog__option--highlighted {
-  background: var(--ctp-mauve);
-  color: var(--ctp-base);
-  border-color: var(--ctp-mauve);
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
 }
 
 .ext-dialog__cancel {
   background: none;
   border: none;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   cursor: pointer;
   font-family: var(--font-display);
   font-size: 0.857em;
@@ -181,20 +181,20 @@
 .ext-dialog__hint {
   font-family: var(--font-display);
   font-size: 0.786em;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   letter-spacing: 0.02em;
   text-align: right;
 }
 
 .ext-dialog__cancel:hover {
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
 }
 
 .ext-dialog__input {
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: 1em;
   outline: none;
@@ -209,10 +209,10 @@
    syntax-highlighted blocks, the terminal, and other machine-text
    surfaces; user input always renders in the display face. */
 .ext-dialog__editor {
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: 1em;
   line-height: var(--leading-body);
@@ -242,21 +242,21 @@
 }
 
 .ext-dialog__btn--confirm {
-  background: var(--ctp-mauve);
-  color: var(--ctp-base);
+  background: var(--accent);
+  color: var(--bg);
 }
 
 .ext-dialog__btn--confirm:hover {
-  background: var(--ctp-lavender);
+  background: var(--accent-soft);
 }
 
 .ext-dialog__btn--cancel {
-  background: var(--ctp-surface1);
-  color: var(--ctp-subtext0);
+  background: var(--surface-2);
+  color: var(--text-muted);
 }
 
 .ext-dialog__btn--cancel:hover {
-  background: var(--ctp-surface2);
+  background: var(--surface-3);
 }
 
 /* Toast host */
@@ -279,13 +279,13 @@
 }
 
 .toast {
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 0.714rem 1rem;
   font-family: var(--font-display);
   font-size: 0.929em;
-  color: var(--ctp-text);
+  color: var(--text);
   max-width: 21.429rem; /* ≈300px */
   cursor: pointer;
   pointer-events: all;
@@ -295,14 +295,14 @@
 }
 
 .toast--error {
-  border-color: var(--ctp-red);
-  color: var(--ctp-red);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 .toast--warning {
-  border-color: var(--ctp-yellow);
+  border-color: var(--warning);
 }
 .toast--success {
-  border-color: var(--ctp-green);
+  border-color: var(--success);
 }
 
 @keyframes slideIn {

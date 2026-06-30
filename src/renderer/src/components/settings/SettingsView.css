@@ -8,7 +8,7 @@
 .settings-overlay {
   position: fixed;
   inset: 0;
-  background: var(--ctp-scrim);
+  background: var(--scrim);
   backdrop-filter: blur(0.286rem);
   display: flex;
   align-items: center;
@@ -18,7 +18,7 @@
 }
 
 .settings-panel {
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   width: 100%;
@@ -43,13 +43,13 @@
   font-size: 1em;
   font-weight: 600;
   line-height: var(--leading-label);
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .settings-panel__close {
   background: none;
   border: none;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   cursor: pointer;
   font-size: 1.429em;
   line-height: 1;
@@ -57,7 +57,7 @@
 }
 
 .settings-panel__close:hover {
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .settings-panel__body {
@@ -79,7 +79,7 @@
   font-size: 0.857em;
   font-weight: 600;
   line-height: var(--leading-label);
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   margin-bottom: 0.143rem;
 }
 
@@ -92,7 +92,7 @@
 .settings-label {
   font-family: var(--font-display);
   font-size: 0.929em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   min-width: 4.286rem;
   line-height: 1.2;
 }
@@ -100,20 +100,20 @@
 .settings-value {
   font-family: var(--font-display);
   font-size: 0.929em;
-  color: var(--ctp-text);
+  color: var(--text);
   flex: 1;
 }
 
 .settings-value--mono {
   font-family: var(--font-code);
-  color: var(--ctp-teal);
+  color: var(--cyan);
 }
 
 .settings-btn {
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
   border: none;
   border-radius: var(--radius-md);
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   cursor: pointer;
   font-family: var(--font-display);
   font-size: 0.857em;
@@ -123,16 +123,16 @@
 }
 
 .settings-btn:hover {
-  background: var(--ctp-surface2);
-  color: var(--ctp-text);
+  background: var(--surface-3);
+  color: var(--text);
 }
 
 .settings-select,
 .settings-input {
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: 0.929em;
   padding: 0.429rem 0.571rem;
@@ -142,7 +142,7 @@
 
 .settings-select:focus,
 .settings-input:focus {
-  border-color: var(--ctp-mauve);
+  border-color: var(--accent);
 }
 
 .settings-stepper {
@@ -152,10 +152,10 @@
 }
 
 .settings-stepper__btn {
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
   border: none;
   border-radius: var(--radius-md);
-  color: var(--ctp-text);
+  color: var(--text);
   cursor: pointer;
   font-size: 1em;
   width: 1.714rem;
@@ -166,13 +166,13 @@
 }
 
 .settings-stepper__btn:hover {
-  background: var(--ctp-surface2);
+  background: var(--surface-3);
 }
 
 .settings-stepper__val {
   font-family: var(--font-code);
   font-size: 0.929em;
-  color: var(--ctp-text);
+  color: var(--text);
   min-width: 2.571rem;
   text-align: center;
 }
@@ -180,17 +180,17 @@
 .settings-hint {
   font-family: var(--font-display);
   font-size: 0.857em;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   line-height: var(--leading-body);
 }
 
 .settings-hint--error {
-  color: var(--ctp-red);
+  color: var(--danger);
 }
 
 .settings-hint code {
   font-family: var(--font-code);
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
   padding: 0.1em 0.3em;
   border-radius: 0.214em;
   font-size: 0.929em;
@@ -209,11 +209,11 @@
 }
 
 .settings-toggle--on {
-  background: var(--ctp-mauve);
+  background: var(--accent);
 }
 
 .settings-toggle--off {
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
 }
 
 .settings-toggle__knob {
@@ -223,7 +223,7 @@
   width: 1.143rem;
   height: 1.143rem;
   border-radius: 50%;
-  background: var(--ctp-base);
+  background: var(--bg);
   transition: transform 0.2s;
 }
 
@@ -251,7 +251,7 @@
   font-family: var(--font-display);
   font-size: 0.786em;
   font-weight: 600;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   border-bottom: 1px solid var(--border);
 }
 
@@ -270,7 +270,7 @@
   gap: 0.429rem;
   align-items: center;
   padding: 0.429rem 0;
-  border-bottom: 1px solid var(--ctp-surface0);
+  border-bottom: 1px solid var(--surface);
 }
 
 .settings-update-row:last-child {
@@ -287,7 +287,7 @@
 
 .settings-update-col-pkg--pi {
   font-weight: 600;
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 .settings-update-badge {
@@ -300,35 +300,35 @@
 }
 
 .settings-update-badge--ok {
-  background: var(--ctp-surface1);
-  color: var(--ctp-green);
+  background: var(--surface-2);
+  color: var(--success);
 }
 
 .settings-update-badge--na {
-  background: var(--ctp-surface1);
-  color: var(--ctp-overlay0);
+  background: var(--surface-2);
+  color: var(--text-ghost);
 }
 
 .settings-update-badge--local {
-  background: var(--ctp-surface1);
-  color: var(--ctp-yellow);
+  background: var(--surface-2);
+  color: var(--warning);
 }
 
 .settings-update-badge--checking {
-  background: var(--ctp-surface1);
-  color: var(--ctp-overlay0);
+  background: var(--surface-2);
+  color: var(--text-ghost);
 }
 
 .settings-btn:disabled {
   opacity: 0.4;
   cursor: default;
-  background: var(--ctp-surface1);
-  color: var(--ctp-overlay0);
+  background: var(--surface-2);
+  color: var(--text-ghost);
 }
 
 .settings-btn:disabled:hover {
-  background: var(--ctp-surface1);
-  color: var(--ctp-overlay0);
+  background: var(--surface-2);
+  color: var(--text-ghost);
 }
 
 /* ── Auth / Account section ─────────────────────────────────────────── */
@@ -349,7 +349,7 @@
 .settings-auth-name {
   font-family: var(--font-display);
   font-size: 0.929em;
-  color: var(--ctp-text);
+  color: var(--text);
   min-width: 6rem;
 }
 
@@ -362,18 +362,18 @@
 }
 
 .badge--api-key {
-  background: var(--ctp-surface1);
-  color: var(--ctp-teal);
+  background: var(--surface-2);
+  color: var(--cyan);
 }
 
 .badge--oauth {
-  background: var(--ctp-surface1);
-  color: var(--ctp-mauve);
+  background: var(--surface-2);
+  color: var(--accent);
 }
 
 .badge--env {
-  background: var(--ctp-surface1);
-  color: var(--ctp-yellow);
+  background: var(--surface-2);
+  color: var(--warning);
 }
 
 .settings-btn--small {

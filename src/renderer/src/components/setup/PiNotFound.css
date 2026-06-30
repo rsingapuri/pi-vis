@@ -14,7 +14,7 @@
 
 .pi-not-found__icon {
   font-size: 4.571em; /* ≈64px @ 14px root — monumental, but still in em */
-  color: var(--ctp-mauve);
+  color: var(--accent);
   font-weight: 200;
   line-height: 1;
 }
@@ -27,13 +27,13 @@
   letter-spacing: var(--tracking-display);
   text-align: left;
   margin-bottom: var(--space-5);
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .pi-not-found__desc {
   font-family: var(--font-display);
   font-size: 1em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   max-width: 28.571rem; /* ≈400px */
   line-height: var(--leading-body);
   /* Indent to the right of the flush-left axis */
@@ -43,13 +43,13 @@
 
 .pi-not-found__desc code {
   font-family: var(--font-code);
-  background: var(--ctp-surface0);
+  background: var(--surface);
   padding: 0.1em 0.3em;
   border-radius: 0.214em;
 }
 
 .pi-not-found__instructions {
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 1.143rem 1.429rem;
@@ -67,15 +67,15 @@
 .pi-not-found__instructions p {
   font-family: var(--font-display);
   font-size: 0.929em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   line-height: var(--leading-body);
 }
 
 .pi-not-found__code {
   font-family: var(--font-code);
   font-size: 0.857em;
-  color: var(--ctp-teal);
-  background: var(--ctp-mantle);
+  color: var(--cyan);
+  background: var(--bg-sunken);
   padding: 0.571rem 0.857rem;
   border-radius: var(--radius-sm);
   line-height: var(--leading-code);
@@ -84,10 +84,10 @@
 }
 
 .pi-not-found__btn {
-  background: var(--ctp-mauve);
+  background: var(--accent);
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--ctp-base);
+  color: var(--bg);
   cursor: pointer;
   font-family: var(--font-display);
   font-size: 1em;
@@ -99,5 +99,5 @@
 }
 
 .pi-not-found__btn:hover {
-  background: var(--ctp-lavender);
+  background: var(--accent-soft);
 }

@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSettingsStore } from "../stores/settings-store.js";
-import { getHighlighter, highlightCode } from "./shiki.js";
+import { getHighlighter, getShikiTheme, highlightCode } from "./shiki.js";
 
 // Kick off highlighter init immediately so it's ready when needed
 void getHighlighter();
@@ -16,11 +16,15 @@ interface CodeBlockProps {
 
 function CodeBlock({ lang, code }: CodeBlockProps): React.ReactElement {
   const [html, setHtml] = useState<string | null>(null);
+  // Re-run when the active scheme changes; the actual Shiki theme name is
+  // resolved from the highlighter (set by settings-store on scheme change),
+  // so this works for any theme, not just `catppuccin-*`.
   const colorScheme = useSettingsStore((s) => s.settings.colorScheme);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: colorScheme is the re-tokenize trigger — the theme name is read via getShikiTheme() (set by settings-store before this re-runs), so the dep is the scheme change itself, not a value read in the body.
   useEffect(() => {
     let cancelled = false;
-    const theme = `catppuccin-${colorScheme}`;
+    const theme = getShikiTheme();
     getHighlighter().then((h) => {
       if (cancelled) return;
       try {

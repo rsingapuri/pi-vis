@@ -112,7 +112,7 @@
   background: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-family: var(--font-display);
   font-size: 0.857em;
   font-weight: 500;
@@ -125,7 +125,7 @@
 
 .show-earlier-btn:hover {
   border-color: var(--border-strong);
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 /* ── Block architecture ───────────────────────────────────────────────
@@ -161,12 +161,12 @@
      subtle "tail" toward the right edge (a modern messaging convention)
      without resorting to a drawn pointer. Neutral Catppuccin surfaces; the
      right-alignment is what marks it as "mine". */
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   border-bottom-right-radius: var(--radius-sm);
   padding: 0.643rem 1rem; /* ≈9/14 */
-  color: var(--ctp-text);
+  color: var(--text);
   line-height: var(--leading-body);
   white-space: pre-wrap;
   word-break: break-word;
@@ -179,7 +179,7 @@
    capped at two-thirds of the panel), so the text should not be
    re-capped by this rule. */
 .transcript-block__content {
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: 1em;
   line-height: var(--leading-body);
@@ -219,7 +219,7 @@
 }
 
 .transcript-block__image-thumb:hover {
-  border-color: var(--ctp-mauve);
+  border-color: var(--accent);
 }
 
 /* Thinking — always visible, italic — uses the display font's true
@@ -315,12 +315,12 @@
 }
 
 .tool-card--error {
-  background: color-mix(in srgb, var(--ctp-red) 9%, var(--ctp-base));
-  border-color: color-mix(in srgb, var(--ctp-red) 26%, transparent);
+  background: color-mix(in srgb, var(--danger) 9%, var(--bg));
+  border-color: color-mix(in srgb, var(--danger) 26%, transparent);
 }
 
 .tool-card--error:hover {
-  border-color: color-mix(in srgb, var(--ctp-red) 40%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
 }
 
 .tool-card__header {
@@ -352,12 +352,12 @@ button.tool-card__header {
   font-size: var(--font-size-small);
   font-weight: 600;
   line-height: var(--leading-label);
-  color: var(--ctp-text);
+  color: var(--text);
   flex-shrink: 0;
 }
 
 .tool-card__name--bash {
-  color: var(--ctp-green);
+  color: var(--success);
 }
 
 .tool-card__subject {
@@ -365,7 +365,7 @@ button.tool-card__header {
   font-family: var(--font-code);
   font-size: var(--font-size-code);
   line-height: var(--leading-code);
-  color: var(--ctp-teal);
+  color: var(--cyan);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -373,7 +373,7 @@ button.tool-card__header {
 }
 
 .tool-card__subject--command {
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .tool-card__spinner {
@@ -385,8 +385,8 @@ button.tool-card__header {
   flex-shrink: 0;
   font-family: var(--font-code);
   font-size: var(--font-size-small);
-  color: var(--ctp-red);
-  background: color-mix(in srgb, var(--ctp-red) 18%, var(--ctp-mantle));
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 18%, var(--bg-sunken));
   border-radius: 0.214em;
   padding: 0.071em 0.429em;
 }
@@ -416,7 +416,7 @@ button.tool-card__header {
    full JSON is collapsed into a one-liner. A <details> disclosure
    reveals the full JSON if it's substantially larger. */
 .tool-card__args {
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   font-family: var(--font-code);
   font-size: var(--font-size-code);
   line-height: var(--leading-code);
@@ -433,7 +433,7 @@ button.tool-card__header {
 }
 
 .tool-card__args-label {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   margin-right: 0.429rem;
 }
 
@@ -449,7 +449,7 @@ button.tool-card__header {
 
 .tool-card__args-summary::before {
   content: "▸";
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   display: inline-block;
   margin-right: 0.429rem;
   transition: transform 0.15s ease;
@@ -462,11 +462,11 @@ details[open] > .tool-card__args-summary::before {
 .tool-card__args-full {
   margin: 0.429rem 0 0;
   padding: 0.429rem 0.571rem;
-  background: var(--ctp-base);
+  background: var(--bg);
   border-radius: var(--radius-sm);
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--ctp-overlay2);
+  color: var(--text-disabled);
   font-family: var(--font-code);
   font-size: var(--font-size-code);
   line-height: var(--leading-code);
@@ -479,14 +479,14 @@ details[open] > .tool-card__args-summary::before {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
 }
 
 .tool-card__more {
   font-family: var(--font-code);
   font-size: var(--font-size-small);
   font-style: italic; /* True italic variant for "more" notes */
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 
 .tool-card__expand {
@@ -498,17 +498,17 @@ details[open] > .tool-card__args-summary::before {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, var(--ctp-surface0) 60%, transparent);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
   border: none;
   border-radius: 0.286em;
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   cursor: pointer;
   padding: 0;
 }
 
 .tool-card__expand:hover {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .tool-card__expand svg {
@@ -526,7 +526,7 @@ details[open] > .tool-card__args-summary::before {
   align-items: center;
   gap: 0.571rem;
   padding: 0.286rem 0;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-family: var(--font-code);
   font-size: var(--font-size-code);
 }
@@ -546,7 +546,7 @@ details[open] > .tool-card__args-summary::before {
 .compaction-marker__line {
   flex: 1;
   height: 1px;
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
 }
 
 .compaction-marker__label {
@@ -554,7 +554,7 @@ details[open] > .tool-card__args-summary::before {
   font-size: 0.786em; /* ≈11px @ 14px root */
   font-weight: 500;
   line-height: var(--leading-label);
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   white-space: nowrap;
 }
 
@@ -562,7 +562,7 @@ details[open] > .tool-card__args-summary::before {
   width: 100%;
   font-family: var(--font-display);
   font-size: 0.857em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-style: italic;
   line-height: var(--leading-body);
   margin-top: 0.286rem;
@@ -572,7 +572,7 @@ details[open] > .tool-card__args-summary::before {
 .transcript-block--custom {
   font-family: var(--font-display);
   font-size: 0.857em;
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   font-style: italic;
   padding: 0.286rem 0;
   line-height: var(--leading-body);
@@ -585,15 +585,15 @@ details[open] > .tool-card__args-summary::before {
   gap: 0.571rem;
   padding: 0.643rem 0.857rem;
   border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--ctp-red) 30%, transparent);
-  background: color-mix(in srgb, var(--ctp-red) 11%, var(--ctp-base));
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  background: color-mix(in srgb, var(--danger) 11%, var(--bg));
   font-family: var(--font-display);
   font-size: 0.857em;
   line-height: var(--leading-body);
 }
 
 .transcript-block__error-icon {
-  color: var(--ctp-red);
+  color: var(--danger);
   font-size: 1.1em;
   line-height: var(--leading-label);
   flex-shrink: 0;
@@ -608,11 +608,11 @@ details[open] > .tool-card__args-summary::before {
 
 .transcript-block__error-title {
   font-weight: 600;
-  color: var(--ctp-red);
+  color: var(--danger);
 }
 
 .transcript-block__error-message {
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   word-break: break-word;
 }
 
@@ -635,9 +635,9 @@ details[open] > .tool-card__args-summary::before {
 }
 
 .transcript-block__content blockquote {
-  border-left: 2px solid var(--ctp-surface1);
+  border-left: 2px solid var(--surface-2);
   padding-left: 0.714rem;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   margin: 0 0 var(--space-2);
   font-style: italic;
 }
@@ -645,20 +645,20 @@ details[open] > .tool-card__args-summary::before {
 .transcript-block__content h1,
 .transcript-block__content h2,
 .transcript-block__content h3 {
-  color: var(--ctp-text);
+  color: var(--text);
   margin: 0.8em 0 0.4em;
   font-weight: 600;
   line-height: 1.3;
 }
 
 .transcript-block__content a {
-  color: var(--ctp-blue);
+  color: var(--info);
   text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--ctp-blue) 30%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--info) 30%, transparent);
 }
 
 .transcript-block__content a:hover {
-  border-bottom-color: var(--ctp-blue);
+  border-bottom-color: var(--info);
 }
 
 .transcript-block__content table {
@@ -684,7 +684,7 @@ details[open] > .tool-card__args-summary::before {
 }
 
 .transcript-block__content th {
-  background: var(--ctp-surface0);
+  background: var(--surface);
   font-weight: 600;
 }
 
@@ -695,7 +695,7 @@ details[open] > .tool-card__args-summary::before {
    reads as a distinct boxed surface — same treatment as the tool cards. */
 .transcript-block__content .shiki,
 .thinking-block .shiki {
-  background: var(--ctp-mantle) !important;
+  background: var(--bg-sunken) !important;
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-md);
   padding: 0.857rem;
@@ -707,7 +707,7 @@ details[open] > .tool-card__args-summary::before {
 }
 
 .code-block--plain {
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-md);
   padding: 0.857rem;
@@ -715,5 +715,5 @@ details[open] > .tool-card__args-summary::before {
   font-size: var(--font-size-code);
   line-height: var(--leading-code);
   margin: var(--space-2) 0;
-  color: var(--ctp-text);
+  color: var(--text);
 }

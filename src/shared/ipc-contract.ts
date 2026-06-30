@@ -14,6 +14,7 @@ import type { ExtensionUiRequest, ExtensionUiResponse } from "./pi-protocol/exte
 import type { PanelEvent } from "./pi-protocol/panel-events.js";
 import type { PiRpcResponse } from "./pi-protocol/responses.js";
 import type { AppSettings } from "./settings.js";
+import type { Theme } from "./theme/index.js";
 import type { UpdateStatus } from "./updates.js";
 
 export interface SessionSummary {
@@ -180,6 +181,10 @@ export interface IpcInvokeContract {
   };
   "settings.get": { req: undefined; res: AppSettings };
   "settings.set": { req: Partial<AppSettings>; res: AppSettings };
+  // User-droppable themes loaded from <userData>/themes/*.json (validated
+  // against ThemeSchema). Bundled themes are compiled into the renderer; this
+  // returns only the user layer, which the renderer merges on top.
+  "themes.listUser": { req: undefined; res: Theme[] };
   "app.versions": { req: undefined; res: { app: string; electron: string; node: string } };
   // Clipboard write. Routed through the main process because the
   // renderer's `navigator.clipboard` API is unreliable in Electron

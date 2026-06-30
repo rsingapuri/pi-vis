@@ -1,17 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { AppSettingsSchema, piThemeForColorScheme } from "./settings.js";
+import { AppSettingsSchema } from "./settings.js";
 
-describe("piThemeForColorScheme", () => {
-  it("maps Latte (the only light flavor) to pi's light theme", () => {
-    expect(piThemeForColorScheme("latte")).toBe("light");
-  });
-
-  it("maps the dark flavors to pi's dark theme", () => {
-    expect(piThemeForColorScheme("frappe")).toBe("dark");
-    expect(piThemeForColorScheme("macchiato")).toBe("dark");
-    expect(piThemeForColorScheme("mocha")).toBe("dark");
-  });
-});
+// The pi-theme luminance mapping moved to @shared/theme (piThemeForTheme,
+// keyed off each theme's `appearance`); see theme/*.test.ts.
 
 describe("AppSettingsSchema", () => {
   it("returns sensible defaults for an empty input", () => {
@@ -43,18 +34,17 @@ describe("AppSettingsSchema", () => {
     expect("activeSessionFile" in result.data).toBe(false);
   });
 
-  it("accepts and round-trips every valid colorScheme flavor", () => {
-    for (const flavor of ["mocha", "macchiato", "frappe", "latte"] as const) {
-      const result = AppSettingsSchema.safeParse({ colorScheme: flavor });
+  it("accepts and round-trips any colorScheme id", () => {
+    // colorScheme is now a free string (a theme-registry id), not an enum:
+    // bundled flavors AND user-theme ids must round-trip. An id that no
+    // longer resolves is handled at apply time by resolveTheme's fallback,
+    // not rejected here.
+    for (const id of ["mocha", "latte", "gruvbox-material-dark", "my-custom-theme"]) {
+      const result = AppSettingsSchema.safeParse({ colorScheme: id });
       expect(result.success).toBe(true);
       if (!result.success) return;
-      expect(result.data.colorScheme).toBe(flavor);
+      expect(result.data.colorScheme).toBe(id);
     }
-  });
-
-  it("rejects an unknown colorScheme flavor", () => {
-    const result = AppSettingsSchema.safeParse({ colorScheme: "frappuccino" });
-    expect(result.success).toBe(false);
   });
 
   it("strips the legacy recentWorkspaces key and defaults workspaceOrder / expandedWorkspaces to empty", () => {

@@ -3,7 +3,7 @@
 .changelog-overlay {
   position: fixed;
   inset: 0;
-  background: var(--ctp-scrim);
+  background: var(--scrim);
   backdrop-filter: blur(0.286rem);
   display: flex;
   align-items: center;
@@ -13,7 +13,7 @@
 }
 
 .changelog-modal {
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   width: 100%;
@@ -36,13 +36,13 @@
   font-family: var(--font-display);
   font-size: 1em;
   font-weight: 600;
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .changelog-modal__close {
   background: none;
   border: none;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   cursor: pointer;
   font-size: 1.429em;
   line-height: 1;
@@ -50,7 +50,7 @@
 }
 
 .changelog-modal__close:hover {
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .changelog-modal__body {
@@ -61,7 +61,7 @@
   font-size: 0.929em;
   line-height: var(--leading-body);
   letter-spacing: var(--tracking-body);
-  color: var(--ctp-text);
+  color: var(--text);
   min-height: 8rem;
 }
 
@@ -75,10 +75,10 @@
 }
 
 .changelog-modal__btn {
-  background: var(--ctp-mauve);
+  background: var(--accent);
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--ctp-base);
+  color: var(--bg);
   cursor: pointer;
   font-family: var(--font-display);
   font-size: 0.929em;
@@ -88,7 +88,7 @@
 }
 
 .changelog-modal__btn:hover {
-  background: var(--ctp-lavender);
+  background: var(--accent-soft);
 }
 
 /* ── Markdown content (mirrors transcript markdown styling) ────────── */
@@ -111,9 +111,9 @@
 }
 
 .changelog-modal__body blockquote {
-  border-left: 2px solid var(--ctp-surface1);
+  border-left: 2px solid var(--surface-2);
   padding-left: 0.714rem;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   margin: 0 0 var(--space-2);
   font-style: italic;
 }
@@ -121,20 +121,20 @@
 .changelog-modal__body h1,
 .changelog-modal__body h2,
 .changelog-modal__body h3 {
-  color: var(--ctp-text);
+  color: var(--text);
   margin: 0.8em 0 0.4em;
   font-weight: 600;
   line-height: 1.3;
 }
 
 .changelog-modal__body a {
-  color: var(--ctp-blue);
+  color: var(--info);
   text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--ctp-blue) 30%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--info) 30%, transparent);
 }
 
 .changelog-modal__body a:hover {
-  border-bottom-color: var(--ctp-blue);
+  border-bottom-color: var(--info);
 }
 
 .changelog-modal__body table {
@@ -156,14 +156,14 @@
 }
 
 .changelog-modal__body th {
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   font-weight: 600;
 }
 
 /* Shiki code blocks: override the inline theme background so the block
    reads as a distinct surface (mirrors the transcript treatment). */
 .changelog-modal__body .shiki {
-  background: var(--ctp-mantle) !important;
+  background: var(--bg-sunken) !important;
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-md);
   padding: 0.857rem;
@@ -175,7 +175,7 @@
 }
 
 .changelog-modal__body .code-block--plain {
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-md);
   padding: 0.857rem;
@@ -183,5 +183,5 @@
   font-size: var(--font-size-code);
   line-height: var(--leading-code);
   margin: var(--space-2) 0;
-  color: var(--ctp-text);
+  color: var(--text);
 }

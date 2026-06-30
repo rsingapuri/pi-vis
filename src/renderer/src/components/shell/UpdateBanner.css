@@ -19,13 +19,13 @@
   margin: 0.429rem 0.857rem 0.643rem;
   padding: 0.357rem 0.5rem 0.357rem 0.857rem;
   max-width: calc(100% - 1.714rem);
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--elevation-2);
   font-family: var(--font-display);
   font-size: 0.857em;
-  color: var(--ctp-text);
+  color: var(--text);
   animation: update-banner-rise 0.18s ease-out;
 }
 
@@ -63,7 +63,7 @@
 .update-banner__text {
   flex: 1 1 auto;
   min-width: 0;
-  color: var(--ctp-green);
+  color: var(--success);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -78,10 +78,10 @@
 }
 
 .update-banner__btn {
-  background: var(--ctp-mauve);
+  background: var(--accent);
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--ctp-base);
+  color: var(--bg);
   cursor: pointer;
   font-family: var(--font-display);
   font-size: 0.857em;
@@ -92,17 +92,17 @@
 }
 
 .update-banner__btn:hover {
-  background: var(--ctp-lavender);
+  background: var(--accent-soft);
 }
 
 .update-banner__btn--secondary {
-  background: var(--ctp-surface1);
-  color: var(--ctp-subtext0);
+  background: var(--surface-2);
+  color: var(--text-muted);
 }
 
 .update-banner__btn--secondary:hover {
-  background: var(--ctp-surface2);
-  color: var(--ctp-text);
+  background: var(--surface-3);
+  color: var(--text);
 }
 
 /* Expand toggle — a pure-CSS chevron (no text), centered in its button.
@@ -144,7 +144,7 @@
   background: none;
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   cursor: pointer;
   font-size: 1.143em;
   line-height: 1;
@@ -152,8 +152,8 @@
 }
 
 .update-banner__close:hover {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 /* Expandable disclosure — lists each available update with its version
@@ -188,13 +188,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--ctp-text);
+  color: var(--text);
   font-weight: 500;
 }
 
 .update-banner__detail-version {
   flex: 0 0 auto;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-family: var(--font-code);
   font-size: 0.857em;
   white-space: nowrap;

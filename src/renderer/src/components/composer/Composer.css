@@ -68,7 +68,7 @@
 }
 
 .composer__attachment-remove:hover {
-  background: var(--ctp-red);
+  background: var(--danger);
 }
 
 /* Hidden file input */
@@ -90,7 +90,7 @@
   bottom: 100%;
   margin-bottom: 0.429rem;
   z-index: 2; /* sit above the input box's focus ring */
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--elevation-2);
@@ -123,7 +123,7 @@
   text-align: left;
   font-family: var(--font-code);
   font-size: 0.929em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   display: grid;
   grid-template-columns: auto auto 1fr auto;
   align-items: baseline;
@@ -138,9 +138,9 @@
    with the /model, /fork, /resume pickers — never a full-bleed strip
    butting into the card's rounded corners. */
 .composer__suggestion--selected {
-  background: var(--ctp-surface1);
-  border-color: var(--ctp-surface2);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  border-color: var(--surface-3);
+  color: var(--text);
 }
 
 .composer__suggestion-name {
@@ -148,7 +148,7 @@
 }
 
 .composer__suggestion-arg {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   font-size: 0.929em;
 }
 
@@ -158,32 +158,32 @@
   padding: 0.071em 0.357em;
   border-radius: 999px;
   border: 1px solid var(--border-strong);
-  color: var(--ctp-overlay0);
-  background: var(--ctp-surface0);
+  color: var(--text-ghost);
+  background: var(--surface);
 }
 
 .composer__suggestion-badge--built-in {
-  color: var(--ctp-mauve);
-  border-color: var(--ctp-mauve);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .composer__suggestion-badge--extension {
-  color: var(--ctp-green);
-  border-color: var(--ctp-green);
+  color: var(--success);
+  border-color: var(--success);
 }
 
 .composer__suggestion-badge--prompt {
-  color: var(--ctp-blue);
-  border-color: var(--ctp-blue);
+  color: var(--info);
+  border-color: var(--info);
 }
 
 .composer__suggestion-badge--skill {
-  color: var(--ctp-peach);
-  border-color: var(--ctp-peach);
+  color: var(--warning-soft);
+  border-color: var(--warning-soft);
 }
 
 .composer__suggestion-desc {
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-family: var(--font-display);
   font-size: 0.929em;
   overflow: hidden;
@@ -212,7 +212,7 @@
   align-items: flex-end;
   gap: 0.143rem;
   padding: 0.357rem;
-  background: var(--ctp-input-bg);
+  background: var(--input-bg);
   /* Always-visible border (border-strong, not the faint --border) so the input
      reads as a defined card even when unfocused — consistent with the custom
      panel / dialog slots that can replace it here. Focus lifts it to mauve. */
@@ -236,8 +236,8 @@
 /* The text field lifts to an accent ring while focused — the same mauve
    focus language the dialogs and dropdowns use. */
 .composer__input-box:focus-within {
-  border-color: var(--ctp-mauve);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ctp-mauve) 14%, transparent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .composer__attach-btn {
@@ -247,7 +247,7 @@
   border-radius: var(--radius-sm);
   border: none;
   background: none;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   font-size: inherit;
   cursor: pointer;
   display: flex;
@@ -264,8 +264,8 @@
 }
 
 .composer__attach-btn:hover {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 /* Active model can't accept images: dim the affordance and signal it's
@@ -278,7 +278,7 @@
 
 .composer__attach-btn--unsupported:hover {
   background: none;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 
 .composer__textarea-wrap {
@@ -293,7 +293,7 @@
   min-width: 0;
   background: none;
   border: none;
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: inherit;
   line-height: inherit;
@@ -312,7 +312,7 @@
   position: absolute;
   inset: 0;
   padding: 0.3em 0.4em;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   pointer-events: none;
   white-space: nowrap;
   overflow: hidden;
@@ -320,9 +320,9 @@
 }
 
 .composer__input-row--bash .composer__placeholder {
-  color: var(--ctp-green);
+  color: var(--success);
 }
 
 .composer__input-row--slash .composer__placeholder {
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }

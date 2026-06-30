@@ -68,21 +68,21 @@
   background: none;
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   cursor: pointer;
   /* Interactive element inside the drag region — must be clickable. */
   -webkit-app-region: no-drag;
 }
 
 .titlebar__sidebar-toggle:hover {
-  background: var(--ctp-surface0);
-  color: var(--ctp-text);
+  background: var(--surface);
+  color: var(--text);
 }
 
 .titlebar__sidebar-toggle:focus-visible {
   outline: none;
-  background: var(--ctp-surface0);
-  color: var(--ctp-text);
+  background: var(--surface);
+  color: var(--text);
 }
 
 .titlebar__sidebar-toggle svg {

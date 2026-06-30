@@ -43,9 +43,12 @@ export const AppSettingsSchema = z.object({
       }),
     )
     .default({}),
-  // Catppuccin flavor applied at runtime via CSS vars (and Shiki themes).
-  // Enum literals must match the keys exported from catppuccin.ts.
-  colorScheme: z.enum(["latte", "frappe", "macchiato", "mocha"]).default("mocha"),
+  // Active theme id, applied at runtime via CSS vars (and Shiki themes). A
+  // free string (not an enum) because themes are now a registry: bundled
+  // themes (src/shared/theme) plus user-droppable ones (<userData>/themes).
+  // An id that no longer resolves falls back to the default theme at apply
+  // time (see resolveTheme), so a stale persisted id can't break startup.
+  colorScheme: z.string().default("mocha"),
   // Diff viewer preference (WP5d). Persisted across sessions; the
   // viewer seeds its own state from this on open and writes back on
   // toggle. Default is "unified" — split view is opt-in and only
@@ -91,18 +94,8 @@ export const defaultSettings: AppSettings = AppSettingsSchema.parse({});
 
 export type ColorScheme = AppSettings["colorScheme"];
 
-/**
- * Map a pi-vis Catppuccin flavor to the pi theme name the SDK host should load.
- *
- * pi ships exactly two built-in themes — "dark" and "light" — and resolves an
- * extension's semantic colors (`theme.fg("text"|"muted"|"borderMuted", …)`) plus
- * all pi-tui rendering (the unified TUI, custom() panels) against the active one.
- * Those colors must be readable on the surface pi-vis paints them on, so the host
- * theme has to track pi-vis's scheme by luminance: Latte is the only light flavor;
- * Frappé/Macchiato/Mocha are dark. Without this the host would always use pi's
- * default (dark) theme, so a light pi-vis scheme (Latte) showed dark-tuned,
- * low-contrast extension text — the "looked good in Mocha, bad in Latte" bug.
- */
-export function piThemeForColorScheme(scheme: ColorScheme): "dark" | "light" {
-  return scheme === "latte" ? "light" : "dark";
-}
+// The pi-theme mapping (which pi built-in theme the SDK host loads for a given
+// app theme) now lives in @shared/theme as `piThemeForTheme`, keyed off the
+// theme's declared `appearance` rather than a hardcoded flavor check — so it
+// generalizes to any bundled or user theme. The main process resolves the
+// active theme from its registry (bundled + user) before mapping.

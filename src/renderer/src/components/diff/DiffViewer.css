@@ -40,7 +40,7 @@
   border-radius: calc(var(--radius-lg) - var(--card-border-w));
   overflow: hidden;
   z-index: 150;
-  background: var(--ctp-scrim);
+  background: var(--scrim);
   backdrop-filter: blur(0.286rem);
   display: flex;
   justify-content: center;
@@ -84,7 +84,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--ctp-base);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--elevation-3);
@@ -132,8 +132,8 @@
 
 .diff-viewer__header {
   padding: 0.571rem 1rem;
-  background: var(--ctp-mantle);
-  border-bottom: 1px solid var(--ctp-surface0);
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--surface);
   flex-shrink: 0;
 }
 
@@ -141,7 +141,7 @@
   font-family: var(--font-display);
   font-size: 0.929em;
   font-weight: 600;
-  color: var(--ctp-text);
+  color: var(--text);
   flex-shrink: 0;
 }
 
@@ -150,7 +150,7 @@
 .diff-viewer__summary {
   font-family: var(--font-code);
   font-size: var(--font-size-small);
-  color: var(--ctp-subtext1);
+  color: var(--text-secondary);
   display: inline-flex;
   gap: 0.429rem;
   flex-shrink: 0;
@@ -158,10 +158,10 @@
 }
 
 .diff-viewer__summary-add {
-  color: var(--ctp-green);
+  color: var(--success);
 }
 .diff-viewer__summary-del {
-  color: var(--ctp-red);
+  color: var(--danger);
 }
 
 /* Segmented control (UNIFIED / SPLIT). */
@@ -179,18 +179,18 @@
   font-size: 0.786em;
   font-weight: 600;
   background: transparent;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   border: none;
   cursor: pointer;
 }
 
 .diff-viewer__seg-btn:hover:not(.diff-viewer__seg-btn--active):not(:disabled) {
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .diff-viewer__seg-btn--active {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .diff-viewer__seg-btn:disabled {
@@ -209,25 +209,25 @@
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   cursor: pointer;
   flex-shrink: 0;
   padding: 0;
 }
 
 .diff-viewer__icon-btn:hover {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 /* Toggled-on state for the header find button (find bar is open). */
 .diff-viewer__icon-btn--on {
-  background: color-mix(in srgb, var(--ctp-mauve) 22%, transparent);
-  color: var(--ctp-mauve);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
 }
 .diff-viewer__icon-btn--on:hover {
-  background: color-mix(in srgb, var(--ctp-mauve) 30%, transparent);
-  color: var(--ctp-mauve);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--accent);
 }
 
 .diff-viewer__icon-btn--spinning svg {
@@ -245,7 +245,7 @@
   width: 0.5rem;
   height: 0.5rem;
   border-radius: 50%;
-  background: var(--ctp-mauve);
+  background: var(--accent);
   flex-shrink: 0;
 }
 
@@ -263,12 +263,12 @@
 
 /* Truncation banner under the header. */
 .diff-viewer__truncated {
-  background: var(--ctp-mantle);
-  border-bottom: 1px solid var(--ctp-surface0);
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--surface);
   padding: 0.286rem 1rem;
   font-family: var(--font-display);
   font-size: var(--font-size-small);
-  color: var(--ctp-peach);
+  color: var(--warning-soft);
   flex-shrink: 0;
 }
 
@@ -293,10 +293,10 @@
   align-items: center;
   gap: 0.214rem;
   padding: 0.214rem 0.286rem 0.214rem 0.5rem;
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: 0 0.286rem 1rem var(--ctp-shadow);
+  box-shadow: 0 0.286rem 1rem var(--shadow);
   animation: diff-search-in 120ms ease-out;
 }
 
@@ -320,7 +320,7 @@
 .diff-search__icon {
   display: inline-flex;
   align-items: center;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   flex-shrink: 0;
 }
 
@@ -330,7 +330,7 @@
   background: transparent;
   border: none;
   outline: none;
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-code);
   font-size: var(--font-size-small);
   padding: 0.286rem 0.143rem;
@@ -338,13 +338,13 @@
 }
 
 .diff-search__input::placeholder {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 
 .diff-search__count {
   font-family: var(--font-code);
   font-size: 0.786em;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
@@ -354,14 +354,14 @@
 }
 
 .diff-search__count--empty {
-  color: var(--ctp-red);
+  color: var(--danger);
 }
 
 .diff-search__divider {
   width: 1px;
   align-self: stretch;
   margin: 0.214rem 0.143rem;
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
   flex-shrink: 0;
 }
 
@@ -374,15 +374,15 @@
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   cursor: pointer;
   flex-shrink: 0;
   padding: 0;
 }
 
 .diff-search__btn:hover:not(:disabled) {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .diff-search__btn:disabled {
@@ -392,12 +392,12 @@
 
 /* Case-sensitivity toggle: lit when active. */
 .diff-search__btn[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--ctp-mauve) 22%, transparent);
-  color: var(--ctp-mauve);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
 }
 .diff-search__btn[aria-pressed="true"]:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--ctp-mauve) 30%, transparent);
-  color: var(--ctp-mauve);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--accent);
 }
 
 /* Rail */
@@ -409,8 +409,8 @@
   position: relative;
   flex-shrink: 0;
   max-width: 55%;
-  border-right: 1px solid var(--ctp-surface0);
-  background: var(--ctp-mantle);
+  border-right: 1px solid var(--surface);
+  background: var(--bg-sunken);
   display: flex;
   flex-direction: column;
 }
@@ -420,7 +420,7 @@
   display: flex;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--ctp-crust);
+  background: var(--bg-deep);
   flex-shrink: 0;
 }
 
@@ -428,7 +428,7 @@
   flex: 1;
   background: transparent;
   border: none;
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-code);
   font-size: var(--font-size-small);
   outline: none;
@@ -437,11 +437,11 @@
 }
 
 .diff-rail__search-input::placeholder {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 
 .diff-rail__search:focus-within {
-  border-color: var(--ctp-mauve);
+  border-color: var(--accent);
 }
 
 .diff-rail__list {
@@ -455,7 +455,7 @@
 
 .diff-rail__empty {
   padding: 0.857rem;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-family: var(--font-display);
   font-size: 0.857em;
   text-align: center;
@@ -469,7 +469,7 @@
   width: 0.857rem;
   min-width: 0.857rem;
   flex-shrink: 0;
-  border-left: 1px solid var(--ctp-surface0);
+  border-left: 1px solid var(--surface);
   margin-right: 0;
   height: 100%;
   align-self: stretch;
@@ -489,28 +489,28 @@
   font-family: var(--font-code);
   font-size: var(--font-size-small);
   text-align: left;
-  color: var(--ctp-text);
+  color: var(--text);
   white-space: nowrap;
   min-width: 0;
 }
 
 .diff-tree__row:hover {
-  background: var(--ctp-surface0);
+  background: var(--surface);
 }
 
 .diff-tree__row--active {
-  background: var(--ctp-surface0);
-  border-color: var(--ctp-surface1);
-  box-shadow: inset 2px 0 0 var(--ctp-mauve);
+  background: var(--surface);
+  border-color: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .diff-tree__row--dir {
-  color: var(--ctp-subtext1);
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
 .diff-tree__row--dir:hover {
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 /* Chevron is an SVG arrow; rotated 90° via transition when open. */
@@ -522,7 +522,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   transition: transform 0.2s ease;
 }
 
@@ -577,13 +577,13 @@
   white-space: nowrap;
   flex-shrink: 1;
   min-width: 0;
-  color: var(--ctp-text);
+  color: var(--text);
   font-weight: 500;
 }
 
 .diff-tree__file-ext {
   flex-shrink: 0;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-weight: 500;
 }
 
@@ -610,13 +610,13 @@
 }
 
 .diff-rail__item-counts-add {
-  color: var(--ctp-green);
+  color: var(--success);
 }
 .diff-rail__item-counts-del {
-  color: var(--ctp-red);
+  color: var(--danger);
 }
 .diff-rail__item-counts-bin {
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
 }
 
 /* Content */
@@ -625,7 +625,7 @@
   min-width: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  background: var(--ctp-base);
+  background: var(--bg);
 }
 
 .diff-content--empty {
@@ -640,7 +640,7 @@
   flex-direction: column;
   align-items: center;
   gap: 0.571rem;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-family: var(--font-display);
   font-size: 0.929em;
   padding: 2rem;
@@ -649,29 +649,29 @@
 }
 
 .diff-empty__check {
-  color: var(--ctp-green);
+  color: var(--success);
   font-size: 1.714em;
   font-family: var(--font-code);
 }
 
 .diff-empty__sub {
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
   font-size: 0.857em;
 }
 
 .diff-empty__path {
   font-family: var(--font-code);
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   font-size: var(--font-size-small);
-  background: var(--ctp-surface0);
+  background: var(--surface);
   padding: 0.143rem 0.429rem;
   border-radius: var(--radius-sm);
   margin-top: 0.286rem;
 }
 
 .diff-empty__retry {
-  background: var(--ctp-mauve);
-  color: var(--ctp-base);
+  background: var(--accent);
+  color: var(--bg);
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -684,7 +684,7 @@
 }
 
 .diff-empty__retry:hover {
-  background: var(--ctp-lavender);
+  background: var(--accent-soft);
 }
 
 /* Split-view selection containment. While the user is selecting in

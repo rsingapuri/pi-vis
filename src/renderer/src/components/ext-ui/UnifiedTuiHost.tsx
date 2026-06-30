@@ -26,7 +26,8 @@ import type React from "react";
 import { useEffect, useRef } from "react";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
-import { palettes } from "../../theme/catppuccin.js";
+import { getTheme } from "../../theme/registry.js";
+import { buildXtermTheme } from "../../theme/xterm.js";
 import "@xterm/xterm/css/xterm.css";
 import "./CustomPanelHost.css";
 
@@ -40,34 +41,6 @@ interface UnifiedTuiHostProps {
  *  (font-metric accurate — the public API doesn't expose it). */
 interface XtermCore {
   _renderService?: { dimensions?: { css?: { cell?: { height?: number } } } };
-}
-
-// ─── xterm theme builder (mirrors CustomPanelHost) ───────────────────────
-
-function buildXtermTheme(colorScheme: string): Record<string, string> {
-  const p = palettes[colorScheme as keyof typeof palettes] ?? palettes.mocha;
-  return {
-    background: p.base,
-    foreground: p.text,
-    cursor: p.rosewater,
-    selectionBackground: p.surface2,
-    black: p.surface1,
-    red: p.red,
-    green: p.green,
-    yellow: p.yellow,
-    blue: p.blue,
-    magenta: p.pink,
-    cyan: p.teal,
-    white: p.subtext1,
-    brightBlack: p.surface2,
-    brightRed: p.red,
-    brightGreen: p.green,
-    brightYellow: p.yellow,
-    brightBlue: p.blue,
-    brightMagenta: p.pink,
-    brightCyan: p.teal,
-    brightWhite: p.subtext0,
-  };
 }
 
 function resolveMonoFont(): string {
@@ -127,7 +100,7 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
       cursorStyle: "block",
       fontSize: fonts?.code?.sizePx ?? 14,
       fontFamily,
-      theme: buildXtermTheme(colorScheme ?? "mocha"),
+      theme: buildXtermTheme(getTheme(colorScheme ?? "mocha")),
     });
     termRef.current = term;
 

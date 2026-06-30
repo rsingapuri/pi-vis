@@ -564,6 +564,9 @@ const stub = {
       case "settings.set":
         Object.assign(settingsState, req as Record<string, unknown>);
         return settingsState;
+      case "themes.listUser":
+        return []; // preview has no user-droppable themes; bundled themes apply
+
       case "workspace.list":
         return [DEMO_WORKSPACE];
       case "workspace.remove": {

@@ -13,7 +13,7 @@
   border-radius: calc(var(--radius-lg) - var(--card-border-w));
   overflow: hidden;
   z-index: 150;
-  background: var(--ctp-scrim);
+  background: var(--scrim);
   backdrop-filter: blur(0.286rem);
   display: flex;
   justify-content: center;
@@ -41,7 +41,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--ctp-base);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--elevation-3);
@@ -85,8 +85,8 @@
 
 .tree-viewer__header {
   padding: 0.571rem 1rem;
-  background: var(--ctp-mantle);
-  border-bottom: 1px solid var(--ctp-surface0);
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--surface);
   flex-shrink: 0;
 }
 
@@ -94,7 +94,7 @@
   font-family: var(--font-display);
   font-size: 0.929em;
   font-weight: 600;
-  color: var(--ctp-text);
+  color: var(--text);
   flex-shrink: 0;
 }
 
@@ -103,8 +103,8 @@
   font-family: var(--font-display);
   font-size: 0.78em;
   font-weight: 600;
-  color: var(--ctp-mauve);
-  background: color-mix(in srgb, var(--ctp-mauve) 16%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   padding: 0.071rem 0.5rem;
   border-radius: var(--radius-pill);
   flex-shrink: 0;
@@ -114,7 +114,7 @@
 .tree-viewer__summary {
   font-family: var(--font-code);
   font-size: var(--font-size-small);
-  color: var(--ctp-subtext1);
+  color: var(--text-secondary);
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -132,10 +132,10 @@
 
 .tree-viewer__search-input {
   appearance: none;
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid transparent;
   border-radius: var(--radius-md);
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-code);
   font-size: var(--font-size-small);
   padding: 0.286rem 0.714rem;
@@ -145,8 +145,8 @@
 
 .tree-viewer__search-input:focus {
   outline: none;
-  border-color: var(--ctp-mauve);
-  background: var(--ctp-base);
+  border-color: var(--accent);
+  background: var(--bg);
 }
 
 /* Summarize toggle ─────────────────────────────────────────────────── */
@@ -157,7 +157,7 @@
   gap: 0.429rem;
   font-family: var(--font-display);
   font-size: var(--font-size-small);
-  color: var(--ctp-subtext1);
+  color: var(--text-secondary);
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
@@ -171,15 +171,15 @@
   margin: 0;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   cursor: pointer;
   position: relative;
   flex-shrink: 0;
 }
 
 .tree-viewer__toggle input[type="checkbox"]:checked {
-  background: var(--ctp-mauve);
-  border-color: var(--ctp-mauve);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .tree-viewer__toggle input[type="checkbox"]:checked::after {
@@ -189,13 +189,13 @@
   top: 0.107rem;
   width: 0.214rem;
   height: 0.45rem;
-  border: solid var(--ctp-base);
+  border: solid var(--bg);
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
 }
 
 .tree-viewer__toggle--on {
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 /* Close button ─────────────────────────────────────────────────────── */
@@ -204,7 +204,7 @@
   appearance: none;
   background: transparent;
   border: 0;
-  color: var(--ctp-subtext1);
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 0.286rem;
   border-radius: var(--radius-sm);
@@ -215,8 +215,8 @@
 }
 
 .tree-viewer__icon-btn:hover {
-  background: var(--ctp-surface0);
-  color: var(--ctp-text);
+  background: var(--surface);
+  color: var(--text);
 }
 
 /* Hint line ────────────────────────────────────────────────────────── */
@@ -224,10 +224,10 @@
 .tree-viewer__hint {
   font-family: var(--font-code);
   font-size: var(--font-size-tiny);
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   padding: 0.286rem 1rem;
-  background: var(--ctp-mantle);
-  border-bottom: 1px solid var(--ctp-surface0);
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--surface);
   flex-shrink: 0;
   display: flex;
   gap: 0.857rem;
@@ -236,12 +236,12 @@
 
 .tree-viewer__hint kbd {
   font-family: var(--font-code);
-  background: var(--ctp-surface0);
-  border: 1px solid var(--ctp-surface1);
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
   border-radius: 0.214rem;
   padding: 0 0.357rem;
   font-size: 0.85em;
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 /* Body ─────────────────────────────────────────────────────────────── */
@@ -270,23 +270,23 @@
   cursor: pointer;
   font-family: var(--font-code);
   font-size: var(--font-size-small);
-  color: var(--ctp-text);
+  color: var(--text);
   transition: background 80ms ease-out;
   min-height: 1.571rem;
 }
 
 .tree-viewer__row:hover {
-  background: var(--ctp-surface0);
+  background: var(--surface);
 }
 
 /* Selected row: a left accent bar (pi's `›` cursor), no full-row outline. */
 .tree-viewer__row--selected {
-  background: var(--ctp-surface0);
-  box-shadow: inset 2px 0 0 var(--ctp-mauve);
+  background: var(--surface);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .tree-viewer__row--selected:hover {
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
 }
 
 .tree-viewer__chevron {
@@ -298,7 +298,7 @@
   height: 1rem;
   align-items: center;
   justify-content: center;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   transition: transform 100ms ease-out;
   flex-shrink: 0;
   cursor: pointer;
@@ -306,7 +306,7 @@
 }
 
 .tree-viewer__chevron:hover {
-  color: var(--ctp-text);
+  color: var(--text);
 }
 
 .tree-viewer__chevron--open {
@@ -329,7 +329,7 @@
 }
 
 .tree-viewer__bullet--active {
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 .tree-viewer__row-text {
@@ -338,26 +338,26 @@
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
-  color: var(--ctp-subtext1);
+  color: var(--text-secondary);
 }
 
 /* Role-tinted text, mirroring pi's colored prefixes. */
 .tree-viewer__row-text--user {
-  color: var(--ctp-text);
+  color: var(--text);
 }
 .tree-viewer__row-text--assistant {
-  color: var(--ctp-subtext1);
+  color: var(--text-secondary);
 }
 .tree-viewer__row-text--summary {
-  color: var(--ctp-yellow);
+  color: var(--warning);
 }
 .tree-viewer__row-text--compaction {
-  color: var(--ctp-teal);
+  color: var(--cyan);
 }
 .tree-viewer__row-text--tool,
 .tree-viewer__row-text--bash,
 .tree-viewer__row-text--meta {
-  color: var(--ctp-overlay1);
+  color: var(--text-faint);
 }
 
 .tree-viewer__label-chip {
@@ -366,8 +366,8 @@
   gap: 0.286rem;
   font-family: var(--font-display);
   font-size: 0.85em;
-  background: color-mix(in srgb, var(--ctp-yellow) 16%, transparent);
-  color: var(--ctp-yellow);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  color: var(--warning);
   padding: 0.071rem 0.5rem;
   border-radius: var(--radius-pill);
   flex-shrink: 0;
@@ -380,7 +380,7 @@
   appearance: none;
   border: 0;
   background: transparent;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   cursor: pointer;
   padding: 0.143rem;
   border-radius: var(--radius-sm);
@@ -396,8 +396,8 @@
 }
 
 .tree-viewer__label-add:hover {
-  color: var(--ctp-text);
-  background: var(--ctp-surface1);
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 .tree-viewer__current-pill {
@@ -406,8 +406,8 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  background: var(--ctp-mauve);
-  color: var(--ctp-base);
+  background: var(--accent);
+  color: var(--bg);
   padding: 0.143rem 0.5rem;
   border-radius: var(--radius-pill);
   flex-shrink: 0;
@@ -422,7 +422,7 @@
   align-items: center;
   justify-content: center;
   gap: 0.429rem;
-  color: var(--ctp-subtext1);
+  color: var(--text-secondary);
   padding: 2rem;
   font-family: var(--font-display);
   text-align: center;
@@ -431,7 +431,7 @@
 .tree-viewer__empty-sub {
   font-family: var(--font-code);
   font-size: var(--font-size-small);
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 
 .tree-viewer__retry {
@@ -440,8 +440,8 @@
   -webkit-appearance: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--ctp-surface0);
-  color: var(--ctp-subtext0);
+  background: var(--surface);
+  color: var(--text-muted);
   font: inherit;
   font-size: 0.857em;
   font-weight: 500;
@@ -452,8 +452,8 @@
 }
 
 .tree-viewer__retry:hover {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
   border-color: var(--border-strong);
 }
 
@@ -461,8 +461,8 @@
 
 .tree-viewer__label-edit {
   position: absolute;
-  background: var(--ctp-base);
-  border: 1px solid var(--ctp-mauve);
+  background: var(--bg);
+  border: 1px solid var(--accent);
   border-radius: var(--radius-md);
   box-shadow: var(--elevation-2);
   padding: 0.429rem;
@@ -475,10 +475,10 @@
 
 .tree-viewer__label-edit input {
   appearance: none;
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-code);
   font-size: var(--font-size-small);
   padding: 0.286rem 0.571rem;
@@ -486,7 +486,7 @@
 
 .tree-viewer__label-edit input:focus {
   outline: none;
-  border-color: var(--ctp-mauve);
+  border-color: var(--accent);
 }
 
 .tree-viewer__label-edit-actions {
@@ -497,10 +497,10 @@
 
 .tree-viewer__label-edit-btn {
   appearance: none;
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 0;
   border-radius: var(--radius-sm);
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: var(--font-size-small);
   padding: 0.286rem 0.714rem;
@@ -508,6 +508,6 @@
 }
 
 .tree-viewer__label-edit-btn--primary {
-  background: var(--ctp-mauve);
-  color: var(--ctp-base);
+  background: var(--accent);
+  color: var(--bg);
 }

@@ -19,7 +19,7 @@
      breakpoint never fires — the controls just spill off the right edge. */
   min-width: 0;
   height: 100%;
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   /* Inherit the parent titlebar's border-radius so the rectangular mantle
      fill follows the pill's rounded corners in the sidebar-collapsed layout
      (where the titlebar is a floating pill with `border-radius:
@@ -62,7 +62,7 @@
   font-family: var(--font-display);
   font-size: 0.929em;
   font-weight: 600;
-  color: var(--ctp-subtext1);
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -85,15 +85,15 @@
 }
 
 .session-header__name-btn:hover {
-  background: var(--ctp-surface0);
-  color: var(--ctp-text);
+  background: var(--surface);
+  color: var(--text);
 }
 
 .session-header__name-input {
-  background: var(--ctp-surface0);
-  border: 1px solid var(--ctp-mauve);
+  background: var(--surface);
+  border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: 0.929em;
   padding: 0.286rem 0.429rem;
@@ -123,8 +123,8 @@
   border: none;
   font-family: var(--font-code);
   font-size: 0.786em;
-  color: var(--ctp-mauve);
-  background: color-mix(in srgb, var(--ctp-mauve) 12%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   padding: 0.071rem 0.429rem;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -135,7 +135,7 @@
 }
 
 .session-header__worktree-chip:hover {
-  background: color-mix(in srgb, var(--ctp-mauve) 20%, transparent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 /* ── Controls cluster (shared by title bar and sub-bar) ───────────── */
@@ -160,10 +160,10 @@
 }
 
 .session-header__picker-btn {
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid transparent;
   border-radius: var(--radius-md);
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
   font-family: var(--font-code);
   font-size: 0.857em;
   /* 1.4 line-height gives descenders ('g' in "high", 'y' in "xhigh")
@@ -178,8 +178,8 @@
 }
 
 .session-header__picker-btn:hover {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 /* Model button — the only picker whose label can be arbitrarily long
@@ -222,7 +222,7 @@
 .session-header__picker-btn:disabled {
   cursor: not-allowed;
   opacity: 0.6;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 
 .session-header__changes-btn {
@@ -233,17 +233,17 @@
   -webkit-app-region: no-drag;
 }
 .session-header__changes-btn--clean {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 .session-header__changes-count {
-  color: var(--ctp-yellow);
+  color: var(--warning);
 }
 
 .session-header__dropdown {
   position: absolute;
   top: calc(100% + 0.429rem);
   right: 0;
-  background: var(--ctp-surface0);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   min-width: 14.286rem;
@@ -257,16 +257,16 @@
   position: sticky;
   top: 0;
   padding: 0.571rem 0.571rem 0.286rem;
-  background: var(--ctp-surface0);
+  background: var(--surface);
 }
 
 .session-header__dropdown-search-input {
   /* box-sizing is set globally by theme.css */
   width: 100%;
-  background: var(--ctp-mantle);
+  background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  color: var(--ctp-text);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: 0.857em;
   padding: 0.429rem 0.571rem;
@@ -277,18 +277,18 @@
 }
 
 .session-header__dropdown-search-input:focus {
-  border-color: var(--ctp-mauve);
+  border-color: var(--accent);
 }
 
 .session-header__dropdown-search-input::placeholder {
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
 }
 
 .session-header__dropdown-empty {
   padding: 0.857rem;
   font-family: var(--font-code);
   font-size: 0.857em;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   text-align: center;
 }
 
@@ -303,7 +303,7 @@
   font-family: var(--font-code);
   font-size: 0.857em;
   line-height: 1.3;
-  color: var(--ctp-text);
+  color: var(--text);
   /* Dropdown option inside a popup that's anchored to a control in the
      titlebar's drag region. */
   -webkit-app-region: no-drag;
@@ -313,7 +313,7 @@
    class (onMouseEnter → setHighlightedIndex), not by :hover — see the
    note in AppPickerHost.css for why :hover causes dual-highlight. */
 .session-header__dropdown-item--active {
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 /* A reserved-width check gutter rendered on every row (empty when not
@@ -321,17 +321,17 @@
 .session-header__dropdown-item-check {
   display: inline-block;
   width: 1.1em;
-  color: var(--ctp-mauve);
+  color: var(--accent);
 }
 
 .session-header__dropdown-item--highlighted {
-  background: var(--ctp-surface1);
-  color: var(--ctp-text);
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .session-header__match {
-  background: var(--ctp-surface2);
-  color: var(--ctp-mauve);
+  background: var(--surface-3);
+  color: var(--accent);
   border-radius: 0.143em;
   padding: 0 0.071em;
 }
@@ -345,29 +345,29 @@
 .context-meter {
   width: 4.286rem;
   height: 0.286rem;
-  background: var(--ctp-surface1);
+  background: var(--surface-2);
   border-radius: 0.143em;
   overflow: hidden;
 }
 
 .context-meter__fill {
   height: 100%;
-  background: var(--ctp-mauve);
+  background: var(--accent);
   border-radius: 0.143em;
   transition: width 0.3s ease;
 }
 
 .context-meter__fill--warn {
-  background: var(--ctp-peach);
+  background: var(--warning-soft);
 }
 .context-meter__fill--danger {
-  background: var(--ctp-red);
+  background: var(--danger);
 }
 
 .session-header__meta {
   font-family: var(--font-code);
   font-size: 0.786em;
-  color: var(--ctp-overlay0);
+  color: var(--text-ghost);
   white-space: nowrap;
   letter-spacing: 0;
   text-transform: none;
@@ -388,7 +388,7 @@
   align-items: center;
   justify-content: center;
   padding: 0.214rem 0.357rem;
-  color: var(--ctp-subtext0);
+  color: var(--text-muted);
 }
 
 .session-header__statusbar-toggle svg {
