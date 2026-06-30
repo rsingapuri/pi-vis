@@ -10,6 +10,10 @@
  * 2. Stream: listen for session.panelEvent (panel_data) → term.write()
  * 3. Input: term.onData → session.panelInput IPC
  * 4. Close: session.panelEvent (panel_close) → unmount; or Escape key
+ *
+ * Sizing: a STABLE, deterministic box (CSS min-height + max-height: 50vh) that
+ * an extension's overlay floats and self-scrolls inside — deliberately NOT
+ * content-hugged (unlike the sibling UnifiedTuiHost). See `applyFit` below.
  */
 
 import type { SessionId } from "@shared/ids.js";
@@ -207,26 +211,23 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
 
   return (
     <div className="custom-panel" onKeyDown={handleKeyDown}>
-      <div className="custom-panel__header">
-        <span className="custom-panel__title">Extension Panel</span>
-        <span className="custom-panel__hint">Extension controls the panel</span>
-        {/* Escape hatch: an extension owns the panel lifecycle via done(), but a
-            buggy one could never call it and wedge the session. This force-closes
-            the panel — the host resolves the extension's custom() promise with
-            undefined and tears it down. */}
-        <button
-          type="button"
-          className="custom-panel__close"
-          title="Force-close this panel (cancels the extension's request)"
-          onClick={() => {
-            void window.pivis
-              .invoke("session.panelClose", { sessionId, panelId: panel.id })
-              .catch(() => {});
-          }}
-        >
-          ✕ Close
-        </button>
-      </div>
+      {/* Escape hatch: an extension owns the panel lifecycle via done(), but a
+          buggy one could never call it and wedge the session. This force-closes
+          the panel — the host resolves the extension's custom() promise with
+          undefined and tears it down. Rendered as a minimal floating control so
+          there is no full-width header bar competing with the panel content. */}
+      <button
+        type="button"
+        className="custom-panel__close"
+        title="Force-close this panel (cancels the extension's request)"
+        onClick={() => {
+          void window.pivis
+            .invoke("session.panelClose", { sessionId, panelId: panel.id })
+            .catch(() => {});
+        }}
+      >
+        ✕
+      </button>
       {/* The xterm canvas owns keystroke capture. Focus is driven by
           term.focus() on mount + the mousedown refocus handler above, so the
           container doesn't need tabIndex (which would trip a11y rules for a

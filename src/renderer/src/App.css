@@ -263,6 +263,26 @@
   flex: 0 0 auto;
 }
 
+/* Connected stack — when the Dock tray is present above one of the
+   Composer-slot cards, that card flattens its top corners and lifts its
+   border to --border-strong so the tray's flat bottom edge and the card's
+   top border meet as one continuous, gap-free outline. This is the same
+   treatment the Composer's input box gets (see Composer.css
+   `.session-dock:has(.dock) ~ .composer .composer__input-box`); applying it
+   to every component that can replace the Composer keeps the stack reading
+   as one connected unit regardless of which surface is mounted. `:has()`
+   keeps it purely in CSS — when the Dock renders nothing (no `.dock`
+   descendant) the cards keep their rounded corners. The cards match the
+   Dock's `--border-strong` so the seam is a single strong outline, not a
+   strong/faint mismatch. */
+.session-dock:has(.dock) ~ .custom-panel,
+.session-dock:has(.dock) ~ .picker-slot .picker,
+.session-dock:has(.dock) ~ .ext-dialog-slot .ext-dialog {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-color: var(--border-strong);
+}
+
 .app__empty {
   /* Empty state: a single centered welcome card. The horizontal padding
      scales with the pane width (cqi) so it stays centered without crushing

@@ -15,7 +15,13 @@
      so the gap appears outside the bordered card — matching the inset
      the Composer's `.composer__input-row` and the dialog slot get via
      their padding. No top margin (card sits flush under the dock /
-     transcript above), 0.857rem sides + bottom. */
+     transcript above), 0.857rem sides + bottom.
+
+     A STABLE, deterministic box (CSS min-height + max-height: 50vh) that an
+     extension's overlay floats and self-scrolls inside — deliberately NOT
+     content-hugged (unlike the unified-TUI panel; see CustomPanelHost
+     `applyFit`). */
+  position: relative; /* anchor for the floating force-close button */
   margin: 0 0.857rem 0.857rem;
   display: flex;
   flex-direction: column;
@@ -27,46 +33,39 @@
   max-height: 50vh;
 }
 
-.custom-panel__header {
+/* Force-close escape hatch — a minimal floating control in the top-right
+   corner (no full-width header bar). Low-prominence until hovered so it
+   doesn't compete with the panel content; positioned over the terminal grid. */
+.custom-panel__close {
+  position: absolute;
+  top: 0.286rem;
+  right: 0.286rem;
+  z-index: 2;
   display: flex;
   align-items: center;
-  gap: 0.571rem;
-  padding: 0.571rem 0.857rem;
-  border-bottom: 1px solid var(--border);
+  justify-content: center;
+  width: 1.429rem;
+  height: 1.429rem;
+  padding: 0;
   background: var(--surface);
-  flex-shrink: 0;
-}
-
-.custom-panel__title {
-  font-family: var(--font-display);
-  font-size: 0.929em;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.custom-panel__hint {
-  font-family: var(--font-display);
-  font-size: 0.786em;
-  color: var(--text-faint);
-}
-
-.custom-panel__close {
-  margin-left: auto;
-  font-family: var(--font-display);
-  font-size: 0.786em;
-  color: var(--text-muted);
-  background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.143rem 0.5rem;
+  color: var(--text-muted);
   cursor: pointer;
+  font-size: 0.857em;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
 }
 
 .custom-panel__close:hover {
+  opacity: 1;
   color: var(--text);
   background: var(--surface-2);
 }
 
+/* The xterm mount fills the card; FitAddon computes cols/rows from it and
+   the overlay floats/self-scrolls inside the stable box. */
 .custom-panel__xterm {
   flex: 1;
   min-height: 10rem;
@@ -96,13 +95,14 @@
 }
 
 /* ── Unified-TUI panel (UnifiedTuiHost) ──────────────────────────────────────
-   Unlike the custom() panel, the unified panel hugs its content: its height is
-   JS-driven (set to the non-blank content height, capped at a deterministic max
-   derived from the transcript column). The grid TRACKS the content (the host's
-   pi-tui bottom-anchors + scrolls when content exceeds the grid), so the card
-   clips the one-row sentinel blank the JS leaves; `overflow-y` is set in JS to
-   `auto` only when the content is taller than the cap. No min-height floor and
-   no 50vh CSS cap fighting the measured height.
+   Unlike the custom() panel (a stable fixed box), the unified panel hugs its
+   content: its height is JS-driven (set to the non-blank content height,
+   capped at a deterministic max derived from the transcript column). The grid
+   TRACKS the content (the host's pi-tui bottom-anchors + scrolls when content
+   exceeds the grid), so the card clips the one-row sentinel blank the JS
+   leaves; `overflow-y` is set in JS to `auto` only when the content is taller
+   than the cap. No min-height floor and no 50vh CSS cap fighting the measured
+   height.
 
    A small vertical padding gives the text breathing room above/below; the JS
    adds this chrome (read from computed style) to the measured content height so
@@ -113,21 +113,12 @@
   padding-block: 0.286rem;
 }
 
-/* The mount carries the terminal grid (set in JS). `flex: none` keeps it at its
-   set height so it overflows the (shorter) card and is clipped/scrolled by it,
-   rather than shrinking to fit.
-
-   Vertical padding stays 0 — the card's `padding-block` is the inset, so the
-   grid rows map 1:1 to the card's content area and the JS `cardChrome()` math
-   (which reads only paddingTop/paddingBottom + borders) stays correct.
-
-   Horizontal padding gives the terminal content symmetric breathing room from
-   the card's border. Without it, pi-tui widgets render left-aligned at column
-   0 of the grid, so the leftmost cell is flush with the inner border while the
-   rightmost cell is empty on short lines — visually asymmetric even though the
-   geometry is "no padding on either side". The inline inset bounds the empty
-   trailing cells on the right by visible padding on the left, matching the
-   inset the Composer and built-in pickers get in the same flex slot. */
+/* The mount carries the terminal grid (set in JS). `flex: none` keeps it at
+   its set height so it overflows the (shorter) card and is clipped/scrolled by
+   it, rather than shrinking to fit. Vertical padding stays 0 — the card's
+   `padding-block` is the inset, so the grid rows map 1:1 to the card's content
+   area and the JS `cardChrome()` math stays exact. Horizontal padding gives the
+   terminal content symmetric breathing room from the card's border. */
 .unified-panel .custom-panel__xterm {
   flex: none;
   min-height: 0;
