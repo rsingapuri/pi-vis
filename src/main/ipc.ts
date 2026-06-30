@@ -6,6 +6,7 @@ import type { PiEvent } from "@shared/pi-protocol/events.js";
 import type { ExtensionUiRequest, ExtensionUiResponse } from "@shared/pi-protocol/extension-ui.js";
 import type { PanelEvent } from "@shared/pi-protocol/panel-events.js";
 import type { PiRpcResponse, SessionTreeEntry } from "@shared/pi-protocol/responses.js";
+import { piThemeForColorScheme } from "@shared/settings.js";
 import { app, clipboard, ipcMain } from "electron";
 import type { BrowserWindow } from "electron";
 import {
@@ -48,6 +49,15 @@ import {
 let registry: SessionRegistry | null = null;
 let mainWindow: BrowserWindow | null = null;
 let handlersRegistered = false;
+
+// Build the env for spawning a pi process/host. Adds PIVIS_PI_THEME (the pi
+// theme name matching pi-vis's active color scheme) to the login-shell env, so
+// every host-rendered terminal/ANSI surface resolves colors consistently with
+// the UI. Read fresh on each spawn so reloads pick up a scheme change.
+async function getHostEnv(): Promise<Record<string, string>> {
+  const env = await getLoginShellEnv();
+  return { ...env, PIVIS_PI_THEME: piThemeForColorScheme(getSettings().colorScheme) };
+}
 
 // During quit, pi processes are SIGTERMed and emit final events/exits after
 // the window is gone — sending to a destroyed webContents throws.
@@ -158,7 +168,7 @@ export function initIpc(win: BrowserWindow): void {
     const piInfo = await locatePi(settings.piBinaryPath);
     if (!piInfo)
       throw new Error("pi binary not found. Please install pi or set the path in settings.");
-    const loginShellEnv = await getLoginShellEnv();
+    const loginShellEnv = await getHostEnv();
     await registry?.activateSession(args.sessionId, piInfo.path, loginShellEnv, true);
   });
 
@@ -172,7 +182,7 @@ export function initIpc(win: BrowserWindow): void {
       const settings = getSettings();
       const piInfo = await locatePi(settings.piBinaryPath);
       if (!piInfo) return { ok: false, error: "pi binary not found" };
-      const loginShellEnv = await getLoginShellEnv();
+      const loginShellEnv = await getHostEnv();
       try {
         const result = await createWorktree(rec.workspacePath, args.base);
         if (result.kind === "error") return { ok: false, error: result.message };
@@ -230,7 +240,7 @@ export function initIpc(win: BrowserWindow): void {
       const settings = getSettings();
       const piInfo = await locatePi(settings.piBinaryPath);
       if (!piInfo) return { ok: false, error: "pi binary not found" };
-      const loginShellEnv = await getLoginShellEnv();
+      const loginShellEnv = await getHostEnv();
       try {
         const result = await inspectWorktree(rec.workspacePath, args.path);
         if (result.kind === "error") return { ok: false, error: result.message };
@@ -290,7 +300,7 @@ export function initIpc(win: BrowserWindow): void {
     const settings = getSettings();
     const piInfo = await locatePi(settings.piBinaryPath);
     if (!piInfo) return { success: false, error: "pi binary not found" };
-    const loginShellEnv = await getLoginShellEnv();
+    const loginShellEnv = await getHostEnv();
     try {
       registry?.reloadSession(args.sessionId, piInfo.path, loginShellEnv);
       return { success: true };
@@ -465,7 +475,22 @@ export function initIpc(win: BrowserWindow): void {
   });
 
   ipcMain.handle("settings.set", async (_evt, updates: Partial<ReturnType<typeof getSettings>>) => {
-    return saveSettings(updates);
+    const prevScheme = getSettings().colorScheme;
+    const next = saveSettings(updates);
+    // A color-scheme change must re-theme already-running sessions, not just
+    // future ones: the host bakes PIVIS_PI_THEME in at spawn, so reload the
+    // running sessions to respawn them with the matching pi theme (and make
+    // extensions re-emit their widgets in the new colors). Fire-and-forget so
+    // the settings write returns promptly; busy sessions are skipped.
+    if (updates.colorScheme && updates.colorScheme !== prevScheme && registry) {
+      void (async () => {
+        const piInfo = await locatePi(getSettings().piBinaryPath);
+        if (!piInfo) return;
+        const env = await getHostEnv();
+        await registry?.reloadRunningSessions(piInfo.path, env);
+      })();
+    }
+    return next;
   });
 
   ipcMain.handle("app.versions", async () => {

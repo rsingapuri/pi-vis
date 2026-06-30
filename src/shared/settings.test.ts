@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { AppSettingsSchema } from "./settings.js";
+import { AppSettingsSchema, piThemeForColorScheme } from "./settings.js";
+
+describe("piThemeForColorScheme", () => {
+  it("maps Latte (the only light flavor) to pi's light theme", () => {
+    expect(piThemeForColorScheme("latte")).toBe("light");
+  });
+
+  it("maps the dark flavors to pi's dark theme", () => {
+    expect(piThemeForColorScheme("frappe")).toBe("dark");
+    expect(piThemeForColorScheme("macchiato")).toBe("dark");
+    expect(piThemeForColorScheme("mocha")).toBe("dark");
+  });
+});
 
 describe("AppSettingsSchema", () => {
   it("returns sensible defaults for an empty input", () => {

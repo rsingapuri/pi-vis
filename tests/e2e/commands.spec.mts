@@ -255,10 +255,11 @@ test.describe("Slash commands", () => {
     await textarea.fill("/widget-on");
     await textarea.press("Enter");
 
-    // Widget strip renders one item per key, with one line per entry.
-    const widgetStrip = window.locator(".composer__widget-strip");
-    await expect(widgetStrip).toBeVisible({ timeout: 5_000 });
-    await expect(widgetStrip.locator(".widget-strip__line")).toHaveText([
+    // Widget chips render one per key in the Dock (above-composer chip rail),
+    // with one line per entry.
+    const dock = window.locator(".dock");
+    await expect(dock).toBeVisible({ timeout: 5_000 });
+    await expect(dock.locator(".dock__widget-line")).toHaveText([
       "Plan mode: planning",
       "Tools: read_file",
       "Produce a <proposed_plan> block.",
@@ -290,7 +291,7 @@ test.describe("Slash commands", () => {
     await textarea.fill("hello there");
     await textarea.press("Enter");
     await expect(window.locator("body")).toContainText("your pi coding agent", { timeout: 15_000 });
-    await expect(widgetStrip).toBeHidden();
+    await expect(window.locator(".dock__widget-line")).toHaveCount(0);
 
     await app.close();
     rmrf(folders.settingsDir);

@@ -97,6 +97,15 @@
   flex-direction: column;
   gap: var(--space-5);
   flex: 1;
+  /* One uniform, centered reading column shared by every block type
+     (assistant text, user bubbles, tool cards, code blocks, thinking).
+     Capped at the measure so line length never grows unbounded on a wide
+     monitor, and centered in the pane; below the measure it shrinks to fill
+     the available width (the cqi side padding on .transcript-view still
+     supplies gutters there). */
+  width: 100%;
+  max-width: var(--transcript-measure);
+  margin-inline: auto;
 }
 
 .show-earlier-btn {
@@ -139,11 +148,11 @@
 }
 
 .transcript-block--user .transcript-block__bubble {
-  /* User bubble — right-aligned. On a narrow pane it nearly fills the width
-     (a thin left gap still reads as "mine"); the two-thirds cap that keeps
-     the assistant column dominant is restored at wider panes (see the
-     @container rule below). */
-  max-width: 90%;
+  /* User bubble — right-aligned within the shared column. Capped below 100%
+     so a thin left gap still reads as "mine" without dominating the column.
+     The column itself is already capped at the reading measure, so this is a
+     fraction of a *stable* width (never grows unbounded on a wide monitor). */
+  max-width: 85%;
 }
 
 .transcript-block__bubble {
@@ -175,8 +184,9 @@
   font-size: 1em;
   line-height: var(--leading-body);
   letter-spacing: var(--tracking-body);
-  /* Full width on a narrow pane; the 80% reading-measure cap is restored at
-     wider panes via the @container rule at the bottom of this file. */
+  /* Fills the shared centered column uniformly (tool cards, code blocks,
+     and thinking already span 100% too). The column's max-width is the
+     reading measure, set once on .transcript-blocks. */
   max-width: 100%;
   min-width: 0;
   /* Break long unbreakable runs (paths, identifiers) as a last resort so they
@@ -187,25 +197,8 @@
 }
 
 .transcript-block--user .transcript-block__content {
-  /* Fill the user bubble (the 2/3 cap is already on the bubble itself). */
+  /* Fill the user bubble. */
   max-width: 100%;
-}
-
-/* ── Comfortable (wide pane) reading measures ─────────────────────────────
-   Once the content pane (the `.app__main` size container) is wide enough,
-   cap the line length: the assistant column is held to a readable measure
-   and the user bubble to two-thirds. Below this width the caps above
-   (100% / 90%) keep every word of text on screen instead of wrapping into
-   a sliver. */
-@container mainpane (min-width: 560px) {
-  .transcript-block__content,
-  .thinking-block {
-    max-width: 80%;
-  }
-
-  .transcript-block--user .transcript-block__bubble {
-    max-width: 66.6667%;
-  }
 }
 
 .transcript-block__images {

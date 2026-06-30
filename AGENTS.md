@@ -67,7 +67,7 @@ src/
 │   │   ├── composer/        # Textarea input: prompts, !bash, /slash commands, image attach, autocomplete
 │   │   ├── transcript/      # TranscriptView, DiffBlock (renders user/assistant/tool_call/bash/compaction blocks)
 │   │   ├── shell/           # TitleBar, Sidebar (workspace switcher with manual drag-reorder + multi-expand chevrons, session list, tabs, drag/drop), StatusBar,
-│   │   │                   #   UpdateBanner (compact dismissible update card: above the composer in a session, floating bottom-right on the empty screen)
+│   │   │                   #   Dock (above-composer tray — bordered card connected to the composer, floating pills inside: extension widget pills + update pill; floating UpdateBanner bottom-right on the empty screen)
 │   │   ├── auth/            # LoginTerminal (embedded xterm.js terminal for pi's /login OAuth flow)
 │   │   ├── updates/         # UpdateProgress (modal with streaming `pi update` output via AnsiText)
 │   │   ├── diff/            # DiffViewerHost, DiffFileSection (Shiki-highlighted unified/split diffs)
@@ -146,6 +146,7 @@ src/
   - Composer decoupled: extension commands fire-and-forget (execute.ts)
 - **Project trust (security)**: the host wires `resolveProjectTrust` into `createAgentSessionServices` (deny-by-default, matching terminal pi). A folder with trust-requiring project-local resources prompts a React **select** dialog *during* host startup, offering pi's full choice set (trust folder / trust parent / trust this-session-only / deny / deny this-session-only — `buildProjectTrustOptions`); the chosen option's updates persist via the public `ProjectTrustStore.setMany` (`get()` walks ancestors, so a parent grant covers children). Because the prompt fires pre-`ready`, the registry attaches the `uiRequest`/panel listeners **before** `waitForReady`, and `SessionHost` pauses its startup watchdog while a pre-ready dialog is outstanding (a human, not a hang). Without this gate, pi loads project-local `.pi/` extensions ungated (`projectTrusted` defaults `true`). The host derives `agentDir` from `pi.getAgentDir()` so the trust store, services, and runtime agree and stay shared with terminal pi.
 - **Zero private pi imports**: the host uses only pi's public `dist/index.js` surface (+ public pi-tui + bundled undici). The active theme comes from public `initTheme()` + reading `globalThis[Symbol.for("…:theme")]`, not a deep import. Enforced by `src/main/pi/host-imports.test.ts`.
+- **Color-scheme sync (terminal/ANSI surfaces)**: every host-rendered surface resolves its colors from the host's pi theme — extension `theme.fg("text"|"muted"|"borderMuted", …)` (widget/status ANSI rendered by the renderer's theme-aware `AnsiText`), and all pi-tui rendering (the unified TUI, `custom()` panels rendered in xterm). pi ships only **two** themes, `dark` and `light`, so the host theme must track pi-vis's Catppuccin scheme **by luminance**: `piThemeForColorScheme(scheme)` (`shared/settings.ts`) maps Latte→`light`, Frappé/Macchiato/Mocha→`dark`. The main process passes the result as the **`PIVIS_PI_THEME`** env var on every host/pi spawn (`getHostEnv()` in `ipc.ts`, read fresh per spawn), and `host.mjs` feeds it to `initHostTheme(pi, process.env.PIVIS_PI_THEME)`. Without this the host always used pi's default (dark) theme, so a light pi-vis scheme (Latte) showed dark-tuned, low-contrast extension text — the "good in Mocha, bad in Latte" bug. The renderer's own xterm panels already theme their background + 16-color palette from `colorScheme` via `buildXtermTheme` (CustomPanelHost/UnifiedTuiHost/LoginTerminal); this closes the loop for the truecolor content pi-tui emits. **Live changes:** because the host bakes the theme in at spawn (and the renderer holds already-emitted widget ANSI), a scheme change reloads running sessions — `settings.set` detects a `colorScheme` change and calls `SessionRegistry.reloadRunningSessions()` (best-effort; busy/mid-turn sessions are skipped and re-theme on their next spawn), respawning each host with the new `PIVIS_PI_THEME` so extensions re-emit widgets in the new colors.
 
 ### Three-Process Electron Model (legacy fallback)
 
@@ -399,10 +400,17 @@ The app is fully usable from the enforced floor (`minWidth: 480`, `minHeight: 40
   by.
 - **Fluid transcript**: `.app__main` is a size-query container (`container: mainpane /
   inline-size`). The transcript's horizontal padding scales with the pane via
-  `clamp(--space-5, 6cqi, --space-8)`, and a `@container mainpane (min-width: 560px)`
-  rule applies the reading-measure caps (assistant 80%, user bubble ⅔); below that
-  the caps yield to ~full width so text doesn't wrap into a sliver. The empty-state outer
-  padding is likewise `cqi`-scaled. Overlays (diff/toast) live inside
+  `clamp(--space-5, 6cqi, --space-8)`. **One uniform, centered reading column** is
+  set once on `.transcript-blocks` (`max-width: var(--transcript-measure)` =
+  60rem ≈ 840px — wider than a pure-prose measure because the surface mixes prose
+  with code blocks/diffs/tool cards; `margin-inline: auto`), shared by every block type (assistant
+  text, user bubbles, tool cards, code blocks, thinking) so the line length never
+  grows unbounded on a wide monitor and every element reads as a single coherent
+  width; below the measure the column shrinks to fill the pane (the `cqi` side
+  padding supplies gutters). There are no per-type percentage caps anymore — user
+  bubbles right-align within the column at ~85% to keep the "mine" asymmetry. The
+  empty-state outer padding is likewise `cqi`-scaled. Overlays (diff/toast) live
+  inside
   `.app__session` (its own positioned ancestor), so the container's layout containment
   doesn't affect them.
 - **Overflow containment**: the transcript feed and the sidebar list are vertical
@@ -521,7 +529,9 @@ Builtins are defined in `builtins.ts` (mirrors pi's interactive-mode.js). Discov
 | `src/renderer/src/stores/updates-store.ts` | Update notification + progress state |
 | `src/renderer/src/lib/commands/` | Slash command definitions, parsing, and execution |
 | `src/renderer/src/components/auth/LoginTerminal.tsx` | Embedded xterm.js terminal for pi's /login OAuth flow |
-| `src/renderer/src/components/shell/UpdateBanner.tsx` | Dismissible update card — in a session it lives in the in-flow `.session-dock` (App.tsx/App.css), stacked ABOVE the WorktreeBar and the composer (dock is rigid `flex: 0 0 auto` so only the transcript absorbs vertical pressure; banner is `position: relative; z-index: 1`); floats bottom-right on the empty screen |
+| `src/renderer/src/components/shell/Dock.tsx` + `Dock.css` | Above-composer **tray** — a bordered, rounded card (`.dock`, surface0 + `--border-strong`, rounded top + flat bottom, no bottom border) that **connects to the composer as a stacked-card pair**: it sits flush on the composer's input box, sharing the input box's top border as the seam. The composer flattens its top corners when the tray is present via a CSS-only `:has()` rule (`.session-dock:has(.dock) ~ .composer .composer__input-box`) — no dock-presence flag threaded through React. The composer input box now carries an **always-visible** `--border-strong` border (was the faint `--border`) so it reads as a defined card unfocused, lifting to mauve on focus. Inside the tray each item is a **floating pill** (`.dock__widget` / `.dock__update`) on a **recessed `--ctp-base` fill** (darker than the surface0 tray — real contrast in both light/dark flavors; surface1 was too low-contrast) + `--border-strong`. Collects every above-composer notification/control: one pill per extension `setWidget` key (sorted, `Map<string,string[]>` lines via AnsiText, left) + the update pill (right, `margin-left: auto`); pills `flex-wrap` and keep a stable order (reserved trailing slot for a future Input/Extension toggle). **Returns `null` when empty** so there is never a phantom box. The update pill's detail list (`ExtensionRow`s) opens as a **floating popover anchored above the pill** so expansion never reflows the tray height; the popover claims ESC (`useEscapeClaim`) + closes on ESC/outside-click. The Dock renders below the `WorktreeBar` in `.session-dock` (adjacent to the composer). Replaces the old stacked UpdateBanner card + `.composer__widget-strip` |
+| `src/renderer/src/components/shell/UpdateBanner.tsx` | **Floating-only** update card for the empty (no-session) screen (bottom-right). The in-session update notification moved to the Dock chip rail. Still dispatches the `pivis:run-update` CustomEvent and honors `lastDismissedPiVersion` |
+| `src/renderer/src/components/common/viewer-header.css` | Shared overlay **viewer-header reflow** consumed by both DiffViewerHost and TreeViewerHost (alongside their own `__header` classes): a left cluster (title + context, `flex: 1 1 auto; min-width: 0`, shrinks/ellipsizes) + right cluster (action controls + essential `×` close, `flex: 0 1 auto; margin-left: auto`). The header `flex-wrap: wrap`s, so at narrow widths the right cluster drops to a second row and stays right-pinned — controls never clip. The tree's search input flexes (6–14rem) so it gives way before the close button does |
 | `src/renderer/src/components/updates/UpdateProgress.tsx` | Modal streaming `pi update` output |
 | `RELEASING.md` | macOS signing, notarization, and release build/publish docs |
 | `build/notarize.cjs` | `afterSign` hook for macOS notarization (env-gated) |

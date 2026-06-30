@@ -88,3 +88,21 @@ export const AppSettingsSchema = z.object({
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
 
 export const defaultSettings: AppSettings = AppSettingsSchema.parse({});
+
+export type ColorScheme = AppSettings["colorScheme"];
+
+/**
+ * Map a pi-vis Catppuccin flavor to the pi theme name the SDK host should load.
+ *
+ * pi ships exactly two built-in themes — "dark" and "light" — and resolves an
+ * extension's semantic colors (`theme.fg("text"|"muted"|"borderMuted", …)`) plus
+ * all pi-tui rendering (the unified TUI, custom() panels) against the active one.
+ * Those colors must be readable on the surface pi-vis paints them on, so the host
+ * theme has to track pi-vis's scheme by luminance: Latte is the only light flavor;
+ * Frappé/Macchiato/Mocha are dark. Without this the host would always use pi's
+ * default (dark) theme, so a light pi-vis scheme (Latte) showed dark-tuned,
+ * low-contrast extension text — the "looked good in Mocha, bad in Latte" bug.
+ */
+export function piThemeForColorScheme(scheme: ColorScheme): "dark" | "light" {
+  return scheme === "latte" ? "light" : "dark";
+}

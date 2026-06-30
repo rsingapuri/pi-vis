@@ -547,6 +547,8 @@ const settingsState = {
   colorScheme: "mocha" as const,
   diffMaxFileSizeMiB: 5,
   statusBarVisible: true,
+  updateCheckEnabled: true,
+  lastDismissedPiVersion: null,
   sidebarWidth: 220,
   sidebarCollapsed: false,
   window: undefined,

@@ -13,6 +13,7 @@ import { AppPickerHost } from "./components/pickers/AppPickerHost.js";
 import { SessionSubBar } from "./components/session-header/SessionSubBar.js";
 import { SettingsView } from "./components/settings/SettingsView.js";
 import { PiNotFound } from "./components/setup/PiNotFound.js";
+import { Dock } from "./components/shell/Dock.js";
 import { Sidebar } from "./components/shell/Sidebar.js";
 import { StatusBar } from "./components/shell/StatusBar.js";
 import { TitleBar } from "./components/shell/TitleBar.js";
@@ -485,19 +486,17 @@ export function App(): React.ReactElement {
               {compact && <SessionSubBar sessionId={activeSessionId} />}
               <TranscriptView sessionId={activeSessionId} />
               {/* Session dock — the rigid (non-shrinking) stack of bars that
-                  sits between the scrolling transcript and the composer. Both
-                  children are in-flow column rows here, so the update banner
-                  can never overlap or render beneath the WorktreeBar above it
-                  (their boxes are sequential, not positioned siblings of the
-                  flex column). See `.session-dock` in App.css. */}
+                  sits between the scrolling transcript and the composer. The
+                  WorktreeBar + Dock (above-composer tray) stack as ordered,
+                  in-flow column rows here. See `.session-dock` in App.css. */}
               <div className="session-dock">
-                {/* Update notification: a compact, right-aligned, dismissible
-                    card. Sits ABOVE the WorktreeBar (and thus above the
-                    composer) as an in-flow column row — never overlapping or
-                    rendering beneath the bar below it. */}
-                <UpdateBanner />
                 {/* WorktreeBar — appears only in new sessions (first-send bar) */}
                 <WorktreeBar sessionId={activeSessionId} />
+                {/* Dock — the above-composer tray (extension widget items + the
+                    update notice). Sits directly above the composer so the two
+                    read as a connected stack of cards. Renders nothing when
+                    empty, so there is never a phantom box. */}
+                <Dock sessionId={activeSessionId} />
               </div>
               {/* Composer and the extension dialog share the same flex
                 slot: the dialog replaces the composer when a question is

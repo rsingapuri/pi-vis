@@ -99,6 +99,18 @@
   --space-8: 2.75rem;
   --space-10: 4.25rem;
 
+  /* ── Reading measure ─────────────────────────────────────────────────
+     Every transcript block shares this one centered column, so the line
+     length never grows unbounded on a wide monitor and every element type
+     (text, tool cards, code blocks) reads as a single coherent width. Below
+     the measure the column shrinks to fill the pane.
+
+     60rem (≈840px) is wider than a pure-prose measure (ChatGPT/Claude.ai sit
+     ~45–48rem) on purpose: this surface mixes prose with code blocks, diffs,
+     and tool cards that need the extra room, and it's a full-window app rather
+     than a narrow side panel. */
+  --transcript-measure: 60rem;
+
   /* Half the sidebar resize grab target. The handle straddles the content
      card's left edge; this sets each half so `calc(... * 2)` is the full grab
      width. */

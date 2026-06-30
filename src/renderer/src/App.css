@@ -252,13 +252,11 @@
   overflow: hidden;
 }
 
-/* Session dock — the fixed-height stack (WorktreeBar + UpdateBanner) wedged
+/* Session dock — the fixed-height stack (Dock chip rail + WorktreeBar) wedged
    between the scrolling transcript and the composer. `flex: 0 0 auto` makes it
    rigid so the transcript is the *only* flex item that absorbs vertical
    pressure — the dock's rows can never be compressed into one another. Its
-   children stack as ordered, in-flow column boxes, so the update banner is
-   structurally incapable of overlapping (or rendering beneath) the WorktreeBar
-   above it. */
+   children stack as ordered, in-flow column boxes. */
 .session-dock {
   display: flex;
   flex-direction: column;

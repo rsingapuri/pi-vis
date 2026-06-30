@@ -131,9 +131,6 @@
 /* ── Header bar ────────────────────────────────────────────────────── */
 
 .diff-viewer__header {
-  display: flex;
-  align-items: center;
-  gap: 0.857rem;
   padding: 0.571rem 1rem;
   background: var(--ctp-mantle);
   border-bottom: 1px solid var(--ctp-surface0);
@@ -165,10 +162,6 @@
 }
 .diff-viewer__summary-del {
   color: var(--ctp-red);
-}
-
-.diff-viewer__spacer {
-  flex: 1;
 }
 
 /* Segmented control (UNIFIED / SPLIT). */

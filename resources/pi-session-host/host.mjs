@@ -239,7 +239,12 @@ async function handleInit(msg) {
 
     // Step 2: Bootstrap
     configureHttpDispatcher(piPath);
-    const theme = initHostTheme(pi);
+    // Load the pi theme that matches pi-vis's active color scheme (passed as
+    // PIVIS_PI_THEME = "dark" | "light" by the main process). This is what makes
+    // every host-rendered surface — extension `theme.fg` widgets/status, the
+    // unified TUI, and custom() panels — resolve colors that read correctly on
+    // pi-vis's light/dark UI. Falls back to pi's default when unset (older main).
+    const theme = initHostTheme(pi, process.env.PIVIS_PI_THEME || undefined);
     const agentDir = pi.getAgentDir();
 
     // Step 3: Dialog resolver — created BEFORE the runtime because the

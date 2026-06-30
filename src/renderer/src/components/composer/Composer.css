@@ -76,24 +76,6 @@
   display: none;
 }
 
-.composer__widget-strip {
-  border-bottom: 1px solid var(--border);
-  padding: 0.429rem 0.857rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.143rem;
-}
-
-.widget-strip__item {
-  font-family: var(--font-code);
-  font-size: var(--font-size-small);
-  color: var(--ctp-subtext0);
-}
-
-.widget-strip__line {
-  white-space: pre;
-}
-
 .composer__suggestions {
   /* Detached floating popover anchored above the input box. Speaks the
      same visual language as the app's command pickers (.picker in
@@ -231,11 +213,24 @@
   gap: 0.143rem;
   padding: 0.357rem;
   background: var(--ctp-input-bg);
-  border: 1px solid var(--border);
+  /* Always-visible border (border-strong, not the faint --border) so the input
+     reads as a defined card even when unfocused — consistent with the custom
+     panel / dialog slots that can replace it here. Focus lifts it to mauve. */
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   font-size: var(--font-size-base);
   line-height: 1.5;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Connected stack: when the Dock tray sits above the composer, the input box
+   flattens its top corners so the tray's flat bottom edge and the input box's
+   top border meet as one continuous, gap-free outline (the input box's top
+   border is the shared seam). `:has()` keeps this purely in CSS — no
+   dock-presence flag has to be threaded through the React tree. */
+.session-dock:has(.dock) ~ .composer .composer__input-box {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 /* The text field lifts to an accent ring while focused — the same mauve

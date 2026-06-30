@@ -3,7 +3,6 @@ import type { ModelInfo } from "@shared/pi-protocol/responses.js";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
-import { AnsiText } from "../../lib/ansi.js";
 import {
   BUILTIN_COMMANDS,
   type PickerRequest,
@@ -824,22 +823,6 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
               >
                 ×
               </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Widget strip */}
-      {session && session.widgets.size > 0 && (
-        <div className="composer__widget-strip">
-          {Array.from(session.widgets.entries()).map(([key, lines]) => (
-            <div key={key} className="widget-strip__item">
-              {lines.map((line, i) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: widget lines are appended and stable per key
-                <div key={i} className="widget-strip__line">
-                  <AnsiText text={line} />
-                </div>
-              ))}
             </div>
           ))}
         </div>

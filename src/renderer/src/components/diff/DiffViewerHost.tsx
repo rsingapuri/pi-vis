@@ -16,6 +16,7 @@ import { useDiffStore } from "../../stores/diff-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { BaseBranchDropdown } from "./BaseBranchDropdown.js";
 import { DiffFileSection } from "./DiffFileSection.js";
+import "../common/viewer-header.css";
 import "./DiffViewer.css";
 
 interface DiffViewerHostProps {
@@ -559,77 +560,80 @@ function ViewerHeader({
     return { ins, del, count: files.length };
   }, [files]);
   return (
-    <div className="diff-viewer__header">
-      <span className="diff-viewer__title">Changes</span>
-      <BaseBranchDropdown />
-      <span className="diff-viewer__summary">
-        <span>
-          {totals.count.toLocaleString()} {totals.count === 1 ? "file" : "files"}
+    <div className="diff-viewer__header viewer-header">
+      <div className="viewer-header__left">
+        <span className="diff-viewer__title">Changes</span>
+        <BaseBranchDropdown />
+        <span className="diff-viewer__summary">
+          <span>
+            {totals.count.toLocaleString()} {totals.count === 1 ? "file" : "files"}
+          </span>
+          {totals.ins > 0 && (
+            <span className="diff-viewer__summary-add">+{totals.ins.toLocaleString()}</span>
+          )}
+          {totals.del > 0 && (
+            <span className="diff-viewer__summary-del">−{totals.del.toLocaleString()}</span>
+          )}
         </span>
-        {totals.ins > 0 && (
-          <span className="diff-viewer__summary-add">+{totals.ins.toLocaleString()}</span>
-        )}
-        {totals.del > 0 && (
-          <span className="diff-viewer__summary-del">−{totals.del.toLocaleString()}</span>
-        )}
-      </span>
-      <span className="diff-viewer__spacer" />
-      {stale ? (
-        <span
-          className="diff-viewer__stale-dot"
-          role="img"
-          aria-label="Changes may be pending refresh"
-          title="Changes may be pending refresh"
-        />
-      ) : null}
-      <button
-        type="button"
-        className={`diff-viewer__icon-btn${phase === "loading" || refreshing ? " diff-viewer__icon-btn--spinning" : ""}`}
-        onClick={onRefresh}
-        title="Refresh"
-        aria-label="Refresh"
-      >
-        <RefreshIcon />
-      </button>
-      {phase === "ready" && files.length > 0 && (
+      </div>
+      <div className="viewer-header__right">
+        {stale ? (
+          <span
+            className="diff-viewer__stale-dot"
+            role="img"
+            aria-label="Changes may be pending refresh"
+            title="Changes may be pending refresh"
+          />
+        ) : null}
         <button
           type="button"
-          className={`diff-viewer__icon-btn${searchOpen ? " diff-viewer__icon-btn--on" : ""}`}
-          onClick={onToggleSearch}
-          title="Find in diff (⌘F)"
-          aria-label="Find in diff"
-          aria-pressed={searchOpen}
+          className={`diff-viewer__icon-btn${phase === "loading" || refreshing ? " diff-viewer__icon-btn--spinning" : ""}`}
+          onClick={onRefresh}
+          title="Refresh"
+          aria-label="Refresh"
         >
-          <SearchIcon />
+          <RefreshIcon />
         </button>
-      )}
-      <div className="diff-viewer__seg" role="group" aria-label="Diff view mode">
+        {phase === "ready" && files.length > 0 && (
+          <button
+            type="button"
+            className={`diff-viewer__icon-btn${searchOpen ? " diff-viewer__icon-btn--on" : ""}`}
+            onClick={onToggleSearch}
+            title="Find in diff (⌘F)"
+            aria-label="Find in diff"
+            aria-pressed={searchOpen}
+          >
+            <SearchIcon />
+          </button>
+        )}
+        <div className="diff-viewer__seg" role="group" aria-label="Diff view mode">
+          <button
+            type="button"
+            className={`diff-viewer__seg-btn${viewMode === "unified" ? " diff-viewer__seg-btn--active" : ""}`}
+            onClick={() => onSetViewMode("unified")}
+          >
+            Unified
+          </button>
+          <button
+            type="button"
+            className={`diff-viewer__seg-btn${viewMode === "split" ? " diff-viewer__seg-btn--active" : ""}`}
+            onClick={() => onSetViewMode("split")}
+            disabled={narrow}
+            title={narrow ? "Window too narrow for split view" : undefined}
+          >
+            Split
+          </button>
+        </div>
         <button
           type="button"
-          className={`diff-viewer__seg-btn${viewMode === "unified" ? " diff-viewer__seg-btn--active" : ""}`}
-          onClick={() => onSetViewMode("unified")}
+          className="diff-viewer__icon-btn"
+          onClick={onClose}
+          title="Close (Esc)"
+          aria-label="Close diff viewer"
         >
-          Unified
-        </button>
-        <button
-          type="button"
-          className={`diff-viewer__seg-btn${viewMode === "split" ? " diff-viewer__seg-btn--active" : ""}`}
-          onClick={() => onSetViewMode("split")}
-          disabled={narrow}
-          title={narrow ? "Window too narrow for split view" : undefined}
-        >
-          Split
+          <CloseIcon />
         </button>
       </div>
-      <button
-        type="button"
-        className="diff-viewer__icon-btn"
-        onClick={onClose}
-        title="Close (Esc)"
-        aria-label="Close diff viewer"
-      >
-        <CloseIcon />
-      </button>
     </div>
   );
 }

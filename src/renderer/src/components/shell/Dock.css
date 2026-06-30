@@ -1,0 +1,246 @@
+/* ── Dock — the above-composer tray ──────────────────────────────────────
+   A bordered, rounded tray that collects every above-composer
+   notification/control (extension widget lines today, the update
+   notification, and — reserved — a future Input/Extension toggle) into one
+   surface. It shares the composer's always-visible border and sits flush on
+   top of the composer's input box — the tray's flat bottom edge meets the
+   composer's top border, so the two read as one connected unit (the composer
+   flattens its top corners when the tray is present; see Composer.css
+   `.session-dock:has(.dock) ~ .composer`). When there are no items the Dock
+   renders nothing (returns null in TSX), so there is never a phantom box.
+
+   Each item inside the tray is its own floating pill so the eye can tell them
+   apart — the previous design ran the items together as borderless text on a
+   low-contrast strip. */
+
+.dock {
+  /* Match the composer input box's horizontal inset (Composer.css
+     `.composer__input-row` side padding) so the tray and the input box are the
+     same width and their borders line up into one continuous outline. */
+  margin: 0 0.857rem 0;
+  /* Bottom padding is 1px more than top so the pills read as centered between
+     the tray's visible top *border* and the seam (the bottom has no border, so
+     symmetric padding would otherwise sit the pills 1px high). */
+  padding: 0.5rem 0.714rem 0.571rem;
+  background: var(--ctp-surface0);
+  /* Same always-visible border as the composer input box; no bottom border —
+     the composer's top border is the shared seam between them. */
+  border: 1px solid var(--border-strong);
+  border-bottom: none;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  /* Positioning context for the update item's popover. */
+  position: relative;
+  /* Rigid row in the session dock; only the transcript absorbs vertical
+     pressure. Pills flow inline and wrap to additional rows when narrow. */
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.357rem 0.429rem;
+  font-family: var(--font-display);
+  font-size: 0.857em;
+  line-height: var(--leading-label);
+  color: var(--ctp-text);
+  animation: dock-rise 0.18s ease-out;
+}
+
+@keyframes dock-rise {
+  from {
+    transform: translateY(0.286rem);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* ── Floating pill — the shared per-item vocabulary ─────────────────────
+   Every item in the tray is its own pill so the eye can tell items apart. The
+   fill is a recessed background tone (base — darker than the surface0 tray),
+   not a mid-surface, so the pill reads with real contrast against the tray
+   instead of blending into it; a border-strong outline + soft elevation keep
+   it defined and lifted. */
+.dock__widget,
+.dock__update {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.429rem;
+  min-width: 0;
+  background: var(--ctp-base);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  padding: 0.286rem 0.643rem;
+}
+
+/* ── Widget pill (extension setWidget text) ─────────────────────────────── */
+.dock__widget {
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.071rem;
+}
+
+.dock__widget-line {
+  font-family: var(--font-code);
+  font-size: var(--font-size-small);
+  color: var(--ctp-subtext0);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* ── Update pill ────────────────────────────────────────────────────────
+   Collapsed: a summary line with an inline "Update now" action, a disclosure
+   affordance, and a dismiss. Expanded: the per-extension detail list opens as
+   a floating popover anchored above the pill, so expansion never reflows the
+   tray height. Sits at the right of the tray (margin-left: auto). */
+.dock__update {
+  margin-left: auto;
+  position: relative;
+  /* Tighter right padding so the dismiss "×" sits comfortably inside the pill. */
+  padding-right: 0.286rem;
+}
+
+.dock__update-text {
+  color: var(--ctp-green);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.dock__btn {
+  background: var(--ctp-mauve);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--ctp-base);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.857em;
+  font-weight: 500;
+  line-height: var(--leading-label);
+  padding: 0.214rem 0.643rem;
+  white-space: nowrap;
+}
+
+.dock__btn:hover {
+  background: var(--ctp-lavender);
+}
+
+.dock__btn--secondary {
+  background: var(--ctp-surface1);
+  color: var(--ctp-subtext0);
+}
+
+.dock__btn--secondary:hover {
+  background: var(--ctp-surface2);
+  color: var(--ctp-text);
+}
+
+/* Expand toggle — pure-CSS chevron, points down when collapsed, up when
+   expanded. */
+.dock__chevron-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.429rem;
+  padding: 0.214rem 0;
+}
+
+.dock__chevron {
+  display: block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-0.071rem) rotate(45deg);
+  transition: transform 0.15s ease;
+}
+
+.dock__chevron--up {
+  transform: translateY(0.071rem) rotate(225deg);
+}
+
+.dock__dismiss {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.286rem;
+  height: 1.286rem;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--ctp-overlay0);
+  cursor: pointer;
+  font-size: 1.143em;
+  line-height: 1;
+  padding: 0;
+}
+
+.dock__dismiss:hover {
+  background: var(--ctp-surface1);
+  color: var(--ctp-text);
+}
+
+/* Expanded detail popover — floats above the item so the tray height is
+   unaffected by expansion. Anchored to the item's right edge, opening
+   upward (bottom: 100%). */
+.dock__update-popover {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 0.643rem;
+  z-index: 3;
+  background: var(--ctp-surface0);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-2);
+  padding: 0.429rem;
+  min-width: 16rem;
+  max-width: 22rem;
+  animation: dock-rise 0.18s ease-out;
+}
+
+.dock__update-details {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.143rem;
+  min-width: 0;
+  max-height: 11rem;
+  overflow-y: auto;
+}
+
+.dock__update-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 0.571rem;
+  padding: 0.143rem 0;
+  min-width: 0;
+}
+
+.dock__update-detail-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ctp-text);
+  font-weight: 500;
+}
+
+.dock__update-detail-version {
+  flex: 0 0 auto;
+  color: var(--ctp-subtext0);
+  font-family: var(--font-code);
+  font-size: 0.857em;
+  white-space: nowrap;
+}
+
+.dock__update-detail-btn {
+  flex: 0 0 auto;
+  padding: 0.143rem 0.571rem;
+}

@@ -16,6 +16,7 @@ import { cssEscape } from "../../lib/format.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { type TreeFilterMode, isTreeUnsupported, useTreeStore } from "../../stores/tree-store.js";
 import { type VisibleRow, flattenVisible } from "./tree-flatten.js";
+import "../common/viewer-header.css";
 import "./TreeViewer.css";
 
 // Filter modes + the single-letter key (with ⌃/⌘) that toggles each, mirroring
@@ -257,50 +258,53 @@ export function TreeViewerHost({ sessionId }: TreeViewerHostProps): React.ReactE
         tabIndex={-1}
         ref={panelRef}
       >
-        <div className="tree-viewer__header">
-          <span className="tree-viewer__title">Conversation Tree</span>
-          {filterMode !== "default" && phase === "ready" && (
-            <span className="tree-viewer__filter-tag">{FILTER_LABEL[filterMode]}</span>
-          )}
-          <span className="tree-viewer__summary">
-            {phase === "ready"
-              ? `${visibleRows.length} ${visibleRows.length === 1 ? "entry" : "entries"}`
-              : phase === "loading"
-                ? "Loading…"
-                : phase === "unsupported"
-                  ? "Unavailable"
-                  : ""}
-          </span>
-          <div className="tree-viewer__spacer" />
-          <label
-            className={`tree-viewer__toggle${summarizeOnSwitch ? " tree-viewer__toggle--on" : ""}`}
-            title="Synthesize a summary of the branch you leave when switching"
-          >
-            <input
-              type="checkbox"
-              checked={summarizeOnSwitch}
-              onChange={(e) => setSummarizeOnSwitch(e.target.checked)}
-            />
-            Summarize on switch
-          </label>
-          <div className="tree-viewer__search">
-            <input
-              className="tree-viewer__search-input"
-              placeholder="Search…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              aria-label="Search tree"
-            />
+        <div className="tree-viewer__header viewer-header">
+          <div className="viewer-header__left">
+            <span className="tree-viewer__title">Conversation Tree</span>
+            {filterMode !== "default" && phase === "ready" && (
+              <span className="tree-viewer__filter-tag">{FILTER_LABEL[filterMode]}</span>
+            )}
+            <span className="tree-viewer__summary">
+              {phase === "ready"
+                ? `${visibleRows.length} ${visibleRows.length === 1 ? "entry" : "entries"}`
+                : phase === "loading"
+                  ? "Loading…"
+                  : phase === "unsupported"
+                    ? "Unavailable"
+                    : ""}
+            </span>
           </div>
-          <button
-            type="button"
-            className="tree-viewer__icon-btn"
-            onClick={closeViewer}
-            title="Close (Esc)"
-            aria-label="Close tree viewer"
-          >
-            <CloseIcon />
-          </button>
+          <div className="viewer-header__right">
+            <label
+              className={`tree-viewer__toggle${summarizeOnSwitch ? " tree-viewer__toggle--on" : ""}`}
+              title="Synthesize a summary of the branch you leave when switching"
+            >
+              <input
+                type="checkbox"
+                checked={summarizeOnSwitch}
+                onChange={(e) => setSummarizeOnSwitch(e.target.checked)}
+              />
+              Summarize on switch
+            </label>
+            <div className="tree-viewer__search">
+              <input
+                className="tree-viewer__search-input"
+                placeholder="Search…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                aria-label="Search tree"
+              />
+            </div>
+            <button
+              type="button"
+              className="tree-viewer__icon-btn"
+              onClick={closeViewer}
+              title="Close (Esc)"
+              aria-label="Close tree viewer"
+            >
+              <CloseIcon />
+            </button>
+          </div>
         </div>
 
         <div className="tree-viewer__hint" aria-hidden="true">

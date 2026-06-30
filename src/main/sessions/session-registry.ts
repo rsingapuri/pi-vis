@@ -660,6 +660,30 @@ export class SessionRegistry {
   }
 
   /**
+   * Reload every running session. Used when a global input the host bakes in
+   * at spawn changes — specifically the color scheme, which selects the pi
+   * theme the host loads (PIVIS_PI_THEME). Respawning re-themes every
+   * host-rendered surface (extension widgets/status, the unified TUI, custom
+   * panels) and makes extensions re-emit their widgets with the new colors.
+   *
+   * Best-effort: a busy (mid-turn) session throws from reloadSession and is
+   * skipped — it re-themes on its next reload/spawn — and one failure never
+   * aborts the rest.
+   */
+  async reloadRunningSessions(piPath: string, env?: Record<string, string>): Promise<void> {
+    const ids = [...this.sessions.entries()]
+      .filter(([, rec]) => rec.proc && !rec.busy)
+      .map(([id]) => id);
+    for (const id of ids) {
+      try {
+        await this.reloadSession(id, piPath, env);
+      } catch {
+        // Busy or failed session — leave it; it re-themes on its next spawn.
+      }
+    }
+  }
+
+  /**
    * Re-point the session to a worktree and re-spawn its pi process.
    * Stops the current process (same guard pattern as reloadSession),
    * sets the worktree path, and re-activates (which spawns a fresh

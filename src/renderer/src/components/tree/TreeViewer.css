@@ -84,14 +84,10 @@
 /* ── Header bar ────────────────────────────────────────────────────── */
 
 .tree-viewer__header {
-  display: flex;
-  align-items: center;
-  gap: 0.857rem;
   padding: 0.571rem 1rem;
   background: var(--ctp-mantle);
   border-bottom: 1px solid var(--ctp-surface0);
   flex-shrink: 0;
-  flex-wrap: nowrap;
 }
 
 .tree-viewer__title {
@@ -123,16 +119,15 @@
   white-space: nowrap;
 }
 
-.tree-viewer__spacer {
-  flex: 1;
-}
-
 /* Search ───────────────────────────────────────────────────────────── */
 
 .tree-viewer__search {
   position: relative;
-  flex-shrink: 1;
+  /* Flex between 6rem and 14rem so the search input gives way (rather than
+     the close button getting clipped) when the viewer header is narrow. */
+  flex: 1 1 6rem;
   min-width: 6rem;
+  max-width: 14rem;
 }
 
 .tree-viewer__search-input {
@@ -144,8 +139,7 @@
   font-family: var(--font-code);
   font-size: var(--font-size-small);
   padding: 0.286rem 0.714rem;
-  width: 14rem;
-  max-width: 100%;
+  width: 100%;
   transition: border-color 100ms ease-out, background 100ms ease-out;
 }
 

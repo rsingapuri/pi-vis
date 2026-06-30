@@ -1,0 +1,45 @@
+/* ── Shared overlay viewer-header reflow ─────────────────────────────────
+   DiffViewerHost and TreeViewerHost share an identical header layout: a left
+   cluster (title + summary, shrinks/ellipsizes) and a right cluster (action
+   controls, never shrinks). When the pane is too narrow for both clusters,
+   the header wraps to two rows — the right cluster (containing the essential
+   × close button) drops to a second line and stays right-aligned, so controls
+   are never clipped by the viewer's `overflow: hidden`.
+
+   Applied alongside each viewer's own header class (e.g. .diff-viewer__header);
+   the content-specific styles (rail, rows, segmented controls) stay in their
+   own stylesheets. The two clusters are marked with the modifier classes
+   below. */
+
+.viewer-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.857rem;
+}
+
+/* Left cluster: title + context (branch, summary, filter tag). Shrinks and
+   ellipsizes rather than pushing the controls off-screen. */
+.viewer-header__left {
+  display: flex;
+  align-items: center;
+  gap: 0.857rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Right cluster: action controls (refresh, search, segmented, close). Never
+   grows; shrinks only when there isn't room (so on a wrapped second row the
+   shrinkable controls — the tree's search input — give way instead of the
+   essential close button getting clipped). min-width:0 lets those children
+   flex-shrink below their intrinsic size. margin-left:auto pins it right on a
+   single row; once wrapped it's the sole item on row two and still pins
+   right. */
+.viewer-header__right {
+  display: flex;
+  align-items: center;
+  gap: 0.286rem;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
