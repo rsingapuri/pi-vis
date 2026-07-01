@@ -61,6 +61,23 @@ function ArchiveIcon(): React.ReactElement {
   );
 }
 
+function PinIcon({ filled }: { filled: boolean }): React.ReactElement {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+    </svg>
+  );
+}
+
 function StreamingIndicator({ isStreaming }: StreamingDotProps): React.ReactElement | null {
   if (!isStreaming) return null;
   return <span className="status-dot status-dot--streaming" title="Streaming" />;
@@ -101,11 +118,48 @@ export function Sidebar({
   const reorderWorkspaces = useSessionsStore((s) => s.reorderWorkspaces);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const updateSettings = useSettingsStore((s) => s.update);
+  const pinnedSessions = useSettingsStore((s) => s.settings.pinnedSessions);
   const lastActiveWorkspace = useSettingsStore((s) => s.settings.lastActiveWorkspace);
   const savedExpandedWorkspaces = useSettingsStore((s) => s.settings.expandedWorkspaces);
   const statusBarVisible = useSettingsStore((s) => s.settings.statusBarVisible);
   const sidebarRef = useRef<HTMLElement>(null);
   const dragIndexRef = useRef<number | null>(null);
+  const pinnedDragKeyRef = useRef<string | null>(null);
+
+  // Pinned sessions (by file path) as a Set for O(1) lookup during render.
+  const pinnedSet = useMemo(() => new Set(pinnedSessions), [pinnedSessions]);
+
+  // Toggle a session's pin. Pinning APPENDS to the persisted array so a newly
+  // pinned row lands at the bottom of the pinned group; unpinning removes it
+  // and the row falls back to activity-sorted ordering among its peers.
+  const togglePin = useCallback(
+    (filePath: string) => {
+      const next = pinnedSessions.includes(filePath)
+        ? pinnedSessions.filter((k) => k !== filePath)
+        : [...pinnedSessions, filePath];
+      void updateSettings({ pinnedSessions: next });
+    },
+    [pinnedSessions, updateSettings],
+  );
+
+  // Drag-reorder within the pinned group. Moves the dragged key to the
+  // target key's position in the persisted order array (durable across
+  // relaunch). A no-op self-drop or unknown key skips the settings write.
+  const handlePinnedDrop = useCallback(
+    (targetKey: string) => {
+      const dragged = pinnedDragKeyRef.current;
+      pinnedDragKeyRef.current = null;
+      if (!dragged || dragged === targetKey) return;
+      const from = pinnedSessions.indexOf(dragged);
+      const to = pinnedSessions.indexOf(targetKey);
+      if (from === -1 || to === -1) return;
+      const next = [...pinnedSessions];
+      next.splice(from, 1);
+      next.splice(to, 0, dragged);
+      void updateSettings({ pinnedSessions: next });
+    },
+    [pinnedSessions, updateSettings],
+  );
 
   // Pagination: visible count per workspace
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
@@ -216,9 +270,20 @@ export function Sidebar({
       // Sort by activity timestamp descending (most recent first)
       merged.sort((a, b) => b.sortKey - a.sortKey);
 
-      return merged;
+      // Pinned sessions float to the top, in persisted pinned order. A newly
+      // pinned session is appended to the end of `pinnedSessions` so it lands
+      // at the bottom of the pinned group; drag-reorder rewrites that order.
+      // Rows are keyed by file path (shared by a live row and its stored
+      // counterpart, and stable across relaunch).
+      // Reuse the memoized pinnedSet (component-scope) instead of rebuilding.
+      const pinKey = (e: (typeof merged)[number]) => e.filePath ?? "";
+      const pinned = pinnedSessions
+        .map((key) => merged.find((e) => pinKey(e) === key))
+        .filter((e): e is (typeof merged)[number] => e !== undefined);
+      const unpinned = merged.filter((e) => !pinnedSet.has(pinKey(e)));
+      return [...pinned, ...unpinned];
     },
-    [sessions, workspaces, activeSessionId],
+    [sessions, workspaces, activeSessionId, pinnedSessions, pinnedSet],
   );
 
   // (Sidebar resize is handled in App.tsx — the drag handle lives there so
@@ -537,12 +602,46 @@ export function Sidebar({
                         {visibleSessions.map((entry) => {
                           if (entry.kind === "live") {
                             const liveSession = sessions.get(entry.sessionId);
+                            const isPinned =
+                              entry.filePath != null && pinnedSet.has(entry.filePath);
                             return (
                               <div
                                 key={entry.sessionId}
                                 role="button"
                                 tabIndex={0}
-                                className={`sidebar__session ${activeSessionId === entry.sessionId ? "sidebar__session--active" : ""}`}
+                                className={`sidebar__session ${activeSessionId === entry.sessionId ? "sidebar__session--active" : ""} ${isPinned ? "sidebar__session--pinned" : ""}`}
+                                draggable={isPinned}
+                                onDragStart={
+                                  isPinned && entry.filePath
+                                    ? (e) => {
+                                        pinnedDragKeyRef.current = entry.filePath!;
+                                        e.dataTransfer.effectAllowed = "move";
+                                      }
+                                    : undefined
+                                }
+                                onDragOver={
+                                  isPinned
+                                    ? (e) => {
+                                        e.preventDefault();
+                                        e.dataTransfer.dropEffect = "move";
+                                      }
+                                    : undefined
+                                }
+                                onDrop={
+                                  isPinned && entry.filePath
+                                    ? (e) => {
+                                        e.preventDefault();
+                                        handlePinnedDrop(entry.filePath!);
+                                      }
+                                    : undefined
+                                }
+                                onDragEnd={
+                                  isPinned
+                                    ? () => {
+                                        pinnedDragKeyRef.current = null;
+                                      }
+                                    : undefined
+                                }
                                 onClick={() => setActiveSession(entry.sessionId)}
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter" || e.key === " ") {
@@ -577,17 +676,64 @@ export function Sidebar({
                                 >
                                   <ArchiveIcon />
                                 </button>
+                                {entry.filePath && (
+                                  <button
+                                    type="button"
+                                    className="sidebar__session-pin"
+                                    title={isPinned ? "Unpin session" : "Pin session"}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      togglePin(entry.filePath!);
+                                    }}
+                                  >
+                                    <PinIcon filled={isPinned} />
+                                  </button>
+                                )}
                               </div>
                             );
                           }
 
                           // Stored session row
+                          const isPinned =
+                            entry.filePath != null && pinnedSet.has(entry.filePath);
                           return (
                             <div
                               key={entry.filePath}
                               role="button"
                               tabIndex={0}
-                              className="sidebar__session"
+                              className={`sidebar__session ${isPinned ? "sidebar__session--pinned" : ""}`}
+                              draggable={isPinned}
+                              onDragStart={
+                                isPinned
+                                  ? (e) => {
+                                      pinnedDragKeyRef.current = entry.filePath;
+                                      e.dataTransfer.effectAllowed = "move";
+                                    }
+                                  : undefined
+                              }
+                              onDragOver={
+                                isPinned
+                                  ? (e) => {
+                                      e.preventDefault();
+                                      e.dataTransfer.dropEffect = "move";
+                                    }
+                                  : undefined
+                              }
+                              onDrop={
+                                isPinned
+                                  ? (e) => {
+                                      e.preventDefault();
+                                      handlePinnedDrop(entry.filePath);
+                                    }
+                                  : undefined
+                              }
+                              onDragEnd={
+                                isPinned
+                                  ? () => {
+                                      pinnedDragKeyRef.current = null;
+                                    }
+                                  : undefined
+                              }
                               onClick={() => handleResumeSession(ws.path, entry.filePath)}
                               onKeyDown={(e) => {
                                 if (e.key === "Enter" || e.key === " ") {
@@ -613,6 +759,17 @@ export function Sidebar({
                                 }}
                               >
                                 <ArchiveIcon />
+                              </button>
+                              <button
+                                type="button"
+                                className="sidebar__session-pin"
+                                title={isPinned ? "Unpin session" : "Pin session"}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  togglePin(entry.filePath);
+                                }}
+                              >
+                                <PinIcon filled={isPinned} />
                               </button>
                             </div>
                           );

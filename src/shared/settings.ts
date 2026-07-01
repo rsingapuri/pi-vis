@@ -74,6 +74,19 @@ export const AppSettingsSchema = z.object({
   // so it can never dominate a narrow window.
   sidebarWidth: z.number().default(220),
   sidebarCollapsed: z.boolean().default(false),
+  // Pinned sessions (by session-file path), in manual pinned order. Pinned
+  // rows float to the top of their workspace's session list, above the
+  // standard activity-sorted rows. A newly pinned session is appended to the
+  // end of this array (so it lands at the bottom of the pinned group);
+  // drag-reorder rewrites it. Unpinning removes the key and the row returns
+  // to its activity-sorted place. Keyed by file path (stable across
+  // relaunch and shared by the live row and its stored counterpart). The
+  // array is GLOBAL across all workspaces; each workspace view sees only its
+  // own keys, in their relative order within this array (so pinning order
+  // can interleave across workspaces). Stale keys (deleted/moved session
+  // files) are filtered out at render rather than pruned here, matching
+  // archivedSessions' trade-off.
+  pinnedSessions: z.array(z.string()).default([]),
   archivedSessions: z.array(z.string()).default([]),
   lastDismissedPiVersion: z.string().nullable().default(null),
   updateCheckEnabled: z.boolean().default(true),

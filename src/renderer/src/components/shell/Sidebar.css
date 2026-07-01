@@ -298,9 +298,6 @@
 .sidebar__session--active {
   background: var(--surface);
   color: var(--text);
-  /* Mauve spine = "this is the open session" (matches the diff tree's active
-     row). Reads as identity, not just another hovered block. */
-  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .sidebar__session--active:hover {
@@ -343,7 +340,55 @@
   display: block;
 }
 
-.sidebar__session-preview {
+/* Pinned rows are draggable to reorder within the pinned group. The grab
+   cursor hints that the row can be rearranged; the archive/pin buttons keep
+   their own pointer cursor. */
+.sidebar__session--pinned {
+  cursor: grab;
+}
+.sidebar__session--pinned:active {
+  cursor: grabbing;
+}
+
+/* Pin button — sits to the right of the archive button. Unpinned: reveals
+   on row hover like the archive button. Pinned: always visible and filled
+   accent, so it reads as identity even after the archive icon has faded. */
+.sidebar__session-pin {
+  background: none;
+  border: none;
+  color: var(--text-ghost);
+  cursor: pointer;
+  padding: 0.143rem 0.286rem;
+  line-height: 1;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.1s ease, color 0.1s ease,
+    transform 0.12s ease;
+}
+.sidebar__session:hover .sidebar__session-pin {
+  opacity: 1;
+}
+.sidebar__session-pin:hover {
+  background: var(--surface-3);
+  color: var(--accent);
+}
+/* Pinned state: the filled accent pin is the persistent identity marker —
+   it stays visible at rest, independent of row hover. */
+.sidebar__session--pinned .sidebar__session-pin {
+  opacity: 1;
+  color: var(--accent);
+}
+.sidebar__session--pinned .sidebar__session-pin:hover {
+  color: var(--text);
+  transform: rotate(-20deg);
+}
+.sidebar__session-pin svg {
+  width: 0.95em;
+  height: 0.95em;
+  display: block;
+}
+
   flex: 1;
   white-space: nowrap;
   overflow: hidden;

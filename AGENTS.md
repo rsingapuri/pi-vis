@@ -116,7 +116,7 @@ src/
     │   │   ├── catppuccin-mocha.json / catppuccin-macchiato.json / catppuccin-frappe.json / catppuccin-latte.json
     │   │   └── gruvbox-material-dark.json
     │   └── index.ts         # buildThemeRegistry/resolveTheme (fallback to default) + piThemeForTheme (appearance → pi light/dark) + re-exports buildPiThemeColors/buildPiThemeColorIndices/PI_ROLE_INDEX/PI_INDEX_TOKEN/PI_ROLES/PI_THEME_DEFAULTS
-    ├── settings.ts          # AppSettingsSchema (Zod): fonts, paths, workspaceOrder + expandedWorkspaces, lastActiveWorkspace, colorScheme (now a free theme-id string, validated against the registry at apply time), diff mode, diffMaxFileSizeMiB (diff viewer file-size cap, default 5), sidebar width/collapsed, window bounds
+    ├── settings.ts          # AppSettingsSchema (Zod): fonts, paths, workspaceOrder + expandedWorkspaces, pinnedSessions (global, by session-file path, manual order), lastActiveWorkspace, colorScheme (now a free theme-id string, validated against the registry at apply time), diff mode, diffMaxFileSizeMiB (diff viewer file-size cap, default 5), sidebar width/collapsed, window bounds
     ├── git.ts               # GitChangedFile, GitChangesResult, GitFileDiffResult types
     ├── result.ts            # Result<T,E> utility + assertNever
     └── session-file/        # Session file format schemas (header, message/model-change/snapshot entries)
@@ -375,6 +375,21 @@ the user works in another expanded one. `activeWorkspacePath` (focus/active CSS)
 `sessions-store.ts`; `setActiveSession` derives `activeWorkspacePath` from the session's
 workspace. The `workspace.list` IPC channel (renamed from `workspace.recents`)
 returns the ordered, existence-pruned list.
+
+**Pinned sessions** (`settings.pinnedSessions`, a global array of session-file paths):
+a pinned row floats to the TOP of its workspace's session list, above the
+activity-sorted rows, in persisted manual order. Each row has a pin button (hover-
+revealed when unpinned, always-visible accent-filled when pinned); pinning appends
+to the array (lands at the bottom of the pinned group), and pinned rows are
+HTML-draggable to reorder within the group (drop targets only exist on pinned
+rows, so the group is self-contained). The array is global across workspaces — each
+workspace view renders only its own keys in their relative order. Keyed by file
+path (stable across relaunch and shared by the live row and its stored counterpart,
+so a pin survives the live→stored idle-eviction transition). Stale keys are filtered
+at render, not pruned, matching `archivedSessions`' trade-off. Because pinned rows
+sit at the front of the unified list and pagination slices from the front
+(`visibleSessions = unifiedSessions.slice(0, visibleCount)`), pinned rows are never
+pushed off the first page by newer unpinned sessions.
 
 ### Shell layout (canvas + floating content card)
 
