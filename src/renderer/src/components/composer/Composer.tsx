@@ -146,7 +146,6 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const setSessionDraft = useSessionsStore((s) => s.setSessionDraft);
   const clearEditorInjection = useSessionsStore((s) => s.clearEditorInjection);
 
-  const isStreaming = session?.isStreaming ?? false;
   const worktreeCreating = session?.worktreeCreating ?? false;
   // The composer is interactive only when the session is live AND we're not
   // mid worktree-creation (the submit is already in flight — the input is
@@ -909,35 +908,6 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
               aria-label="Message pi"
               disabled={!live}
             />
-            {text === "" && (
-              <div className="composer__placeholder" aria-hidden="true">
-                <FadeText>{isStreaming ? "Streaming…" : "Message pi…"}</FadeText>
-                {/* Shortcut hints live as quiet kbd chips at the input's right
-                    edge, not as a parenthetical manual in the placeholder
-                    sentence. They vanish as soon as the user types. */}
-                <span className="composer__hints">
-                  {isStreaming ? (
-                    <>
-                      <span className="composer__hint">
-                        <kbd>⏎</kbd> steer
-                      </span>
-                      <span className="composer__hint">
-                        <kbd>esc</kbd> abort
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="composer__hint">
-                        <kbd>/</kbd> commands
-                      </span>
-                      <span className="composer__hint">
-                        <kbd>!</kbd> bash
-                      </span>
-                    </>
-                  )}
-                </span>
-              </div>
-            )}
           </div>
         </div>
       </div>
