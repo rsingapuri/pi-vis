@@ -206,3 +206,47 @@ body {
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* ── Icons — one app-wide treatment (components/common/icons.tsx) ────────
+   `.icon` scales with the surrounding type and sits on the text baseline,
+   so an inline check reads like a character, not a sticker. `.icon-btn` is
+   the ghost icon-button chrome every ×/▾/✓ control shares: square hit
+   target, no resting fill, quiet surface lift on hover. Components add
+   their BEM class alongside for placement-specific tweaks only. */
+.icon {
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+  vertical-align: -0.125em;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.714rem;
+  height: 1.714rem;
+  padding: 0;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.icon-btn .icon {
+  display: block;
+  vertical-align: baseline;
+}

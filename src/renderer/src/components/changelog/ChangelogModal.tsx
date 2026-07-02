@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { Markdown } from "../../lib/markdown.js";
 import { useChangelogStore } from "../../stores/changelog-store.js";
+import { IconClose } from "../common/icons.js";
 import "./ChangelogModal.css";
 
 export function ChangelogModal(): React.ReactElement | null {
@@ -50,11 +51,11 @@ export function ChangelogModal(): React.ReactElement | null {
           <button
             ref={closeBtnRef}
             type="button"
-            className="changelog-modal__close"
+            className="changelog-modal__close icon-btn"
             onClick={handleClose}
             aria-label="Close changelog"
           >
-            ×
+            <IconClose />
           </button>
         </div>
         <div className="changelog-modal__body">

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { AnsiText } from "../../lib/ansi.js";
 import { useUpdatesStore } from "../../stores/updates-store.js";
+import { IconClose } from "../common/icons.js";
 import "./UpdateProgress.css";
 
 export function UpdateProgress(): React.ReactElement | null {
@@ -44,11 +45,12 @@ export function UpdateProgress(): React.ReactElement | null {
           <span className="update-progress__title">{isDone ? "Update complete" : "Updating…"}</span>
           <button
             type="button"
-            className="update-progress__close"
+            className="update-progress__close icon-btn"
             onClick={isDone ? handleDone : undefined}
             disabled={!isDone}
+            aria-label="Close"
           >
-            ×
+            <IconClose />
           </button>
         </div>
         <pre ref={scrollRef} className="update-progress__output">

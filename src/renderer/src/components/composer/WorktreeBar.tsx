@@ -3,6 +3,7 @@ import type { SessionId } from "@shared/ids.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { gitRootForSession, useSessionsStore } from "../../stores/sessions-store.js";
 import { BranchDropdown } from "../common/BranchDropdown.js";
+import { IconCheck } from "../common/icons.js";
 import "./WorktreeBar.css";
 
 interface WorktreeBarProps {
@@ -359,7 +360,7 @@ function AttachStatusLine({ sessionId }: { sessionId: SessionId }): React.ReactE
   if (status.kind === "ok") {
     return (
       <div className="worktree-bar__status worktree-bar__status--ok">
-        <span aria-hidden="true">✓</span>
+        <IconCheck />
         <span>On branch {status.branch}</span>
       </div>
     );

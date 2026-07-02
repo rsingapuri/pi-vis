@@ -10,6 +10,7 @@ import { findCurrentModel, modelDisplayName, modelKey } from "../../lib/model-ut
 import { openDiffForSession, useDiffStore } from "../../stores/diff-store.js";
 import { gitRootForSession, useSessionsStore } from "../../stores/sessions-store.js";
 import { FadeText } from "../common/FadeText.js";
+import { IconBranch, IconCheck, IconChevronDown } from "../common/icons.js";
 import { UnifiedViewToggle } from "../ext-ui/UnifiedViewToggle.js";
 import "./SessionHeader.css";
 
@@ -381,7 +382,7 @@ export function SessionControls({
           title={modelButtonLabel}
         >
           <FadeText className="session-header__picker-label">{modelButtonLabel}</FadeText>
-          <span aria-hidden>▾</span>
+          <IconChevronDown className="session-header__caret" />
         </button>
         {modelOpen && (
           <div className="session-header__dropdown" ref={dropdownRef}>
@@ -438,7 +439,12 @@ export function SessionControls({
             {filteredModels.length === 0 ? (
               <div className="session-header__dropdown-empty">No models found</div>
             ) : (
-              <div ref={listRef} role="listbox" id="model-listbox">
+              <div
+                ref={listRef}
+                role="listbox"
+                id="model-listbox"
+                className="session-header__dropdown-list"
+              >
                 {filteredModels.map((m, idx) => {
                   const label = modelDisplayName(m);
                   const q = modelSearch;
@@ -465,7 +471,7 @@ export function SessionControls({
                       onMouseEnter={() => setHighlightedIndex(idx)}
                     >
                       <span className="session-header__dropdown-item-check" aria-hidden>
-                        {selected ? "✓" : ""}
+                        {selected ? <IconCheck /> : null}
                       </span>
                       <FadeText className="session-header__dropdown-item-label">
                         {q ? highlightMatch(label, q) : label}
@@ -494,28 +500,31 @@ export function SessionControls({
               : undefined
           }
         >
-          {session?.thinkingLevel ?? "off"} ▾
+          <span>{session?.thinkingLevel ?? "off"}</span>
+          <IconChevronDown className="session-header__caret" />
         </button>
         {thinkingOpen && !thinkingDisabled && (
           <div className="session-header__dropdown" ref={thinkingDropdownRef}>
-            {thinkingOptions.map((l) => {
-              const selected = session?.thinkingLevel === l;
-              return (
-                <button
-                  type="button"
-                  key={l}
-                  role="option"
-                  aria-selected={selected}
-                  className={`session-header__dropdown-item${selected ? " session-header__dropdown-item--active" : ""}`}
-                  onClick={() => {
-                    void handleThinkingLevel(l);
-                    setThinkingOpen(false);
-                  }}
-                >
-                  {l}
-                </button>
-              );
-            })}
+            <div className="session-header__dropdown-list">
+              {thinkingOptions.map((l) => {
+                const selected = session?.thinkingLevel === l;
+                return (
+                  <button
+                    type="button"
+                    key={l}
+                    role="option"
+                    aria-selected={selected}
+                    className={`session-header__dropdown-item${selected ? " session-header__dropdown-item--active" : ""}`}
+                    onClick={() => {
+                      void handleThinkingLevel(l);
+                      setThinkingOpen(false);
+                    }}
+                  >
+                    {l}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
@@ -565,7 +574,8 @@ function WorktreeChip({
           .catch(() => addToast(sessionId, "Failed to copy worktree path", "error"));
       }}
     >
-      ⑂ {name}
+      <IconBranch />
+      {name}
     </button>
   );
 }

@@ -16,6 +16,7 @@ import { useSessionsStore } from "../../stores/sessions-store.js";
 import { isNewSessionPending } from "../../stores/sessions-store.js";
 import { useTreeStore } from "../../stores/tree-store.js";
 import { FadeText } from "../common/FadeText.js";
+import { IconClose } from "../common/icons.js";
 import "./Composer.css";
 
 interface ComposerProps {
@@ -824,7 +825,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
                 onClick={() => removeAttachment(i)}
                 aria-label={`Remove ${att.name}`}
               >
-                ×
+                <IconClose size="0.714em" />
               </button>
             </div>
           ))}
@@ -866,6 +867,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
                   <span
                     className={`composer__suggestion-badge composer__suggestion-badge--${s.badge}`}
                   >
+                    <span className="composer__suggestion-dot" aria-hidden />
                     {s.badge}
                     {s.scope ? `:${s.scope}` : ""}
                   </span>
@@ -909,11 +911,31 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
             />
             {text === "" && (
               <div className="composer__placeholder" aria-hidden="true">
-                <FadeText>
-                  {isStreaming
-                    ? "Streaming… (Enter to steer, Esc to abort)"
-                    : "Message pi… (Enter to send, !cmd for bash, /cmd for commands)"}
-                </FadeText>
+                <FadeText>{isStreaming ? "Streaming…" : "Message pi…"}</FadeText>
+                {/* Shortcut hints live as quiet kbd chips at the input's right
+                    edge, not as a parenthetical manual in the placeholder
+                    sentence. They vanish as soon as the user types. */}
+                <span className="composer__hints">
+                  {isStreaming ? (
+                    <>
+                      <span className="composer__hint">
+                        <kbd>⏎</kbd> steer
+                      </span>
+                      <span className="composer__hint">
+                        <kbd>esc</kbd> abort
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="composer__hint">
+                        <kbd>/</kbd> commands
+                      </span>
+                      <span className="composer__hint">
+                        <kbd>!</kbd> bash
+                      </span>
+                    </>
+                  )}
+                </span>
               </div>
             )}
           </div>

@@ -15,6 +15,13 @@ import { computeMatches } from "../../lib/diff/search.js";
 import { useDiffStore } from "../../stores/diff-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { FadeText } from "../common/FadeText.js";
+import {
+  IconCheck,
+  IconChevronDown,
+  IconChevronRight,
+  IconChevronUp,
+  IconClose,
+} from "../common/icons.js";
 import { BaseBranchDropdown } from "./BaseBranchDropdown.js";
 import { DiffFileSection } from "./DiffFileSection.js";
 import "../common/viewer-header.css";
@@ -926,21 +933,7 @@ function flattenTree(
  * Rotated 90° when expanded via CSS transform.
  */
 function ChevronIcon(): React.ReactElement {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points="5 3 9 7 5 11" />
-    </svg>
-  );
+  return <IconChevronRight size="12px" />;
 }
 
 /**
@@ -1269,7 +1262,7 @@ function CleanState(): React.ReactElement {
   return (
     <div className="diff-empty">
       <span className="diff-empty__check" aria-hidden>
-        ✓
+        <IconCheck />
       </span>
       <span>Working tree clean</span>
       <span className="diff-empty__sub">No changes since HEAD</span>
@@ -1409,58 +1402,15 @@ function CaseIcon(): React.ReactElement {
 }
 
 function ChevronUpIcon(): React.ReactElement {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points="3 7.5 6 4.5 9 7.5" />
-    </svg>
-  );
+  return <IconChevronUp size="12px" />;
 }
 
 function ChevronDownIcon(): React.ReactElement {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points="3 4.5 6 7.5 9 4.5" />
-    </svg>
-  );
+  return <IconChevronDown size="12px" />;
 }
 
 function CloseIcon(): React.ReactElement {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <line x1="2" y1="2" x2="10" y2="10" />
-      <line x1="10" y1="2" x2="2" y2="10" />
-    </svg>
-  );
+  return <IconClose size="12px" />;
 }
 
 // ── Small helpers ────────────────────────────────────────────────────

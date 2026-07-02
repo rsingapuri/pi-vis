@@ -16,6 +16,7 @@ import { cssEscape } from "../../lib/format.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { type TreeFilterMode, isTreeUnsupported, useTreeStore } from "../../stores/tree-store.js";
 import { FadeText } from "../common/FadeText.js";
+import { IconChevronRight, IconClose } from "../common/icons.js";
 import { type VisibleRow, flattenVisible } from "./tree-flatten.js";
 import "../common/viewer-header.css";
 import "./TreeViewer.css";
@@ -308,6 +309,30 @@ export function TreeViewerHost({ sessionId }: TreeViewerHostProps): React.ReactE
           </div>
         </div>
 
+        <div className="tree-viewer__body">
+          {phase === "loading" && (
+            <div className="tree-viewer__empty">
+              <span>Loading tree…</span>
+            </div>
+          )}
+          {phase === "unsupported" && <UnsupportedState message={errorMessage} />}
+          {phase === "error" && <ErrorState message={errorMessage} />}
+          {phase === "ready" && visibleRows.length === 0 && <EmptyState />}
+          {phase === "ready" && visibleRows.length > 0 && (
+            <TreeList
+              rows={visibleRows}
+              selectedId={selectedId}
+              navigating={navigating}
+              onSelect={setSelected}
+              onToggleFold={toggleFold}
+              onNavigate={(id) => void navigateTo(id)}
+              onEditLabel={(id, currentLabel) => setLabelEditing({ id, text: currentLabel ?? "" })}
+            />
+          )}
+        </div>
+
+        {/* Keyboard hints — a quiet footer strip (the command-palette
+            convention), not a manual bar crowding the header. */}
         <div className="tree-viewer__hint" aria-hidden="true">
           <span>
             <kbd>↑</kbd>
@@ -330,28 +355,6 @@ export function TreeViewerHost({ sessionId }: TreeViewerHostProps): React.ReactE
           <span>
             <kbd>Esc</kbd> Close
           </span>
-        </div>
-
-        <div className="tree-viewer__body">
-          {phase === "loading" && (
-            <div className="tree-viewer__empty">
-              <span>Loading tree…</span>
-            </div>
-          )}
-          {phase === "unsupported" && <UnsupportedState message={errorMessage} />}
-          {phase === "error" && <ErrorState message={errorMessage} />}
-          {phase === "ready" && visibleRows.length === 0 && <EmptyState />}
-          {phase === "ready" && visibleRows.length > 0 && (
-            <TreeList
-              rows={visibleRows}
-              selectedId={selectedId}
-              navigating={navigating}
-              onSelect={setSelected}
-              onToggleFold={toggleFold}
-              onNavigate={(id) => void navigateTo(id)}
-              onEditLabel={(id, currentLabel) => setLabelEditing({ id, text: currentLabel ?? "" })}
-            />
-          )}
         </div>
 
         {labelEditing && (
@@ -620,40 +623,15 @@ function moveSelection(
 }
 
 // ── Icons ───────────────────────────────────────────────────────────
+// Generic chrome glyphs come from the shared set (components/common/icons);
+// only the viewer-specific label glyph stays local.
 
 function CloseIcon(): React.ReactElement {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
-      <path d="M4 4l8 8M12 4l-8 8" />
-    </svg>
-  );
+  return <IconClose size="14px" />;
 }
 
 function ChevronRightIcon(): React.ReactElement {
-  return (
-    <svg
-      width="10"
-      height="10"
-      viewBox="0 0 12 12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4 2l4 4-4 4" />
-    </svg>
-  );
+  return <IconChevronRight size="10px" />;
 }
 
 function LabelIcon(): React.ReactElement {

@@ -8,6 +8,7 @@ import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUpdatesStore } from "../../stores/updates-store.js";
 import { FadeText } from "../common/FadeText.js";
+import { IconChevronDown, IconClose } from "../common/icons.js";
 import "./Dock.css";
 
 /**
@@ -159,11 +160,16 @@ function UpdateItem(): React.ReactElement {
           aria-expanded={open}
           aria-label={open ? "Hide details" : "Show details"}
         >
-          <span className={`dock__chevron${open ? " dock__chevron--up" : ""}`} />
+          <IconChevronDown className={`dock__chevron${open ? " dock__chevron--up" : ""}`} />
         </button>
       )}
-      <button type="button" className="dock__dismiss" onClick={handleDismiss} aria-label="Dismiss">
-        ×
+      <button
+        type="button"
+        className="dock__dismiss icon-btn"
+        onClick={handleDismiss}
+        aria-label="Dismiss"
+      >
+        <IconClose />
       </button>
       {open && hasDetails && (
         <div className="dock__update-popover">

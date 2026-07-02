@@ -164,24 +164,28 @@
   color: var(--danger);
 }
 
-/* Segmented control (UNIFIED / SPLIT). */
+/* Segmented control (UNIFIED / SPLIT) — a raised thumb sliding in a quiet
+   track (the modern segmented idiom), replacing the old boxed-outline pair. */
 .diff-viewer__seg {
   display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+  gap: 0.143rem;
+  padding: 0.143rem;
+  background: var(--surface);
+  border-radius: var(--radius-md);
   flex-shrink: 0;
 }
 
 .diff-viewer__seg-btn {
-  padding: 0.286rem 0.714rem;
+  padding: 0.214rem 0.643rem;
   font-family: var(--font-display);
   font-size: 0.786em;
   font-weight: 600;
   background: transparent;
   color: var(--text-muted);
   border: none;
+  border-radius: calc(var(--radius-md) - 0.143rem);
   cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .diff-viewer__seg-btn:hover:not(.diff-viewer__seg-btn--active):not(:disabled) {
@@ -191,6 +195,7 @@
 .diff-viewer__seg-btn--active {
   background: var(--surface-2);
   color: var(--text);
+  box-shadow: var(--elevation-1);
 }
 
 .diff-viewer__seg-btn:disabled {
@@ -418,10 +423,11 @@
 .diff-rail__search {
   margin: 0.571rem;
   display: flex;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   background: var(--bg-deep);
   flex-shrink: 0;
+  transition: border-color 100ms ease-out;
 }
 
 .diff-rail__search-input {
@@ -634,10 +640,21 @@
   line-height: var(--leading-body);
 }
 
+/* Success mark in a tinted circle — replaces the bare oversized ✓ glyph. */
 .diff-empty__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.857rem;
+  height: 2.857rem;
+  border-radius: 50%;
   color: var(--success);
-  font-size: 1.714em;
-  font-family: var(--font-code);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.diff-empty__check .icon {
+  width: 1.429rem;
+  height: 1.429rem;
 }
 
 .diff-empty__sub {

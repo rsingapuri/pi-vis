@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUpdatesStore } from "../../stores/updates-store.js";
 import { FadeText } from "../common/FadeText.js";
+import { IconChevronDown, IconClose } from "../common/icons.js";
 import "./UpdateBanner.css";
 
 export function UpdateBanner({
@@ -91,7 +92,7 @@ export function UpdateBanner({
               aria-controls="update-banner-details"
               aria-label={showDetails ? "Hide details" : "Show details"}
             >
-              <span
+              <IconChevronDown
                 className={`update-banner__chevron${showDetails ? " update-banner__chevron--up" : ""}`}
               />
             </button>
@@ -99,11 +100,11 @@ export function UpdateBanner({
         </div>
         <button
           type="button"
-          className="update-banner__close"
+          className="update-banner__close icon-btn"
           onClick={handleDismiss}
           aria-label="Dismiss"
         >
-          ×
+          <IconClose />
         </button>
       </div>
       {showDetails && hasDetails && (

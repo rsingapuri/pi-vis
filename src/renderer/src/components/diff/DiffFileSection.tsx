@@ -23,6 +23,7 @@ import type { MatchSide } from "../../lib/diff/search.js";
 import type { FileState } from "../../stores/diff-store.js";
 import { useDiffStore } from "../../stores/diff-store.js";
 import { FadeText } from "../common/FadeText.js";
+import { IconChevronDown, IconChevronRight, IconChevronUp } from "../common/icons.js";
 import "./DiffFileSection.css";
 
 /**
@@ -126,7 +127,7 @@ export function DiffFileSection({
           aria-expanded={open}
           aria-label={open ? "Collapse file" : "Expand file"}
         >
-          <span className="diff-file__chevron" aria-hidden />
+          <IconChevronRight className="diff-file__chevron" />
         </button>
         <StatusBadge status={file.status} untracked={file.untracked} />
         <FilePath file={file} />
@@ -508,21 +509,21 @@ function GapRow({
       {!isSmall && showDown && (
         <button
           type="button"
-          className="diff-gap__btn"
+          className="diff-gap__btn icon-btn"
           title={`Show next ${EXPAND_STEP} lines`}
           onClick={() => onExpand(gapIndex, "down")}
         >
-          ▼
+          <IconChevronDown />
         </button>
       )}
       {!isSmall && showUp && (
         <button
           type="button"
-          className="diff-gap__btn"
+          className="diff-gap__btn icon-btn"
           title={`Show previous ${EXPAND_STEP} lines`}
           onClick={() => onExpand(gapIndex, "up")}
         >
-          ▲
+          <IconChevronUp />
         </button>
       )}
       <button
@@ -576,44 +577,39 @@ function Counts({
 }
 
 function FilePath({ file }: { file: GitChangedFile }): React.ReactElement {
-  // Renders the file path with a separate dirname span (so the
-  // dirname absorbs all truncation) and a basename span (never
-  // truncated). For renames, we render oldPath → path.
+  // ONE head-mode FadeText across the whole path: at rest the tail — the
+  // basename, the load-bearing part — stays visible while the leading edge
+  // fades; hovering glides the full path into view in a single motion.
+  // (Splitting dirname/basename into two independent FadeTexts produced a
+  // double fade with two tiny disconnected glides, and a stray leading "/"
+  // once the dirname had fully collapsed.) For renames, oldPath → path
+  // share the same fade.
   if (file.status === "R" && file.oldPath) {
     return (
-      <span className="diff-file__path" title={`${file.oldPath} → ${file.path}`}>
-        <PathPart path={file.oldPath} />
+      <FadeText head className="diff-file__path" title={`${file.oldPath} → ${file.path}`}>
+        <PathSpans path={file.oldPath} />
         <span className="diff-file__arrow">→</span>
-        <PathPart path={file.path} />
-      </span>
+        <PathSpans path={file.path} />
+      </FadeText>
     );
   }
   return (
-    <span className="diff-file__path" title={file.path}>
-      <PathPart path={file.path} />
-    </span>
+    <FadeText head className="diff-file__path" title={file.path}>
+      <PathSpans path={file.path} />
+    </FadeText>
   );
 }
 
-function PathPart({ path }: { path: string }): React.ReactElement {
+/** Dirname (dim, includes the trailing slash) + basename (bright) spans. */
+function PathSpans({ path }: { path: string }): React.ReactElement {
   const slash = path.lastIndexOf("/");
   if (slash === -1) {
-    return <FadeText className="diff-file__basename">{path}</FadeText>;
+    return <span className="diff-file__basename">{path}</span>;
   }
-  // Split the directory and filename into separate spans. The dirname is
-  // head-truncated (FadeText `head`) so a long path keeps its informative
-  // tail, and it carries a much larger flex-shrink than the basename so it
-  // gives way first; only once it's gone does the basename itself start to
-  // fade (instead of overflowing onto the counts, the old wart).
   return (
     <>
-      <FadeText head className="diff-file__dirname">
-        {path.slice(0, slash)}
-      </FadeText>
-      <span className="diff-file__sep" aria-hidden>
-        /
-      </span>
-      <FadeText className="diff-file__basename">{path.slice(slash + 1)}</FadeText>
+      <span className="diff-file__dirname">{path.slice(0, slash + 1)}</span>
+      <span className="diff-file__basename">{path.slice(slash + 1)}</span>
     </>
   );
 }

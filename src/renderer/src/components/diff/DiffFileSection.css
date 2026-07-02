@@ -73,27 +73,21 @@
   color: var(--text);
 }
 
-/* The arrow itself — the same border-drawing technique the Dock's update
-   chip uses (`.dock__chevron`), scaled up so it reads as a primary toggle
-   rather than a glyph. Points right when collapsed, rotates to point down
-   when the file is open. */
+/* Shared IconChevronRight, rotated down when the file is open. */
 .diff-file__chevron {
-  display: block;
-  width: 0.6rem;
-  height: 0.6rem;
-  border-right: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
-  transform: rotate(-45deg);
+  width: 0.857rem;
+  height: 0.857rem;
   transition: transform 0.15s ease;
 }
 
 .diff-file--open .diff-file__chevron {
-  transform: rotate(45deg);
+  transform: rotate(90deg);
 }
 
+/* One head-mode FadeText across the whole path — the basename tail stays
+   visible at rest and the leading edge fades; hover glides the full path
+   into view as a single motion. */
 .diff-file__path {
-  display: inline-flex;
-  align-items: baseline;
   min-width: 0;
   font-family: var(--font-code);
   font-size: var(--font-size-code);
@@ -101,29 +95,13 @@
   flex: 1;
 }
 
-/* Head-truncated (FadeText `head`) so a long path keeps its tail. The large
-   shrink factor makes the dirname absorb nearly all of the squeeze before the
-   basename starts to give way. */
 .diff-file__dirname {
   color: var(--text-faint);
-  flex-shrink: 30;
-  min-width: 0;
-}
-
-.diff-file__sep {
-  /* Separator slash lives outside the truncating dirname span so it is
-     never swallowed by the fade. */
-  color: var(--text-faint);
-  flex-shrink: 0;
 }
 
 .diff-file__basename {
   color: var(--text);
   font-weight: 500;
-  /* Shrinkable (FadeText clips + fades) so it can never overflow the path box
-     and paint over the counts — but only after the dirname has collapsed. */
-  flex-shrink: 1;
-  min-width: 0;
 }
 
 .diff-file__arrow {
@@ -186,25 +164,23 @@
   letter-spacing: 0;
 }
 
+/* Tinted letter chips — translucent status wash, no outline (the accent
+   outline read as one more competing border in an otherwise hairline UI). */
 .diff-status-badge--M {
   color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
 }
 .diff-status-badge--A {
   color: var(--success);
-  background: color-mix(in srgb, var(--success) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+  background: color-mix(in srgb, var(--success) 18%, transparent);
 }
 .diff-status-badge--D {
   color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
 }
 .diff-status-badge--R {
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 /* ── Row grid ────────────────────────────────────────────────────── */
@@ -362,26 +338,10 @@
   font-size: 0.929em;
 }
 
-.diff-gap__btn {
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  cursor: pointer;
-  width: 1.714rem;
-  height: 1.714rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-code);
-  font-size: 0.857em;
-  flex-shrink: 0;
-  padding: 0;
-}
-
-.diff-gap__btn:hover {
-  background: var(--surface-2);
-  color: var(--text);
+/* Expander chrome comes from the global .icon-btn treatment. */
+.diff-gap__btn .icon {
+  width: 0.857rem;
+  height: 0.857rem;
 }
 
 .diff-gap__label {

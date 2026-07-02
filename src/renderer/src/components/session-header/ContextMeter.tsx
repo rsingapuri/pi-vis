@@ -2,7 +2,7 @@ import type { SessionId } from "@shared/ids.js";
 import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
-import { formatTokens } from "../../lib/format.js";
+import { formatCost, formatTokens } from "../../lib/format.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import "./ContextMeter.css";
 
@@ -35,8 +35,7 @@ export function ContextMeter({ sessionId }: { sessionId: SessionId }): React.Rea
     return () => document.removeEventListener("mousedown", onMouseDown, true);
   }, [open]);
 
-  const pct =
-    stats?.contextUsage?.percent != null ? Math.round(stats.contextUsage.percent) : null;
+  const pct = stats?.contextUsage?.percent != null ? Math.round(stats.contextUsage.percent) : null;
   const ring = pct ?? 0;
   const used = stats?.contextUsage?.tokens ?? null;
   const windowTok = stats?.contextUsage?.contextWindow ?? null;
@@ -96,28 +95,52 @@ export function ContextMeter({ sessionId }: { sessionId: SessionId }): React.Rea
 
       {open && (
         <div className="context-dropdown" role="dialog" aria-label="Context usage details">
-          <dl className="context-dropdown__rows">
-            <Row label="Context">
+          {/* Context headline + linear meter (the ring, unrolled). */}
+          <div className="context-dropdown__head">
+            <span className="context-dropdown__label">Context</span>
+            <span className="context-dropdown__value">
               {used != null ? formatTokens(used) : "—"}
               {windowTok != null && used != null && (
                 <span className="context-dropdown__dim">
                   {" / "}
                   {formatTokens(windowTok)}
-                  {pct !== null ? ` · ${pct}%` : ""}
                 </span>
               )}
-            </Row>
-            {stats?.tokens && (
-              <>
-                <Row label="Input">{formatTokens(stats.tokens.input)}</Row>
-                <Row label="Output">{formatTokens(stats.tokens.output)}</Row>
-                <Row label="Cache read">{formatTokens(stats.tokens.cacheRead)}</Row>
-                <Row label="Cache hit rate">
-                  {cacheHitRate != null ? `${Math.round(cacheHitRate * 100)}%` : "—"}
-                </Row>
-              </>
-            )}
-          </dl>
+              {pct !== null && (
+                <span
+                  className={`context-dropdown__pct${danger ? " context-dropdown__pct--danger" : warn ? " context-dropdown__pct--warn" : ""}`}
+                >
+                  {" "}
+                  {pct}%
+                </span>
+              )}
+            </span>
+          </div>
+          <div
+            className={`context-dropdown__meter${danger ? " context-dropdown__meter--danger" : warn ? " context-dropdown__meter--warn" : ""}`}
+            aria-hidden
+          >
+            <div
+              className="context-dropdown__meter-fill"
+              style={{ width: `${Math.min(100, ring)}%` }}
+            />
+          </div>
+          {stats?.tokens && (
+            <dl className="context-dropdown__rows">
+              <Row label="Input">{formatTokens(stats.tokens.input)}</Row>
+              <Row label="Output">{formatTokens(stats.tokens.output)}</Row>
+              <Row label="Cache read">{formatTokens(stats.tokens.cacheRead)}</Row>
+              <Row label="Cache hit rate">
+                {cacheHitRate != null ? `${Math.round(cacheHitRate * 100)}%` : "—"}
+              </Row>
+            </dl>
+          )}
+          {stats?.cost != null && (
+            <div className="context-dropdown__row context-dropdown__cost">
+              <span className="context-dropdown__label">Cost</span>
+              <span className="context-dropdown__value">{formatCost(stats.cost)}</span>
+            </div>
+          )}
         </div>
       )}
     </div>

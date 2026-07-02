@@ -219,7 +219,8 @@
   color: var(--text);
 }
 
-/* Hint line ────────────────────────────────────────────────────────── */
+/* Hint footer — a quiet strip along the bottom edge (command-palette
+   convention), keeping the header free for controls. */
 
 .tree-viewer__hint {
   font-family: var(--font-code);
@@ -227,7 +228,7 @@
   color: var(--text-ghost);
   padding: 0.286rem 1rem;
   background: var(--bg-sunken);
-  border-bottom: 1px solid var(--surface);
+  border-top: 1px solid var(--surface);
   flex-shrink: 0;
   display: flex;
   gap: 0.857rem;
@@ -259,14 +260,17 @@
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0.429rem 0;
+  padding: 0.429rem;
 }
 
+/* Rounded inset rows (matching the app's list vocabulary) instead of
+   full-bleed strips. The per-depth indent stays inline padding-left. */
 .tree-viewer__row {
   display: flex;
   align-items: center;
   gap: 0.286rem;
-  padding: 0.215rem 1rem;
+  padding: 0.215rem 0.571rem;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-family: var(--font-code);
   font-size: var(--font-size-small);
@@ -397,14 +401,16 @@
   background: var(--surface-2);
 }
 
+/* Tinted accent pill (matches .tree-viewer__filter-tag) — the old solid
+   accent chip shouted over the row text. */
 .tree-viewer__current-pill {
   font-family: var(--font-display);
   font-size: 0.7em;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  background: var(--accent);
-  color: var(--bg);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
   padding: 0.143rem 0.5rem;
   border-radius: var(--radius-pill);
   flex-shrink: 0;

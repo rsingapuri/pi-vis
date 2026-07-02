@@ -86,12 +86,65 @@
   }
 }
 
+/* ── Head: "Context  1.2K / 200K  34%" + linear meter ─────────────── */
+
+.context-dropdown__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.857rem;
+}
+
+.context-dropdown__pct {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.context-dropdown__pct--warn {
+  color: var(--warning-soft);
+}
+
+.context-dropdown__pct--danger {
+  color: var(--danger);
+}
+
+/* The ring, unrolled — same tone ramp (accent → warn → danger). */
+.context-dropdown__meter {
+  height: 0.286rem;
+  margin: 0.5rem 0 0.714rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.context-dropdown__meter-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+.context-dropdown__meter--warn .context-dropdown__meter-fill {
+  background: var(--warning-soft);
+}
+
+.context-dropdown__meter--danger .context-dropdown__meter-fill {
+  background: var(--danger);
+}
+
 /* Sentence case, no uppercase/letter-spacing — flat list, no headings. */
 .context-dropdown__rows {
   display: flex;
   flex-direction: column;
   gap: 0.286rem;
   margin: 0;
+}
+
+/* Cost — set apart from the token breakdown by a hairline. */
+.context-dropdown__cost {
+  margin-top: 0.571rem;
+  padding-top: 0.571rem;
+  border-top: 1px solid var(--border-strong);
 }
 
 .context-dropdown__row {

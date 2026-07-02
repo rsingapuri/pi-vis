@@ -13,6 +13,7 @@ import { Terminal } from "@xterm/xterm";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { IconCheck, IconClose } from "../common/icons.js";
 import { getTheme } from "../../theme/registry.js";
 import { buildXtermTheme } from "../../theme/xterm.js";
 import "@xterm/xterm/css/xterm.css";
@@ -198,11 +199,11 @@ export function LoginTerminal({
           <span className="login-terminal__title">Sign in to a provider</span>
           <button
             type="button"
-            className="login-terminal__close"
+            className="login-terminal__close icon-btn"
             onClick={handleClose}
             aria-label="Close"
           >
-            ×
+            <IconClose />
           </button>
         </div>
 
@@ -217,7 +218,9 @@ export function LoginTerminal({
 
         {status === "authenticated" && (
           <div className="login-terminal__success">
-            <p>✓ Signed in successfully. You can now use this provider.</p>
+            <p>
+              <IconCheck /> Signed in successfully. You can now use this provider.
+            </p>
             <button type="button" className="login-terminal__btn" onClick={handleClose}>
               Done
             </button>
@@ -240,7 +243,7 @@ export function LoginTerminal({
           )}
           {status === "authenticated" && (
             <span className="login-terminal__status login-terminal__status--done">
-              ✓ Authenticated
+              <IconCheck /> Authenticated
             </span>
           )}
           <button type="button" className="login-terminal__btn" onClick={handleClose}>

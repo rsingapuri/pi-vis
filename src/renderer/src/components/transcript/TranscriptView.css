@@ -160,9 +160,11 @@
      hard-bordered box. The slightly tighter bottom-right corner gives it a
      subtle "tail" toward the right edge (a modern messaging convention)
      without resorting to a drawn pointer. Neutral Catppuccin surfaces; the
-     right-alignment is what marks it as "mine". */
+     right-alignment is what marks it as "mine". Hairline edge (--border,
+     not --border-strong): the raised surface carries the separation, so the
+     border only needs to crisp the shape. */
   background: var(--surface);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   border-bottom-right-radius: var(--radius-sm);
   padding: 0.643rem 1rem; /* ≈9/14 */

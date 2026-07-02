@@ -26,14 +26,23 @@
   word-break: break-word;
 }
 
+/* Path left, model right — both FadeTexts, so a narrow window fades the
+   ends instead of wrapping the line (the old wrap read scruffy). */
 .statusbar__line--split {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 0 1.143rem;
+  gap: 1.143rem;
+}
+
+.statusbar__path {
+  color: var(--text-faint);
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .statusbar__model {
   color: var(--text-faint);
+  flex: 0 1 auto;
   min-width: 0;
 }

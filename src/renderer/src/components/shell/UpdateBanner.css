@@ -102,10 +102,7 @@
   color: var(--text);
 }
 
-/* Expand toggle — a pure-CSS chevron (no text), centered in its button.
-   Points down when collapsed, flips up when expanded. The translateY
-   nudge compensates for the optical offset of the rotated border-box so
-   the glyph reads as vertically centered. */
+/* Expand toggle — shared IconChevronDown, flipped when expanded. */
 .update-banner__chevron-btn {
   display: inline-flex;
   align-items: center;
@@ -119,38 +116,18 @@
 
 .update-banner__chevron {
   display: block;
-  width: 0.5rem;
-  height: 0.5rem;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: translateY(-0.071rem) rotate(45deg); /* points down */
   transition: transform 0.15s ease;
 }
 
 .update-banner__chevron--up {
-  transform: translateY(0.071rem) rotate(225deg); /* points up */
+  transform: rotate(180deg);
 }
 
+/* Close button chrome comes from the global .icon-btn treatment; a compact
+   size fits the banner strip. */
 .update-banner__close {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   width: 1.429rem;
   height: 1.429rem;
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--text-ghost);
-  cursor: pointer;
-  font-size: 1.143em;
-  line-height: 1;
-  padding: 0;
-}
-
-.update-banner__close:hover {
-  background: var(--surface-2);
-  color: var(--text);
 }
 
 /* Expandable disclosure — lists each available update with its version

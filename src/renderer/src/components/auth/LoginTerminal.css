@@ -41,19 +41,7 @@
   color: var(--text);
 }
 
-.login-terminal__close {
-  background: none;
-  border: none;
-  color: var(--text-ghost);
-  cursor: pointer;
-  font-size: 1.429em;
-  line-height: 1;
-  padding: 0.143rem 0.429rem;
-}
-
-.login-terminal__close:hover {
-  color: var(--text);
-}
+/* Close button chrome comes from the global .icon-btn treatment. */
 
 .login-terminal__hint {
   margin: 0;

@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { FadeText } from "./FadeText.js";
+import { IconCheck, IconChevronDown } from "./icons.js";
 import "./BranchDropdown.css";
 
 interface Branch {
@@ -211,7 +212,7 @@ export function BranchDropdown({
         disabled={disabled}
       >
         <FadeText>{label}</FadeText>
-        <span aria-hidden>▾</span>
+        <IconChevronDown className="branch-dropdown__caret" />
       </button>
       {open && (
         <div
@@ -255,7 +256,11 @@ export function BranchDropdown({
                       <FadeText className="branch-dropdown__item-label">
                         {search ? highlightMatch(item.label, search) : item.label}
                       </FadeText>
-                      {value === null && <span className="branch-dropdown__check">✓</span>}
+                      {value === null && (
+                        <span className="branch-dropdown__check" aria-hidden>
+                          <IconCheck />
+                        </span>
+                      )}
                     </button>
                   );
                 }
@@ -280,7 +285,11 @@ export function BranchDropdown({
                       {search ? highlightMatch(b.name, search) : b.name}
                     </FadeText>
                     {b.current && <span className="branch-dropdown__current">current</span>}
-                    {selected && <span className="branch-dropdown__check">✓</span>}
+                    {selected && (
+                      <span className="branch-dropdown__check" aria-hidden>
+                        <IconCheck />
+                      </span>
+                    )}
                   </button>
                 );
               })}

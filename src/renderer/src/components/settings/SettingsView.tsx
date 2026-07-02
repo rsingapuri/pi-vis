@@ -8,6 +8,7 @@ import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUpdatesStore } from "../../stores/updates-store.js";
 import { listThemes } from "../../theme/registry.js";
 import { LoginTerminal } from "../auth/LoginTerminal.js";
+import { IconCheck, IconClose } from "../common/icons.js";
 import "./SettingsView.css";
 
 interface FontFamily {
@@ -337,8 +338,13 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
         <div className="settings-panel">
           <div className="settings-panel__header">
             <span className="settings-panel__title">Settings</span>
-            <button type="button" className="settings-panel__close" onClick={onClose}>
-              ×
+            <button
+              type="button"
+              className="settings-panel__close icon-btn"
+              onClick={onClose}
+              aria-label="Close settings"
+            >
+              <IconClose />
             </button>
           </div>
 
@@ -698,7 +704,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                         </button>
                       ) : current ? (
                         <span className="settings-update-badge settings-update-badge--ok">
-                          ✓ Up to date
+                          <IconCheck /> Up to date
                         </span>
                       ) : (
                         <span className="settings-update-badge settings-update-badge--na">
@@ -742,7 +748,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                         </button>
                       ) : upToDate ? (
                         <span className="settings-update-badge settings-update-badge--ok">
-                          ✓ Up to date
+                          <IconCheck /> Up to date
                         </span>
                       ) : (
                         <span className="settings-update-badge settings-update-badge--na">
