@@ -196,6 +196,24 @@ function seedDemoSession(): void {
     },
     {
       id: "demo-7",
+      type: "compaction",
+      data: {
+        summary:
+          "Summarized the earlier config-loader investigation, the path resolution bug, and the planned validation steps so the active context can stay focused on the implementation.",
+        reason: "threshold",
+        tokensBefore: 12840,
+      },
+    },
+    {
+      id: "demo-8",
+      type: "custom_message",
+      data: {
+        content:
+          "**Session Info**\n\nName: Config loader fix\nFile: ~/.pi/agent/sessions/demo.jsonl\nID: demo-session",
+      },
+    },
+    {
+      id: "demo-9",
       type: "assistant",
       data: {
         content: [
@@ -223,7 +241,7 @@ function seedDemoSession(): void {
       },
     },
     {
-      id: "demo-8",
+      id: "demo-10",
       type: "bash",
       data: {
         command: "git status --short",

@@ -62,6 +62,12 @@ export interface BashBlockData {
 
 export interface CompactionBlockData {
   summary?: string | undefined;
+  reason?: "manual" | "threshold" | "overflow" | undefined;
+  tokensBefore?: number | undefined;
+  firstKeptEntryId?: string | undefined;
+  aborted?: boolean | undefined;
+  willRetry?: boolean | undefined;
+  errorMessage?: string | undefined;
 }
 
 export interface CustomMessageBlockData {
@@ -219,7 +225,19 @@ export function seedFromHistory(
         };
       }
       if (b.type === "compaction") {
-        return { id: b.id, type: "compaction", data: { summary: d.summary as string | undefined } };
+        return {
+          id: b.id,
+          type: "compaction",
+          data: {
+            summary: d.summary as string | undefined,
+            reason: d.reason as CompactionBlockData["reason"],
+            tokensBefore: d.tokensBefore as number | undefined,
+            firstKeptEntryId: d.firstKeptEntryId as string | undefined,
+            aborted: d.aborted as boolean | undefined,
+            willRetry: d.willRetry as boolean | undefined,
+            errorMessage: d.errorMessage as string | undefined,
+          },
+        };
       }
       if (b.type === "custom_message") {
         return { id: b.id, type: "custom_message", data: { content: (d.content as string) ?? "" } };
@@ -750,7 +768,15 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
       const newCompactionBlock: TypedTranscriptBlock = {
         id: blockId,
         type: "compaction",
-        data: { summary: event.result?.summary },
+        data: {
+          summary: event.result?.summary,
+          reason: event.reason,
+          tokensBefore: event.result?.tokensBefore,
+          firstKeptEntryId: event.result?.firstKeptEntryId,
+          aborted: event.aborted,
+          willRetry: event.willRetry,
+          errorMessage: event.errorMessage,
+        },
       };
       // Bound the in-memory transcript at the compaction boundary. Find the
       // most recent existing compaction marker; everything before it has

@@ -536,47 +536,15 @@ details[open] > .tool-card__args-summary::before {
   font-style: italic;
 }
 
-/* Compaction marker — a thin divider line */
-.compaction-marker {
-  display: flex;
-  align-items: center;
-  gap: 0.571rem;
-  padding: 0.571rem 0;
+/* Activity cards (compaction summaries, custom notices) intentionally use the
+   same tool-card chrome as real tool calls; only their markdown body needs
+   margin cleanup inside the shared tool-card well. */
+.activity-card__markdown > :first-child {
+  margin-top: 0;
 }
 
-.compaction-marker__line {
-  flex: 1;
-  height: 1px;
-  background: var(--surface-2);
-}
-
-.compaction-marker__label {
-  font-family: var(--font-display);
-  font-size: 0.786em; /* ≈11px @ 14px root */
-  font-weight: 500;
-  line-height: var(--leading-label);
-  color: var(--text-ghost);
-  white-space: nowrap;
-}
-
-.compaction-marker__summary {
-  width: 100%;
-  font-family: var(--font-display);
-  font-size: 0.857em;
-  color: var(--text-muted);
-  font-style: italic;
-  line-height: var(--leading-body);
-  margin-top: 0.286rem;
-}
-
-/* Custom message */
-.transcript-block--custom {
-  font-family: var(--font-display);
-  font-size: 0.857em;
-  color: var(--text-faint);
-  font-style: italic;
-  padding: 0.286rem 0;
-  line-height: var(--leading-body);
+.activity-card__markdown > :last-child {
+  margin-bottom: 0;
 }
 
 /* Model/provider failure — surfaces pi's `stopReason: "error"` turns */

@@ -8,6 +8,8 @@ import {
   type AssistantBlockData,
   type AssistantSegment,
   type BashBlockData,
+  type CompactionBlockData,
+  type CustomMessageBlockData,
   type ErrorBlockData,
   type ToolCallBlockData,
   type TypedTranscriptBlock,
@@ -21,6 +23,7 @@ import "./TranscriptView.css";
 const MAX_VISIBLE_BLOCKS = 150;
 const OUTPUT_PREVIEW_LINES = 4;
 const DIFF_PREVIEW_LINES = 12;
+const ACTIVITY_PREVIEW_CHARS = 420;
 // Any upward scroll unsticks; scrolling back to within this distance of the
 // bottom re-sticks.
 const SCROLL_RESTICK_PX = 24;
@@ -110,6 +113,33 @@ function renderArgs(input: Record<string, unknown> | undefined): React.ReactNode
 
 function pluralLines(n: number): string {
   return n === 1 ? "line" : "lines";
+}
+
+function firstNonEmptyLine(text: string): string | null {
+  return (
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean) ?? null
+  );
+}
+
+function stripMarkdownChrome(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/u, "")
+    .replace(/^[-*+]\s+/u, "")
+    .replace(/^\d+\.\s+/u, "")
+    .replace(/^\*\*(.+)\*\*$/u, "$1")
+    .replace(/^__(.+)__$/u, "$1")
+    .replace(/^`(.+)`$/u, "$1")
+    .trim();
+}
+
+function summarizeActivityContent(text: string): string | null {
+  const first = firstNonEmptyLine(text);
+  if (!first) return null;
+  const stripped = stripMarkdownChrome(first);
+  return stripped.length > 96 ? `${stripped.slice(0, 96)}…` : stripped;
 }
 
 /** Formats a millisecond duration as e.g. "12m 37s", "4s", or "1h 05m". */
@@ -473,6 +503,119 @@ const BashBlock = memo(function BashBlock({
   );
 });
 
+interface ActivityCardProps {
+  label: string;
+  subject: string | null;
+  content?: string | undefined;
+  badge?: string | undefined;
+  isError?: boolean | undefined;
+  preserveScroll: (mutate: () => void) => void;
+}
+
+const ActivityCard = memo(function ActivityCard({
+  label,
+  subject,
+  content,
+  badge,
+  isError = false,
+  preserveScroll,
+}: ActivityCardProps): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const toggle = useCallback(() => preserveScroll(() => setOpen((v) => !v)), [preserveScroll]);
+
+  const text = content?.trim() ?? "";
+  const lines = useMemo(() => splitOutputLines(text), [text]);
+  const hiddenLines = Math.max(0, lines.length - OUTPUT_PREVIEW_LINES);
+  const expandable = text.length > 0;
+  const linePreview = lines.slice(0, OUTPUT_PREVIEW_LINES).join("\n");
+  const preview =
+    linePreview.length > ACTIVITY_PREVIEW_CHARS
+      ? `${linePreview.slice(0, ACTIVITY_PREVIEW_CHARS - 1)}…`
+      : linePreview;
+  const hasHiddenPreview = hiddenLines > 0 || preview !== text;
+  const showCollapsedBody = label === "context" || lines.length > 1 || text.length > 120;
+  const showBody = text.length > 0 && (open || showCollapsedBody);
+
+  const header = (
+    <>
+      <span className="tool-card__name">{label}</span>
+      {subject && <FadeText className="tool-card__subject">{subject}</FadeText>}
+      {badge && <span className="tool-card__badge">{badge}</span>}
+    </>
+  );
+
+  return (
+    <ToolCardShell
+      isError={isError}
+      open={open}
+      expandable={expandable}
+      onToggle={toggle}
+      header={header}
+    >
+      {showBody && (
+        <div className="tool-card__body">
+          <div className="tool-card__scroll">
+            <div className="transcript-block__content activity-card__markdown">
+              <Markdown>{open ? text : preview}</Markdown>
+            </div>
+          </div>
+          {!open && hasHiddenPreview && (
+            <div className="tool-card__more">
+              {hiddenLines > 0
+                ? `… ${hiddenLines} more ${pluralLines(hiddenLines)}`
+                : "… more details"}
+            </div>
+          )}
+        </div>
+      )}
+    </ToolCardShell>
+  );
+});
+
+const CompactionBlock = memo(function CompactionBlock({
+  data,
+  preserveScroll,
+}: {
+  data: CompactionBlockData;
+  preserveScroll: (mutate: () => void) => void;
+}): React.ReactElement {
+  const tokens = typeof data.tokensBefore === "number" ? data.tokensBefore.toLocaleString() : null;
+  const reason = data.reason ? data.reason : null;
+  const badge = data.aborted ? "aborted" : data.errorMessage ? "error" : undefined;
+  const subjectParts = ["Context compacted", reason, tokens ? `${tokens} tokens summarized` : null];
+  const subject = subjectParts.filter(Boolean).join(" · ");
+  const content = data.errorMessage ? data.errorMessage : data.summary;
+
+  return (
+    <ActivityCard
+      label="context"
+      subject={subject}
+      content={content}
+      badge={badge ?? undefined}
+      isError={!!data.errorMessage}
+      preserveScroll={preserveScroll}
+    />
+  );
+});
+
+const CustomMessageBlock = memo(function CustomMessageBlock({
+  data,
+  preserveScroll,
+}: {
+  data: CustomMessageBlockData;
+  preserveScroll: (mutate: () => void) => void;
+}): React.ReactElement {
+  const subject = summarizeActivityContent(data.content);
+  return (
+    <ActivityCard
+      label="notice"
+      subject={subject}
+      content={data.content}
+      preserveScroll={preserveScroll}
+    />
+  );
+});
+
 // ── Main view ────────────────────────────────────────────────────────────
 
 interface TranscriptViewProps {
@@ -693,20 +836,15 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
               return <BashBlock key={block.id} data={block.data} preserveScroll={preserveScroll} />;
             case "compaction":
               return (
-                <div key={block.id} className="compaction-marker">
-                  <div className="compaction-marker__line" />
-                  <span className="compaction-marker__label">Context compacted</span>
-                  <div className="compaction-marker__line" />
-                  {block.data.summary && (
-                    <div className="compaction-marker__summary">{block.data.summary}</div>
-                  )}
-                </div>
+                <CompactionBlock key={block.id} data={block.data} preserveScroll={preserveScroll} />
               );
             case "custom_message":
               return (
-                <div key={block.id} className="transcript-block transcript-block--custom">
-                  {block.data.content}
-                </div>
+                <CustomMessageBlock
+                  key={block.id}
+                  data={block.data}
+                  preserveScroll={preserveScroll}
+                />
               );
             case "error":
               return <ErrorBlock key={block.id} data={block.data} />;

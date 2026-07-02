@@ -38,6 +38,12 @@ export const BashBlockSchema = z.object({
 export const CompactionMarkerSchema = z.object({
   type: z.literal("compaction"),
   summary: z.string().optional(),
+  reason: z.enum(["manual", "threshold", "overflow"]).optional(),
+  tokensBefore: z.number().optional(),
+  firstKeptEntryId: z.string().optional(),
+  aborted: z.boolean().optional(),
+  willRetry: z.boolean().optional(),
+  errorMessage: z.string().optional(),
 });
 
 export const CustomMessageBlockSchema = z.object({

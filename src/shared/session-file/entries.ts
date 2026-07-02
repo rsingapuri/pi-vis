@@ -51,6 +51,8 @@ export const ThinkingLevelChangeEntrySchema = BaseEntrySchema.extend({
 export const CompactionEntrySchema = BaseEntrySchema.extend({
   type: z.literal("compaction"),
   summary: z.string().optional(),
+  reason: z.enum(["manual", "threshold", "overflow"]).optional(),
+  tokensBefore: z.number().optional(),
   firstKeptEntryId: z.string().optional(),
 });
 

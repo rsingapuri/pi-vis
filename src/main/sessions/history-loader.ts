@@ -37,7 +37,12 @@ export function entriesToTranscript(
         blocks.push({
           id: entry.id,
           type: "compaction",
-          data: { summary: entry.summary },
+          data: {
+            summary: entry.summary,
+            reason: entry.reason,
+            tokensBefore: entry.tokensBefore,
+            firstKeptEntryId: entry.firstKeptEntryId,
+          },
         });
         break;
       }
