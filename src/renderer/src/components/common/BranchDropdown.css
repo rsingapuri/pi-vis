@@ -183,7 +183,8 @@
   display: flex;
   align-items: center;
   padding: 0.571rem 0.857rem;
-  border-top: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: inset 0 1px 0 var(--border-strong);
   flex-shrink: 0; /* pinned footer — never collapsed by the scrolling list */
 }
 

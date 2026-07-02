@@ -10,14 +10,25 @@
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   margin: 0.286rem 0;
+}
+
+.diff-block__inner {
+  /* Size to the longest line, but never smaller than the viewport. Rows then
+     fill this inner canvas so their semantic tint continues across the whole
+     horizontally scrollable area. */
+  width: max-content;
+  min-width: 100%;
 }
 
 .diff-block__line {
   padding: 0 0.857rem;
   white-space: pre;
   color: var(--text-muted);
+  width: 100%;
+  box-sizing: border-box;
   /* 1.43em ≈ 20px @ 14px root — fits the 1.5 line-height in code */
   min-height: 1.43em;
   line-height: 1.5;

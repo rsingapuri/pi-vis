@@ -410,6 +410,17 @@ button.tool-card__header {
   padding: 0.571rem 0.857rem;
   max-height: 28.571rem;
   overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+/* Tool-card wells sit inside rounded cards; give their vertical scrollbar a
+   slightly wider transparent gutter so the thumb doesn't hug the rounded edge. */
+.tool-card__scroll::-webkit-scrollbar {
+  width: 14px;
+}
+
+.tool-card__scroll::-webkit-scrollbar-thumb {
+  border-width: 4px;
 }
 
 /* Args: a compact `key=value` one-liner at the top of the scroll area.
