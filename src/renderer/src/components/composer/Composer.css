@@ -22,7 +22,7 @@
   flex-shrink: 0;
 }
 
-/* ── Attachments (image previews) ────────────────────────────────────── */
+/* ── Attachments (enhanced image previews) ───────────────────────────── */
 .composer__attachments {
   border-bottom: 1px solid var(--border);
   padding: 0.571rem 0.857rem;
@@ -275,19 +275,6 @@
 .composer__attach-btn:hover {
   background: var(--surface-2);
   color: var(--text);
-}
-
-/* Active model can't accept images: dim the affordance and signal it's
-   not actionable. The button stays clickable so the click surfaces an
-   explanatory toast (disabled buttons don't fire events or show tooltips). */
-.composer__attach-btn--unsupported {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.composer__attach-btn--unsupported:hover {
-  background: none;
-  color: var(--text-ghost);
 }
 
 .composer__textarea-wrap {

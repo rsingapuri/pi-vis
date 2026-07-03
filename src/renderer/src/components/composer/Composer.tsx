@@ -25,7 +25,50 @@ interface ComposerProps {
 
 interface Attachment {
   name: string;
+  path: string;
   dataUrl: string;
+}
+
+type FileWithLegacyPath = File & { path?: string };
+
+const IMAGE_FILE_EXTENSION = /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|webp)$/i;
+
+function isImageFile(file: File): boolean {
+  return file.type.startsWith("image/") || IMAGE_FILE_EXTENSION.test(file.name);
+}
+
+function pathForPickedFile(file: File): string {
+  try {
+    const path = window.pivis.getPathForFile(file);
+    if (path) return path;
+  } catch {
+    // Older Electron builds exposed a non-standard File.path property; keep it
+    // as a defensive fallback if contextBridge cannot proxy the File object.
+  }
+  return (file as FileWithLegacyPath).path || file.name;
+}
+
+function textWithInsertedFilePaths(
+  current: string,
+  paths: string[],
+  selectionStart: number,
+  selectionEnd: number,
+): { text: string; cursor: number } {
+  const prefix = current.slice(0, selectionStart);
+  const suffix = current.slice(selectionEnd);
+  const leading = prefix.length > 0 && !/\s$/.test(prefix) ? "\n" : "";
+  const trailing = suffix.length > 0 && !/^\s/.test(suffix) ? "\n" : "";
+  const insert = `${leading}${paths.join("\n")}${trailing}`;
+  return {
+    text: `${prefix}${insert}${suffix}`,
+    cursor: prefix.length + insert.length,
+  };
+}
+
+function textWithAppendedFilePaths(current: string, paths: string[]): string {
+  if (paths.length === 0) return current;
+  const separator = current.length === 0 || /\s$/.test(current) ? "" : "\n";
+  return `${current}${separator}${paths.join("\n")}`;
 }
 
 interface SuggestionEntry {
@@ -152,12 +195,13 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   // frozen so it reads as "sending", not "still unsubmitted text").
   const live = (session?.status === "starting" || session?.status === "ready") && !worktreeCreating;
 
-  // Image-attach gating. Pi only forwards image content to models whose
+  // Image-attach capability. Pi only forwards image content to models whose
   // registry record lists "image" as an input modality; for a text-only
-  // model the image is silently dropped before the provider call. Mirror
-  // pi's TUI by disabling the attach affordance when the active model can't
-  // accept images. Unknown capability (model not yet in availableModels)
-  // defaults to allowed so we never block a vision model on a data race.
+  // model the image is silently dropped before the provider call. The +
+  // affordance still opens for every model because non-image files mirror
+  // pi's TUI path-insertion behavior, and images can fall back to paths.
+  // Unknown capability (model not yet in availableModels) defaults to
+  // allowed so we never downgrade a vision model on a data race.
   const currentModelInfo = useMemo<ModelInfo | undefined>(
     () =>
       findCurrentModel(
@@ -223,24 +267,68 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
 
   // ── Attachment handling ─────────────────────────────────────────────
 
+  const updateTextFromFilePicker = useCallback(
+    (nextText: string, cursor: number) => {
+      setText(nextText);
+      setDismissed(false);
+      if (pending && workspacePath) setNewSessionDraft(workspacePath, nextText);
+      else setSessionDraft(sessionId, nextText);
+      if (useSessionsStore.getState().sessions.get(sessionId)?.editorInjection !== undefined) {
+        clearEditorInjection(sessionId);
+      }
+      const restoreCursor = () => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.setSelectionRange(cursor, cursor);
+      };
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(restoreCursor);
+      else queueMicrotask(restoreCursor);
+    },
+    [pending, workspacePath, setNewSessionDraft, setSessionDraft, sessionId, clearEditorInjection],
+  );
+
   const handleAttachClick = useCallback(() => {
-    if (!modelSupportsImages) {
-      addToast(sessionId, `${modelLabel} doesn't support image input`, "warning");
-      return;
-    }
     fileInputRef.current?.click();
-  }, [modelSupportsImages, modelLabel, addToast, sessionId]);
+  }, []);
 
   const handleFilesSelected = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (!files || files.length === 0) return;
+      const selected = Array.from(files).map((file) => ({
+        file,
+        path: pathForPickedFile(file),
+        image: isImageFile(file),
+      }));
+      const imageCount = selected.filter((entry) => entry.image).length;
+      const genericPaths = selected
+        .filter((entry) => !entry.image || !modelSupportsImages)
+        .map((entry) => entry.path);
+
+      if (!modelSupportsImages && imageCount > 0) {
+        addToast(
+          sessionId,
+          `${modelLabel} doesn't support image input — attaching image${imageCount === 1 ? "" : "s"} as file path${imageCount === 1 ? "" : "s"}`,
+          "warning",
+        );
+      }
+
+      if (genericPaths.length > 0) {
+        const textarea = textareaRef.current;
+        const start = textarea?.selectionStart ?? text.length;
+        const end = textarea?.selectionEnd ?? start;
+        const next = textWithInsertedFilePaths(text, genericPaths, start, end);
+        updateTextFromFilePicker(next.text, next.cursor);
+      }
+
       const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
       const MAX_ATTACHMENTS = 8;
       let slots = MAX_ATTACHMENTS - attachments.length;
-      for (const file of Array.from(files)) {
+      for (const { file, path, image } of selected) {
+        if (!image || !modelSupportsImages) continue;
         if (slots <= 0) {
-          addToast(sessionId, "Too many images (max 8)", "error");
+          addToast(sessionId, "Too many image attachments (max 8)", "error");
           break;
         }
         if (file.size > MAX_IMAGE_BYTES) {
@@ -251,13 +339,21 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         const reader = new FileReader();
         reader.onload = () => {
           const dataUrl = reader.result as string;
-          setAttachments((prev) => [...prev, { name: file.name, dataUrl }]);
+          setAttachments((prev) => [...prev, { name: file.name, path, dataUrl }]);
         };
         reader.readAsDataURL(file);
       }
       e.target.value = "";
     },
-    [addToast, attachments, sessionId],
+    [
+      addToast,
+      attachments,
+      sessionId,
+      text,
+      updateTextFromFilePicker,
+      modelSupportsImages,
+      modelLabel,
+    ],
   );
 
   const removeAttachment = useCallback((index: number) => {
@@ -494,30 +590,43 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
 
       try {
         const action = parseComposerInput(content, { discovered });
-        // Drop attachments the active model can't accept (e.g. the user
-        // attached an image, then switched to a text-only model). Pi would
-        // silently discard them before the provider call, so warn and submit
-        // the text alone rather than letting the user believe the image went.
         let imgs = attachments;
-        if (imgs.length > 0 && !modelSupportsImages) {
+        let promptText = action.kind === "send-prompt" ? action.text : content;
+        // If the user attached enhanced image previews and then switched to a
+        // text-only model, preserve TUI parity by sending the image paths in
+        // the prompt instead of silently dropping the attachments.
+        if (action.kind === "send-prompt" && imgs.length > 0 && !modelSupportsImages) {
           addToast(
             sessionId,
-            `${modelLabel} doesn't support image input — sending text only`,
+            `${modelLabel} doesn't support image input — sending image file paths instead`,
             "warning",
+          );
+          promptText = textWithAppendedFilePaths(
+            action.text,
+            imgs.map((a) => a.path),
           );
           imgs = [];
         }
 
         const finalAction =
-          action.kind === "send-prompt" && imgs.length > 0
+          action.kind === "send-prompt"
             ? {
                 ...action,
-                images: imgs.map((a) => {
-                  const comma = a.dataUrl.indexOf(",");
-                  const header = a.dataUrl.slice(0, comma);
-                  const mimeType = /^data:([^;]+)/.exec(header)?.[1] ?? "image/png";
-                  return { data: a.dataUrl.slice(comma + 1), mimeType, dataUrl: a.dataUrl };
-                }),
+                text: promptText,
+                ...(imgs.length > 0
+                  ? {
+                      images: imgs.map((a) => {
+                        const comma = a.dataUrl.indexOf(",");
+                        const header = a.dataUrl.slice(0, comma);
+                        const mimeType = /^data:([^;]+)/.exec(header)?.[1] ?? "image/png";
+                        return {
+                          data: a.dataUrl.slice(comma + 1),
+                          mimeType,
+                          dataUrl: a.dataUrl,
+                        };
+                      }),
+                    }
+                  : {}),
               }
             : action;
 
@@ -812,7 +921,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
 
   return (
     <div className="composer">
-      {/* Image preview strip */}
+      {/* Enhanced image preview strip */}
       {attachments.length > 0 && (
         <div className="composer__attachments">
           {attachments.map((att, i) => (
@@ -834,7 +943,6 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
         multiple
         className="composer__file-input"
         onChange={handleFilesSelected}
@@ -878,14 +986,10 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         <div className="composer__input-box">
           <button
             type="button"
-            className={`composer__attach-btn ${modelSupportsImages ? "" : "composer__attach-btn--unsupported"}`}
+            className="composer__attach-btn"
             onClick={handleAttachClick}
-            aria-label={
-              modelSupportsImages ? "Attach images" : `${modelLabel} doesn't support image input`
-            }
-            title={
-              modelSupportsImages ? "Attach images" : `${modelLabel} doesn't support image input`
-            }
+            aria-label="Attach files"
+            title="Attach files"
             disabled={!live}
           >
             <svg viewBox="0 0 16 16" aria-hidden="true">

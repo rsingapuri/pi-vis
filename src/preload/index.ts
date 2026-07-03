@@ -1,5 +1,5 @@
 import type { IpcEventContract, IpcInvokeContract } from "@shared/ipc-contract.js";
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 type IpcEventCallback<T> = (payload: T) => void;
 
@@ -21,6 +21,8 @@ const pivis = {
     ipcRenderer.on(channel, handler);
     return () => ipcRenderer.removeListener(channel, handler);
   },
+
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
 };
 
 contextBridge.exposeInMainWorld("pivis", pivis);

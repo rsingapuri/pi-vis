@@ -71,6 +71,19 @@ function keyDown(
   return ev;
 }
 
+function pickedFile(name: string, type: string, path: string): File {
+  const file = new File(["content"], name, { type });
+  Object.defineProperty(file, "path", { value: path });
+  return file;
+}
+
+function dispatchFiles(input: HTMLInputElement, files: File[]): void {
+  act(() => {
+    Object.defineProperty(input, "files", { value: files, configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 describe("Composer autocomplete — A1, A2, A3", () => {
   let invokeSpy: ReturnType<typeof vi.fn>;
 
@@ -91,7 +104,10 @@ describe("Composer autocomplete — A1, A2, A3", () => {
       return Promise.resolve({ success: true });
     });
     // @ts-expect-error stubbing preload bridge
-    globalThis.window.pivis = { invoke: invokeSpy };
+    globalThis.window.pivis = {
+      invoke: invokeSpy,
+      getPathForFile: (file: File) => (file as File & { path?: string }).path ?? file.name,
+    };
   });
 
   afterEach(() => {
@@ -145,5 +161,70 @@ describe("Composer autocomplete — A1, A2, A3", () => {
     expect(calls.length).toBe(1);
     const payload = calls[0]![1] as { command: { message: string } };
     expect(payload.command.message).toBe("/log");
+  });
+});
+
+describe("Composer file attachments", () => {
+  let invokeSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: SESSION_A,
+      workspaces: new Map(),
+      activeWorkspacePath: WORKSPACE,
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    const s = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    setField(s, {
+      status: "ready",
+      currentModel: "text-model",
+      availableModels: [{ id: "text-model", name: "Text Model", input: ["text"] }],
+    });
+    invokeSpy = vi.fn().mockResolvedValue({ success: true });
+    // @ts-expect-error stubbing preload bridge
+    globalThis.window.pivis = {
+      invoke: invokeSpy,
+      getPathForFile: (file: File) => (file as File & { path?: string }).path ?? file.name,
+    };
+  });
+
+  afterEach(() => {
+    // @ts-expect-error cleanup
+    delete globalThis.window.pivis;
+  });
+
+  it("keeps the picker available for text-only models", () => {
+    const { container, unmount } = mountComposer();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const button = container.querySelector<HTMLButtonElement>(".composer__attach-btn")!;
+    const clickSpy = vi.spyOn(input, "click").mockImplementation(() => undefined);
+
+    act(() => {
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(input.getAttribute("accept")).toBeNull();
+    expect(button.title).toBe("Attach files");
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.toasts).toEqual([]);
+    unmount();
+  });
+
+  it("falls back to image file paths with one warning when the model lacks image support", () => {
+    const { container, textarea, unmount } = mountComposer();
+    const ta = textarea();
+    setValueAndDispatch(ta, "Please inspect");
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+
+    dispatchFiles(input, [pickedFile("diagram.png", "image/png", "/tmp/diagram.png")]);
+
+    expect(textarea().value).toBe("Please inspect\n/tmp/diagram.png");
+    expect(container.querySelectorAll(".composer__attachment-item").length).toBe(0);
+    const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]?.type).toBe("warning");
+    expect(toasts[0]?.message).toContain("doesn't support image input");
+    unmount();
   });
 });
