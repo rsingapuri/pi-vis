@@ -1,5 +1,9 @@
 # Testing
 
+## Verification commands
+
+- `npm run lint` runs `biome check .`. In pi's non-TTY `bash` tool, this command can sometimes be reported as `ESLint output (JSON parse failed: EOF while parsing a value at line 1 column 0)` even when Biome itself succeeds. This is a harness-specific parser issue, not a project lint failure. Verify with `./node_modules/.bin/biome check .` or, when you specifically need the npm script, run it through a pseudo-terminal: `script -q /dev/null npm run lint`.
+
 ## Testing
 
 - **Vitest** for unit tests. The glob is `["src/**/*.test.ts", "src/**/*.test.tsx", "resources/**/*.test.mjs"]` — the second pattern is load-bearing: the SDK-host subprocess lives in `resources/pi-session-host/` as plain ESM and was previously excluded entirely. Host-subprocess units are colocated as `*.test.mjs` (matched there, never colliding with the Playwright `*.spec.mts` e2e). The `*.test.tsx` pattern covers React-rendering unit tests (e.g. the ESC hook/autocomplete tests) that need jsdom; those files opt in with a `// @vitest-environment jsdom` comment. Everything else is colocated `*.test.ts`.
