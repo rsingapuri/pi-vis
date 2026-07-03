@@ -63,6 +63,7 @@ export async function launchElectron(options: LaunchOptions): Promise<LaunchedEl
     // argument. The app installs this value through app.commandLine instead.
     PIVIS_TEST_REMOTE_DEBUGGING_PORT: "0",
   };
+  env.PIVIS_TEST_HIDE_WINDOW ??= env.PIVIS_TEST_SHOW_WINDOW === "1" ? "0" : "1";
   // pi runs tools under Electron's bundled Node mode. A child Electron app must
   // not inherit that flag, or the app's main process runs as plain Node and
   // require("electron") resolves to the npm package path.

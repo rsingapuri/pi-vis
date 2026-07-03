@@ -24,7 +24,7 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
   test("mounts UnifiedTuiHost with rendered roster content, replacing the composer", async ({
     page,
   }) => {
-    await page.goto("http://127.0.0.1:7317/?unified=1");
+    await page.goto("/?unified=1");
     await page.waitForLoadState("domcontentloaded");
 
     // The unified panel replaces the Composer in the flex slot.
@@ -46,7 +46,7 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
   test("a short roster: card hugs the content, no scroll (trailing blanks trimmed)", async ({
     page,
   }) => {
-    await page.goto("http://127.0.0.1:7317/?unified=1");
+    await page.goto("/?unified=1");
     await page.waitForLoadState("domcontentloaded");
 
     const panel = page.locator(".unified-panel");
@@ -74,7 +74,7 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
   test("a tall roster: card caps at the max, scrolls, and keeps the top reachable", async ({
     page,
   }) => {
-    await page.goto("http://127.0.0.1:7317/?unified=tall");
+    await page.goto("/?unified=tall");
     await page.waitForLoadState("domcontentloaded");
 
     const panel = page.locator(".unified-panel");
@@ -112,7 +112,7 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
   test("an overlay (viewport mode): the grid pins to a fixed screen, not the small box", async ({
     page,
   }) => {
-    await page.goto("http://127.0.0.1:7317/?unified=overlay");
+    await page.goto("/?unified=overlay");
     await page.waitForLoadState("domcontentloaded");
 
     const panel = page.locator(".unified-panel");
@@ -142,7 +142,7 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
 
   test("orders the title-bar worktree chip before unified toggle and changes", async ({ page }) => {
     await page.setViewportSize({ width: 1200, height: 760 });
-    await page.goto("http://127.0.0.1:7317/?unified=1");
+    await page.goto("/?unified=1");
     await page.waitForLoadState("domcontentloaded");
 
     await expect(page.locator(".session-header__controls .unified-toggle")).toBeVisible({
@@ -186,7 +186,7 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
   });
 
   test("UnifiedViewToggle switches between the panel and the native composer", async ({ page }) => {
-    await page.goto("http://127.0.0.1:7317/?unified=1");
+    await page.goto("/?unified=1");
     await page.waitForLoadState("domcontentloaded");
 
     // While a unified panel is live, the view switcher is in the right-side

@@ -60,7 +60,7 @@ test.describe("Custom() panel (CustomPanelHost) — stable viewport sizing", () 
     page,
   }) => {
     await page.setViewportSize({ width: 1100, height: 900 });
-    await page.goto("http://127.0.0.1:7317/?panel=1");
+    await page.goto("/?panel=1");
     await page.waitForLoadState("domcontentloaded");
 
     const panel = page.locator(".custom-panel");
@@ -82,7 +82,7 @@ test.describe("Custom() panel (CustomPanelHost) — stable viewport sizing", () 
     page,
   }) => {
     await page.setViewportSize({ width: 1100, height: 900 });
-    await page.goto("http://127.0.0.1:7317/?panel=1");
+    await page.goto("/?panel=1");
     await page.waitForLoadState("domcontentloaded");
 
     const panel = page.locator(".custom-panel");
@@ -109,7 +109,7 @@ test.describe("Custom() panel (CustomPanelHost) — stable viewport sizing", () 
 test.describe("Custom() panel — manual resize handle", () => {
   test("the handle is an invisible row-resize strip", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 900 });
-    await page.goto("http://127.0.0.1:7317/?panel=1");
+    await page.goto("/?panel=1");
     await page.waitForLoadState("domcontentloaded");
     const panel = page.locator(".custom-panel");
     await expect(panel).toBeVisible({ timeout: 20_000 });
@@ -127,7 +127,7 @@ test.describe("Custom() panel — manual resize handle", () => {
 
   test("dragging the handle resizes the panel and persists the fraction", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 900 });
-    await page.goto("http://127.0.0.1:7317/?panel=1");
+    await page.goto("/?panel=1");
     await page.waitForLoadState("domcontentloaded");
     const panel = page.locator(".custom-panel");
     await expect(panel).toBeVisible({ timeout: 20_000 });
@@ -172,7 +172,7 @@ test.describe("Custom() panel — manual resize handle", () => {
 
   test("double-clicking the handle resets to the default height", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 900 });
-    await page.goto("http://127.0.0.1:7317/?panel=1");
+    await page.goto("/?panel=1");
     await page.waitForLoadState("domcontentloaded");
     const panel = page.locator(".custom-panel");
     await expect(panel).toBeVisible({ timeout: 20_000 });

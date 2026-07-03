@@ -17,6 +17,8 @@ function boundsOnScreen(b: { x: number; y: number; width: number; height: number
 
 app.setName("Pi-Vis");
 
+const hideWindowForTests = process.env["PIVIS_TEST_HIDE_WINDOW"] === "1";
+
 // Playwright's Electron launcher passes --remote-debugging-port=0 as a
 // top-level Electron CLI argument, which Electron 43 rejects before app code
 // runs. The e2e launcher sets this env var so tests can enable the same CDP
@@ -118,7 +120,9 @@ if (!app.requestSingleInstanceLock()) {
     });
 
     win.once("ready-to-show", () => {
-      win.show();
+      if (!hideWindowForTests) {
+        win.show();
+      }
       // Sync the initial fullscreen state so the title bar reserves
       // (or reclaims) the traffic-light clearance correctly if the app
       // launches already in fullscreen (e.g. relaunch while fullscreen).
@@ -157,6 +161,10 @@ if (!app.requestSingleInstanceLock()) {
   }
 
   app.whenReady().then(() => {
+    if (hideWindowForTests && process.platform === "darwin") {
+      app.dock?.hide();
+    }
+
     // Strict CSP for the packaged (file://) app. Skipped in dev: the Vite dev
     // server needs inline/eval/websocket for HMR. 'wasm-unsafe-eval' is required
     // by Shiki's WASM highlighter; 'unsafe-inline' style is required by Shiki and

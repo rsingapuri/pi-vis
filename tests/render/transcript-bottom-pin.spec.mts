@@ -47,7 +47,7 @@ async function waitPinned(page: Page): Promise<void> {
 test.describe("Transcript bottom pinning across Composer replacements", () => {
   test("a JS-sized custom panel opening does not unpin the transcript", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 760 });
-    await page.goto("http://127.0.0.1:7317/?panel=1");
+    await page.goto("/?panel=1");
     await page.waitForLoadState("domcontentloaded");
 
     await expect(page.locator(".custom-panel")).toBeVisible({ timeout: 20_000 });
@@ -67,7 +67,7 @@ test.describe("Transcript bottom pinning across Composer replacements", () => {
     page,
   }) => {
     await page.setViewportSize({ width: 1100, height: 760 });
-    await page.goto("http://127.0.0.1:7317/?unified=1");
+    await page.goto("/?unified=1");
     await page.waitForLoadState("domcontentloaded");
 
     await expect(page.locator(".unified-panel")).toBeVisible({ timeout: 20_000 });

@@ -3,6 +3,15 @@
 ## Verification commands
 
 - `npm run lint` runs `biome check .`. In pi's non-TTY `bash` tool, this command can sometimes be reported as `ESLint output (JSON parse failed: EOF while parsing a value at line 1 column 0)` even when Biome itself succeeds. This is a harness-specific parser issue, not a project lint failure. Verify with `./node_modules/.bin/biome check .` or, when you specifically need the npm script, run it through a pseudo-terminal: `script -q /dev/null npm run lint`.
+- `npm run test:full` is the agent-friendly full local suite: typecheck, lint, unit tests, build, render tests, then Electron E2E.
+
+## Worktree-safe agent testing
+
+- Every npm script that needs dev dependencies starts with `scripts/ensure-worktree-dev.mjs`. In a fresh git worktree it symlinks `node_modules` from a sibling pi-vis worktree that already ran `npm install`, so agents do not need a separate install per worktree. If no installed sibling exists, run `npm install` once in any worktree.
+- Vite/electron-vite/Vitest caches are redirected to the current worktree's ignored `.cache/` directory. This keeps shared symlinked `node_modules` effectively read-only during builds/tests and avoids cross-worktree optimizer-cache races.
+- Electron E2E launches are hidden by default (`PIVIS_TEST_HIDE_WINDOW=1` is set by `tests/e2e/electron-launch.mts`), so tests can drive the real app over CDP without windows popping up. Set `PIVIS_TEST_SHOW_WINDOW=1` to debug visibly.
+- Electron E2E defaults to one worker (`PIVIS_E2E_WORKERS` can override) to avoid a burst of simultaneous app instances on a laptop. Each test still gets its own `PIVIS_SETTINGS_DIR`/session dirs.
+- E2E process-registry files and render-test web-server ports are scoped by worktree (or by explicit `PIVIS_TEST_RUN_ID`), so different agents can run in different worktrees without sharing teardown state or port 7317. Override the render port with `PIVIS_RENDER_PORT` when needed; set `PIVIS_RENDER_REUSE_EXISTING=1` only for intentional local reuse.
 
 ## Testing
 

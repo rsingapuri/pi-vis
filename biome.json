@@ -48,6 +48,7 @@
       "coverage",
       "playwright-report",
       "test-results",
+      ".cache",
       ".pi"
     ]
   },

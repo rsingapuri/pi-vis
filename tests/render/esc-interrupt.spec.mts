@@ -31,7 +31,7 @@ test.describe("ESC-to-interrupt — renderer", () => {
   test("(a) two-press under rapid ESC: first closes autocomplete, second aborts", async ({
     page,
   }) => {
-    await page.goto("http://127.0.0.1:7317/");
+    await page.goto("/");
     await page.waitForLoadState("domcontentloaded");
     // Wait for the composer to mount.
     const textarea = page.locator(".composer__textarea");
@@ -77,7 +77,7 @@ test.describe("ESC-to-interrupt — renderer", () => {
   test("(b) unified-panel + streaming: ESC aborts and does NOT forward to panelInput", async ({
     page,
   }) => {
-    await page.goto("http://127.0.0.1:7317/?unified=1");
+    await page.goto("/?unified=1");
     await page.waitForLoadState("domcontentloaded");
     const panel = page.locator(".unified-panel");
     await expect(panel).toBeVisible({ timeout: 20_000 });
@@ -113,7 +113,7 @@ test.describe("ESC-to-interrupt — renderer", () => {
     // behave exactly as in pi's TUI — close the overlay, NOT abort the agent.
     // The UnifiedTuiHost claims ESC in viewport mode, so the global handler
     // defers and the keystroke flows to the host instead of aborting.
-    await page.goto("http://127.0.0.1:7317/?unified=overlay");
+    await page.goto("/?unified=overlay");
     await page.waitForLoadState("domcontentloaded");
     const panel = page.locator(".unified-panel");
     await expect(panel).toBeVisible({ timeout: 20_000 });

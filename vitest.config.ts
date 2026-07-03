@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  cacheDir: resolve(__dirname, ".cache/vitest"),
   test: {
     environment: "node",
     // src/**/*.test.ts — the main/renderer/shared TypeScript suites.

@@ -46,7 +46,7 @@ async function startStreaming(page: import("@playwright/test").Page): Promise<vo
 
 test.describe("ESC surface coverage — claims prevent abort", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("http://127.0.0.1:7317/");
+    await page.goto("/");
     await page.waitForLoadState("domcontentloaded");
     await expect(page.locator(".composer__textarea")).toBeVisible({ timeout: 20_000 });
   });

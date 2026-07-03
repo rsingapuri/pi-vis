@@ -1,9 +1,16 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
+import { scopedPort } from "../isolation.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..", "..");
+const renderPort = scopedPort({
+  envName: "PIVIS_RENDER_PORT",
+  scopeName: "render",
+  base: 27_000,
+  range: 10_000,
+});
 
 /**
  * Renderer render tests — headless chromium against the Vite dev server
@@ -19,14 +26,15 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   fullyParallel: false,
   use: {
+    baseURL: `http://127.0.0.1:${renderPort}/`,
     headless: true,
     trace: "on-first-retry",
   },
   webServer: {
-    command: "npm run dev:renderer -- --host 127.0.0.1 --port 7317 --strictPort",
-    url: "http://127.0.0.1:7317/",
+    command: `npm run dev:renderer -- --host 127.0.0.1 --port ${renderPort} --strictPort`,
+    url: `http://127.0.0.1:${renderPort}/`,
     cwd: root,
-    reuseExistingServer: true,
+    reuseExistingServer: process.env["PIVIS_RENDER_REUSE_EXISTING"] === "1",
     timeout: 60_000,
   },
 });

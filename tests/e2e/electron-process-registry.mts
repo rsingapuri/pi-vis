@@ -1,12 +1,10 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
+import { scopedTmpPath } from "../isolation.mjs";
 
-const REGISTRY_PATH = join(
-  os.tmpdir(),
-  `pivis-e2e-electron-pids-${process.getuid?.() ?? "user"}.txt`,
-);
+const REGISTRY_PATH =
+  process.env["PIVIS_E2E_PROCESS_REGISTRY"] ?? scopedTmpPath("pivis-e2e-electron-pids", "txt");
 const APP_ENTRY = resolve(import.meta.dirname, "../../out/main/index.js");
 
 export function electronPidRegistryPath(): string {
