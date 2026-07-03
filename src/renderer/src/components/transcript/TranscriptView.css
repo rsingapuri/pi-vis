@@ -427,11 +427,71 @@ button.tool-card__header {
   gap: 0.429rem;
 }
 
-/* Unified terminal-style box: a single bordered region for the args
-   (compact one-liner), diff, and output. One scroll context instead of
-   nested scrollable regions per section. The well uses the transcript base
-   (--bg) so the code canvas matches the chat surface; the raised tool card
-   (--surface) around it provides the contrast frame. */
+.tool-card__body--open {
+  margin-top: 0.714rem;
+}
+
+.tool-card__detail,
+.tool-card__section,
+.tool-card__output-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.429rem;
+  min-width: 0;
+}
+
+.tool-card__detail {
+  gap: 0.571rem;
+}
+
+.tool-card__output-panel {
+  gap: 0.571rem;
+}
+
+.tool-card__section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.714rem;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-small);
+  line-height: var(--leading-label);
+  color: var(--text-faint);
+}
+
+.tool-card__section-title {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.tool-card__section-meta {
+  color: var(--text-ghost);
+  font-family: var(--font-code);
+  font-size: var(--font-size-small);
+}
+
+.tool-card__copy {
+  margin-left: auto;
+  padding: 0.143rem 0.5rem;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-faint);
+  font-family: var(--font-display);
+  font-size: var(--font-size-small);
+  line-height: var(--leading-label);
+  cursor: pointer;
+}
+
+.tool-card__copy:hover {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+/* Terminal-style wells. The well uses the transcript base (--bg) so the code
+   canvas matches the chat surface; the raised tool card (--surface) around it
+   provides the contrast frame. */
 .tool-card__scroll {
   background: var(--bg);
   border: 1px solid var(--border-faint);
@@ -440,6 +500,10 @@ button.tool-card__header {
   max-height: 28.571rem;
   overflow-y: auto;
   scrollbar-gutter: stable;
+}
+
+.tool-card__scroll--diff {
+  max-height: 40rem;
 }
 
 /* Tool-card wells sit inside rounded cards; give their vertical scrollbar a
@@ -452,58 +516,65 @@ button.tool-card__header {
   border-width: 4px;
 }
 
-/* Args: a compact `key=value` one-liner at the top of the scroll area.
-   The header already shows the most important arg (subject), so the
-   full JSON is collapsed into a one-liner. A <details> disclosure
-   reveals the full JSON if it's substantially larger. */
-.tool-card__args {
+/* Args/metadata: compact summary cards above the heavy output well. The header
+   already shows the most important arg (subject), so long JSON stays behind a
+   disclosure while the output inspector gets the visual weight. */
+.tool-card__args,
+.tool-card__metadata {
   color: var(--text-faint);
   font-family: var(--font-code);
   font-size: var(--font-size-code);
   line-height: var(--leading-code);
   word-break: break-word;
-  margin: 0 0 0.429rem;
-  padding: 0 0 0.429rem;
-  border-bottom: 1px dashed var(--border);
+  margin: 0;
+  padding: 0.571rem 0.857rem;
+  background: var(--bg);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
 }
 
-.tool-card__scroll > .tool-card__args:only-child {
-  margin-bottom: 0;
-  padding-bottom: 0;
-  border-bottom: none;
-}
-
-.tool-card__args-label {
+.tool-card__args-label,
+.tool-card__metadata-label {
   color: var(--text-ghost);
-  margin-right: 0.429rem;
+  flex-shrink: 0;
 }
 
-.tool-card__args-summary {
+.tool-card__args--inline {
+  display: flex;
+  align-items: baseline;
+  gap: 0.429rem;
+}
+
+.tool-card__args-summary,
+.tool-card__metadata-summary {
   cursor: pointer;
-  display: block;
+  display: flex;
+  align-items: baseline;
+  gap: 0.429rem;
   list-style: none;
 }
 
-.tool-card__args-summary::-webkit-details-marker {
+.tool-card__args-summary::-webkit-details-marker,
+.tool-card__metadata-summary::-webkit-details-marker {
   display: none;
 }
 
-.tool-card__args-summary::before {
-  content: "▸";
+.tool-card__details-chevron {
   color: var(--text-ghost);
-  display: inline-block;
-  margin-right: 0.429rem;
+  flex-shrink: 0;
   transition: transform 0.15s ease;
+  transform: translateY(0.071rem);
 }
 
-details[open] > .tool-card__args-summary::before {
-  transform: rotate(90deg);
+.tool-card__details-disclosure[open] > summary .tool-card__details-chevron {
+  transform: rotate(90deg) translateX(0.071rem);
 }
 
-.tool-card__args-full {
+.tool-card__args-full,
+.tool-card__metadata-json {
   margin: 0.429rem 0 0;
   padding: 0.429rem 0.571rem;
-  background: var(--bg);
+  background: var(--bg-sunken);
   border-radius: var(--radius-sm);
   white-space: pre-wrap;
   word-break: break-word;
@@ -521,6 +592,62 @@ details[open] > .tool-card__args-summary::before {
   word-break: break-word;
   margin: 0;
   color: var(--text-muted);
+}
+
+.tool-card__output-frame {
+  position: relative;
+  min-height: 0;
+}
+
+.tool-card__output-frame::before,
+.tool-card__output-frame::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  height: 1.714rem;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.tool-card__output-frame::before {
+  top: 1px;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: linear-gradient(to bottom, var(--bg), transparent);
+}
+
+.tool-card__output-frame::after {
+  bottom: 1px;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  background: linear-gradient(to top, var(--bg), transparent);
+}
+
+.tool-card__output-frame--fade-top::before,
+.tool-card__output-frame--fade-bottom::after {
+  opacity: 1;
+}
+
+.tool-card__virtual-scroll {
+  background: var(--bg);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+  padding: 0.857rem 1.143rem;
+  max-height: min(45vh, 34rem);
+  min-height: 5.714rem;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  color: var(--text-muted);
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: 1.58;
+}
+
+.tool-card__output-line {
+  white-space: pre;
+  min-height: calc(var(--font-size-code) * 1.58);
+  padding-block: 0.036rem;
 }
 
 .tool-card__more {

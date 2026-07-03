@@ -65,6 +65,7 @@ describe("loadHistory (real pi v3 nested message format)", () => {
           toolName: "read",
           isError: false,
           content: [{ type: "text", text: "file contents" }],
+          details: { diff: "-old\n+new", fullOutputPath: "/tmp/full-output.log" },
           timestamp: 1_700_000_003_000,
         },
       },
@@ -102,6 +103,11 @@ describe("loadHistory (real pi v3 nested message format)", () => {
     expect(toolData["toolName"]).toBe("read");
     expect(toolData["input"]).toEqual({ path: "a.ts" });
     expect(toolData["outputText"]).toBe("file contents");
+    expect(toolData["diff"]).toBe("-old\n+new");
+    expect(toolData["resultDetails"]).toEqual({
+      diff: "-old\n+new",
+      fullOutputPath: "/tmp/full-output.log",
+    });
     expect(toolData["isError"]).toBe(false);
     expect(toolData["isStreaming"]).toBe(false);
 
@@ -283,6 +289,30 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
     ];
     const blocks = entriesToTranscript(branch);
     expect(blocks.map((b) => b.type)).toEqual(["user", "assistant"]);
+  });
+
+  it("preserves details.diff for standalone tool results with no preceding tool call", () => {
+    const blocks = entriesToTranscript([
+      {
+        type: "message",
+        id: "tr1",
+        timestamp: "t1",
+        message: {
+          role: "toolResult",
+          toolCallId: "missing-call",
+          toolName: "edit",
+          content: [{ type: "text", text: "Edited a.ts" }],
+          details: { diff: "-before\n+after" },
+          isError: false,
+        },
+      },
+    ]);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.type).toBe("tool_call");
+    const data = blocks[0]?.data as Record<string, unknown>;
+    expect(data["diff"]).toBe("-before\n+after");
+    expect(data["resultDetails"]).toEqual({ diff: "-before\n+after" });
   });
 
   it("renders compaction entries as compaction blocks (pre-compaction trimming is the chain walker's job, not ours)", () => {

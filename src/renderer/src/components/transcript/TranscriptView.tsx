@@ -18,11 +18,14 @@ import {
   hasAssistantContent,
 } from "../../stores/transcript.js";
 import { FadeText } from "../common/FadeText.js";
+import { IconChevronRight } from "../common/icons.js";
 import { DiffBlock } from "./DiffBlock.js";
 import "./TranscriptView.css";
 
 const MAX_VISIBLE_BLOCKS = 150;
 const OUTPUT_PREVIEW_LINES = 4;
+const OUTPUT_VIRTUAL_OVERSCAN = 8;
+const OUTPUT_DEFAULT_ROW_HEIGHT = 18;
 const DIFF_PREVIEW_LINES = 12;
 const ACTIVITY_PREVIEW_CHARS = 420;
 // Any upward scroll unsticks; scrolling back to within this distance of the
@@ -40,8 +43,9 @@ const USER_SCROLL_INTENT_MS = 1000;
 // ── Shared helpers ───────────────────────────────────────────────────────
 
 function splitOutputLines(text: string): string[] {
-  const trimmed = text.replace(/\s+$/u, "");
-  return trimmed ? trimmed.split("\n") : [];
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!normalized) return [];
+  return (normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized).split("\n");
 }
 
 const SUBJECT_KEYS = [
@@ -65,8 +69,7 @@ function summarizeInput(input?: Record<string, unknown>): string | null {
   for (const key of SUBJECT_KEYS) {
     const value = input[key];
     if (typeof value === "string" && value.trim()) {
-      const firstLine = value.split("\n", 1)[0] ?? value;
-      return firstLine.length > 96 ? `${firstLine.slice(0, 96)}…` : firstLine;
+      return value.split("\n", 1)[0] ?? value;
     }
   }
   return null;
@@ -76,16 +79,24 @@ const COMPACT_VALUE_MAX = 80;
 const FULL_JSON_REVEAL_THRESHOLD = 240;
 
 /** Format tool-call args as a compact `key=value key=value` one-liner. */
-function formatArgsCompact(input: Record<string, unknown>): string {
+function formatArgsCompact(input: Record<string, unknown>): { compact: string; lossy: boolean } {
   const parts: string[] = [];
+  let lossy = false;
   for (const [key, value] of Object.entries(input)) {
     let s: string;
-    if (typeof value === "string") s = value;
-    else s = JSON.stringify(value);
-    if (s.length > COMPACT_VALUE_MAX) s = `${s.slice(0, COMPACT_VALUE_MAX - 1)}…`;
+    if (typeof value === "string") {
+      s = value;
+      if (/\s{2,}|\n/u.test(value)) lossy = true;
+    } else {
+      s = JSON.stringify(value) ?? String(value);
+    }
+    if (s.length > COMPACT_VALUE_MAX) {
+      s = `${s.slice(0, COMPACT_VALUE_MAX - 1)}…`;
+      lossy = true;
+    }
     parts.push(`${key}=${s}`);
   }
-  return parts.join("  ");
+  return { compact: parts.join("  "), lossy };
 }
 
 /** Render tool-call args as a compact one-liner. If the full JSON is
@@ -93,14 +104,15 @@ function formatArgsCompact(input: Record<string, unknown>): string {
  *  the user can reveal the full input on demand. */
 function renderArgs(input: Record<string, unknown> | undefined): React.ReactNode {
   if (!input || Object.keys(input).length === 0) return null;
-  const compact = formatArgsCompact(input);
+  const { compact, lossy } = formatArgsCompact(input);
   const full = JSON.stringify(input, null, 2);
-  const fullIsLonger =
-    full.length > FULL_JSON_REVEAL_THRESHOLD && full.length > compact.length + 80;
-  if (fullIsLonger) {
+  const fullNeedsDisclosure =
+    lossy || (full.length > FULL_JSON_REVEAL_THRESHOLD && full.length > compact.length + 80);
+  if (fullNeedsDisclosure) {
     return (
-      <details className="tool-card__args">
+      <details className="tool-card__args tool-card__details-disclosure">
         <summary className="tool-card__args-summary">
+          <IconChevronRight className="tool-card__details-chevron" />
           <span className="tool-card__args-label">input</span>
           <span>{compact}</span>
         </summary>
@@ -109,15 +121,71 @@ function renderArgs(input: Record<string, unknown> | undefined): React.ReactNode
     );
   }
   return (
-    <div className="tool-card__args">
+    <div className="tool-card__args tool-card__args--inline">
       <span className="tool-card__args-label">input</span>
       <span>{compact}</span>
     </div>
   );
 }
 
+function summarizeResultDetails(details?: Record<string, unknown>): string | null {
+  if (!details) return null;
+  const parts: string[] = [];
+  const truncation = isRecord(details.truncation) ? details.truncation : undefined;
+  if (truncation?.truncated === true) {
+    const outputLines = typeof truncation.outputLines === "number" ? truncation.outputLines : null;
+    const totalLines = typeof truncation.totalLines === "number" ? truncation.totalLines : null;
+    if (outputLines !== null && totalLines !== null) {
+      parts.push(
+        `pi retained ${outputLines.toLocaleString()} of ${totalLines.toLocaleString()} lines`,
+      );
+    } else {
+      parts.push("pi returned truncated output");
+    }
+  }
+  if (typeof details.fullOutputPath === "string" && details.fullOutputPath) {
+    parts.push("full output saved on disk");
+  }
+  const extraKeys = Object.keys(details).filter(
+    (key) => !["diff", "truncation", "fullOutputPath"].includes(key),
+  );
+  if (extraKeys.length > 0) {
+    parts.push(
+      `${extraKeys.length.toLocaleString()} metadata ${extraKeys.length === 1 ? "field" : "fields"}`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+function renderResultDetails(details?: Record<string, unknown>): React.ReactNode {
+  const summary = summarizeResultDetails(details);
+  if (!details || !summary) return null;
+  const displayDetails = { ...details };
+  if (typeof displayDetails.diff === "string") {
+    displayDetails.diff = "[shown in diff section]";
+  }
+  return (
+    <details className="tool-card__metadata tool-card__details-disclosure">
+      <summary className="tool-card__metadata-summary">
+        <IconChevronRight className="tool-card__details-chevron" />
+        <span className="tool-card__metadata-label">result</span>
+        <span>{summary}</span>
+      </summary>
+      <pre className="tool-card__metadata-json">{JSON.stringify(displayDetails, null, 2)}</pre>
+    </details>
+  );
+}
+
 function pluralLines(n: number): string {
   return n === 1 ? "line" : "lines";
+}
+
+function formatLineCount(n: number): string {
+  return `${n.toLocaleString()} ${pluralLines(n)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function firstNonEmptyLine(text: string): string | null {
@@ -365,6 +433,109 @@ const AssistantBlock = memo(function AssistantBlock({
   );
 });
 
+const VirtualizedOutput = memo(function VirtualizedOutput({
+  text,
+  label = "output",
+}: {
+  text: string;
+  label?: string;
+}): React.ReactElement | null {
+  const lines = useMemo(() => splitOutputLines(text), [text]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [rowHeight, setRowHeight] = useState(OUTPUT_DEFAULT_ROW_HEIGHT);
+  const [copied, setCopied] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const update = () => setViewportHeight(el.clientHeight);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
+    const measured = measureRef.current?.getBoundingClientRect().height;
+    if (measured && Math.abs(measured - rowHeight) > 0.5) {
+      setRowHeight(measured);
+    }
+  }, [rowHeight]);
+
+  useEffect(() => {
+    const maxScrollTop = Math.max(0, lines.length * rowHeight - viewportHeight);
+    if (scrollTop > maxScrollTop) setScrollTop(maxScrollTop);
+  }, [lines.length, rowHeight, scrollTop, viewportHeight]);
+
+  const copyOutput = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  }, [text]);
+
+  if (lines.length === 0) return null;
+
+  const visibleCount = Math.max(1, Math.ceil((viewportHeight || 360) / rowHeight));
+  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - OUTPUT_VIRTUAL_OVERSCAN);
+  const end = Math.min(lines.length, start + visibleCount + OUTPUT_VIRTUAL_OVERSCAN * 2);
+  const beforeHeight = start * rowHeight;
+  const afterHeight = Math.max(0, (lines.length - end) * rowHeight);
+  const hasOverflow = lines.length * rowHeight > viewportHeight + 1;
+  const atTop = scrollTop <= 1;
+  const atBottom = !hasOverflow || scrollTop + viewportHeight >= lines.length * rowHeight - 1;
+
+  return (
+    <div className="tool-card__output-panel">
+      <div className="tool-card__section-header">
+        <span className="tool-card__section-title">{label}</span>
+        <span className="tool-card__section-meta">{formatLineCount(lines.length)}</span>
+        <button type="button" className="tool-card__copy" onClick={copyOutput}>
+          {copied ? "Copied" : "Copy all"}
+        </button>
+      </div>
+      <div
+        className={[
+          "tool-card__output-frame",
+          !atTop ? "tool-card__output-frame--fade-top" : "",
+          !atBottom ? "tool-card__output-frame--fade-bottom" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
+        <div
+          ref={scrollRef}
+          className="tool-card__virtual-scroll"
+          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+          aria-label={`${label} (${formatLineCount(lines.length)})`}
+          role="region"
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: scrollable output regions must be keyboard-focusable so users can page through retained output.
+          tabIndex={0}
+        >
+          <div style={{ height: beforeHeight }} aria-hidden="true" />
+          {lines.slice(start, end).map((line, offset) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: virtual rows are positional slices of immutable text
+              key={start + offset}
+              ref={offset === 0 ? measureRef : undefined}
+              className="tool-card__output-line"
+            >
+              {line || "\u00A0"}
+            </div>
+          ))}
+          <div style={{ height: afterHeight }} aria-hidden="true" />
+        </div>
+      </div>
+    </div>
+  );
+});
+
 const ToolCallBlock = memo(function ToolCallBlock({
   data,
   preserveScroll,
@@ -383,8 +554,10 @@ const ToolCallBlock = memo(function ToolCallBlock({
 
   const isBash = data.toolName === "bash";
   const subject = summarizeInput(data.input);
+  const hasResultDetails = summarizeResultDetails(data.resultDetails) !== null;
   const expandable =
     data.input !== undefined ||
+    hasResultDetails ||
     hiddenDiff > 0 ||
     (diff ? outputLines.length > 0 : hiddenOutput > 0);
 
@@ -402,15 +575,24 @@ const ToolCallBlock = memo(function ToolCallBlock({
   let body: React.ReactNode = null;
   if (open) {
     const argsNode = renderArgs(data.input);
-    const diffNode = diff ? <DiffBlock diff={diff} /> : null;
-    const outputNode =
-      outputLines.length > 0 ? (
-        <pre className="tool-card__output">{outputLines.join("\n")}</pre>
-      ) : null;
+    const metadataNode = renderResultDetails(data.resultDetails);
+    const diffNode = diff ? (
+      <div className="tool-card__section">
+        <div className="tool-card__section-header">
+          <span className="tool-card__section-title">diff</span>
+          <span className="tool-card__section-meta">{formatLineCount(diffLines.length)}</span>
+        </div>
+        <div className="tool-card__scroll tool-card__scroll--diff">
+          <DiffBlock diff={diff} />
+        </div>
+      </div>
+    ) : null;
+    const outputNode = outputLines.length > 0 ? <VirtualizedOutput text={data.outputText} /> : null;
     body = (
-      <div className="tool-card__body">
-        <div className="tool-card__scroll">
+      <div className="tool-card__body tool-card__body--open">
+        <div className="tool-card__detail">
           {argsNode}
+          {metadataNode}
           {diffNode}
           {outputNode}
         </div>
@@ -512,17 +694,21 @@ const BashBlock = memo(function BashBlock({
       header={header}
     >
       {outputLines.length > 0 && (
-        <div className="tool-card__body">
+        <div className={`tool-card__body${open ? " tool-card__body--open" : ""}`}>
           {!open && hiddenOutput > 0 && (
             <div className="tool-card__more">
               … {hiddenOutput} earlier {pluralLines(hiddenOutput)}
             </div>
           )}
-          <div className="tool-card__scroll">
-            <pre className="tool-card__output">
-              {open ? outputLines.join("\n") : outputLines.slice(-OUTPUT_PREVIEW_LINES).join("\n")}
-            </pre>
-          </div>
+          {open ? (
+            <VirtualizedOutput text={data.outputText} />
+          ) : (
+            <div className="tool-card__scroll">
+              <pre className="tool-card__output">
+                {outputLines.slice(-OUTPUT_PREVIEW_LINES).join("\n")}
+              </pre>
+            </div>
+          )}
         </div>
       )}
     </ToolCardShell>

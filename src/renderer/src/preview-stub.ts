@@ -874,6 +874,46 @@ const stub = {
 
 seedDemoSession();
 
+function seedToolOutputPreview(): void {
+  setTimeout(() => {
+    const output = Array.from({ length: 180 }, (_, i) => {
+      const n = String(i + 1).padStart(3, "0");
+      return `preview-line-${n}  ${"0123456789abcdef ".repeat((i % 7) + 1)}done`;
+    }).join("\n");
+    const longCommand = `node scripts/generate-report.mjs --workspace ${DEMO_WORKSPACE} --include-transcript --format=json --very-long-option=${"value-".repeat(18)}tail`;
+    const store = useSessionsStore.getState();
+    const sessionId = store.activeSessionId ?? DEMO_SESSION_ID;
+    store.applyEvent(sessionId, {
+      type: "tool_execution_start",
+      toolCallId: "preview-long-tool",
+      toolName: "bash",
+      args: { command: longCommand },
+    });
+    store.applyEvent(sessionId, {
+      type: "tool_execution_end",
+      toolCallId: "preview-long-tool",
+      toolName: "bash",
+      result: {
+        content: [{ type: "text", text: output }],
+        details: {
+          truncation: {
+            truncated: true,
+            outputLines: 180,
+            totalLines: 4200,
+            truncatedBy: "lines",
+          },
+          fullOutputPath: "/tmp/pi-bash-preview-full-output.log",
+        },
+      },
+      isError: false,
+    });
+  }, 600);
+}
+
+if (new URLSearchParams(window.location.search).get("toolOutput") === "1") {
+  seedToolOutputPreview();
+}
+
 // ── Unified-TUI panel preview (factory setWidget) ────────────────────────
 // Enable with ?unified=1 on the preview URL. Emits the panel_open{unified}
 // + panel_data events an extension's factory setWidget produces, so the real

@@ -92,6 +92,13 @@ export function entriesToTranscript(
                 (b.data as Record<string, unknown>)["toolCallId"] === toolCallId
               ) {
                 (b.data as Record<string, unknown>)["outputText"] = outputText;
+                if (msg.details && typeof msg.details === "object") {
+                  const details = msg.details as Record<string, unknown>;
+                  (b.data as Record<string, unknown>)["resultDetails"] = details;
+                  if (typeof details.diff === "string") {
+                    (b.data as Record<string, unknown>)["diff"] = details.diff;
+                  }
+                }
                 (b.data as Record<string, unknown>)["isError"] = msg.isError ?? false;
                 (b.data as Record<string, unknown>)["isStreaming"] = false;
                 matched = true;
@@ -109,6 +116,16 @@ export function entriesToTranscript(
                 toolName: msg.toolName ?? "",
                 input: undefined,
                 outputText,
+                resultDetails:
+                  msg.details && typeof msg.details === "object"
+                    ? (msg.details as Record<string, unknown>)
+                    : undefined,
+                diff:
+                  msg.details &&
+                  typeof msg.details === "object" &&
+                  typeof (msg.details as Record<string, unknown>).diff === "string"
+                    ? ((msg.details as Record<string, unknown>).diff as string)
+                    : undefined,
                 isError: msg.isError ?? false,
                 isStreaming: false,
               },

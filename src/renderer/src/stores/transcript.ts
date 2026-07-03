@@ -49,6 +49,7 @@ export interface ToolCallBlockData {
   outputText: string;
   diff?: string | undefined;
   patch?: string | undefined;
+  resultDetails?: Record<string, unknown> | undefined;
   isError: boolean;
   isStreaming: boolean;
 }
@@ -207,6 +208,7 @@ export function seedFromHistory(
             outputText: (d.outputText as string) ?? "",
             diff: d.diff as string | undefined,
             patch: d.patch as string | undefined,
+            resultDetails: d.resultDetails as Record<string, unknown> | undefined,
             isError: (d.isError as boolean) ?? false,
             isStreaming: (d.isStreaming as boolean) ?? false,
           },
@@ -307,6 +309,12 @@ function extractResultDiff(result: unknown): string | undefined {
   }
   if (typeof r.diff === "string") return r.diff;
   return undefined;
+}
+
+function extractResultDetails(result: unknown): Record<string, unknown> | undefined {
+  if (!result || typeof result !== "object") return undefined;
+  const details = (result as Record<string, unknown>)["details"];
+  return details && typeof details === "object" ? (details as Record<string, unknown>) : undefined;
 }
 
 // ── Assistant segment helpers ───────────────────────────────────────────
@@ -724,12 +732,32 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
     case "tool_execution_update": {
       const blockId = activeToolCallIds.get(event.toolCallId);
       if (!blockId) return state;
-      const delta = typeof event.partialResult === "string" ? event.partialResult : "";
+      const partialText = extractResultText(event.partialResult);
+      const partialDetails = extractResultDetails(event.partialResult);
+      const partialDiff = extractResultDiff(event.partialResult);
+      const replacesOutput =
+        event.partialResult !== null &&
+        typeof event.partialResult === "object" &&
+        !Array.isArray(event.partialResult);
       return {
         ...state,
         blocks: patchBlock(blockId, (b) => {
           if (b.type !== "tool_call") return b;
-          return { ...b, data: { ...b.data, outputText: b.data.outputText + delta } };
+          return {
+            ...b,
+            data: {
+              ...b.data,
+              outputText: partialText
+                ? replacesOutput
+                  ? partialText
+                  : b.data.outputText + partialText
+                : b.data.outputText,
+              diff: b.data.diff ?? partialDiff,
+              resultDetails: partialDetails
+                ? { ...b.data.resultDetails, ...partialDetails }
+                : b.data.resultDetails,
+            },
+          };
         }),
       };
     }
@@ -741,6 +769,7 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
       newActiveIds.delete(event.toolCallId);
       const resultText = extractResultText(event.result);
       const resultDiff = extractResultDiff(event.result);
+      const resultDetails = extractResultDetails(event.result);
       return {
         ...state,
         blocks: updateBlock(blockId, (b) => {
@@ -752,7 +781,10 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
               isStreaming: false,
               isError: event.isError,
               outputText: resultText || b.data.outputText,
-              diff: b.data.diff ?? resultDiff,
+              diff: resultDiff ?? b.data.diff,
+              resultDetails: resultDetails
+                ? { ...b.data.resultDetails, ...resultDetails }
+                : b.data.resultDetails,
             },
           };
         }),

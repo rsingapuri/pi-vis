@@ -290,6 +290,63 @@ async function handleUseTool(id) {
   send({ type: "response", command: "prompt", success: true, id });
 }
 
+async function handleLongTool(id) {
+  const output = Array.from({ length: 240 }, (_, i) => {
+    const n = String(i + 1).padStart(3, "0");
+    return `long-tool-line-${n}  ${"abcdef0123456789 ".repeat((i % 8) + 1)}complete`;
+  }).join("\n");
+  const command = `node scripts/generate-long-report.mjs --workspace ${process.cwd()} --include-transcript --format=json --long-option=${"value-".repeat(22)}tail`;
+
+  send({ type: "agent_start" });
+  send({ type: "turn_start" });
+  send({
+    type: "tool_execution_start",
+    toolCallId: "tool-long-output",
+    toolName: "bash",
+    args: { command },
+  });
+  await sleep(50);
+  send({
+    type: "tool_execution_update",
+    toolCallId: "tool-long-output",
+    toolName: "bash",
+    args: { command },
+    partialResult: {
+      content: [{ type: "text", text: output.split("\n").slice(0, 80).join("\n") }],
+      details: { truncation: { truncated: false } },
+    },
+  });
+  await sleep(50);
+  send({
+    type: "tool_execution_end",
+    toolCallId: "tool-long-output",
+    toolName: "bash",
+    result: {
+      content: [{ type: "text", text: output }],
+      details: {
+        truncation: {
+          truncated: true,
+          truncatedBy: "lines",
+          outputLines: 240,
+          totalLines: 6400,
+        },
+        fullOutputPath: path.join(os.tmpdir(), "fake-pi-long-output.log"),
+      },
+    },
+    isError: false,
+  });
+  send({ type: "message_start", message: { role: "assistant" } });
+  send({
+    type: "message_update",
+    message: { role: "assistant" },
+    assistantMessageEvent: { type: "text_delta", delta: "Long tool output captured." },
+  });
+  send({ type: "message_end", message: { role: "assistant" } });
+  send({ type: "turn_end" });
+  send({ type: "agent_end" });
+  send({ type: "response", command: "prompt", success: true, id });
+}
+
 const uiPending = new Map();
 
 async function handleAskMe(id) {
@@ -551,6 +608,17 @@ rl.on("line", async (line) => {
           },
         });
         lastAssistantText = "Hello! I'm your pi coding agent.";
+      } else if (lowered.includes("long-tool")) {
+        await handleLongTool(id);
+        appendEntry({
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Long tool output captured." }],
+            timestamp: Date.now(),
+          },
+        });
+        lastAssistantText = "Long tool output captured.";
       } else if (lowered.includes("use-tool")) {
         await handleUseTool(id);
         appendEntry({

@@ -161,7 +161,10 @@ describe("transcript reducer", () => {
         type: "tool_execution_end",
         toolCallId: "t1",
         toolName: "read",
-        result: { content: [{ type: "text", text: '{\n  "name": "pi-vis"\n}' }] },
+        result: {
+          content: [{ type: "text", text: '{\n  "name": "pi-vis"\n}' }],
+          details: { truncation: { truncated: false } },
+        },
         isError: false,
       }),
     );
@@ -170,7 +173,56 @@ describe("transcript reducer", () => {
     expect(block?.type).toBe("tool_call");
     if (block?.type === "tool_call") {
       expect(block.data.outputText).toBe('{\n  "name": "pi-vis"\n}');
+      expect(block.data.resultDetails).toEqual({ truncation: { truncated: false } });
       expect(block.data.isStreaming).toBe(false);
+    }
+  });
+
+  it("replaces accumulated structured partial results instead of appending snapshots", () => {
+    let state = createTranscriptState();
+    state = applyPiEvent(
+      state,
+      e({
+        type: "tool_execution_start",
+        toolCallId: "t1",
+        toolName: "bash",
+        args: { command: "make" },
+      }),
+    );
+    state = applyPiEvent(
+      state,
+      e({
+        type: "tool_execution_update",
+        toolCallId: "t1",
+        toolName: "bash",
+        args: {},
+        partialResult: {
+          content: [{ type: "text", text: "step 1\n" }],
+          details: { truncation: { truncated: false } },
+        },
+      }),
+    );
+    state = applyPiEvent(
+      state,
+      e({
+        type: "tool_execution_update",
+        toolCallId: "t1",
+        toolName: "bash",
+        args: {},
+        partialResult: {
+          content: [{ type: "text", text: "step 1\nstep 2\n" }],
+          details: { fullOutputPath: "/tmp/pi-bash.log" },
+        },
+      }),
+    );
+
+    const block = state.blocks[0];
+    if (block?.type === "tool_call") {
+      expect(block.data.outputText).toBe("step 1\nstep 2\n");
+      expect(block.data.resultDetails).toEqual({
+        truncation: { truncated: false },
+        fullOutputPath: "/tmp/pi-bash.log",
+      });
     }
   });
 
@@ -192,7 +244,10 @@ describe("transcript reducer", () => {
         toolCallId: "t1",
         toolName: "edit",
         args: {},
-        partialResult: "working...\n",
+        partialResult: {
+          content: [{ type: "text", text: "working...\n" }],
+          details: { diff: "-partial" },
+        },
       }),
     );
     state = applyPiEvent(

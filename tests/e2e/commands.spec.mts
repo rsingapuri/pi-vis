@@ -203,6 +203,53 @@ test.describe("Slash commands", () => {
     rmrf(folders.piSessionsDir);
   });
 
+  test("expanded tool output shows all retained data through a virtualized output well", async () => {
+    test.setTimeout(60_000);
+    const folders = await makeFolders();
+    const { app, window } = await launchApp(folders);
+
+    await window.getByRole("button", { name: "New session" }).click();
+    await expect(window.locator(".session-header__model-btn")).toContainText("Fake Model [fake]", {
+      timeout: 15_000,
+    });
+
+    const textarea = window.locator(".composer__textarea");
+    await textarea.fill("long-tool");
+    await textarea.press("Enter");
+
+    const card = window.locator(".tool-card").filter({ hasText: "generate-long-report" }).first();
+    await expect(card).toBeVisible({ timeout: 15_000 });
+    await expect(card).toContainText("value-value-value");
+    await expect(card).toContainText("tail");
+
+    await card.locator("button.tool-card__header").click();
+    await expect(card.locator(".tool-card__output-panel")).toBeVisible({ timeout: 5_000 });
+    await expect(card.locator(".tool-card__metadata-summary")).toContainText(
+      "pi retained 240 of 6,400 lines",
+    );
+    await expect(
+      card.locator(".tool-card__section-meta").filter({ hasText: "240 lines" }),
+    ).toBeVisible();
+    await expect(card.locator(".tool-card__output-line").first()).toContainText(
+      "long-tool-line-001",
+    );
+    await expect.poll(() => card.locator(".tool-card__output-line").count()).toBeLessThan(80);
+
+    await card.locator(".tool-card__virtual-scroll").evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+    await expect(card.locator(".tool-card__output-line").last()).toContainText(
+      "long-tool-line-240",
+      { timeout: 5_000 },
+    );
+    await expect.poll(() => card.locator(".tool-card__output-line").count()).toBeLessThan(80);
+
+    await app.close();
+    rmrf(folders.settingsDir);
+    rmrf(folders.workspaceDir);
+    rmrf(folders.piSessionsDir);
+  });
+
   test("/timeout-select: dialog auto-dismisses in ≈1.5s (the seconds-bug would have held 1500s)", async () => {
     test.setTimeout(60_000);
     const folders = await makeFolders();
@@ -306,6 +353,9 @@ test.describe("Slash commands", () => {
 
     // /new clears the transcript and adopts a fresh file.
     await textarea.fill("/new");
+    // Close slash autocomplete so Enter submits the command instead of racing
+    // the selected completion on slower full-suite runs.
+    await textarea.press("Escape");
     await textarea.press("Enter");
     // Transcript is empty after /new.
     await expect(window.locator(".transcript-block--assistant")).toHaveCount(0, { timeout: 5_000 });
