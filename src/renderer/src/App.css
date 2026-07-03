@@ -45,8 +45,8 @@
 
    The canvas background switches from mantle to base (the transcript's own
    background) so the strip behind/around the pill matches the content — the
-   pill floats as mantle chrome on a base field, with a border + shadow for
-   separation instead of relying on canvas contrast.
+   pill floats as mantle chrome on a base field, with a border for separation
+   instead of relying on canvas contrast.
 
    The grid keeps two rows — title bar (auto) then content (1fr) — but the
    sidebar column is gone. The title bar is no longer a full-width strip; it's
@@ -71,32 +71,39 @@
 
 /* Floating title-bar pill. Sits in flow above the content (not overlapping).
    Inset from the window edges on all sides so it reads as floating, with
-   rounded corners, border, and elevation. Clears the macOS traffic lights on
-   the left (left margin ~80px) so native buttons never overlap the pill
+   rounded corners and border. Clears the macOS traffic lights on the left
+   with the same 98px clearance used by the sidebar-visible title-bar content,
+   so native buttons never crowd the pill
    chrome. Keeps the drag region (`-webkit-app-region: drag` inherited from
    .titlebar) so the window is still movable by dragging the pill. */
 .app--sidebar-collapsed .titlebar {
-  margin: var(--space-2) var(--space-2) 0 80px;
-  /* Pill chrome: rounded, bordered, elevated. Background stays mantle
-     (inherited) so it reads as the same chrome canvas as the sidebar-visible
-     title bar — continuity between the two layouts. */
+  margin: var(--space-3) var(--space-3) 0 98px;
+  /* Pill chrome: rounded and bordered. Background stays mantle (inherited) so
+     it reads as the same chrome canvas as the sidebar-visible title bar, but
+     avoid elevation here: a shadow on the pill's left/right edges looked like
+     a stray fade over the full-bleed transcript. */
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--elevation-2);
-  /* The full-width strip clears the traffic lights via 80px left padding
-     (so its content starts after the native buttons). The pill already
-     clears them via its left margin, so the internal left padding collapses
-     to the toggle button's own spacing. */
+  box-shadow: none;
+  /* The full-width strip clears the traffic lights with its left padding, but
+     the pill already clears them via its left margin. Keep the pill's internal
+     inset modest; the extra breathing room in collapsed mode belongs around
+     the outside of the pill (the margin above), not between its end controls
+     and border. */
   padding: 0 var(--space-2);
 }
 
 /* macOS fullscreen + collapsed sidebar: the native traffic lights are
-   gone, so the floating title-bar pill no longer needs the 80px left
+   gone, so the floating title-bar pill no longer needs the 98px left
    margin that cleared them — it insets uniformly on the left like the
    other sides. (Override must come after the base pill rule, which it
    does since it's both more specific and later in source order.) */
 .app--fullscreen.app--sidebar-collapsed .titlebar {
-  margin-left: var(--space-2);
+  margin-left: var(--space-3);
+}
+
+.app--sidebar-collapsed .session-header {
+  padding-inline: 0.429rem;
 }
 
 /* Edge-reveal trigger: an invisible strip at the very left edge of the
@@ -127,18 +134,21 @@
 .app--sidebar-collapsed .sidebar {
   position: absolute;
   /* Top clears the floating title-bar pill: the pill sits at top:
-     --space-2 and is 38px tall (+ border), so this lands just below it
+     --space-3 and is 38px tall (+ border), so this lands just below it
      with a matching gap. Bottom stays inset to the content area. */
-  top: calc(38px + var(--space-2) * 2);
-  bottom: var(--space-2);
-  left: var(--space-2);
+  top: calc(38px + var(--space-3) * 2);
+  bottom: var(--space-3);
+  left: var(--space-3);
   width: min(var(--sidebar-width, 15.714rem), 38%);
   max-width: 35.714rem;
   z-index: 25;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--elevation-2);
-  transform: translateX(calc(-100% - var(--space-2)));
+  /* Move the hidden overlay fully off-canvas, including its border/shadow; if
+     its right edge lands exactly on x=0 Chromium leaves a faint vertical fringe
+     over the transcript. */
+  transform: translateX(calc(-100% - var(--space-3) - 1.5rem));
   transition: transform 0.2s ease;
   pointer-events: none;
 }
@@ -156,12 +166,11 @@
   display: none;
 }
 
-/* Content starts below the pill (in flow, no overlap). A top fade dissolves
-   content in beneath the pill: the transcript's top padding == the top fade
-   zone, so the first message rests at the opaque boundary (fully visible at
-   rest), while the band just below the pill is the fade zone — empty padding
-   at rest, the cue that older content continues above when scrolled. The
-   fade-top is sized as a clearly visible band, not a sliver. */
+/* Content starts below the pill (in flow, no overlap). The collapsed layout
+   gives the transcript enough top padding to breathe under the floating pill
+   and a real top-fade size for the scroll-state class to use. The fade is not
+   always painted; TranscriptView only enables it after there is clipped
+   content above the viewport. */
 .app--sidebar-collapsed .transcript-view {
   --transcript-fade-top: 2rem;
   --transcript-pad-top: 2rem;

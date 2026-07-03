@@ -25,6 +25,13 @@ type PreviewHooks = {
   stopStreaming: () => void;
 };
 
+type PreviewStore = {
+  getState: () => {
+    activeSessionId: string | null;
+    addUserMessage: (sessionId: string, content: string, images?: string[]) => void;
+  };
+};
+
 async function abortCount(page: import("@playwright/test").Page): Promise<number> {
   return page.evaluate(() => {
     return (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview.abortCalls;
@@ -89,6 +96,25 @@ test.describe("ESC surface coverage — claims prevent abort", () => {
     const before = await abortCount(page);
     await page.keyboard.press("Escape");
     await expect(page.locator(".diff-overlay")).toHaveCount(0);
+    expect(await abortCount(page)).toBe(before);
+  });
+
+  test("Image lightbox: ESC closes the preview, does NOT abort", async ({ page }) => {
+    await page.evaluate(() => {
+      const store = (window as unknown as { __pivisStore: PreviewStore }).__pivisStore.getState();
+      const sessionId = store.activeSessionId;
+      if (!sessionId) throw new Error("missing active session");
+      store.addUserMessage(sessionId, "Attached screenshot", [
+        "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='80'%20height='48'%3E%3Crect%20width='80'%20height='48'%20fill='%2389b4fa'/%3E%3C/svg%3E",
+      ]);
+    });
+    await page.locator(".transcript-block__image-button").last().click();
+    await expect(page.locator(".image-lightbox")).toBeVisible({ timeout: 5_000 });
+
+    await startStreaming(page);
+    const before = await abortCount(page);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".image-lightbox")).toHaveCount(0);
     expect(await abortCount(page)).toBe(before);
   });
 

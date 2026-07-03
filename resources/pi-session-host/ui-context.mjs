@@ -168,10 +168,14 @@ export function createUIContext({
       entry.unsubscribe = tui.addInputListener(entry.handler);
     }
 
-    // Wire resize handler
-    panelBridge.setResizeHandler(panelId, (cols, rows) => {
+    // Wire resize handler. `force` is sent by UnifiedTuiHost when its xterm
+    // remounts after a session/view switch: the renderer intentionally starts
+    // from a clean terminal, so the host must discard pi-tui's differential
+    // render state and send a complete repaint instead of a cursor-relative
+    // diff against the old, now-disposed xterm.
+    panelBridge.setResizeHandler(panelId, (cols, rows, force) => {
       hostTerminal.resize(cols, rows);
-      tui.requestRender();
+      tui.requestRender(force === true);
     });
 
     // Store state
@@ -595,9 +599,11 @@ export function createUIContext({
 
       // Keep the TUI's layout in sync with the actual xterm.js panel size.
       // The renderer sends panel_resize whenever the FitAddon recomputes cols/rows.
-      panelBridge.setResizeHandler(panelId, (cols, rows) => {
+      // A force resize asks pi-tui to discard diff-render state and repaint a
+      // complete frame (used when a renderer xterm remounts).
+      panelBridge.setResizeHandler(panelId, (cols, rows, force) => {
         hostTerminal.resize(cols, rows);
-        tui.requestRender();
+        tui.requestRender(force === true);
       });
 
       return new Promise((resolve, reject) => {

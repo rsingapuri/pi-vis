@@ -27,43 +27,57 @@
      emitting scroll events the handler can misread as a user scrolling up —
      which drifts the view off the bottom. Opt the scroller out entirely. */
   overflow-anchor: none;
-  /* Edge-fade scroll. The mask dissolves content as it nears the top/bottom
-     of the viewport instead of hard-cutting at the card edges.
+  /* Edge-fade scroll. The mask is opt-in via scroll-state classes from
+     TranscriptView.tsx: a fade is painted only on an edge that actually has
+     clipped content beyond it. This avoids an always-on composited mask on an
+     empty or bottom-pinned transcript (which read as a stray side shadow in the
+     full-bleed collapsed-sidebar layout).
 
-     --transcript-fade-top defaults to 0 (no top fade). In the normal
+     --transcript-fade-top defaults to 0 (no visible top fade). In the normal
      sidebar-visible layout the transcript lives inside the rounded floating
      content card (`.app__main`): the top is a crisp, deliberate boundary
      (card border + radius), so content should hard-cut there — a top fade
-     would fight the card's own visual edge and read as a muddy seam rather
-     than a clean frame. App.css re-enables a top fade only in the
-     sidebar-collapsed (full-bleed) layout, where the title bar becomes a
-     floating pill over the content and content must dissolve *under* it.
+     would fight the card's own visual edge. App.css gives the collapsed
+     full-bleed layout a real top fade size, but it still only appears after
+     the user scrolls down and there is content above the viewport.
 
-     The bottom always fades: it abuts the composer, which has no shared
-     border with the transcript — content used to hard-cut against the
-     composer's top. A bottom fade spans that junction so the dissolution is
-     always visible, the cue that older content continues below when scrolled
-     up. When bottom-pinned the latest message sits *above* this zone (the
-     matching bottom padding is empty), so the current response stays fully
-     opaque and readable; only scrolled-up history passes through the fade.
-
-     Top padding and the top fade size are *decoupled* (as in the sidebar):
-     the fade zone can be larger than the padding so dissolution is visible
-     without pushing the first message down. The *bottom* padding, however,
-     is re-coupled to the bottom fade zone: this guarantees the latest
-     message rests at the opaque end of the ramp (fully readable when
-     bottom-pinned) AND that the ramp reaches 0% exactly at the overflow
-     clip edge — so content fully dissolves before being hard-clipped,
-     instead of fading halfway and abruptly cutting off.
-
-     The gradient uses an eased (multi-stop) ramp so the dissolve is
-     perceptually smooth across the full invisible→visible range — a plain
-     two-stop linear ramp looks like it stalls halfway then snaps. */
+     The bottom fade similarly appears only while there is content below the
+     visible bottom. When bottom-pinned the latest message sits above the
+     matching bottom padding, so no mask is needed and no empty fade band is
+     visible. */
   --transcript-fade-top: 0;
   --transcript-pad-top: 1.25rem;
   --transcript-fade-bottom: 3rem;
   padding: var(--transcript-pad-top) clamp(var(--space-5), 6cqi, var(--space-8))
     var(--transcript-fade-bottom);
+}
+
+.app--sidebar-collapsed .transcript-view--fade-top:not(.transcript-view--fade-bottom) {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--transcript-fade-top),
+    #000 100%
+  );
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--transcript-fade-top), #000 100%);
+}
+
+.transcript-view--fade-bottom:not(.transcript-view--fade-top) {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 calc(100% - var(--transcript-fade-bottom)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 calc(100% - var(--transcript-fade-bottom)),
+    transparent 100%
+  );
+}
+
+.transcript-view--fade-top.transcript-view--fade-bottom {
   -webkit-mask-image: linear-gradient(
     to bottom,
     transparent 0,
@@ -210,18 +224,33 @@
   margin-bottom: 0.286rem;
 }
 
-.transcript-block__image-thumb {
+.transcript-block__image-button {
+  display: block;
   max-width: 14.286rem;
   max-height: 14.286rem;
-  border-radius: var(--radius-sm);
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
   border: 1px solid var(--border);
-  object-fit: cover;
-  cursor: pointer;
-  transition: border-color 0.15s;
+  border-radius: var(--radius-sm);
+  cursor: zoom-in;
+  transition: border-color 0.15s ease, transform 0.15s ease;
 }
 
-.transcript-block__image-thumb:hover {
+.transcript-block__image-button:hover,
+.transcript-block__image-button:focus-visible {
   border-color: var(--accent);
+}
+
+.transcript-block__image-button:hover {
+  transform: translateY(-1px);
+}
+
+.transcript-block__image-thumb {
+  display: block;
+  max-width: 14.286rem;
+  max-height: 14.286rem;
+  object-fit: cover;
 }
 
 /* Thinking — always visible, italic — uses the display font's true

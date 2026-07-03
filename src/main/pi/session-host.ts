@@ -701,8 +701,14 @@ export class SessionHost extends EventEmitter {
     this.proc.send({ type: "panel_input", panelId, data });
   }
 
-  sendPanelResize(panelId: number, cols: number, rows: number): void {
-    this.proc.send({ type: "panel_resize", panelId, cols, rows });
+  sendPanelResize(panelId: number, cols: number, rows: number, force = false): void {
+    this.proc.send({
+      type: "panel_resize",
+      panelId,
+      cols,
+      rows,
+      ...(force ? { force: true } : {}),
+    });
   }
 
   /** Force-close a custom panel from the UI (escape hatch). The host resolves

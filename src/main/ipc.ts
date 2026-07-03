@@ -471,10 +471,13 @@ export function initIpc(win: BrowserWindow): void {
 
   ipcMain.handle(
     "session.panelResize",
-    async (_evt, args: { sessionId: SessionId; panelId: number; cols: number; rows: number }) => {
+    async (
+      _evt,
+      args: { sessionId: SessionId; panelId: number; cols: number; rows: number; force?: boolean },
+    ) => {
       const rec = registry?.getSession(args.sessionId);
       if (rec?.proc && isSessionHost(rec.proc)) {
-        rec.proc.sendPanelResize(args.panelId, args.cols, args.rows);
+        rec.proc.sendPanelResize(args.panelId, args.cols, args.rows, args.force === true);
       }
     },
   );

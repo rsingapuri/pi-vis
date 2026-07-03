@@ -24,19 +24,18 @@
   align-items: stretch;
   /* Left padding clears the macOS traffic-light buttons. macOS
      positions them natively at ~12px from the window's left edge and
-     the three buttons + spacing span ~78px, so 80px of padding puts
-     the leftmost interactive element (the sidebar toggle) just
-     past them.
+     the three buttons + spacing span ~78px; 98px leaves roughly the
+     same breathing room before the sidebar toggle as the toggle has
+     before the session title text.
 
      Right padding is 0: the title bar shares the canvas color
      (--color-sidebar === --bg-sunken) with the session-header that fills
      it, so the header can run flush to the window edge with no color
      seam. The rightmost control's edge offset is then owned entirely by
-     the session-header's own padding, which is tuned so the context ring
-     lines up with the floating content card's right edge (whose margin
-     is --space-2). The sidebar-collapsed pill overrides this to
-     `padding: 0 var(--space-2)` for its floating inset. */
-  padding: 0 0 0 80px;
+     the session-header's own padding, which provides the visible right-side
+     gutter for the controls. The sidebar-collapsed pill adds only a small
+     internal inset; its extra breathing room comes from its outer margin. */
+  padding: 0 0 0 98px;
   /* The title bar is the top strip of the window canvas — same color as the
      sidebar and the area behind the floating content card, with no divider.
      The content card's own top edge provides the only separation needed. */

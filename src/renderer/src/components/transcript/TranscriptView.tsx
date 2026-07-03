@@ -3,6 +3,7 @@ import type React from "react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../../lib/markdown.js";
 import { htmlToMarkdown } from "../../lib/turndown.js";
+import { useImageViewerStore } from "../../stores/image-viewer-store.js";
 import { shouldShowWorkingIndicator, useSessionsStore } from "../../stores/sessions-store.js";
 import {
   type AssistantBlockData,
@@ -266,24 +267,45 @@ function ToolCardShell({
 // blocks keep a stable `data` ref and skip. Without this, the parent
 // re-renders all visible blocks on every token (O(150) reconcile per delta).
 const UserBlock = memo(function UserBlock({ data }: { data: UserBlockData }): React.ReactElement {
+  const openImages = useImageViewerStore((s) => s.openImages);
+  const validImages = useMemo(
+    () => data.images?.filter((img) => /^(data:image\/|file:|https?:)/.test(img)) ?? [],
+    [data.images],
+  );
+
+  const handleOpenImage = useCallback(
+    (index: number) => {
+      openImages(
+        validImages.map((src, i) => ({ src, alt: `Attached image ${i + 1}` })),
+        index,
+      );
+    },
+    [openImages, validImages],
+  );
+
   return (
     <div className="transcript-block transcript-block--user">
       <div className="transcript-block__bubble user-content">
-        {data.images && data.images.length > 0 && (
+        {validImages.length > 0 && (
           <div className="transcript-block__images">
-            {data.images
-              .filter((img) => /^(data:image\/|file:|https?:)/.test(img))
-              .map((img, i) => (
+            {validImages.map((img, i) => (
+              <button
                 // biome-ignore lint/suspicious/noArrayIndexKey: image order is stable for a given user message
-                <a key={i} href={img} target="_blank" rel="noreferrer">
-                  <img
-                    src={img}
-                    // biome-ignore lint/a11y/noRedundantAlt: alt describes which attached image, not "what"
-                    alt={`Attached image ${i + 1}`}
-                    className="transcript-block__image-thumb"
-                  />
-                </a>
-              ))}
+                key={i}
+                type="button"
+                className="transcript-block__image-button"
+                onClick={() => handleOpenImage(i)}
+                aria-label={`Open attached image ${i + 1} larger`}
+                title="Open image preview"
+              >
+                <img
+                  src={img}
+                  // biome-ignore lint/a11y/noRedundantAlt: alt describes which attached image, not "what"
+                  alt={`Attached image ${i + 1}`}
+                  className="transcript-block__image-thumb"
+                />
+              </button>
+            ))}
           </div>
         )}
         <div className="transcript-block__content">{data.content}</div>
@@ -643,6 +665,18 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   const userScrollIntentUntilRef = useRef(0);
   const prevScrollHeightRef = useRef(0);
   const prevClientHeightRef = useRef(0);
+  const [scrollFades, setScrollFades] = useState({ top: false, bottom: false });
+
+  const updateScrollFades = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const next = {
+      top: el.scrollTop > 1,
+      bottom: distance > 1,
+    };
+    setScrollFades((prev) => (prev.top === next.top && prev.bottom === next.bottom ? prev : next));
+  }, []);
 
   // Programmatic pin helper. Always pin to the absolute bottom and record the
   // target so handleScroll can distinguish "we pinned" from "the user moved up
@@ -657,7 +691,8 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     lastPinnedTopRef.current = el.scrollTop;
     prevScrollHeightRef.current = el.scrollHeight;
     prevClientHeightRef.current = el.clientHeight;
-  }, []);
+    updateScrollFades();
+  }, [updateScrollFades]);
 
   const markUserScrollIntent = useCallback(() => {
     userScrollIntentUntilRef.current = performance.now() + USER_SCROLL_INTENT_MS;
@@ -706,6 +741,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     const el = scrollRef.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    updateScrollFades();
     if (distance <= SCROLL_RESTICK_PX) {
       // At/near bottom: re-pin (covers shrink-clamps, growth-clamps, and
       // the user actively returning to the bottom).
@@ -731,7 +767,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
       // bottom instead of waiting for the next streamed token.
       pinToBottom();
     }
-  }, [pinToBottom]);
+  }, [pinToBottom, updateScrollFades]);
 
   // Backstop for size changes that do NOT go through a React render — async
   // syntax highlighting swapping in and images finishing load — neither of
@@ -743,11 +779,13 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     if (!el || !content) return;
     const observer = new ResizeObserver(() => {
       if (pinnedRef.current) pinToBottom();
+      updateScrollFades();
     });
     observer.observe(content);
     observer.observe(el);
+    updateScrollFades();
     return () => observer.disconnect();
-  }, [pinToBottom]);
+  }, [pinToBottom, updateScrollFades]);
 
   // JS-sized Composer replacements (CustomPanelHost / UnifiedTuiHost) can grow
   // after their React commit when xterm has measured its grid. The panel sizer
@@ -834,6 +872,10 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     if (shouldFollow) pinToBottom();
   });
 
+  useLayoutEffect(() => {
+    updateScrollFades();
+  });
+
   const handleClipboard = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) return;
@@ -851,9 +893,17 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     e.clipboardData.setData("text/plain", markdown);
   }, []);
 
+  const transcriptClassName = [
+    "transcript-view",
+    scrollFades.top ? "transcript-view--fade-top" : "",
+    scrollFades.bottom ? "transcript-view--fade-bottom" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <div
-      className="transcript-view"
+      className={transcriptClassName}
       ref={scrollRef}
       onScroll={handleScroll}
       onWheelCapture={markUserScrollIntent}

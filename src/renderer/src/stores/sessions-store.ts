@@ -128,11 +128,13 @@ export interface SessionViewState {
    *  `UnifiedTuiHost` (a real pi-tui Editor + widget components). Distinct
    *  from `panel` (transient custom() overlays) so the two never collide and
    *  so `extensionUiActive` doesn't treat the unified panel as a blocking
-   *  dialog. The buffer is a bounded remount snapshot (same rationale as `panel`).
-   *  `mode` selects the renderer's sizing model: `"content"` (default) tracks the
-   *  intrinsic content height; `"viewport"` pins a fixed grid while a pi-tui
-   *  overlay is up, whose geometry would otherwise feed a resize loop. Set by the
-   *  `panel_mode` event from the host (overlay show/hide). */
+   *  dialog. The buffer is a bounded current replay segment: on a hard full-
+   *  screen clear, stale data before the clear is dropped so remounts don't
+   *  replay old frames as scrollback. `mode` selects the renderer's sizing model:
+   *  `"content"` (default) tracks the intrinsic content height; `"viewport"` pins
+   *  a fixed grid while a pi-tui overlay is up, whose geometry would otherwise
+   *  feed a resize loop. Set by the `panel_mode` event from the host (overlay
+   *  show/hide). */
   unifiedPanel?: { id: number; buffer: string[]; mode?: "content" | "viewport" } | undefined;
   /** When a `unifiedPanel` is live, the user can toggle between the
    *  extension's TUI surface and the native Composer (both stay mounted-
@@ -504,9 +506,37 @@ interface SessionsStore {
 let toastCounter = 0;
 let editorInjectionNonce = 0;
 
-/** Upper bound on a session's retained custom-panel replay buffer (chars).
+/** Upper bound on a session's retained panel replay buffer (chars).
  *  See the panel_data case in handlePanelEvent for the rationale. */
 const PANEL_BUFFER_MAX_BYTES = 512 * 1024;
+
+/** Keep the bounded tail used to seed a remounted panel xterm. */
+function appendBoundedPanelBuffer(buffer: string[], data: string): string[] {
+  const next = [...buffer, data];
+  let total = 0;
+  for (const chunk of next) total += chunk.length;
+  while (next.length > 1 && total > PANEL_BUFFER_MAX_BYTES) {
+    total -= (next.shift() as string).length;
+  }
+  return next;
+}
+
+/**
+ * Unified pi-tui output is differential most of the time, but a forced/full
+ * repaint contains a hard terminal reset (`CSI 2 J`, followed by home and
+ * usually `CSI 3 J`). Anything before the LAST such reset is stale history and
+ * must not be replayed into a freshly-mounted xterm after a session/view switch:
+ * xterm would treat it as scrollback and the content-tracking sizer would then
+ * measure a corrupted buffer. Keep only the current repaint segment (the latest
+ * hard clear plus subsequent diffs), bounded as a safety net.
+ */
+function appendUnifiedReplayBuffer(buffer: string[], data: string): string[] {
+  const hardClearAt = data.lastIndexOf("\x1b[2J");
+  if (hardClearAt >= 0) {
+    return appendBoundedPanelBuffer([], data.slice(hardClearAt));
+  }
+  return appendBoundedPanelBuffer(buffer, data);
+}
 
 export const useSessionsStore = create<SessionsStore>((set, get) => ({
   workspaces: new Map(),
@@ -1074,29 +1104,18 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
           break;
         case "panel_data":
           if (s.unifiedPanel?.id === event.panelId) {
-            // Same bounded-tail rationale as the custom() panel buffer: TUI
-            // frames are full repaints, so the most recent PANEL_BUFFER_MAX_BYTES
-            // holds a complete frame to re-seed a fresh xterm from on remount.
-            const ubuffer = [...s.unifiedPanel.buffer, event.data];
-            let utotal = 0;
-            for (const chunk of ubuffer) utotal += chunk.length;
-            while (ubuffer.length > 1 && utotal > PANEL_BUFFER_MAX_BYTES) {
-              utotal -= (ubuffer.shift() as string).length;
-            }
-            sessions.set(sessionId, { ...s, unifiedPanel: { ...s.unifiedPanel, buffer: ubuffer } });
+            // The unified panel can outlive its renderer xterm across session
+            // switches. Keep a replay segment, not an unbounded ANSI log: when
+            // pi-tui emits a hard full-screen clear, anything before it is stale
+            // history and corrupts remount sizing if replayed.
+            const buffer = appendUnifiedReplayBuffer(s.unifiedPanel.buffer, event.data);
+            sessions.set(sessionId, { ...s, unifiedPanel: { ...s.unifiedPanel, buffer } });
           } else if (s.panel?.id === event.panelId) {
             // The buffer is only a remount snapshot (CustomPanelHost replays it
             // into a fresh xterm). A TUI panel redraws continuously, so an
-            // unbounded buffer is a steady leak. Keep a bounded tail: TUI
-            // frames are full repaints with cursor-home/clear sequences, so the
-            // most recent PANEL_BUFFER_MAX_BYTES reliably contains a complete
-            // frame to re-seed from. Oldest chunks are dropped first.
-            const buffer = [...s.panel.buffer, event.data];
-            let total = 0;
-            for (const chunk of buffer) total += chunk.length;
-            while (buffer.length > 1 && total > PANEL_BUFFER_MAX_BYTES) {
-              total -= (buffer.shift() as string).length;
-            }
+            // unbounded buffer is a steady leak. Keep a bounded tail; oldest
+            // chunks are dropped first.
+            const buffer = appendBoundedPanelBuffer(s.panel.buffer, event.data);
             sessions.set(sessionId, { ...s, panel: { ...s.panel, buffer } });
           }
           break;

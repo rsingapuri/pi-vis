@@ -158,9 +158,11 @@ export interface IpcInvokeContract {
     res: undefined;
   };
   /** Notify the host of a new xterm.js panel size (cols/rows), so the TUI
-   *  layout matches the actual panel dimensions. */
+   *  layout matches the actual panel dimensions. `force` asks the host to
+   *  discard its diff-render state and repaint a complete frame; UnifiedTuiHost
+   *  uses it on xterm remount after session/view switches. */
   "session.panelResize": {
-    req: { sessionId: SessionId; panelId: number; cols: number; rows: number };
+    req: { sessionId: SessionId; panelId: number; cols: number; rows: number; force?: boolean };
     res: undefined;
   };
   /** Force-close an open custom panel (escape hatch for a panel whose

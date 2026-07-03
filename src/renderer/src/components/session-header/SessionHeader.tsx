@@ -163,7 +163,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
 
   return (
     <div className="session-header" ref={headerRef}>
-      {/* Primary row: name + WorktreeChip (always visible) */}
+      {/* Primary row: name on the left; worktree + controls on the right. */}
       <div className="session-header__primary">
         <div className="session-header__name">
           {editingName ? (
@@ -194,17 +194,17 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
               </FadeText>
             </button>
           )}
-          {session?.worktreeName && (
-            <WorktreeChip
-              sessionId={sessionId}
-              name={session.worktreeName}
-              branch={session.worktreeBranch ?? session.worktreeName ?? ""}
-              base={session.worktreeFromBase}
-              path={session.worktreePath}
-            />
-          )}
         </div>
 
+        {session?.worktreeName && (
+          <WorktreeChip
+            sessionId={sessionId}
+            name={session.worktreeName}
+            branch={session.worktreeBranch ?? session.worktreeName ?? ""}
+            base={session.worktreeFromBase}
+            path={session.worktreePath}
+          />
+        )}
         {!compact && <SessionControls sessionId={sessionId} />}
         <NotificationBellButton sessionId={sessionId} />
       </div>
@@ -388,8 +388,8 @@ export function SessionControls({
   return (
     <div className="session-header__controls">
       {/* Unified-TUI view toggle — shown only while a factory `setWidget` panel is live.
-          Placed in the right-side controls cluster, before the changes button, for better
-          visibility. Uses text labels "Extension" and "Input" for clarity. */}
+          Placed in the right-side controls cluster after the worktree chip (when present)
+          and before the changes button. Uses text labels "Extension" and "Input" for clarity. */}
       {session?.unifiedPanel && (
         <UnifiedViewToggle sessionId={sessionId} extensionLabel="Extension" inputLabel="Input" />
       )}
@@ -601,8 +601,9 @@ function WorktreeChip({
   return (
     <button
       type="button"
-      className="session-header__worktree-chip"
+      className="session-header__worktree-chip fade-scope"
       title={path ? `${detail} · click to copy path` : detail}
+      data-testid="worktree-chip"
       onClick={() => {
         if (!path) return;
         void window.pivis
@@ -612,7 +613,7 @@ function WorktreeChip({
       }}
     >
       <IconBranch />
-      {name}
+      <FadeText className="session-header__worktree-label">{name}</FadeText>
     </button>
   );
 }

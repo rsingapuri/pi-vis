@@ -29,8 +29,9 @@ Both New and Existing converge on the same plumbing:
 
 1. `setWorktreeAndRespawn()` re-points the session's `cwd` to the worktree and
    re-spawns the pi process there.
-2. The WorktreeBar vanishes; the **WorktreeChip** (`⑂ swift-otter`) appears next to
-   the session name in the header. Hover shows `branch · path` for attached
+2. The WorktreeBar vanishes; the **WorktreeChip** (`⑂ swift-otter`) appears in
+   the header's right-side control row, immediately before the unified view toggle
+   (when present) and changes/diff button. Hover shows `branch · path` for attached
    worktrees (where `base === branch` is the "attached, not cut from anything"
    sentinel) and `branch · from <base> · path` for created worktrees.
 3. `settings.worktrees` is persisted **keyed by the canonical worktree toplevel**
@@ -91,7 +92,7 @@ prompt text is preserved for retry — not lost behind an ephemeral toast.
 
 **Responsive reflow**: At narrow widths the secondary controls (model picker,
 thinking level, changes badge, context meter) drop into a **SessionSubBar** below the
-38px title bar. The name + WorktreeChip stay up top. The `SessionControls` component
+38px title bar. The name and right-side WorktreeChip stay up top. The `SessionControls` component
 is the single source of truth rendered in either position. Mechanism: a
 `ResizeObserver` on `.session-header` flips `headerCompact` when the header's
 *available* width drops below 560px. Two things make this correct: (1) `.session-header`

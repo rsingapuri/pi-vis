@@ -15,8 +15,9 @@
  *    overlay and `extensionUiActive` doesn't treat it as a blocking dialog.
  *
  * Lifecycle mirrors CustomPanelHost: rebuild xterm only on panel-identity
- * change (not on every streamed frame); live `panel_data` arrives via the
- * `session.panelEvent` subscription.
+ * change (not on every streamed frame). On remount after a session/view switch
+ * we start from a clean xterm and force the host to send a complete repaint;
+ * live `panel_data` then arrives via the `session.panelEvent` subscription.
  */
 
 import type { SessionId } from "@shared/ids.js";
@@ -130,6 +131,12 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
     term.loadAddon(fitAddon);
 
     term.open(container);
+    // A session/view switch destroys the renderer xterm but NOT the host-side
+    // pi-tui instance. Do not let any previous terminal modes/scrollback leak
+    // into the remounted surface; the first resize report below forces pi-tui
+    // to repaint a complete frame into this clean terminal.
+    term.reset();
+    term.clear();
 
     // Focus on mount + refocus on click so the TUI's Editor receives keystrokes.
     term.focus();
@@ -146,6 +153,7 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
     // hugs it capped at ~half the transcript column, and scrolls only past that
     // cap. `getMode` reads modeRef live so a viewport↔content flip (a pi-tui
     // overlay showing/hiding) reconfigures sizing without tearing down xterm.
+    let forceNextResize = true;
     const sizer = createPanelSizer({
       term,
       container,
@@ -155,18 +163,27 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
       getMode: () => modeRef.current,
       fallbackFontSize: fonts?.code?.sizePx ?? 14,
       onReportSize: (cols, rows) => {
+        const force = forceNextResize;
+        forceNextResize = false;
         void window.pivis
-          .invoke("session.panelResize", { sessionId, panelId: currentPanel.id, cols, rows })
+          .invoke("session.panelResize", {
+            sessionId,
+            panelId: currentPanel.id,
+            cols,
+            rows,
+            ...(force ? { force: true } : {}),
+          })
           .catch(() => {});
       },
     });
     // Expose the (coalesced) sizing pass so the mode-change effect can re-run it.
     syncRef.current = sizer.scheduleSync;
 
-    // Replay the remount snapshot. Measure in the write CALLBACK (fires after
-    // xterm has parsed the bytes) — measuring synchronously read a not-yet-
-    // parsed buffer on cold mount, which is why the panel opened too short and
-    // only corrected on a later remount.
+    // Replay only the store's bounded CURRENT segment (trimmed after the latest
+    // hard full-screen clear), never the whole historical ANSI log. This gives
+    // the sizer enough content to choose a sane first height for tall panels;
+    // the first resize report still carries force:true, so the host immediately
+    // replaces the replay with an authoritative complete repaint.
     for (const chunk of currentPanel.buffer) {
       term.write(chunk);
     }

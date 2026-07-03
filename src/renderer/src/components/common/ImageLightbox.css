@@ -1,0 +1,106 @@
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  background: var(--scrim);
+  backdrop-filter: blur(0.286rem);
+}
+
+.image-lightbox__dialog {
+  max-width: min(92vw, 84rem);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elevation-3);
+}
+
+.image-lightbox__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 3rem;
+  padding: 0.714rem 0.857rem 0.714rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.image-lightbox__title {
+  min-width: 0;
+  flex: 1;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  font-weight: 600;
+  line-height: var(--leading-label);
+}
+
+.image-lightbox__counter {
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: var(--font-size-small);
+  line-height: var(--leading-label);
+}
+
+.image-lightbox__body {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16rem;
+  min-height: 12rem;
+  overflow: auto;
+  background: var(--bg-sunken);
+  padding: var(--space-3);
+}
+
+.image-lightbox__image {
+  display: block;
+  max-width: calc(92vw - 2 * var(--space-5));
+  max-height: calc(90vh - 4rem);
+  object-fit: contain;
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-1);
+}
+
+.image-lightbox__nav {
+  position: absolute;
+  top: 50%;
+  width: 2.25rem;
+  height: 2.25rem;
+  transform: translateY(-50%);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  box-shadow: var(--elevation-1);
+}
+
+.image-lightbox__nav:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.image-lightbox__nav--previous {
+  left: var(--space-3);
+}
+
+.image-lightbox__nav--next {
+  right: var(--space-3);
+}
+
+@media (max-width: 42rem) {
+  .image-lightbox {
+    padding: var(--space-3);
+  }
+
+  .image-lightbox__dialog {
+    max-width: 96vw;
+  }
+
+  .image-lightbox__image {
+    max-width: calc(96vw - 2 * var(--space-3));
+  }
+}

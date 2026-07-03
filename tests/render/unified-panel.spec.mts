@@ -12,6 +12,14 @@
  */
 import { expect, test } from "@playwright/test";
 
+interface PreviewStoreState {
+  activeSessionId: string;
+  applyWorktree: (
+    sessionId: string,
+    result: { worktreePath: string; branch: string; name: string; base: string },
+  ) => void;
+}
+
 test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
   test("mounts UnifiedTuiHost with rendered roster content, replacing the composer", async ({
     page,
@@ -132,6 +140,51 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
     expect(m.overflowY).toBe("hidden");
   });
 
+  test("orders the title-bar worktree chip before unified toggle and changes", async ({ page }) => {
+    await page.setViewportSize({ width: 1200, height: 760 });
+    await page.goto("http://127.0.0.1:7317/?unified=1");
+    await page.waitForLoadState("domcontentloaded");
+
+    await expect(page.locator(".session-header__controls .unified-toggle")).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.locator('[data-testid="changes-button"]')).toBeVisible({ timeout: 10_000 });
+
+    await page.evaluate(() => {
+      const store = (window as unknown as { __pivisStore: { getState: () => PreviewStoreState } })
+        .__pivisStore;
+      const state = store.getState();
+      state.applyWorktree(state.activeSessionId, {
+        worktreePath: "/tmp/stub-worktree/swift-otter",
+        branch: "pi-vis-swift-otter",
+        name: "swift-otter",
+        base: "main",
+      });
+    });
+
+    const chip = page.locator('[data-testid="worktree-chip"]');
+    await expect(chip).toBeVisible({ timeout: 10_000 });
+
+    const order = await page.evaluate(() => {
+      const chipEl = document.querySelector('[data-testid="worktree-chip"]');
+      const toggleEl = document.querySelector(".session-header__controls .unified-toggle");
+      const changesEl = document.querySelector('[data-testid="changes-button"]');
+      const before = (a: Element | null, b: Element | null): boolean =>
+        !!a && !!b && Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      return {
+        chipBeforeToggle: before(chipEl, toggleEl),
+        toggleBeforeChanges: before(toggleEl, changesEl),
+        chipBeforeChanges: before(chipEl, changesEl),
+      };
+    });
+
+    expect(order).toEqual({
+      chipBeforeToggle: true,
+      toggleBeforeChanges: true,
+      chipBeforeChanges: true,
+    });
+  });
+
   test("UnifiedViewToggle switches between the panel and the native composer", async ({ page }) => {
     await page.goto("http://127.0.0.1:7317/?unified=1");
     await page.waitForLoadState("domcontentloaded");
@@ -166,10 +219,15 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
       "true",
     );
 
-    // Click "Extension" → back to the unified TUI.
+    // Click "Extension" → back to the unified TUI. The remounted xterm starts
+    // clean and asks the host for a forced repaint, so content returns without
+    // relying on replaying the old ANSI log.
     await toggle.getByRole("tab", { name: "Extension" }).click();
     await expect(page.locator(".unified-panel")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator(".composer__textarea")).toHaveCount(0);
+    await expect(page.locator(".unified-panel .xterm-rows")).toContainText("Fleet", {
+      timeout: 10_000,
+    });
     await expect(toggle.getByRole("tab", { name: "Extension" })).toHaveAttribute(
       "aria-selected",
       "true",

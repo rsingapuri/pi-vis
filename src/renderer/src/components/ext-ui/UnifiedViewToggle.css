@@ -1,9 +1,10 @@
 /* UnifiedViewToggle — segmented switcher between the unified-TUI panel and the
    native Composer.
 
-   Lives in the right-side controls cluster of the session header, before the
-   changes button. Uses text labels for clarity. Mirrors the visual language of
-   other header controls: surface0 background, hairline border, mauve active
+   Lives in the right-side controls cluster of the session header, after the
+   worktree chip (when present) and before the changes button. Uses text labels
+   for clarity. Mirrors the visual language of other header controls: surface0
+   background, hairline border, mauve active
    segment.
 
    The `--header` variant is styled to match the picker buttons (model, thinking)

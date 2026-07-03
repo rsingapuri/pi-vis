@@ -32,19 +32,12 @@
      same visual purpose at the same y. */
   display: flex;
   align-items: center;
-  /* Symmetric horizontal padding (0.429rem each side). The left padding
-     is tuned so the visible session-title text sits the same distance
-     from the sidebar toggle as the toggle sits from the macOS traffic
-     lights — i.e. the gap on each side of the toggle reads as symmetric.
-     The right padding matches the left so the rightmost control (the
-     context ring) lines up with the floating content card's right edge in
-     sidebar-visible mode (the titlebar's own right padding is 0, so the
-     ring lands at 0.429rem ≈ the card's --space-2 margin) AND so the
-     content stays centered in the floating title-bar pill in
-     sidebar-collapsed mode (the pill's padding is already symmetric). The
-     name button's own 0.429rem horizontal padding accounts for the
-     remaining offset between the header's content box and the text. */
-  padding: 0 0.429rem;
+  /* Symmetric horizontal padding. Keep a real gutter at both ends of the
+     title-bar contents so the session name and right-side controls don't hug
+     the strip edge in either sidebar mode. The name button's own horizontal
+     padding accounts for the remaining offset between the header's content box
+     and the text. */
+  padding: 0 var(--space-3);
   gap: 0.857rem;
   flex-shrink: 0;
   position: relative;
@@ -104,7 +97,7 @@
   -webkit-app-region: no-drag;
 }
 
-/* ── Primary row (name + WorktreeChip) ────────────────────────────── */
+/* ── Primary row (name left; worktree + controls right) ───────────── */
 
 .session-header__primary {
   display: flex;
@@ -132,7 +125,17 @@
   white-space: nowrap;
   -webkit-app-region: no-drag;
   flex-shrink: 0;
+  min-width: 0;
+  max-width: 10rem;
   line-height: 1.4;
+}
+
+.session-header__worktree-chip .icon {
+  flex-shrink: 0;
+}
+
+.session-header__worktree-label {
+  min-width: 0;
 }
 
 .session-header__worktree-chip:hover {

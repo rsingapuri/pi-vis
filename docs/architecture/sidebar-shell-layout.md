@@ -69,10 +69,16 @@ The app is fully usable from the enforced floor (`minWidth: 480`, `minHeight: 40
 - **Compact title bar**: the SessionSubBar reflow described above.
 - **Title bar layout**: the session name is left-aligned and sized to its text
   (`flex: 0 1 auto`, not `1`) — a modern editor convention, and it leaves the slack to
-  its right as part of the title bar's `-webkit-app-region: drag` region (only the
-  name button / chip / controls are `no-drag`). A full-width centered title would
-  otherwise cover the whole bar as a no-drag element, leaving nothing to grab the window
-  by.
+  its right as part of the title bar's `-webkit-app-region: drag` region. The
+  worktree chip lives with the right-side controls (before the unified view toggle
+  and changes/diff button), not beside the title. Only the name button / chip /
+  controls are `no-drag`. In sidebar-visible mode, the left
+  traffic-light clearance leaves a real gutter before the sidebar toggle; in collapsed
+  mode, the floating pill's extra breathing room is its outer inset, not extra internal
+  padding on the end controls. The collapsed floating pill uses a border but no
+  side-casting shadow, so it doesn't read as a stray fade over the transcript. A
+  full-width centered title would otherwise cover the whole bar as a no-drag element,
+  leaving nothing to grab the window by.
 - **Fluid transcript**: `.app__main` is a size-query container (`container: mainpane /
   inline-size`). The transcript's horizontal padding scales with the pane via
   `clamp(--space-5, 6cqi, --space-8)`. **One uniform, centered reading column** is

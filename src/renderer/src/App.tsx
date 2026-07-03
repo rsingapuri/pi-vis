@@ -3,6 +3,7 @@ import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
 import { ChangelogModal } from "./components/changelog/ChangelogModal.js";
+import { ImageLightbox } from "./components/common/ImageLightbox.js";
 import { Composer } from "./components/composer/Composer.js";
 import { WorktreeBar } from "./components/composer/WorktreeBar.js";
 import { DiffViewerHost } from "./components/diff/DiffViewerHost.js";
@@ -580,6 +581,7 @@ export function App(): React.ReactElement {
       )}
       <UpdateProgress />
       <ChangelogModal />
+      <ImageLightbox />
     </div>
   );
 }

@@ -62,6 +62,14 @@ export function IconChevronRight(props: IconProps): React.ReactElement {
   );
 }
 
+export function IconChevronLeft(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <polyline points="7 3 3 7 7 11" />
+    </Icon>
+  );
+}
+
 export function IconCheck(props: IconProps): React.ReactElement {
   return (
     <Icon {...props}>
@@ -74,6 +82,16 @@ export function IconClose(props: IconProps): React.ReactElement {
   return (
     <Icon {...props}>
       <path d="M3 3l6 6M9 3l-6 6" />
+    </Icon>
+  );
+}
+
+/** File — generic pending composer attachment. */
+export function IconFile(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <path d="M3.25 1.75h3.1L8.75 4.15v6.1h-5.5z" />
+      <path d="M6.35 1.75v2.4h2.4" />
     </Icon>
   );
 }

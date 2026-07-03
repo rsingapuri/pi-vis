@@ -107,6 +107,41 @@ pre i {
   overflow-wrap: anywhere;
 }
 
+/* Markdown images appear in assistant/tool output and changelogs. Keep them
+   bounded to their reading surface, but make them clearly zoomable. */
+.markdown-image {
+  display: block;
+  width: fit-content;
+  max-width: min(100%, 28rem);
+  max-height: 22rem;
+  margin: var(--space-2) 0;
+  padding: 0;
+  overflow: hidden;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: zoom-in;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.markdown-image:hover,
+.markdown-image:focus-visible {
+  border-color: var(--accent);
+}
+
+.markdown-image:hover {
+  transform: translateY(-1px);
+}
+
+.markdown-image__img {
+  display: block;
+  max-width: min(100%, 28rem);
+  max-height: 22rem;
+  object-fit: contain;
+}
+
 /* shiki: guarantee true italic for comment-colored tokens even if the
    bundled theme doesn't set fontStyle.  Catppuccin Mocha's comment color
    is overlay1 / overlay0, so we cover the whole range. */

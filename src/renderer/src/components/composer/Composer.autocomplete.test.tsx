@@ -211,7 +211,66 @@ describe("Composer file attachments", () => {
     unmount();
   });
 
-  it("falls back to image file paths with one warning when the model lacks image support", () => {
+  it("shows non-image files as tiles and sends their paths with the prompt", () => {
+    const { container, textarea, unmount } = mountComposer();
+    const ta = textarea();
+    setValueAndDispatch(ta, "Please inspect");
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+
+    dispatchFiles(input, [pickedFile("notes.txt", "text/plain", "/tmp/notes.txt")]);
+
+    expect(textarea().value).toBe("Please inspect");
+    expect(container.querySelectorAll(".composer__attachment-item--file").length).toBe(1);
+
+    keyDown(ta, "Enter");
+    const calls = invokeSpy.mock.calls.filter(
+      (c) => (c[1] as { command?: { type: string } }).command?.type === "prompt",
+    );
+    expect(calls.length).toBe(1);
+    const payload = calls[0]![1] as { command: { message: string } };
+    expect(payload.command.message).toBe("/tmp/notes.txt\nPlease inspect");
+    unmount();
+  });
+
+  it("keeps file paths on their own line when prompt starts with whitespace", () => {
+    const { container, textarea, unmount } = mountComposer();
+    const ta = textarea();
+    setValueAndDispatch(ta, " Please inspect");
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+
+    dispatchFiles(input, [pickedFile("notes.txt", "text/plain", "/tmp/notes.txt")]);
+
+    keyDown(ta, "Enter");
+    const calls = invokeSpy.mock.calls.filter(
+      (c) => (c[1] as { command?: { type: string } }).command?.type === "prompt",
+    );
+    expect(calls.length).toBe(1);
+    const payload = calls[0]![1] as { command: { message: string } };
+    expect(payload.command.message).toBe("/tmp/notes.txt\n Please inspect");
+    unmount();
+  });
+
+  it("renders injected file-path-only editor text as file tiles", () => {
+    const { container, textarea, unmount } = mountComposer();
+
+    act(() => {
+      useSessionsStore.getState().injectEditorText(SESSION_A, "/tmp/a.txt\n/tmp/b.txt");
+    });
+
+    expect(textarea().value).toBe("");
+    expect(container.querySelectorAll(".composer__attachment-item--file").length).toBe(2);
+
+    keyDown(textarea(), "Enter");
+    const calls = invokeSpy.mock.calls.filter(
+      (c) => (c[1] as { command?: { type: string } }).command?.type === "prompt",
+    );
+    expect(calls.length).toBe(1);
+    const payload = calls[0]![1] as { command: { message: string } };
+    expect(payload.command.message).toBe("/tmp/a.txt\n/tmp/b.txt");
+    unmount();
+  });
+
+  it("falls back to image file tiles with one warning when the model lacks image support", () => {
     const { container, textarea, unmount } = mountComposer();
     const ta = textarea();
     setValueAndDispatch(ta, "Please inspect");
@@ -219,8 +278,8 @@ describe("Composer file attachments", () => {
 
     dispatchFiles(input, [pickedFile("diagram.png", "image/png", "/tmp/diagram.png")]);
 
-    expect(textarea().value).toBe("Please inspect\n/tmp/diagram.png");
-    expect(container.querySelectorAll(".composer__attachment-item").length).toBe(0);
+    expect(textarea().value).toBe("Please inspect");
+    expect(container.querySelectorAll(".composer__attachment-item--file").length).toBe(1);
     const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
     expect(toasts).toHaveLength(1);
     expect(toasts[0]?.type).toBe("warning");

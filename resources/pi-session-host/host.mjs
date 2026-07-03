@@ -10,7 +10,7 @@
  *   { type: "command", id, command: PiRpcCommand }
  *   { type: "dialog_response", id, response: ExtensionUiResponse }
  *   { type: "panel_input", panelId, data }
- *   { type: "panel_resize", panelId, cols, rows }
+ *   { type: "panel_resize", panelId, cols, rows, force? }
  *   { type: "panel_close_request", panelId }
  *
  * Protocol (host -> main):
@@ -172,9 +172,9 @@ const panelBridge = {
   // Called when the renderer reports a new xterm.js panel size — forwards to
   // the panel's resize handler (registered by custom()), which updates the
   // HostTerminal dimensions and asks the TUI to re-render.
-  resize(panelId, cols, rows) {
+  resize(panelId, cols, rows, force = false) {
     const p = panels.get(panelId);
-    p?.resizeHandler?.(cols, rows);
+    p?.resizeHandler?.(cols, rows, force === true);
   },
 };
 
@@ -415,7 +415,7 @@ process.on("message", async (msg) => {
         break;
 
       case "panel_resize":
-        panelBridge.resize(msg.panelId, msg.cols, msg.rows);
+        panelBridge.resize(msg.panelId, msg.cols, msg.rows, msg.force === true);
         break;
 
       case "panel_close_request":

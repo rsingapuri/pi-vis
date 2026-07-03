@@ -263,6 +263,19 @@ describe("SessionHost", () => {
       });
     });
 
+    it("sendPanelResize can request a forced full repaint", async () => {
+      await fake.emitReady("0.80.0");
+      await host.waitForReady();
+      host.sendPanelResize(3, 120, 40, true);
+      expect(fake.sent).toContainEqual({
+        type: "panel_resize",
+        panelId: 3,
+        cols: 120,
+        rows: 40,
+        force: true,
+      });
+    });
+
     it("sendPanelClose emits {type:panel_close_request, panelId} (the escape hatch)", async () => {
       await fake.emitReady("0.80.0");
       await host.waitForReady();

@@ -1913,6 +1913,29 @@ describe("sessions store - unified TUI panel reducer", () => {
     expect(buf.length).toBeGreaterThan(0);
   });
 
+  it("panel_data drops stale unified replay history before the latest full-screen clear", () => {
+    const s = useSessionsStore.getState();
+    s.handlePanelEvent(SESSION_A, {
+      type: "panel_open",
+      panelId: 7,
+      overlay: false,
+      unified: true,
+    });
+    s.handlePanelEvent(SESSION_A, { type: "panel_data", panelId: 7, data: "old-first-frame" });
+    s.handlePanelEvent(SESSION_A, { type: "panel_data", panelId: 7, data: "old-diff" });
+    s.handlePanelEvent(SESSION_A, {
+      type: "panel_data",
+      panelId: 7,
+      data: "\x1b[?2026h\x1b[2J\x1b[H\x1b[3Jnew-full-frame\x1b[?2026l",
+    });
+    s.handlePanelEvent(SESSION_A, { type: "panel_data", panelId: 7, data: "new-diff" });
+
+    expect(unifiedPanel()?.buffer).toEqual([
+      "\x1b[2J\x1b[H\x1b[3Jnew-full-frame\x1b[?2026l",
+      "new-diff",
+    ]);
+  });
+
   it("panel_close clears the matching unifiedPanel", () => {
     const s = useSessionsStore.getState();
     s.handlePanelEvent(SESSION_A, {

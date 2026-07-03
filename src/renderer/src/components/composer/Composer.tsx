@@ -12,21 +12,27 @@ import {
 import { findCurrentModel } from "../../lib/model-utils.js";
 import { useChangelogStore } from "../../stores/changelog-store.js";
 import { openDiffForSession } from "../../stores/diff-store.js";
+import { useImageViewerStore } from "../../stores/image-viewer-store.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { isNewSessionPending } from "../../stores/sessions-store.js";
 import { useTreeStore } from "../../stores/tree-store.js";
 import { FadeText } from "../common/FadeText.js";
-import { IconClose } from "../common/icons.js";
+import { IconClose, IconFile } from "../common/icons.js";
 import "./Composer.css";
 
 interface ComposerProps {
   sessionId: SessionId;
 }
 
-interface Attachment {
+interface ImageAttachment {
   name: string;
   path: string;
   dataUrl: string;
+}
+
+interface FileAttachment {
+  name: string;
+  path: string;
 }
 
 type FileWithLegacyPath = File & { path?: string };
@@ -48,27 +54,31 @@ function pathForPickedFile(file: File): string {
   return (file as FileWithLegacyPath).path || file.name;
 }
 
-function textWithInsertedFilePaths(
-  current: string,
-  paths: string[],
-  selectionStart: number,
-  selectionEnd: number,
-): { text: string; cursor: number } {
-  const prefix = current.slice(0, selectionStart);
-  const suffix = current.slice(selectionEnd);
-  const leading = prefix.length > 0 && !/\s$/.test(prefix) ? "\n" : "";
-  const trailing = suffix.length > 0 && !/^\s/.test(suffix) ? "\n" : "";
-  const insert = `${leading}${paths.join("\n")}${trailing}`;
-  return {
-    text: `${prefix}${insert}${suffix}`,
-    cursor: prefix.length + insert.length,
-  };
+function textWithPrependedFilePaths(current: string, paths: string[]): string {
+  if (paths.length === 0) return current;
+  const separator = current.length === 0 || /^\r?\n/.test(current) ? "" : "\n";
+  return `${paths.join("\n")}${separator}${current}`;
 }
 
 function textWithAppendedFilePaths(current: string, paths: string[]): string {
   if (paths.length === 0) return current;
   const separator = current.length === 0 || /\s$/.test(current) ? "" : "\n";
   return `${current}${separator}${paths.join("\n")}`;
+}
+
+function nameFromPath(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  return trimmed.split(/[\\/]/).pop() || path;
+}
+
+function fileAttachmentsFromEditorText(text: string): FileAttachment[] | null {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  if (!lines.every((line) => /^\/(?!\s)(?:.*\/)?[^/\s]+$/.test(line))) return null;
+  return lines.map((path) => ({ path, name: nameFromPath(path) }));
 }
 
 interface SuggestionEntry {
@@ -107,7 +117,8 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   // highlight can't outrun the visible viewport (the list scrolls, not the
   // whole pane — see .composer__suggestion-list's internal overflow-y).
   const suggestionListRef = useRef<HTMLDivElement>(null);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([]);
   // Re-entrancy guard for `handleSubmit`. Without this, a rapid/auto-repeat
   // keydown can read the stale `text` closure before `setText("")` commits
   // and dispatch two submissions (two optimistic bubbles + two prompts).
@@ -159,6 +170,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         setText(draft ?? "");
         setSlashIndex(0);
         setAttachments([]);
+        setFileAttachments([]);
       }
     } else {
       seededWorkspaceRef.current = null;
@@ -176,6 +188,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const applyModelChange = useSessionsStore((s) => s.applyModelChange);
   const addCustomMessage = useSessionsStore((s) => s.addCustomMessage);
   const openPicker = useSessionsStore((s) => s.openPicker);
+  const openImages = useImageViewerStore((s) => s.openImages);
   // Shared with the unified-TUI submit path (handleUnifiedSubmitRequest) so a
   // /fork|/clone|/switch_session|/resume hydrates the transcript + sidebar the
   // same way regardless of which surface dispatched it.
@@ -220,18 +233,21 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   // same text without thrashing on identical payloads.
   useEffect(() => {
     if (editorInjectionNonce === undefined || editorInjectionText === undefined) return;
-    setText(editorInjectionText);
+    const injectedFiles = fileAttachmentsFromEditorText(editorInjectionText);
+    const nextText = injectedFiles ? "" : editorInjectionText;
+    setText(nextText);
     // Mirror the injected text into the per-workspace draft when the session
     // is still pending. Read `pending` from a ref so this effect only fires
     // on nonce/text changes — not on the pending→real transition after the
     // first send (which would spuriously re-inject stale text).
     if (pendingRef.current && workspacePathRef.current) {
-      setNewSessionDraft(workspacePathRef.current, editorInjectionText);
+      setNewSessionDraft(workspacePathRef.current, nextText);
     } else {
-      setSessionDraft(sessionId, editorInjectionText);
+      setSessionDraft(sessionId, nextText);
     }
     setSlashIndex(0);
     setAttachments([]);
+    setFileAttachments(injectedFiles ?? []);
     textareaRef.current?.focus();
   }, [editorInjectionNonce, editorInjectionText, setNewSessionDraft, setSessionDraft, sessionId]);
 
@@ -267,27 +283,6 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
 
   // ── Attachment handling ─────────────────────────────────────────────
 
-  const updateTextFromFilePicker = useCallback(
-    (nextText: string, cursor: number) => {
-      setText(nextText);
-      setDismissed(false);
-      if (pending && workspacePath) setNewSessionDraft(workspacePath, nextText);
-      else setSessionDraft(sessionId, nextText);
-      if (useSessionsStore.getState().sessions.get(sessionId)?.editorInjection !== undefined) {
-        clearEditorInjection(sessionId);
-      }
-      const restoreCursor = () => {
-        const textarea = textareaRef.current;
-        if (!textarea) return;
-        textarea.focus();
-        textarea.setSelectionRange(cursor, cursor);
-      };
-      if (typeof requestAnimationFrame === "function") requestAnimationFrame(restoreCursor);
-      else queueMicrotask(restoreCursor);
-    },
-    [pending, workspacePath, setNewSessionDraft, setSessionDraft, sessionId, clearEditorInjection],
-  );
-
   const handleAttachClick = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
@@ -302,9 +297,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         image: isImageFile(file),
       }));
       const imageCount = selected.filter((entry) => entry.image).length;
-      const genericPaths = selected
+      const genericFiles = selected
         .filter((entry) => !entry.image || !modelSupportsImages)
-        .map((entry) => entry.path);
+        .map((entry) => ({ name: entry.file.name, path: entry.path }));
 
       if (!modelSupportsImages && imageCount > 0) {
         addToast(
@@ -314,12 +309,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         );
       }
 
-      if (genericPaths.length > 0) {
-        const textarea = textareaRef.current;
-        const start = textarea?.selectionStart ?? text.length;
-        const end = textarea?.selectionEnd ?? start;
-        const next = textWithInsertedFilePaths(text, genericPaths, start, end);
-        updateTextFromFilePicker(next.text, next.cursor);
+      if (genericFiles.length > 0) {
+        setFileAttachments((prev) => [...prev, ...genericFiles]);
+        textareaRef.current?.focus();
       }
 
       const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -345,20 +337,26 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       }
       e.target.value = "";
     },
-    [
-      addToast,
-      attachments,
-      sessionId,
-      text,
-      updateTextFromFilePicker,
-      modelSupportsImages,
-      modelLabel,
-    ],
+    [addToast, attachments, sessionId, modelSupportsImages, modelLabel],
   );
 
   const removeAttachment = useCallback((index: number) => {
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   }, []);
+
+  const removeFileAttachment = useCallback((index: number) => {
+    setFileAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const viewAttachment = useCallback(
+    (index: number) => {
+      openImages(
+        attachments.map((att) => ({ src: att.dataUrl, alt: att.name })),
+        index,
+      );
+    },
+    [attachments, openImages],
+  );
 
   // ── Suggestion list ────────────────────────────────────────────────
 
@@ -484,7 +482,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const handleSubmit = useCallback(
     async (overrideContent?: string) => {
       const content = overrideContent ?? text;
-      if (!content.trim()) return;
+      if (!content.trim() && fileAttachments.length === 0) return;
       // Drop a second concurrent invocation: a held/auto-repeat Enter can
       // re-fire this before the `text` state below commits, which would
       // otherwise read the same `content` twice and dispatch two sends.
@@ -591,7 +589,15 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       try {
         const action = parseComposerInput(content, { discovered });
         let imgs = attachments;
+        const attachedFilePaths = fileAttachments.map((a) => a.path);
         let promptText = action.kind === "send-prompt" ? action.text : content;
+        if (action.kind !== "send-prompt" && attachedFilePaths.length > 0) {
+          addToast(sessionId, "File attachments can only be sent with prompts", "error");
+          return;
+        }
+        if (action.kind === "send-prompt" && attachedFilePaths.length > 0) {
+          promptText = textWithPrependedFilePaths(action.text, attachedFilePaths);
+        }
         // If the user attached enhanced image previews and then switched to a
         // text-only model, preserve TUI parity by sending the image paths in
         // the prompt instead of silently dropping the attachments.
@@ -602,7 +608,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
             "warning",
           );
           promptText = textWithAppendedFilePaths(
-            action.text,
+            promptText,
             imgs.map((a) => a.path),
           );
           imgs = [];
@@ -651,6 +657,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         // the moment content lands, so an aborted send still preserves it.
         setText("");
         setAttachments([]);
+        setFileAttachments([]);
         setSlashIndex(0);
 
         const deps = {
@@ -774,6 +781,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       applyWorktree,
       clearWorktreeIntent,
       attachments,
+      fileAttachments,
       modelSupportsImages,
       modelLabel,
     ],
@@ -921,25 +929,6 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
 
   return (
     <div className="composer">
-      {/* Enhanced image preview strip */}
-      {attachments.length > 0 && (
-        <div className="composer__attachments">
-          {attachments.map((att, i) => (
-            <div key={`${att.name}-${i}`} className="composer__attachment-item">
-              <img src={att.dataUrl} alt={att.name} className="composer__attachment-thumb" />
-              <button
-                type="button"
-                className="composer__attachment-remove"
-                onClick={() => removeAttachment(i)}
-                aria-label={`Remove ${att.name}`}
-              >
-                <IconClose size="0.714em" />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
       <input
         ref={fileInputRef}
         type="file"
@@ -984,34 +973,83 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           </div>
         )}
         <div className="composer__input-box">
-          <button
-            type="button"
-            className="composer__attach-btn"
-            onClick={handleAttachClick}
-            aria-label="Attach files"
-            title="Attach files"
-            disabled={!live}
-          >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path
-                d="M8 3.25v9.5M3.25 8h9.5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-          <div className="composer__textarea-wrap">
-            <textarea
-              ref={textareaRef}
-              className="composer__textarea"
-              value={text}
-              onChange={handleChange}
-              onKeyDown={handleKeyDown}
-              aria-label="Message pi"
+          {/* Image previews live inside the input card, above the typed text,
+              so attachments read as part of the pending message rather than a
+              separate horizontal tray. */}
+          {(attachments.length > 0 || fileAttachments.length > 0) && (
+            <div className="composer__attachments">
+              {fileAttachments.map((att, i) => (
+                <div
+                  key={`${att.path}-${i}`}
+                  className="composer__attachment-item composer__attachment-item--file"
+                >
+                  <div className="composer__file-attachment" title={att.path}>
+                    <IconFile className="composer__file-attachment-icon" size="1.6em" />
+                    <FadeText className="composer__file-attachment-name">{att.name}</FadeText>
+                  </div>
+                  <button
+                    type="button"
+                    className="composer__attachment-remove"
+                    onClick={() => removeFileAttachment(i)}
+                    aria-label={`Remove ${att.name}`}
+                  >
+                    <IconClose size="0.714em" />
+                  </button>
+                </div>
+              ))}
+              {attachments.map((att, i) => (
+                <div key={`${att.name}-${i}`} className="composer__attachment-item">
+                  <button
+                    type="button"
+                    className="composer__attachment-preview"
+                    onClick={() => viewAttachment(i)}
+                    aria-label={`Open ${att.name} larger`}
+                    title="Open image preview"
+                  >
+                    <img src={att.dataUrl} alt={att.name} className="composer__attachment-thumb" />
+                  </button>
+                  <button
+                    type="button"
+                    className="composer__attachment-remove"
+                    onClick={() => removeAttachment(i)}
+                    aria-label={`Remove ${att.name}`}
+                  >
+                    <IconClose size="0.714em" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="composer__entry-row">
+            <button
+              type="button"
+              className="composer__attach-btn"
+              onClick={handleAttachClick}
+              aria-label="Attach files"
+              title="Attach files"
               disabled={!live}
-            />
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  d="M8 3.25v9.5M3.25 8h9.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+            <div className="composer__textarea-wrap">
+              <textarea
+                ref={textareaRef}
+                className="composer__textarea"
+                value={text}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                aria-label="Message pi"
+                disabled={!live}
+              />
+            </div>
           </div>
         </div>
       </div>
