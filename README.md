@@ -21,7 +21,7 @@ extensions.
   as they do in the terminal — including their dialogs, toasts, status bar, and
   widgets.
 - **Themes.** Four built-in Catppuccin variants (Latte, Frappé, Macchiato,
-  Mocha).
+  Mocha) plus Gruvbox Material.
 
 ## Install (macOS, Apple Silicon)
 
@@ -99,6 +99,14 @@ npm run dist       # build + electron-builder (mac dmg/zip)
 | `src/main/sessions/session-registry.ts` | SessionId → PiProcess lifecycle, blocks double-open |
 | `src/renderer/src/stores/transcript.ts` | Pure reducer: PiEvent → TranscriptBlock[] |
 | `tests/fixtures/fake-pi.mjs` | Scripted stand-in for real pi (for e2e tests) |
+
+## Acknowledgements
+
+Built-in color themes include palette values derived from the MIT-licensed
+[Catppuccin](https://github.com/catppuccin/catppuccin) and
+[Gruvbox Material](https://github.com/sainnhe/gruvbox-material) projects. See
+[`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) for the required license
+notices.
 
 ## Verification checklist
 

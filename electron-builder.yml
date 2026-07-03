@@ -5,6 +5,8 @@ directories:
   output: release/${version}
 files:
   - out/**/*
+  - LICENSE
+  - THIRD_PARTY_NOTICES.md
   - "!**/.vscode/*"
   - "!src/*"
   - "!electron.vite.config.{js,ts}"

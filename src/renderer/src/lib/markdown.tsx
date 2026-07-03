@@ -161,8 +161,9 @@ const components: Components = {
       }
       return <LinkedMarkdownImage image={imageProps} linkProps={{ ...props, href }} />;
     }
-    if (Children.count(children) === 1) {
-      const only = Children.only(children);
+    const renderedChildren = Children.toArray(children);
+    if (renderedChildren.length === 1) {
+      const only = renderedChildren[0];
       if (isValidElement<MarkdownImageProps>(only) && only.type === MarkdownImagePreview) {
         if (typeof href === "string" && isPreviewableImageSrc(href)) {
           return cloneElement(only, { previewSrc: href });
