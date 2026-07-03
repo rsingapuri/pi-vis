@@ -1,3 +1,4 @@
+import type { AppUpdateStatus } from "./app-updates.js";
 import type { ProviderAuthStatus } from "./auth.js";
 import type {
   GitBranchesResult,
@@ -242,6 +243,9 @@ export interface IpcInvokeContract {
     req: { target: "all" | "pi" | { extension: string } };
     res: { runId: string };
   };
+  "appUpdate.status": { req: undefined; res: AppUpdateStatus };
+  "appUpdate.check": { req: undefined; res: AppUpdateStatus };
+  "appUpdate.install": { req: undefined; res: AppUpdateStatus };
 }
 
 // Every event channel: payload type (main → renderer)
@@ -276,6 +280,7 @@ export interface IpcEventContract {
   "update.available": UpdateStatus;
   "update.progress": { runId: string; chunk: string };
   "update.done": { runId: string; exitCode: number; status: UpdateStatus };
+  "appUpdate.status": AppUpdateStatus;
 
   // ── Window ─────────────────────────────────────────────────────────
   /** Window entered/left macOS fullscreen. In fullscreen the native

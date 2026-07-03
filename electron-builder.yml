@@ -28,7 +28,6 @@ mac:
   extendInfo:
     NSMicrophoneUsageDescription: Not required
     NSCameraUsageDescription: Not required
-  notarize: false
   category: public.app-category.developer-tools
   target:
     - target: dmg
@@ -37,7 +36,6 @@ mac:
     - target: zip
       arch:
         - arm64
-afterSign: build/notarize.cjs
 win:
   executableName: pi-vis
   target:

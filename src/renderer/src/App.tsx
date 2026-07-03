@@ -22,9 +22,11 @@ import { TitleBar } from "./components/shell/TitleBar.js";
 import { UpdateBanner } from "./components/shell/UpdateBanner.js";
 import { TranscriptView } from "./components/transcript/TranscriptView.js";
 import { TreeViewerHost } from "./components/tree/TreeViewerHost.js";
+import { AppUpdatePrompt } from "./components/updates/AppUpdatePrompt.js";
 import { UpdateProgress } from "./components/updates/UpdateProgress.js";
 import { useEscapeClaim } from "./hooks/useEscapeClaim.js";
 import { useGlobalEscapeInterrupt } from "./hooks/useGlobalEscapeInterrupt.js";
+import { useAppUpdatesStore } from "./stores/app-updates-store.js";
 import { openDiffForSession, useDiffStore } from "./stores/diff-store.js";
 import { useSessionsStore } from "./stores/sessions-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
@@ -391,6 +393,10 @@ export function App(): React.ReactElement {
       }
     });
 
+    const unsubAppUpdateStatus = window.pivis.on("appUpdate.status", (status) => {
+      useAppUpdatesStore.getState().setStatus(status);
+    });
+
     // Auth changed events
     const unsubAuthChanged = window.pivis.on("auth.changed", () => {
       // Auth changes are handled by the SettingsView component
@@ -410,6 +416,7 @@ export function App(): React.ReactElement {
       unsubUpdateAvailable();
       unsubUpdateProgress();
       unsubUpdateDone();
+      unsubAppUpdateStatus();
       unsubAuthChanged();
       unsubPanel();
       unsubUnifiedSubmit();
@@ -443,6 +450,7 @@ export function App(): React.ReactElement {
     return (
       <div className="app app--setup">
         <PiNotFound onRecheck={handlePiRecheck} />
+        <AppUpdatePrompt />
       </div>
     );
   }
@@ -580,6 +588,7 @@ export function App(): React.ReactElement {
         />
       )}
       <UpdateProgress />
+      <AppUpdatePrompt />
       <ChangelogModal />
       <ImageLightbox />
     </div>

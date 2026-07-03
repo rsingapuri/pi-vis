@@ -21,6 +21,16 @@ lerna-debug.log*
 .env.*
 !.env.example
 
+# Signing certificates, keys, and provisioning profiles
+*.p12
+*.pfx
+*.pem
+*.key
+*.crt
+*.cer
+*.mobileprovision
+*.provisionprofile
+
 # Test artifacts
 coverage/
 playwright-report/

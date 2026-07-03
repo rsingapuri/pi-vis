@@ -1,9 +1,11 @@
+import type { AppUpdateStatus } from "@shared/app-updates.js";
 import type { ProviderAuthStatus } from "@shared/auth.js";
 import { PROVIDERS } from "@shared/auth.js";
 import type { UpdateStatus } from "@shared/updates.js";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatMiB, parseSizeToMiB } from "../../lib/file-size.js";
+import { useAppUpdatesStore } from "../../stores/app-updates-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUpdatesStore } from "../../stores/updates-store.js";
 import { listThemes } from "../../theme/registry.js";
@@ -249,6 +251,29 @@ interface SettingsViewProps {
   initialSection?: "account" | undefined;
 }
 
+function isAppUpdateBusy(status: AppUpdateStatus | null): boolean {
+  return status?.state === "checking" || status?.state === "available";
+}
+
+function appUpdateMessage(status: AppUpdateStatus): string {
+  switch (status.state) {
+    case "checking":
+      return "Checking…";
+    case "downloaded":
+      return "Update ready to install";
+    case "not-available":
+      return "Pi-Vis is up to date";
+    case "available":
+      return "Update found; downloading…";
+    case "disabled":
+      return status.supported ? "App updates disabled" : "Available in signed macOS builds";
+    case "error":
+      return status.error ?? "Check failed";
+    default:
+      return "";
+  }
+}
+
 export function SettingsView({ onClose, initialSection }: SettingsViewProps): React.ReactElement {
   const { settings, update } = useSettingsStore();
   const [localFonts, setLocalFonts] = useState<FontFamily[]>([]);
@@ -272,6 +297,10 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
   const setStatus = useUpdatesStore((s) => s.setStatus);
   const setActiveRun = useUpdatesStore((s) => s.setActiveRun);
   const [checking, setChecking] = useState(false);
+  const appUpdateStatus = useAppUpdatesStore((s) => s.status);
+  const setAppUpdateStatus = useAppUpdatesStore((s) => s.setStatus);
+  const [appChecking, setAppChecking] = useState(false);
+  const [appUpdateMsg, setAppUpdateMsg] = useState("");
 
   // ── Load on mount ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -295,7 +324,12 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
       .invoke("auth.status", undefined)
       .then(setAuthProviders)
       .catch(() => {});
-  }, []);
+
+    window.pivis
+      .invoke("appUpdate.status", undefined)
+      .then(setAppUpdateStatus)
+      .catch(() => {});
+  }, [setAppUpdateStatus]);
 
   // Subscribe to live auth changes
   useEffect(() => {
@@ -420,6 +454,24 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
     [setActiveRun],
   );
 
+  const handleCheckAppUpdate = useCallback(async () => {
+    setAppChecking(true);
+    setAppUpdateMsg("Checking…");
+    try {
+      const status = await window.pivis.invoke("appUpdate.check", undefined);
+      setAppUpdateStatus(status);
+      setAppUpdateMsg(appUpdateMessage(status));
+      setAppChecking(isAppUpdateBusy(status));
+    } catch {
+      setAppUpdateMsg("Check failed");
+      setAppChecking(false);
+    }
+  }, [setAppUpdateStatus]);
+
+  const handleInstallAppUpdate = useCallback(() => {
+    void window.pivis.invoke("appUpdate.install", undefined);
+  }, []);
+
   // Subscribe to update completion
   useEffect(() => {
     const unsubDone = window.pivis.on("update.done", ({ runId, exitCode, status }) => {
@@ -427,10 +479,18 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
       setStatus(status);
       setUpdateCheckMsg(exitCode === 0 ? "Update successful" : "Update failed");
     });
+    const unsubAppUpdate = window.pivis.on("appUpdate.status", (status) => {
+      setAppUpdateStatus(status);
+      setAppChecking(isAppUpdateBusy(status));
+      setAppUpdateMsg(appUpdateMessage(status));
+    });
     return () => {
       unsubDone();
+      unsubAppUpdate();
     };
-  }, [setStatus]);
+  }, [setAppUpdateStatus, setStatus]);
+
+  const appUpdateBusy = appChecking || isAppUpdateBusy(appUpdateStatus);
 
   // ── Helper: source badge ─────────────────────────────────────────────
 
@@ -777,6 +837,43 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
             <section className="settings-section">
               <h3 className="settings-section__title">Updates</h3>
 
+              <div className="settings-row">
+                <span className="settings-label">Pi-Vis app</span>
+                <span className="settings-value--mono">
+                  {appUpdateStatus?.currentVersion ?? "—"}
+                </span>
+                <button
+                  type="button"
+                  className="settings-btn"
+                  onClick={
+                    appUpdateStatus?.state === "downloaded"
+                      ? handleInstallAppUpdate
+                      : handleCheckAppUpdate
+                  }
+                  disabled={appUpdateBusy}
+                >
+                  {appUpdateStatus?.state === "downloaded"
+                    ? "Restart to install"
+                    : appUpdateStatus?.state === "available"
+                      ? "Downloading…"
+                      : appUpdateBusy
+                        ? "Checking…"
+                        : "Check app"}
+                </button>
+                {appUpdateMsg && <span className="settings-hint">{appUpdateMsg}</span>}
+              </div>
+
+              <div className="settings-row">
+                <span className="settings-label">Check Pi-Vis on launch</span>
+                <button
+                  type="button"
+                  className={`settings-toggle ${settings.appUpdateCheckEnabled ? "settings-toggle--on" : "settings-toggle--off"}`}
+                  onClick={() => update({ appUpdateCheckEnabled: !settings.appUpdateCheckEnabled })}
+                >
+                  <span className="settings-toggle__knob" />
+                </button>
+              </div>
+
               {/* Last checked indicator */}
               {updateStatus && (
                 <div className="settings-update-meta">
@@ -912,7 +1009,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
               </div>
 
               <div className="settings-row">
-                <span className="settings-label">Check on launch</span>
+                <span className="settings-label">Check pi/extensions on launch</span>
                 <button
                   type="button"
                   className={`settings-toggle ${settings.updateCheckEnabled ? "settings-toggle--on" : "settings-toggle--off"}`}

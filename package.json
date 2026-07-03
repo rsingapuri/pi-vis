@@ -16,6 +16,8 @@
     "build": "node scripts/ensure-worktree-dev.mjs && npm run typecheck && electron-vite build && npm run copy-host",
     "copy-host": "mkdir -p out/resources/pi-session-host && cp resources/pi-session-host/*.mjs out/resources/pi-session-host/",
     "dist": "npm run build && electron-builder --mac",
+    "dist:signed": "node scripts/dist-signed.mjs",
+    "release": "node scripts/release.mjs",
     "typecheck": "node scripts/ensure-worktree-dev.mjs && tsc -b --noEmit",
     "lint": "node scripts/ensure-worktree-dev.mjs && biome check .",
     "format": "node scripts/ensure-worktree-dev.mjs && biome format --write .",

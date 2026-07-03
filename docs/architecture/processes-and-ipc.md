@@ -77,7 +77,8 @@
 - `app.versions`
 - `auth.status` / `auth.saveApiKey` / `auth.remove`
 - `pty.start` (with optional `cols`/`rows` for viewport matching) / `pty.write` / `pty.resize` / `pty.kill`
-- `update.check` / `update.run`
+- `update.check` / `update.run` — pi binary and pi extension updates
+- `appUpdate.status` / `appUpdate.check` / `appUpdate.install` — packaged Pi-Vis app updates via Electron's built-in autoUpdater
 
 **Event channels** (main → renderer push):
 - `session.event` — PiEvent (streaming transcript events)
@@ -86,7 +87,8 @@
 - `session.fileChanged` — session file association updated
 - `auth.changed` — auth.json modified externally (e.g. pi's token refresh)
 - `pty.data` / `pty.exit` — embedded terminal I/O
-- `update.available` / `update.progress` / `update.done` — update lifecycle
+- `update.available` / `update.progress` / `update.done` — pi/extension update lifecycle
+- `appUpdate.status` — packaged app update lifecycle (`checking`, `available`, `not-available`, `downloaded`, `error`, `disabled`)
 
 ### Pi RPC Protocol (`shared/pi-protocol/`)
 

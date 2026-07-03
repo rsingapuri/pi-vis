@@ -1,6 +1,11 @@
 import path from "node:path";
 import { BrowserWindow, app, screen, session, shell } from "electron";
-import { initIpc, stopAllSessions, triggerBackgroundUpdateCheck } from "./ipc.js";
+import {
+  initIpc,
+  stopAllSessions,
+  triggerBackgroundAppUpdateCheck,
+  triggerBackgroundUpdateCheck,
+} from "./ipc.js";
 import { loadSettings, saveSettings } from "./settings-store.js";
 
 function boundsOnScreen(b: { x: number; y: number; width: number; height: number }): boolean {
@@ -190,8 +195,9 @@ if (!app.requestSingleInstanceLock()) {
 
     createWindow();
 
-    // Background update check (3s delay, non-blocking)
+    // Background update checks (delayed, non-blocking)
     triggerBackgroundUpdateCheck();
+    triggerBackgroundAppUpdateCheck();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {

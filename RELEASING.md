@@ -2,19 +2,43 @@
 
 ## macOS Build & Distribution
 
-### Required environment variables
+### Signing and notarization credentials
 
-For a signed and notarized macOS build (distribution to other Macs):
+Best practice for local releases is to keep both the signing certificate and
+notarization credentials in macOS Keychain:
+
+- Install the `Developer ID Application` certificate in Keychain. Do not pass
+  the certificate private key to the release command.
+- Store notarization credentials once with notarytool:
+
+```bash
+xcrun notarytool store-credentials "pivis-notary" \
+  --apple-id "your@email.com" \
+  --team-id "ABCDEF1234" \
+  --password "xxxx-xxxx-xxxx-xxxx"
+```
+
+`npm run release` defaults to the `pivis-notary` keychain profile, so you do not
+need to export Apple credentials for normal local releases.
+
+Optional/fallback environment variables:
 
 | Variable | Description |
 |---|---|
-| `APPLE_ID` | Apple ID email address |
-| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password (generate at appleid.apple.com, *not* your iCloud password) |
-| `APPLE_TEAM_ID` | Team ID from [Apple Developer](https://developer.apple.com/account) (e.g. `ABCDEF1234`) |
+| `APPLE_KEYCHAIN_PROFILE` | Override the notarytool profile name if you did not use `pivis-notary` |
+| `APPLE_ID` | Fallback Apple ID email address |
+| `APPLE_APP_SPECIFIC_PASSWORD` | Fallback app-specific password (generate at appleid.apple.com, *not* your iCloud password) |
+| `APPLE_TEAM_ID` | Fallback Team ID from [Apple Developer](https://developer.apple.com/account) (e.g. `ABCDEF1234`) |
 | `CSC_LINK` | (optional) Path or base64-encoded signing certificate; auto-resolved by electron-builder when a valid Developer ID cert is in the keychain |
 | `CSC_KEY_PASSWORD` | (optional) Password for the signing certificate |
 
-If `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID` are all set, the `afterSign` hook in `build/notarize.cjs` will submit the `.app` for notarization after signing. Without them, the build proceeds unsigned with a logged skip message — `npm run dist` works locally without any credentials.
+`npm run dist` remains a local build command. Electron Builder's built-in
+notarization runs only when `APPLE_KEYCHAIN_PROFILE` or fallback Apple credential
+env vars are set; otherwise it skips notarization with a logged message. For
+signed local testing, prefer `npm run dist:signed`: it selects the Developer ID
+Application identity from Keychain (`CSC_NAME`) and defaults notarization to the
+`pivis-notary` keychain profile. `--skip-notarize` is available for signed-only
+local updater smoke tests, but public releases should be notarized.
 
 ### Build commands
 
@@ -22,12 +46,45 @@ If `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID` are all set, t
 # Unsigned local development build (dmg + zip, arm64)
 npm run dist
 
-# Signed & notarized release build
-export APPLE_ID="your@email.com"
-export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
-export APPLE_TEAM_ID="ABCDEF1234"
-npm run dist
+# Signed & notarized build without publishing a release, using the keychain profile
+npm run dist:signed
+
+# If your notarytool profile is not named pivis-notary
+npm run dist:signed -- --notary-profile your-profile-name
+
+# Signed-only local build for updater smoke tests when notarization is not set up yet
+npm run dist:signed -- --skip-notarize
 ```
+
+### One-command release
+
+`npm run release` is the supported release entry point. It defaults to the
+`pivis-notary` notarytool keychain profile. It fails if the git working tree is
+dirty, the keychain profile/fallback Apple credentials are unavailable, `gh` is
+not authenticated, or no `Developer ID Application` signing identity is
+available (unless `CSC_LINK` supplies the certificate).
+
+```bash
+# Defaults to a patch bump, e.g. 0.3.3 -> 0.3.4
+npm run release -- --yes
+
+# Other supported bumps
+npm run release -- --minor --yes
+npm run release -- --major --yes
+npm run release -- --version 0.4.0 --yes
+
+# Inspect the planned commands without mutating files
+npm run release -- --patch --dry-run
+```
+
+The command bumps `package.json`/`package-lock.json`, runs typecheck, lint, unit
+tests, and E2E tests, builds signed/notarized artifacts, verifies codesigning,
+Gatekeeper acceptance, and notarization stapling, commits the version bump, tags
+`vX.Y.Z`, pushes the tag, and creates the GitHub Release with the zip and dmg
+assets. Useful options: `--draft` creates a draft GitHub Release, `--no-push`
+stops after creating the local release commit/tag (skipping both git push and
+GitHub Release creation), and `--skip-tests` is available only for emergency
+reruns after the exact same commit has already passed verification.
 
 ### Architecture
 
@@ -41,11 +98,13 @@ toolchain (e.g. a per-arch CI job).
 ### Publishing a GitHub release
 
 The README install command (`curl … | bash` → `scripts/install.sh`) pulls the
-latest GitHub release's `*-mac.zip` asset. To cut a release so that command
-works:
+latest GitHub release's `*-mac.zip` asset. `npm run release` is preferred because
+it publishes the same assets and performs the required verification.
+
+Manual fallback:
 
 ```bash
-# 1. Build the artifacts (signed+notarized if Apple env vars are set, ad-hoc otherwise)
+# 1. Build the artifacts (signed+notarized if Apple env vars are set)
 npm run dist
 
 # 2. Publish a release tagged vX.Y.Z and upload the dmg + zip
@@ -62,11 +121,22 @@ keeps working across versions with no edits — it just needs each release to
 carry a `*-mac.zip` asset. The `.zip` (not the `.dmg`) is what the installer
 unpacks into `/Applications`.
 
-**Quarantine note:** the installer downloads over `curl`, so macOS does not
-apply `com.apple.quarantine` and Gatekeeper does not block the ad-hoc-signed
-app. This is the temporary stand-in for notarization; once notarization works,
-the same release flow continues to apply (notarized builds also install
-cleanly).
+### Auto updates
+
+Packaged macOS builds use Electron's built-in `autoUpdater` with Electron's
+hosted GitHub release feed:
+
+```txt
+https://update.electronjs.org/rsingapuri/pi-vis/darwin-arm64/<current-version>
+```
+
+The feed requires a public GitHub repository, a signed macOS app, and a GitHub
+Release that contains a compatible zip asset. The existing artifact name
+`Pi-Vis-${VERSION}-arm64-mac.zip` satisfies the macOS arm64 asset matcher. The
+updater checks only in packaged, signed macOS builds; development runs and tests
+report app updates as unavailable. The first updater-capable build still has to
+be installed manually by users already on older ad-hoc builds; future signed
+builds can update themselves.
 
 ### CI
 

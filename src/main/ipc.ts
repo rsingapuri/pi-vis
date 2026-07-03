@@ -9,6 +9,12 @@ import type { PiRpcResponse, SessionTreeEntry } from "@shared/pi-protocol/respon
 import { app, clipboard, ipcMain } from "electron";
 import type { BrowserWindow } from "electron";
 import {
+  checkForAppUpdate,
+  getAppUpdateStatus,
+  initAppUpdates,
+  installAppUpdate,
+} from "./app-updates.js";
+import {
   getAuthStatus,
   getLoginShellEnv,
   removeProvider,
@@ -109,8 +115,9 @@ export function initIpc(win: BrowserWindow): void {
     },
   );
 
-  // Init PTY support (must be after safeSend is wired)
+  // Init PTY and app-update support (must be after safeSend is wired)
   initPty(safeSend);
+  initAppUpdates((status) => safeSend("appUpdate.status", status));
 
   // Start watching auth.json for external changes
   startAuthWatch((providers) => {
@@ -518,6 +525,12 @@ export function initIpc(win: BrowserWindow): void {
     };
   });
 
+  ipcMain.handle("appUpdate.status", async () => getAppUpdateStatus());
+
+  ipcMain.handle("appUpdate.check", async () => checkForAppUpdate());
+
+  ipcMain.handle("appUpdate.install", async () => installAppUpdate());
+
   // ── Clipboard ────────────────────────────────────────────────────────
   // Electron's renderer `navigator.clipboard` API is unreliable (silently
   // no-ops when the window isn't focused / under some security contexts),
@@ -704,4 +717,16 @@ export function triggerBackgroundUpdateCheck(): void {
       // silent — updates are best-effort
     }
   }, 3000);
+}
+
+export function triggerBackgroundAppUpdateCheck(): void {
+  setTimeout(() => {
+    try {
+      const settings = getSettings();
+      if (!settings.appUpdateCheckEnabled) return;
+      checkForAppUpdate();
+    } catch {
+      // silent — app updates are best-effort
+    }
+  }, 5000);
 }

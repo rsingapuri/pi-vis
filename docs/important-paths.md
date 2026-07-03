@@ -6,7 +6,6 @@
 |---|---|
 | `~/.pi/agent/sessions/` | Session files (JSONL format) |
 | `~/.pi/agent/auth.json` | Auth credentials (api_key/oauth); read/written by `auth.ts` with proper-lockfile |
-| `build/notarize.cjs` | macOS notarization hook (env-gated, skips unless Apple creds present) |
 | `~/.pi/agent/settings.json` | Pi settings including `packages[]` for extension management |
 | `~/.pi/agent/npm/node_modules/` | Installed pi extension packages |
 | `~/Library/Application Support/pi-vis/settings.json` | App settings |
@@ -47,5 +46,4 @@
 | `src/renderer/src/components/common/viewer-header.css` | Shared overlay **viewer-header reflow** consumed by both DiffViewerHost and TreeViewerHost (alongside their own `__header` classes): a left cluster (title + context, `flex: 1 1 auto; min-width: 0`, shrinks/ellipsizes) + right cluster (action controls + essential `×` close, `flex: 0 1 auto; margin-left: auto`). The header `flex-wrap: wrap`s, so at narrow widths the right cluster drops to a second row and stays right-pinned — controls never clip. The tree's search input flexes (6–14rem) so it gives way before the close button does |
 | `src/renderer/src/components/updates/UpdateProgress.tsx` | Modal streaming `pi update` output |
 | `RELEASING.md` | macOS signing, notarization, and release build/publish docs |
-| `build/notarize.cjs` | `afterSign` hook for macOS notarization (env-gated) |
 | `scripts/install.sh` | End-user `curl \| bash` installer: fetches the latest release's `*-mac.zip`, installs to `/Applications`, strips quarantine (sidesteps Gatekeeper pre-notarization) |
