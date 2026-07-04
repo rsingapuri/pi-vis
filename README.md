@@ -20,8 +20,13 @@ extensions.
   your extensions, skills, prompts, slash commands, and compaction behave exactly
   as they do in the terminal — including their dialogs, toasts, status bar, and
   widgets.
-- **Themes.** Four built-in Catppuccin variants (Latte, Frappé, Macchiato,
-  Mocha) plus Gruvbox Material.
+- **Themes.** Nine built-in colorschemes — Catppuccin (Latte, Frappé,
+  Macchiato, Mocha), Everforest and Gruvbox Material in dark + light, and the
+  OLED-black Glow Sticks — plus user-droppable theme JSON files.
+
+## Download
+
+Download the latest release from the [Pi-Vis landing page](https://rsingapuri.github.io/pi-vis/) or from [GitHub Releases](https://github.com/rsingapuri/pi-vis/releases/latest).
 
 ## Install (macOS, Apple Silicon)
 
@@ -71,9 +76,9 @@ npm run dist       # build + electron-builder (mac dmg/zip)
 
 ## Architecture
 
-- Every session runs `pi --mode rpc` as a subprocess — exact terminal parity, same extensions, same compaction
-- RPC protocol: JSONL on stdin/stdout with correlated request IDs
-- Extension UI (select/confirm/input/editor dialogs, toasts, status segments, widgets) fully serialized over RPC
+- Every session runs the real pi agent in its own isolated subprocess — an SDK-direct session host (`resources/pi-session-host/`), falling back to `pi --mode rpc` if the host can't start — exact terminal parity, same extensions, same compaction
+- RPC protocol (fallback path): JSONL on stdin/stdout with correlated request IDs
+- Extension UI (select/confirm/input/editor dialogs, toasts, status segments, widgets) bridged from the session subprocess and rendered natively
 - Session files in `~/.pi/agent/sessions/` are enumerated for workspace history; the file's header `cwd` field is used for grouping (not directory-name encoding)
 - Settings: `~/Library/Application Support/pi-vis/settings.json` (overrideable via `PIVIS_SETTINGS_DIR` env var for tests)
 

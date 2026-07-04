@@ -46,6 +46,7 @@ function main() {
 
   run("npm", ["run", "dist"]);
   verifyArtifacts(nextVersion);
+  createStableReleaseAliases(nextVersion);
 
   run("git", ["add", "package.json", "package-lock.json"]);
   run("git", ["commit", "-m", `chore: release ${tag}`]);
@@ -66,6 +67,7 @@ function main() {
   const assets = [
     `release/${nextVersion}/Pi-Vis-${nextVersion}-arm64-mac.zip`,
     `release/${nextVersion}/Pi-Vis-${nextVersion}-arm64.dmg`,
+    `release/${nextVersion}/Pi-Vis-arm64.dmg`,
   ];
 
   const releaseArgs = [
@@ -121,6 +123,13 @@ function verifyArtifacts(version) {
   run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath]);
   run("spctl", ["-a", "-vv", appPath]);
   run("xcrun", ["stapler", "validate", appPath]);
+}
+
+function createStableReleaseAliases(version) {
+  const versionedDmg = path.join(root, `release/${version}/Pi-Vis-${version}-arm64.dmg`);
+  const stableDmg = path.join(root, `release/${version}/Pi-Vis-arm64.dmg`);
+  log(`Creating stable GitHub Pages download alias: ${path.relative(root, stableDmg)}`);
+  if (!dryRun) fs.copyFileSync(versionedDmg, stableDmg);
 }
 
 function getBump(parsed) {

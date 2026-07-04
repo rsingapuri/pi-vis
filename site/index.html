@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pi-Vis — a desktop interface for the Pi coding agent</title>
+    <meta
+      name="description"
+      content="Pi-Vis is an open-source macOS app that runs the unmodified Pi coding agent — same sessions, same extensions, same config — with readable transcripts, a real diff viewer, and parallel sessions."
+    />
+    <meta property="og:title" content="Pi-Vis — a desktop interface for the Pi coding agent" />
+    <meta
+      property="og:description"
+      content="The unmodified Pi binary, with a GUI: readable transcripts, a real diff viewer, parallel sessions, and full extension compatibility."
+    />
+    <meta property="og:image" content="https://rsingapuri.github.io/pi-vis/assets/screenshots/hero.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png" />
+    <link rel="apple-touch-icon" href="./assets/icon-128.png" />
+    <link rel="stylesheet" href="./assets/styles.css" />
+    <script src="./assets/download.js" defer></script>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="nav__inner">
+        <a class="nav__brand" href="#">
+          <img src="./assets/icon-128.png" alt="" width="22" height="22" />
+          <span>Pi-Vis</span>
+        </a>
+        <nav class="nav__links">
+          <a href="#features">Features</a>
+          <a href="#themes">Themes</a>
+          <a href="#install">Install</a>
+          <a href="https://github.com/rsingapuri/pi-vis">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <!-- ── Hero ─────────────────────────────────────────────────── -->
+      <section class="hero">
+        <h1>A desktop interface for&nbsp;Pi</h1>
+        <p class="hero__lede">
+          Pi-Vis runs the same <a href="https://pi.dev">Pi</a> binary you use in the
+          terminal — same sessions, same extensions, same config — and puts a
+          window around it: a transcript you can actually scroll, a real diff
+          viewer, and as many sessions as you have work.
+        </p>
+        <div class="hero__actions">
+          <a
+            class="button"
+            data-download-link
+            href="https://github.com/rsingapuri/pi-vis/releases/latest/download/Pi-Vis-arm64.dmg"
+          >
+            Download
+          </a>
+          <code class="hero__install"
+            >curl -fsSL https://raw.githubusercontent.com/rsingapuri/pi-vis/main/scripts/install.sh | bash</code
+          >
+        </div>
+        <p class="hero__fineprint" data-download-note>
+          Apple Silicon macOS · MIT licensed · Needs a Pi install
+        </p>
+        <figure class="shot shot--hero">
+          <img
+            src="./assets/screenshots/hero.png"
+            alt="Pi-Vis running a session: sidebar with several sessions, a transcript showing an edit diff, a test run, and the agent's summary"
+            width="1440"
+            height="900"
+          />
+        </figure>
+      </section>
+
+      <!-- ── Principles ───────────────────────────────────────────── -->
+      <section class="principles" aria-label="Pi-Vis principles">
+        <ul class="principles__list">
+          <li>
+            <strong>No second agent loop</strong>
+            <span>The app never talks to a model itself.</span>
+          </li>
+          <li>
+            <strong>No accounts, no server</strong>
+            <span>A local shell around your existing Pi install.</span>
+          </li>
+          <li>
+            <strong>No forked config</strong>
+            <span>Pi's extensions, skills, and settings are the source of truth.</span>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ── Pitch ────────────────────────────────────────────────── -->
+      <section class="pitch">
+        <h2>Why this exists</h2>
+        <div class="pitch__prose">
+          <p>
+            Pi is deliberately small: a minimal harness where extensions do
+            the heavy lifting. That philosophy is easy to lose the moment
+            someone builds a GUI for it — most agent frontends bring their
+            own agent loop, their own config, and their own opinions.
+          </p>
+          <p>
+            Pi-Vis tries to be the boring alternative. Every session runs the
+            real, unmodified Pi agent in its own isolated process, and the
+            app stays out of the loop: prompts, tools, compaction, and
+            extensions all behave exactly as they do in your terminal. If an
+            extension opens a dialog, sets a status line, or draws a whole
+            TUI panel, it renders in the app. Quit Pi-Vis and your sessions
+            are still plain files in <code>~/.pi/agent/sessions</code>,
+            resumable from the TUI.
+          </p>
+          <p>
+            The GUI adds what a terminal can't do well:
+            scrolling up while the agent streams, expanding an earlier input
+            or a collapsed tool output without losing your place, reviewing a
+            large diff, and keeping several sessions going at once.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── Features ─────────────────────────────────────────────── -->
+      <section class="features" id="features">
+        <div class="feature">
+          <div class="feature__text">
+            <h2>Most of the job is reading diffs</h2>
+            <p>
+              Supervising an agent mostly means reviewing what it changed, so
+              the diff viewer is built for that. It compares the
+              working tree against HEAD or any branch, shows changes, and
+	      allows searches across the diff. It holds up at real window
+	      sizes: side-by-side when there's room,
+              automatically unified when there isn't, with long lines wrapping
+              instead of scrolling sideways — hide the file tree and a
+	      half-width window next to your IDE still reads fine.
+            </p>
+          </div>
+          <figure class="shot">
+            <img
+              src="./assets/screenshots/diff.png"
+              alt="The Pi-Vis diff viewer: a file tree rail with insertion and deletion counts, and a unified syntax-highlighted diff of a TypeScript file"
+              width="1440"
+              height="900"
+              loading="lazy"
+            />
+          </figure>
+        </div>
+
+        <div class="feature">
+          <div class="feature__text">
+            <h2>Every branch of the conversation</h2>
+            <p>
+              Pi sessions are trees, not lines — every fork and abandoned
+              attempt is still there. <code>/tree</code> shows the whole thing,
+              and branches can be labeled and switched into quickly.
+            </p>
+          </div>
+          <figure class="shot">
+            <img
+              src="./assets/screenshots/tree.png"
+              alt="The conversation tree view: a flat active path with one labeled abandoned branch, and keyboard hints in the footer"
+              width="1440"
+              height="900"
+              loading="lazy"
+            />
+          </figure>
+        </div>
+
+        <div class="feature-grid">
+          <div class="feature-grid__item">
+            <h3>Sessions in parallel</h3>
+            <p>
+              Each session is its own Pi process. Run several across multiple
+              workspaces, switch between them while they stream, and see at a
+              glance which agents are working and which are waiting on you.
+            </p>
+          </div>
+          <div class="feature-grid__item">
+            <h3>A worktree per session</h3>
+            <p>
+              Optionally give a session an isolated git worktree on a fresh
+              branch, created before the first prompt — so parallel agents
+              never step on each other, or on your working tree.
+            </p>
+          </div>
+          <div class="feature-grid__item">
+            <h3>Extensions, unchanged</h3>
+            <p>
+              Extension dialogs, toasts, status bar segments, even full TUI
+              panels render right in the app. If it works in the Pi terminal,
+              it works here — nothing to reinstall, port, or configure.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Themes ───────────────────────────────────────────────── -->
+      <section class="schemes" id="themes">
+        <h2>Nine built-in themes</h2>
+        <p class="schemes__lede">
+          Dark and light, with syntax highlighting that follows the UI theme.
+          Adding your own is one JSON file dropped into a folder.
+        </p>
+        <div class="schemes__grid">
+          <figure>
+            <a href="./assets/screenshots/scheme-catppuccin-mocha.png"><img src="./assets/screenshots/scheme-catppuccin-mocha.png" alt="Pi-Vis in Catppuccin Mocha" width="1440" height="900" loading="lazy" /></a>
+            <figcaption>Catppuccin Mocha</figcaption>
+          </figure>
+          <figure>
+            <a href="./assets/screenshots/scheme-catppuccin-macchiato.png"><img src="./assets/screenshots/scheme-catppuccin-macchiato.png" alt="Pi-Vis in Catppuccin Macchiato" width="1440" height="900" loading="lazy" /></a>
+            <figcaption>Catppuccin Macchiato</figcaption>
+          </figure>
+          <figure>
+            <a href="./assets/screenshots/scheme-catppuccin-frappe.png"><img src="./assets/screenshots/scheme-catppuccin-frappe.png" alt="Pi-Vis in Catppuccin Frappé" width="1440" height="900" loading="lazy" /></a>
+            <figcaption>Catppuccin Frappé</figcaption>
+          </figure>
+          <figure>
+            <a href="./assets/screenshots/scheme-everforest-dark.png"><img src="./assets/screenshots/scheme-everforest-dark.png" alt="Pi-Vis in Everforest dark" width="1440" height="900" loading="lazy" /></a>
+            <figcaption>Everforest</figcaption>
+          </figure>
+          <figure>
+            <a href="./assets/screenshots/scheme-gruvbox-material-dark.png"><img src="./assets/screenshots/scheme-gruvbox-material-dark.png" alt="Pi-Vis in Gruvbox Material dark" width="1440" height="900" loading="lazy" /></a>
+            <figcaption>Gruvbox Material</figcaption>
+          </figure>
+          <figure>
+            <a href="./assets/screenshots/scheme-glow-sticks.png"><img src="./assets/screenshots/scheme-glow-sticks.png" alt="Pi-Vis in Glow Sticks, an OLED black theme" width="1440" height="900" loading="lazy" /></a>
+            <figcaption>Glow Sticks</figcaption>
+          </figure>
+          <figure>
+            <a href="./assets/screenshots/scheme-catppuccin-latte.png"><img src="./assets/screenshots/scheme-catppuccin-latte.png" alt="Pi-Vis in Catppuccin Latte" width="1440" height="900" loading="lazy" /></a>
+            <figcaption>Catppuccin Latte</figcaption>
+          </figure>
+          <figure>
+            <a href="./assets/screenshots/scheme-everforest-light.png"><img src="./assets/screenshots/scheme-everforest-light.png" alt="Pi-Vis in Everforest light" width="1440" height="900" loading="lazy" /></a>
+            <figcaption>Everforest Light</figcaption>
+          </figure>
+          <figure>
+            <a href="./assets/screenshots/scheme-gruvbox-material-light.png"><img src="./assets/screenshots/scheme-gruvbox-material-light.png" alt="Pi-Vis in Gruvbox Material light" width="1440" height="900" loading="lazy" /></a>
+            <figcaption>Gruvbox Material Light</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- ── Install ──────────────────────────────────────────────── -->
+      <section class="install" id="install">
+        <h2>Install</h2>
+        <ol class="install__steps">
+          <li>
+            <p>Install Pi, if you haven't:</p>
+            <pre><code>npm i -g --ignore-scripts @earendil-works/pi-coding-agent</code></pre>
+          </li>
+          <li>
+            <p>Install Pi-Vis:</p>
+            <pre><code>curl -fsSL https://raw.githubusercontent.com/rsingapuri/pi-vis/main/scripts/install.sh | bash</code></pre>
+            <p class="install__alt">
+              Or grab the <code>.dmg</code> from
+              <a href="https://github.com/rsingapuri/pi-vis/releases/latest">GitHub Releases</a>.
+              The installer downloads the latest notarized build into
+              <code>/Applications</code>; releases are Apple Silicon only
+              (Intel Macs can <a href="https://github.com/rsingapuri/pi-vis#building">build from source</a>).
+            </p>
+          </li>
+        </ol>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer__inner">
+        <span>MIT licensed</span>
+        <nav>
+          <a href="https://github.com/rsingapuri/pi-vis">GitHub</a>
+          <a href="https://github.com/rsingapuri/pi-vis/issues">Issues</a>
+          <a href="https://github.com/rsingapuri/pi-vis/releases">Releases</a>
+          <a href="https://pi.dev">Pi.dev</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

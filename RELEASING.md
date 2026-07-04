@@ -109,9 +109,12 @@ npm run dist
 
 # 2. Publish a release tagged vX.Y.Z and upload the dmg + zip
 VERSION=$(node -p "require('./package.json').version")
+cp "release/${VERSION}/Pi-Vis-${VERSION}-arm64.dmg" "release/${VERSION}/Pi-Vis-arm64.dmg"
+
 gh release create "v${VERSION}" \
   "release/${VERSION}/Pi-Vis-${VERSION}-arm64-mac.zip" \
   "release/${VERSION}/Pi-Vis-${VERSION}-arm64.dmg" \
+  "release/${VERSION}/Pi-Vis-arm64.dmg" \
   --title "v${VERSION}" \
   --notes "Pi-Vis v${VERSION}"
 ```
@@ -120,6 +123,10 @@ gh release create "v${VERSION}" \
 keeps working across versions with no edits — it just needs each release to
 carry a `*-mac.zip` asset. The `.zip` (not the `.dmg`) is what the installer
 unpacks into `/Applications`.
+
+The GitHub Pages landing page links directly to
+`releases/latest/download/Pi-Vis-arm64.dmg`, so public releases should also
+include the stable `Pi-Vis-arm64.dmg` alias alongside the versioned DMG.
 
 ### Auto updates
 

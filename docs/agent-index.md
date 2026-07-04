@@ -7,7 +7,7 @@ Use this file to load only the project context needed for the task at hand. Star
 - New to the repo or changing broad structure: `docs/architecture/overview.md`
 - Changing test coverage, fixtures, or verification strategy: `docs/testing.md`
 - Looking for key files or persistent on-disk locations: `docs/important-paths.md`
-- Changing release/install/update packaging: `docs/releasing.md` and `RELEASING.md`
+- Changing release/install/update packaging or the GitHub Pages download site: `docs/releasing.md` and `RELEASING.md`
 - Changing this documentation system: `docs/maintenance.md`
 
 ## Main process, subprocesses, and protocols

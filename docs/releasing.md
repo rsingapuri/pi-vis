@@ -28,6 +28,51 @@ store-credentials "pivis-notary" ...` once. Optional overrides:
 `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` as a fallback, and
 `CSC_LINK` / `CSC_KEY_PASSWORD` / `CSC_NAME` for signing identity overrides.
 
+## Landing page
+
+GitHub Pages serves the static download site from `site/` via
+`.github/workflows/pages.yml`. The page links users to the latest GitHub Release
+and the existing installer command. The public URL is expected to be:
+
+```txt
+https://rsingapuri.github.io/pi-vis/
+```
+
+Keep the page static (plain HTML/CSS plus small progressive-enhancement JS, no
+build step): release downloads should continue to come from GitHub Release
+assets, not checked-in binaries. The primary DMG link uses GitHub's stable
+latest-release URL:
+
+```txt
+https://github.com/rsingapuri/pi-vis/releases/latest/download/Pi-Vis-arm64.dmg
+```
+
+`npm run release` uploads `Pi-Vis-arm64.dmg` as a stable alias beside the
+versioned `Pi-Vis-${VERSION}-arm64.dmg` asset. Keep that alias intact if the
+landing page direct-download button changes.
+
+### Screenshots
+
+The screenshots in `site/assets/screenshots/` are generated, not hand-taken.
+After a UI change that shows in them (theming, transcript, diff viewer, tree
+view, sidebar, status bar), regenerate and commit:
+
+```bash
+npm run site:screenshots
+```
+
+`scripts/site-screenshots.mjs` boots the browser-only dev renderer
+(`npm run dev:renderer` + `preview-stub.ts`), seeds a curated fictional
+session (a queue-backoff fix in a made-up "tidepool" sync service) through
+the same store APIs the render tests use, and captures the hero/diff/tree
+shots plus one gallery shot per bundled colorscheme at 1440×900@2x. macOS
+traffic lights are drawn into the titlebar inset before capture because the
+browser preview has no native window chrome. Set `PIVIS_SHOTS_URL` to reuse
+an already-running dev renderer instead of spawning one.
+
+If a bundled colorscheme is added/removed/renamed, update the `SCHEMES` list
+in the script **and** the gallery section of `site/index.html` together.
+
 ## Install and app-update assets
 
 End users install via `curl … | bash` → `scripts/install.sh`, which downloads
