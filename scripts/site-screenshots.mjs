@@ -836,7 +836,13 @@ async function main() {
 
     console.log("Capturing colorscheme gallery …");
     for (const [index, scheme] of SCHEMES.entries()) {
-      await shotTranscript(context, url, scheme, scheme.file, SEED_MODELS[index % SEED_MODELS.length]);
+      await shotTranscript(
+        context,
+        url,
+        scheme,
+        scheme.file,
+        SEED_MODELS[index % SEED_MODELS.length],
+      );
     }
 
     await browser.close();
