@@ -21,7 +21,7 @@ test.describe("Pi-Vis e2e", () => {
         piBinaryPath: `node ${FAKE_PI}`,
         workspaceOrder: [],
         fonts: {
-          display: { family: "system-ui", sizePx: 14 },
+          display: { sizePx: 14 },
           code: { family: "monospace", sizePx: 13 },
         },
       }),

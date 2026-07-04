@@ -20,13 +20,11 @@ interface FontFamily {
 
 /**
  * Fonts shipped with the app (bundled via @fontsource in main.tsx). These are
- * NOT installed system fonts, so `queryLocalFonts()` never lists them — yet
- * they're the defaults and render correctly. They must still appear in the
- * family <select>, otherwise the stored value ("Inter"/"IBM Plex Mono") matches
- * no <option> and the browser silently displays the first option instead (e.g.
- * "Academy Engraved LET"), making it look like the wrong font is selected.
+ * NOT installed system fonts, so `queryLocalFonts()` never lists them. The code
+ * font picker still needs bundled monospace options to appear even when they
+ * are not system-installed.
  */
-const BUNDLED_FONTS = ["Inter", "IBM Plex Mono"];
+const BUNDLED_FONTS = ["IBM Plex Mono"];
 
 /**
  * Build the family-dropdown options: bundled fonts first, then the currently
@@ -588,45 +586,9 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
               )}
             </section>
 
-            {/* Display font */}
+            {/* Interface font */}
             <section className="settings-section">
-              <h3 className="settings-section__title">Display font</h3>
-              <div className="settings-row">
-                <span className="settings-label">Family</span>
-                {localFonts.length > 0 ? (
-                  <select
-                    className="settings-select"
-                    value={settings.fonts.display.family}
-                    onChange={(e) =>
-                      update({
-                        fonts: {
-                          ...settings.fonts,
-                          display: { ...settings.fonts.display, family: e.target.value },
-                        },
-                      })
-                    }
-                  >
-                    {buildFontOptions(localFonts, settings.fonts.display.family).map((family) => (
-                      <option key={family} value={family}>
-                        {family}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className="settings-input"
-                    value={settings.fonts.display.family}
-                    onChange={(e) =>
-                      update({
-                        fonts: {
-                          ...settings.fonts,
-                          display: { ...settings.fonts.display, family: e.target.value },
-                        },
-                      })
-                    }
-                  />
-                )}
-              </div>
+              <h3 className="settings-section__title">Interface font</h3>
               <div className="settings-row">
                 <span className="settings-label">Size</span>
                 <div className="settings-stepper">
@@ -667,6 +629,10 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                   </button>
                 </div>
               </div>
+              <span className="settings-hint">
+                Pi-Vis owns interface font families for stable alignment; adjust size here for
+                readability.
+              </span>
             </section>
 
             {/* Code font */}

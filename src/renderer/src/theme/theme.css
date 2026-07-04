@@ -92,10 +92,12 @@
   --elevation-2: 0 6px 20px -4px var(--shadow);
   --elevation-3: 0 16px 44px -8px var(--shadow);
 
-  /* ── Font variables (overridden by settings) ──────────────────────────
-     --font-size-base is applied to the <html> root from JS, so 1rem = the
-     user's chosen base size. The other sizes are em ratios that scale
-     fluidly with the base.  */
+  /* ── Font variables ───────────────────────────────────────────────────
+     The interface font family is app-owned for stable metrics/alignment;
+     settings only change its base size. --font-size-base is applied to the
+     <html> root from JS, so 1rem = the user's chosen base size. The other
+     sizes are em ratios that scale fluidly with the base. Code font family
+     and size remain user-configurable. */
   --font-display: "Inter", system-ui, -apple-system, sans-serif;
   --font-code: "IBM Plex Mono", "Menlo", "Monaco", "Courier New", monospace;
   --font-size-base: 14px;

@@ -15,6 +15,22 @@ describe("AppSettingsSchema", () => {
     // baseline so first-launch UI is unchanged.
     expect(parsed.colorScheme).toBe("mocha");
     expect(parsed.piEnv).toEqual({});
+    expect(parsed.fonts.display).toEqual({ sizePx: 14 });
+    expect(parsed.fonts.code).toEqual({ family: "IBM Plex Mono", sizePx: 14 });
+  });
+
+  it("strips the legacy display font family on parse", () => {
+    const result = AppSettingsSchema.safeParse({
+      fonts: {
+        display: { family: "Nimbus Sans", sizePx: 16 },
+        code: { family: "JetBrains Mono", sizePx: 13 },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect("family" in result.data.fonts.display).toBe(false);
+    expect(result.data.fonts.display.sizePx).toBe(16);
+    expect(result.data.fonts.code).toEqual({ family: "JetBrains Mono", sizePx: 13 });
   });
 
   it("strips the legacy openTabs / activeSessionFile / openSessions keys on parse (plain z.object)", () => {

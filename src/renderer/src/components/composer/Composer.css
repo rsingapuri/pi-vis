@@ -1,7 +1,7 @@
 /* ─────────────────────────────────────────────────────────────────────
    Composer — terminal-style input. Inner box uses pure em-based metrics
-   against one shared font-size, so the layout stays aligned for any
-   font family or size:
+   against one shared font-size and the app-owned UI font metrics, so the
+   layout stays aligned as the interface size changes:
 
      one text line        = 1.5em   (unitless line-height)
      textarea padding     = 0.3em top/bottom

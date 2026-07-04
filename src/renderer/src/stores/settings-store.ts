@@ -46,16 +46,15 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
 
 function applyFonts(settings: AppSettings): void {
   const root = document.documentElement;
-  // Append generic fallback stacks (matching theme.css defaults) so that
-  // while the chosen webfont is still loading — or if it isn't available at
-  // all (e.g. a custom family name the user typed) — text degrades to the
-  // right *kind* of font. Without the `monospace` tail, a bare unavailable
-  // code-font name falls through to the browser's default *proportional*
-  // font, making code blocks render in a display-like font.
-  root.style.setProperty(
-    "--font-display",
-    `${settings.fonts.display.family}, system-ui, -apple-system, sans-serif`,
-  );
+  // Keep the interface font family app-owned. UI alignment is tuned against
+  // this stable metric set; exposing arbitrary system fonts makes controls
+  // drift vertically even when their CSS box sizes remain correct.
+  root.style.setProperty("--font-display", '"Inter", system-ui, -apple-system, sans-serif');
+  // Append a generic fallback stack for code so that while the chosen font is
+  // still loading — or if it isn't available at all (e.g. a custom family name
+  // the user typed) — code degrades to the right *kind* of font. Without the
+  // `monospace` tail, a bare unavailable code-font name falls through to the
+  // browser's default *proportional* font.
   root.style.setProperty(
     "--font-code",
     `${settings.fonts.code.family}, "Menlo", "Monaco", "Courier New", monospace`,

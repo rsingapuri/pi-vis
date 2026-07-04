@@ -55,7 +55,7 @@ async function launchApp(
       piBinaryPath: FAKE_PI,
       workspaceOrder: [folders.workspaceDir],
       fonts: {
-        display: { family: "system-ui", sizePx: 14 },
+        display: { sizePx: 14 },
         code: { family: "monospace", sizePx: 13 },
       },
     }),

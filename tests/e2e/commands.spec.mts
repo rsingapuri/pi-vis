@@ -35,7 +35,7 @@ async function launchApp(
         piBinaryPath: FAKE_PI,
         workspaceOrder: [folders.workspaceDir],
         fonts: {
-          display: { family: "system-ui", sizePx: 14 },
+          display: { sizePx: 14 },
           code: { family: "monospace", sizePx: 13 },
         },
       }),
@@ -73,6 +73,29 @@ function rmrf(p: string): void {
 test.describe("Slash commands", () => {
   test.beforeAll(() => {
     fs.chmodSync(FAKE_PI, 0o755);
+  });
+
+  test("settings keep interface font family opinionated while code font remains configurable", async () => {
+    const folders = await makeFolders();
+    const { app, window } = await launchApp(folders);
+
+    await window.getByRole("button", { name: "Settings" }).click();
+    const interfaceSection = window.locator(".settings-section", {
+      has: window.getByRole("heading", { name: "Interface font" }),
+    });
+    await expect(interfaceSection.getByText("Size", { exact: true })).toBeVisible();
+    await expect(interfaceSection.getByText("Family", { exact: true })).toHaveCount(0);
+    await expect(interfaceSection).toContainText("Pi-Vis owns interface font families");
+
+    const codeSection = window.locator(".settings-section", {
+      has: window.getByRole("heading", { name: "Code font" }),
+    });
+    await expect(codeSection.getByText("Family", { exact: true })).toBeVisible();
+
+    await app.close();
+    rmrf(folders.settingsDir);
+    rmrf(folders.workspaceDir);
+    rmrf(folders.piSessionsDir);
   });
 
   test("/name Foo updates the header without a user bubble (parity: pi emits session_info_changed)", async () => {

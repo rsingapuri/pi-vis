@@ -26,7 +26,7 @@ test.describe("Extension Panel Rendering (real pi)", () => {
         piBinaryPath: "pi",
         workspaceOrder: [workspaceDir],
         fonts: {
-          display: { family: "system-ui", sizePx: 14 },
+          display: { sizePx: 14 },
           code: { family: "monospace", sizePx: 13 },
         },
       }),

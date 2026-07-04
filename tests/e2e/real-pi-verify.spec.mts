@@ -43,7 +43,7 @@ function resetSettings(): void {
       {
         piBinaryPath: null,
         fonts: {
-          display: { family: "Inter", sizePx: 14 },
+          display: { sizePx: 14 },
           code: { family: "IBM Plex Mono", sizePx: 14 },
         },
         workspaceOrder: [WORKSPACE],

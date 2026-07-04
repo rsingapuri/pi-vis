@@ -1,7 +1,14 @@
 import { z } from "zod";
 import { ThinkingLevelSchema } from "./pi-protocol/thinking.js";
 
-const FontSettingsSchema = z.object({
+const DisplayFontSettingsSchema = z.object({
+  // The interface font family is intentionally app-owned (currently Inter) so
+  // layout can be tuned against stable font metrics. Users can still scale the
+  // UI for accessibility/readability.
+  sizePx: z.number().min(8).max(48).default(14),
+});
+
+const CodeFontSettingsSchema = z.object({
   family: z.string(),
   sizePx: z.number().min(8).max(48),
 });
@@ -16,8 +23,8 @@ export const AppSettingsSchema = z.object({
   piEnv: z.record(z.coerce.string()).default({}),
   fonts: z
     .object({
-      display: FontSettingsSchema.default({ family: "Inter", sizePx: 14 }),
-      code: FontSettingsSchema.default({ family: "IBM Plex Mono", sizePx: 14 }),
+      display: DisplayFontSettingsSchema.default({ sizePx: 14 }),
+      code: CodeFontSettingsSchema.default({ family: "IBM Plex Mono", sizePx: 14 }),
     })
     .default({}),
   // Manual workspace ordering. The sidebar renders workspaces in this

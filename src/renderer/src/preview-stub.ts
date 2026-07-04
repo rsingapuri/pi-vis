@@ -570,7 +570,7 @@ const settingsState = {
   piBinaryPath: null as string | null,
   piEnv: {} as Record<string, string>,
   fonts: {
-    display: { family: "system-ui", sizePx: 14 },
+    display: { sizePx: 14 },
     code: { family: "monospace", sizePx: 13 },
   },
   workspaceOrder: [DEMO_WORKSPACE],
