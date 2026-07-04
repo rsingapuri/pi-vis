@@ -83,7 +83,9 @@ test.describe("Slash commands", () => {
     const interfaceSection = window.locator(".settings-section", {
       has: window.getByRole("heading", { name: "Interface" }),
     });
-    await expect(interfaceSection.getByText("Theme", { exact: true })).toBeVisible();
+    await expect(interfaceSection.getByText("Light theme", { exact: true })).toBeVisible();
+    await expect(interfaceSection.getByText("Dark theme", { exact: true })).toBeVisible();
+    await expect(interfaceSection.getByText("Mode", { exact: true })).toBeVisible();
     await expect(interfaceSection.getByText("Font Size", { exact: true })).toBeVisible();
     await expect(interfaceSection.getByText("Family", { exact: true })).toHaveCount(0);
     await expect(interfaceSection).not.toContainText("Pi-Vis owns interface font families");

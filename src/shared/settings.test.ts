@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AppSettingsSchema } from "./settings.js";
+import { AppSettingsSchema, resolveActiveColorScheme } from "./settings.js";
 
 // The pi-theme luminance mapping moved to @shared/theme (piThemeForTheme,
 // keyed off each theme's `appearance`); see theme/*.test.ts.
@@ -11,9 +11,9 @@ describe("AppSettingsSchema", () => {
     // appear on the parsed type at all.
     expect("openTabs" in parsed).toBe(false);
     expect("activeSessionFile" in parsed).toBe(false);
-    // Catppuccin flavor defaults to Mocha (dark) — the pre-existing
-    // baseline so first-launch UI is unchanged.
-    expect(parsed.colorScheme).toBe("mocha");
+    expect(parsed.lightColorScheme).toBe("latte");
+    expect(parsed.darkColorScheme).toBe("mocha");
+    expect(parsed.themeMode).toBe("system");
     expect(parsed.piEnv).toEqual({});
     expect(parsed.fonts.display).toEqual({ sizePx: 14 });
     expect(parsed.fonts.code).toEqual({ family: "IBM Plex Mono", sizePx: 14 });
@@ -51,17 +51,31 @@ describe("AppSettingsSchema", () => {
     expect("activeSessionFile" in result.data).toBe(false);
   });
 
-  it("accepts and round-trips any colorScheme id", () => {
-    // colorScheme is now a free string (a theme-registry id), not an enum:
-    // bundled flavors AND user-theme ids must round-trip. An id that no
-    // longer resolves is handled at apply time by resolveTheme's fallback,
-    // not rejected here.
-    for (const id of ["mocha", "latte", "gruvbox-material-dark", "my-custom-theme"]) {
-      const result = AppSettingsSchema.safeParse({ colorScheme: id });
-      expect(result.success).toBe(true);
-      if (!result.success) return;
-      expect(result.data.colorScheme).toBe(id);
-    }
+  it("accepts and round-trips any light/dark theme ids", () => {
+    // Theme ids are free strings (theme-registry ids), not enums: bundled
+    // themes AND user-theme ids must round-trip. Missing ids are handled by
+    // appearance-aware fallback at load/apply time, not rejected here.
+    const result = AppSettingsSchema.safeParse({
+      lightColorScheme: "my-custom-light",
+      darkColorScheme: "gruvbox-material-dark",
+      themeMode: "dark",
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.lightColorScheme).toBe("my-custom-light");
+    expect(result.data.darkColorScheme).toBe("gruvbox-material-dark");
+    expect(result.data.themeMode).toBe("dark");
+  });
+
+  it("resolves the active theme from mode plus system appearance", () => {
+    const settings = AppSettingsSchema.parse({
+      lightColorScheme: "latte",
+      darkColorScheme: "mocha",
+    });
+    expect(resolveActiveColorScheme(settings, "light")).toBe("latte");
+    expect(resolveActiveColorScheme(settings, "dark")).toBe("mocha");
+    expect(resolveActiveColorScheme({ ...settings, themeMode: "light" }, "dark")).toBe("latte");
+    expect(resolveActiveColorScheme({ ...settings, themeMode: "dark" }, "light")).toBe("mocha");
   });
 
   it("strips the legacy recentWorkspaces key and defaults workspaceOrder / expandedWorkspaces to empty", () => {

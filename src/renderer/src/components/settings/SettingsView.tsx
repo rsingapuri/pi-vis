@@ -1,6 +1,7 @@
 import type { AppUpdateStatus } from "@shared/app-updates.js";
 import type { ProviderAuthStatus } from "@shared/auth.js";
 import { PROVIDERS } from "@shared/auth.js";
+import type { ThemeMode } from "@shared/settings.js";
 import type { UpdateStatus } from "@shared/updates.js";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -61,7 +62,9 @@ function SettingsSelect({
 }): React.ReactElement {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const selected = options.find((option) => option.value === value) ?? options[0];
+  const selected = options.find((option) => option.value === value);
+  const selectedLabel =
+    selected?.label ?? (value ? `Missing: ${value}` : (options[0]?.label ?? ""));
 
   useEffect(() => {
     if (!open) return;
@@ -84,7 +87,7 @@ function SettingsSelect({
           if (event.key === "Escape") setOpen(false);
         }}
       >
-        <span className="settings-select__label">{selected?.label ?? ""}</span>
+        <span className="settings-select__label">{selectedLabel}</span>
         <IconChevronDown className="settings-select__caret" />
       </button>
       {open && (
@@ -566,6 +569,18 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
   }, [setAppUpdateStatus, setStatus]);
 
   const appUpdateBusy = appChecking || isAppUpdateBusy(appUpdateStatus);
+  const themes = listThemes();
+  const lightThemeOptions = themes
+    .filter((theme) => theme.appearance === "light")
+    .map((theme) => ({ value: theme.id, label: theme.name }));
+  const darkThemeOptions = themes
+    .filter((theme) => theme.appearance === "dark")
+    .map((theme) => ({ value: theme.id, label: theme.name }));
+  const themeModeOptions: readonly { value: ThemeMode; label: string }[] = [
+    { value: "light", label: "Light" },
+    { value: "dark", label: "Dark" },
+    { value: "system", label: "System" },
+  ];
 
   // ── Helper: source badge ─────────────────────────────────────────────
 
@@ -636,15 +651,40 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
             <section className="settings-section">
               <h3 className="settings-section__title">Interface</h3>
               <div className="settings-row">
-                <span className="settings-label">Theme</span>
+                <span className="settings-label">Light theme</span>
                 <SettingsSelect
-                  value={settings.colorScheme}
-                  onChange={(colorScheme) => update({ colorScheme })}
-                  options={listThemes().map((theme) => ({
-                    value: theme.id,
-                    label: `${theme.name} (${theme.appearance})`,
-                  }))}
+                  value={settings.lightColorScheme}
+                  onChange={(lightColorScheme) => update({ lightColorScheme })}
+                  options={lightThemeOptions}
                 />
+              </div>
+              <div className="settings-row">
+                <span className="settings-label">Dark theme</span>
+                <SettingsSelect
+                  value={settings.darkColorScheme}
+                  onChange={(darkColorScheme) => update({ darkColorScheme })}
+                  options={darkThemeOptions}
+                />
+              </div>
+              <div className="settings-row">
+                <span className="settings-label">Mode</span>
+                <div className="settings-segmented" role="group" aria-label="Theme mode">
+                  {themeModeOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`settings-segmented__btn${
+                        settings.themeMode === option.value
+                          ? " settings-segmented__btn--active"
+                          : ""
+                      }`}
+                      aria-pressed={settings.themeMode === option.value}
+                      onClick={() => update({ themeMode: option.value })}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div className="settings-row">
                 <span className="settings-label">Font Size</span>

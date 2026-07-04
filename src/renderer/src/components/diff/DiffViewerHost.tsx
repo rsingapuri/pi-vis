@@ -173,13 +173,13 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
   // CSS variables don't reach Shiki's baked-in hex tokens, so a scheme
   // switch needs re-tokenization. retokenize() re-runs the highlighter
   // on every ready file in place — no git re-fetch, no flash.
-  const colorScheme = useSettingsStore((s) => s.settings.colorScheme);
+  const activeColorScheme = useSettingsStore((s) => s.activeColorScheme);
   const retokenize = useDiffStore((s) => s.retokenize);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: we intentionally only re-run on colorScheme; visible is checked inside, retokenize is stable
+  // biome-ignore lint/correctness/useExhaustiveDependencies: we intentionally only re-run on activeColorScheme; visible is checked inside, retokenize is stable
   useEffect(() => {
     if (!visible) return;
     retokenize();
-  }, [colorScheme, visible, retokenize]);
+  }, [activeColorScheme, visible, retokenize]);
 
   // ── ResizeObserver → split-view auto-fallback ─────────────────────
   const contentRef = useRef<HTMLDivElement | null>(null);

@@ -1,7 +1,17 @@
-import { BUNDLED_THEMES, DEFAULT_THEME_ID } from "./bundled.js";
+import {
+  BUNDLED_THEMES,
+  DEFAULT_DARK_THEME_ID,
+  DEFAULT_LIGHT_THEME_ID,
+  DEFAULT_THEME_ID,
+} from "./bundled.js";
 import type { Theme } from "./tokens.js";
 
-export { BUNDLED_THEMES, DEFAULT_THEME_ID } from "./bundled.js";
+export {
+  BUNDLED_THEMES,
+  DEFAULT_DARK_THEME_ID,
+  DEFAULT_LIGHT_THEME_ID,
+  DEFAULT_THEME_ID,
+} from "./bundled.js";
 export {
   COLOR_TOKENS,
   type ColorToken,
@@ -39,15 +49,46 @@ export function buildThemeRegistry(extra: readonly Theme[] = []): Map<string, Th
 }
 
 /**
- * Resolve a saved colorScheme id against a registry, falling back to the
+ * Resolve a saved theme id against a registry, falling back to the
  * default theme (then to the first bundled theme) so the app always paints
  * with a real theme even if a persisted id was removed.
  */
 export function resolveTheme(id: string, registry: Map<string, Theme>): Theme {
-  // BUNDLED_THEMES is non-empty (six themes compiled in), so the final
-  // fallback always yields a real Theme even if the registry was somehow empty.
+  // BUNDLED_THEMES is non-empty, so the final fallback always yields a real
+  // Theme even if the registry was somehow empty.
   const found = registry.get(id) ?? registry.get(DEFAULT_THEME_ID) ?? BUNDLED_THEMES[0];
   return found as Theme;
+}
+
+/**
+ * Resolve a saved theme id for a specific light/dark slot. If the saved id is
+ * stale — or resolves to the wrong appearance because a settings file was hand
+ * edited or a user theme overrode a bundled id — fallback within the expected
+ * appearance. This prevents the light slot from ever falling through to the
+ * global dark default (Mocha), and vice versa.
+ */
+export function resolveThemeForAppearance(
+  id: string,
+  appearance: Theme["appearance"],
+  registry: Map<string, Theme>,
+): Theme {
+  const saved = registry.get(id);
+  if (saved?.appearance === appearance) return saved;
+
+  const defaultId = appearance === "light" ? DEFAULT_LIGHT_THEME_ID : DEFAULT_DARK_THEME_ID;
+  const registryDefault = registry.get(defaultId);
+  if (registryDefault?.appearance === appearance) return registryDefault;
+
+  const bundledDefault = BUNDLED_THEMES.find(
+    (theme) => theme.id === defaultId && theme.appearance === appearance,
+  );
+  if (bundledDefault) return bundledDefault;
+
+  return (
+    [...registry.values()].find((theme) => theme.appearance === appearance) ??
+    BUNDLED_THEMES.find((theme) => theme.appearance === appearance) ??
+    resolveTheme(id, registry)
+  );
 }
 
 /**

@@ -1,11 +1,13 @@
-import type { AppSettings } from "@shared/settings.js";
-import { defaultSettings } from "@shared/settings.js";
+import type { AppSettings, ThemeAppearance } from "@shared/settings.js";
+import { defaultSettings, resolveActiveColorScheme } from "@shared/settings.js";
 import { create } from "zustand";
 import { setShikiTheme } from "../lib/shiki.js";
-import { getTheme, setUserThemes } from "../theme/registry.js";
+import { getThemeForAppearance, setUserThemes } from "../theme/registry.js";
 
 interface SettingsStore {
   settings: AppSettings;
+  activeColorScheme: string;
+  systemAppearance: ThemeAppearance;
   loaded: boolean;
   load: () => Promise<void>;
   update: (updates: Partial<AppSettings>) => Promise<void>;
@@ -13,11 +15,13 @@ interface SettingsStore {
 
 export const useSettingsStore = create<SettingsStore>((set) => ({
   settings: defaultSettings,
+  activeColorScheme: resolveActiveThemeId(defaultSettings, getSystemAppearance()),
+  systemAppearance: getSystemAppearance(),
   loaded: false,
 
   load: async () => {
     // Install user-droppable themes BEFORE the first paint so a saved
-    // colorScheme pointing at a user theme resolves on load (not after a
+    // light/dark theme id pointing at a user theme resolves on load (not after a
     // flash of the default). Best-effort: a failed/empty fetch just leaves
     // the bundled themes in place.
     try {
@@ -28,21 +32,73 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
     }
 
     const settings = await window.pivis.invoke("settings.get", undefined);
-    set({ settings, loaded: true });
+    const systemAppearance = getSystemAppearance();
+    set({
+      settings,
+      systemAppearance,
+      activeColorScheme: resolveActiveThemeId(settings, systemAppearance),
+      loaded: true,
+    });
+    installSystemAppearanceListener(set);
 
     // Apply visual settings to the DOM. We do fonts and color scheme
     // together so a single settings load fully paints the UI.
     applyFonts(settings);
-    applyColorScheme(settings);
+    applyColorScheme(settings, systemAppearance);
   },
 
   update: async (updates) => {
     const settings = await window.pivis.invoke("settings.set", updates);
-    set({ settings });
+    const systemAppearance = getSystemAppearance();
+    set({
+      settings,
+      systemAppearance,
+      activeColorScheme: resolveActiveThemeId(settings, systemAppearance),
+    });
     applyFonts(settings);
-    applyColorScheme(settings);
+    applyColorScheme(settings, systemAppearance);
   },
 }));
+
+let systemAppearanceListenerInstalled = false;
+
+function getSystemAppearance(): ThemeAppearance {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return "dark";
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+function installSystemAppearanceListener(
+  set: (
+    partial: Partial<SettingsStore> | ((state: SettingsStore) => Partial<SettingsStore>),
+  ) => void,
+): void {
+  if (systemAppearanceListenerInstalled) return;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+  systemAppearanceListenerInstalled = true;
+  const media = window.matchMedia("(prefers-color-scheme: light)");
+  const onChange = (): void => {
+    const systemAppearance = getSystemAppearance();
+    set((state) => {
+      const activeColorScheme = resolveActiveThemeId(state.settings, systemAppearance);
+      applyColorScheme(state.settings, systemAppearance);
+      return { systemAppearance, activeColorScheme };
+    });
+  };
+  media.addEventListener("change", onChange);
+}
+
+function resolveActiveAppearance(
+  settings: AppSettings,
+  systemAppearance: ThemeAppearance,
+): ThemeAppearance {
+  if (settings.themeMode === "light" || settings.themeMode === "dark") return settings.themeMode;
+  return systemAppearance;
+}
+
+function resolveActiveThemeId(settings: AppSettings, systemAppearance: ThemeAppearance): string {
+  const appearance = resolveActiveAppearance(settings, systemAppearance);
+  return getThemeForAppearance(resolveActiveColorScheme(settings, systemAppearance), appearance).id;
+}
 
 function applyFonts(settings: AppSettings): void {
   const root = document.documentElement;
@@ -83,8 +139,12 @@ function applyFonts(settings: AppSettings): void {
  * Shiki is updated in the same call so its tokenized HTML uses the theme's
  * syntax theme (CSS variables don't touch Shiki's baked-in hex tokens).
  */
-function applyColorScheme(settings: AppSettings): void {
-  const theme = getTheme(settings.colorScheme);
+function applyColorScheme(settings: AppSettings, systemAppearance = getSystemAppearance()): void {
+  const appearance = resolveActiveAppearance(settings, systemAppearance);
+  const theme = getThemeForAppearance(
+    resolveActiveColorScheme(settings, systemAppearance),
+    appearance,
+  );
   const root = document.documentElement;
   for (const [token, value] of Object.entries(theme.colors)) {
     // Optional roles type as `string | undefined`; skip absent ones (they get

@@ -20,9 +20,9 @@ function CodeBlock({ lang, code }: CodeBlockProps): React.ReactElement {
   // Re-run when the active scheme changes; the actual Shiki theme name is
   // resolved from the highlighter (set by settings-store on scheme change),
   // so this works for any theme, not just `catppuccin-*`.
-  const colorScheme = useSettingsStore((s) => s.settings.colorScheme);
+  const activeColorScheme = useSettingsStore((s) => s.activeColorScheme);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: colorScheme is the re-tokenize trigger — the theme name is read via getShikiTheme() (set by settings-store before this re-runs), so the dep is the scheme change itself, not a value read in the body.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeColorScheme is the re-tokenize trigger — the theme name is read via getShikiTheme() (set by settings-store before this re-runs), so the dep is the scheme change itself, not a value read in the body.
   useEffect(() => {
     let cancelled = false;
     const theme = getShikiTheme();
@@ -43,7 +43,7 @@ function CodeBlock({ lang, code }: CodeBlockProps): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [code, lang, colorScheme]);
+  }, [code, lang, activeColorScheme]);
 
   if (html) {
     return (

@@ -1,4 +1,9 @@
-import { type Theme, buildThemeRegistry, resolveTheme } from "@shared/theme";
+import {
+  type Theme,
+  buildThemeRegistry,
+  resolveTheme,
+  resolveThemeForAppearance,
+} from "@shared/theme";
 
 /**
  * Renderer-side theme registry. Holds the bundled themes plus any
@@ -14,9 +19,14 @@ export function setUserThemes(userThemes: readonly Theme[]): void {
   registry = buildThemeRegistry(userThemes);
 }
 
-/** Resolve a colorScheme id to a Theme, falling back to the default. */
+/** Resolve a theme id to a Theme, falling back to the default. */
 export function getTheme(id: string): Theme {
   return resolveTheme(id, registry);
+}
+
+/** Resolve a split light/dark theme id, falling back within that appearance. */
+export function getThemeForAppearance(id: string, appearance: Theme["appearance"]): Theme {
+  return resolveThemeForAppearance(id, appearance, registry);
 }
 
 /** All themes (bundled + user), for the settings picker. */

@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AppSettingsSchema, defaultSettings } from "@shared/settings.js";
+import { AppSettingsSchema } from "@shared/settings.js";
 import type { AppSettings } from "@shared/settings.js";
+import { buildThemeRegistry, resolveThemeForAppearance } from "@shared/theme/index.js";
 import { app } from "electron";
+import { getUserThemes } from "./theme-loader.js";
 
 function getSettingsDir(): string {
   if (process.env["PIVIS_SETTINGS_DIR"]) {
@@ -37,9 +39,10 @@ export function loadSettings(): AppSettings {
         workspaceOrder: (json as Record<string, unknown>).recentWorkspaces,
       };
     }
+    json = migrateLegacyThemeSettings(json);
     const parsed = AppSettingsSchema.safeParse(json);
     if (parsed.success) {
-      current = parsed.data;
+      current = sanitizeThemeSettings(parsed.data);
       // Recovery: if the workspace list is empty but a last-active workspace
       // survived, seed the order from it. This rescues users whose legacy
       // `recentWorkspaces` was stripped by a build that shipped the
@@ -59,12 +62,62 @@ export function loadSettings(): AppSettings {
   return current;
 }
 
+function migrateLegacyThemeSettings(json: unknown): unknown {
+  if (!json || typeof json !== "object") return json;
+  const record = json as Record<string, unknown>;
+  if (
+    typeof record.colorScheme !== "string" ||
+    "lightColorScheme" in record ||
+    "darkColorScheme" in record ||
+    "themeMode" in record
+  ) {
+    return json;
+  }
+
+  const legacyTheme = themeRegistry().get(record.colorScheme);
+  const appearance = legacyTheme?.appearance ?? "dark";
+  return {
+    ...record,
+    themeMode: appearance,
+    ...(appearance === "light"
+      ? { lightColorScheme: record.colorScheme }
+      : { darkColorScheme: record.colorScheme }),
+  };
+}
+
+function themeRegistry(): ReturnType<typeof buildThemeRegistry> {
+  try {
+    return buildThemeRegistry(getUserThemes());
+  } catch {
+    // Electron app path unavailable or user themes unreadable; bundled themes
+    // are enough for defaults and tests.
+    return buildThemeRegistry();
+  }
+}
+
+function sanitizeThemeSettings(settings: AppSettings): AppSettings {
+  const registry = themeRegistry();
+  const lightColorScheme = resolveThemeForAppearance(
+    settings.lightColorScheme,
+    "light",
+    registry,
+  ).id;
+  const darkColorScheme = resolveThemeForAppearance(settings.darkColorScheme, "dark", registry).id;
+  if (
+    lightColorScheme === settings.lightColorScheme &&
+    darkColorScheme === settings.darkColorScheme
+  ) {
+    return settings;
+  }
+  return { ...settings, lightColorScheme, darkColorScheme };
+}
+
 export function getSettings(): AppSettings {
   return current;
 }
 
 export function saveSettings(updates: Partial<AppSettings>): AppSettings {
-  current = AppSettingsSchema.parse({ ...current, ...updates });
+  current = sanitizeThemeSettings(AppSettingsSchema.parse({ ...current, ...updates }));
   const filePath = getSettingsPath();
   const dir = path.dirname(filePath);
 

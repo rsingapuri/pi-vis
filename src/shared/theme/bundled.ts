@@ -18,7 +18,7 @@ import { type Theme, ThemeSchema } from "./tokens.js";
  * overrides it.
  *
  * Order matters only for the last-resort fallback in `resolveTheme`
- * (`BUNDLED_THEMES[0]`), so keep the canonical default (mocha) first.
+ * (`BUNDLED_THEMES[0]`), so keep the canonical dark default (mocha) first.
  */
 export const BUNDLED_THEMES: readonly Theme[] = [
   ThemeSchema.parse(catppuccinMocha),
@@ -32,5 +32,8 @@ export const BUNDLED_THEMES: readonly Theme[] = [
   ThemeSchema.parse(glowSticks),
 ];
 
-/** The id rendered before settings load / when a saved id no longer resolves. */
-export const DEFAULT_THEME_ID = "mocha";
+export const DEFAULT_DARK_THEME_ID = "mocha";
+export const DEFAULT_LIGHT_THEME_ID = "latte";
+
+/** The id rendered before settings load / when a saved dark id no longer resolves. */
+export const DEFAULT_THEME_ID = DEFAULT_DARK_THEME_ID;

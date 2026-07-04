@@ -138,12 +138,11 @@ export type SyntaxSpec = z.infer<typeof SyntaxSpecSchema>;
  * A complete theme. This is exactly the on-disk format for user-droppable
  * theme files (`<userData>/themes/<id>.json`) and the in-repo bundled themes.
  *
- *  - `id`         — stable key persisted in settings.colorScheme; filename stem
+ *  - `id`         — stable key persisted in settings light/dark theme fields; filename stem
  *                   for user themes. Lowercase kebab.
  *  - `name`       — human label shown in the settings picker.
  *  - `appearance` — "dark" | "light"; drives the pi-tui/extension light/dark
- *                   mapping (pi ships only those two), the same role the old
- *                   `piThemeForColorScheme` luminance check served.
+ *                   mapping (pi ships only those two).
  *  - `colors`     — the semantic role map.
  *  - `syntax`     — Shiki theme (ref or inline).
  */

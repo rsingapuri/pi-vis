@@ -6,7 +6,8 @@ import type { PiEvent } from "@shared/pi-protocol/events.js";
 import type { ExtensionUiRequest, ExtensionUiResponse } from "@shared/pi-protocol/extension-ui.js";
 import type { PanelEvent } from "@shared/pi-protocol/panel-events.js";
 import type { PiRpcResponse, SessionTreeEntry } from "@shared/pi-protocol/responses.js";
-import { app, clipboard, ipcMain } from "electron";
+import { resolveActiveColorScheme } from "@shared/settings.js";
+import { app, clipboard, ipcMain, nativeTheme } from "electron";
 import type { BrowserWindow } from "electron";
 import {
   checkForAppUpdate,
@@ -80,11 +81,16 @@ let handlersRegistered = false;
 async function getHostEnv(): Promise<Record<string, string>> {
   const env = await getLoginShellEnv();
   const settings = getSettings();
+  const systemAppearance = nativeTheme.shouldUseDarkColors ? "dark" : "light";
+  const activeAppearance = settings.themeMode === "system" ? systemAppearance : settings.themeMode;
   return {
     ...mergeUserPiEnv(env, settings.piEnv),
     // Pi-Vis-owned variables are written last so user-configured env (or a
     // hand-edited settings.json) cannot override the host/theme control plane.
-    PIVIS_PI_THEME: piThemeForSchemeId(settings.colorScheme),
+    PIVIS_PI_THEME: piThemeForSchemeId(
+      resolveActiveColorScheme(settings, systemAppearance),
+      activeAppearance,
+    ),
     PIVIS_PI_THEME_COLORS: JSON.stringify(piThemeColorIndices()),
   };
 }

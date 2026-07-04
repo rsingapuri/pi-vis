@@ -54,4 +54,27 @@ describe("loadSettings — workspace migration & recovery", () => {
     writeSettings({ workspaceOrder: [], lastActiveWorkspace: null });
     expect(loadSettings().workspaceOrder).toEqual([]);
   });
+
+  it("migrates a legacy light colorScheme into the light theme picker", () => {
+    writeSettings({ colorScheme: "latte" });
+    const s = loadSettings();
+    expect(s.lightColorScheme).toBe("latte");
+    expect(s.darkColorScheme).toBe("mocha");
+    expect(s.themeMode).toBe("light");
+  });
+
+  it("migrates a legacy dark colorScheme into the dark theme picker", () => {
+    writeSettings({ colorScheme: "gruvbox-material-dark" });
+    const s = loadSettings();
+    expect(s.lightColorScheme).toBe("latte");
+    expect(s.darkColorScheme).toBe("gruvbox-material-dark");
+    expect(s.themeMode).toBe("dark");
+  });
+
+  it("sanitizes a stale saved light theme to the light default", () => {
+    writeSettings({ lightColorScheme: "deleted-custom-light", darkColorScheme: "mocha" });
+    const s = loadSettings();
+    expect(s.lightColorScheme).toBe("latte");
+    expect(s.darkColorScheme).toBe("mocha");
+  });
 });

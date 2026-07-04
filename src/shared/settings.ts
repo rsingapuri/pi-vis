@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { ThinkingLevelSchema } from "./pi-protocol/thinking.js";
 
+export const ThemeModeSchema = z.enum(["light", "dark", "system"]);
+export type ThemeMode = z.infer<typeof ThemeModeSchema>;
+export type ThemeAppearance = "light" | "dark";
+
 const DisplayFontSettingsSchema = z.object({
   // The interface font family is intentionally app-owned (currently Inter) so
   // layout can be tuned against stable font metrics. Users can still scale the
@@ -56,12 +60,16 @@ export const AppSettingsSchema = z.object({
       }),
     )
     .default({}),
-  // Active theme id, applied at runtime via CSS vars (and Shiki themes). A
-  // free string (not an enum) because themes are now a registry: bundled
-  // themes (src/shared/theme) plus user-droppable ones (<userData>/themes).
-  // An id that no longer resolves falls back to the default theme at apply
-  // time (see resolveTheme), so a stale persisted id can't break startup.
-  colorScheme: z.string().default("mocha"),
+  // User-selected theme ids for each luminance family. Free strings (not
+  // enums) because themes are a registry: bundled themes (src/shared/theme)
+  // plus user-droppable ones (<userData>/themes). An id that no longer
+  // resolves falls back by slot appearance at apply/load time, so stale
+  // persisted ids can't break startup or cross light/dark families.
+  lightColorScheme: z.string().default("latte"),
+  darkColorScheme: z.string().default("mocha"),
+  // Which theme family is active. "system" resolves via the OS/browser
+  // preferred color scheme in the renderer and Electron nativeTheme in main.
+  themeMode: ThemeModeSchema.default("system"),
   // Diff viewer preference (WP5d). Persisted across sessions; the
   // viewer seeds its own state from this on open and writes back on
   // toggle. Default is "unified" — split view is opt-in and only
@@ -134,10 +142,19 @@ export type AppSettings = z.infer<typeof AppSettingsSchema>;
 
 export const defaultSettings: AppSettings = AppSettingsSchema.parse({});
 
-export type ColorScheme = AppSettings["colorScheme"];
+export type ColorScheme = AppSettings["lightColorScheme"] | AppSettings["darkColorScheme"];
+
+export function resolveActiveColorScheme(
+  settings: Pick<AppSettings, "lightColorScheme" | "darkColorScheme" | "themeMode">,
+  systemAppearance: ThemeAppearance,
+): string {
+  if (settings.themeMode === "light") return settings.lightColorScheme;
+  if (settings.themeMode === "dark") return settings.darkColorScheme;
+  return systemAppearance === "light" ? settings.lightColorScheme : settings.darkColorScheme;
+}
 
 // The pi-theme mapping (which pi built-in theme the SDK host loads for a given
 // app theme) now lives in @shared/theme as `piThemeForTheme`, keyed off the
-// theme's declared `appearance` rather than a hardcoded flavor check — so it
-// generalizes to any bundled or user theme. The main process resolves the
+// resolved theme's declared `appearance` rather than a hardcoded flavor check —
+// so it generalizes to any bundled or user theme. The main process resolves the
 // active theme from its registry (bundled + user) before mapping.

@@ -65,12 +65,12 @@ export function LoginTerminal({
   // Live re-theme: the OAuth terminal streams pi's role-identity ANSI indices,
   // which xterm resolves against `term.options.theme.extendedAnsi` at paint
   // time, so swapping the palette recolors the buffer with no reconnect.
-  const colorScheme = useSettingsStore((s) => s.settings.colorScheme);
+  const activeColorScheme = useSettingsStore((s) => s.activeColorScheme);
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = buildXtermTheme(getTheme(colorScheme ?? "mocha"));
-  }, [colorScheme]);
+    term.options.theme = buildXtermTheme(getTheme(activeColorScheme));
+  }, [activeColorScheme]);
 
   // One lifecycle effect: build the terminal, wire pty I/O, start the pty, and
   // tear everything down. Consolidated (not split across effects) so the pty is
@@ -85,13 +85,13 @@ export function LoginTerminal({
     let localPtyId: string | null = null;
 
     const fontFamily = resolveMonoFont();
-    const colorScheme = useSettingsStore.getState().settings.colorScheme ?? "mocha";
+    const activeColorScheme = useSettingsStore.getState().activeColorScheme;
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: "block",
       fontSize: 14,
       fontFamily,
-      theme: buildXtermTheme(getTheme(colorScheme)),
+      theme: buildXtermTheme(getTheme(activeColorScheme)),
     });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);

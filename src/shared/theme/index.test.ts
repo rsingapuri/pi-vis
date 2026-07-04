@@ -6,6 +6,7 @@ import {
   buildThemeRegistry,
   piThemeForTheme,
   resolveTheme,
+  resolveThemeForAppearance,
 } from "./index.js";
 
 const baseColors = BUNDLED_THEMES[0]!.colors;
@@ -112,6 +113,18 @@ describe("registry resolution", () => {
     expect(resolveTheme("user-neon", reg).name).toBe("Neon");
     // bundled themes still present
     expect(resolveTheme("mocha", reg).id).toBe("mocha");
+  });
+
+  it("falls back by expected appearance for stale split-theme ids", () => {
+    const reg = buildThemeRegistry();
+    expect(resolveThemeForAppearance("deleted-light-theme", "light", reg).id).toBe("latte");
+    expect(resolveThemeForAppearance("deleted-dark-theme", "dark", reg).id).toBe("mocha");
+  });
+
+  it("does not accept a wrong-appearance saved id for a split-theme slot", () => {
+    const reg = buildThemeRegistry();
+    expect(resolveThemeForAppearance("mocha", "light", reg).id).toBe("latte");
+    expect(resolveThemeForAppearance("latte", "dark", reg).id).toBe("mocha");
   });
 });
 

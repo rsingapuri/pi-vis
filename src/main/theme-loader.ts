@@ -7,6 +7,7 @@ import {
   buildThemeRegistry,
   piThemeForTheme,
   resolveTheme,
+  resolveThemeForAppearance,
 } from "@shared/theme/index.js";
 import { app } from "electron";
 
@@ -70,14 +71,20 @@ function readUserThemes(): Theme[] {
 }
 
 /**
- * Resolve a colorScheme id to the pi built-in theme name ("dark" | "light")
+ * Resolve an active theme id to the pi built-in theme name ("dark" | "light")
  * the SDK host should load, considering both bundled and user themes. Used by
  * `getHostEnv` to set PIVIS_PI_THEME so extension/pi-tui surfaces track the
  * app theme's luminance.
  */
-export function piThemeForSchemeId(id: string): "dark" | "light" {
+export function piThemeForSchemeId(
+  id: string,
+  expectedAppearance?: "dark" | "light",
+): "dark" | "light" {
   const registry = buildThemeRegistry(getUserThemes());
-  return piThemeForTheme(resolveTheme(id, registry));
+  const theme = expectedAppearance
+    ? resolveThemeForAppearance(id, expectedAppearance, registry)
+    : resolveTheme(id, registry);
+  return piThemeForTheme(theme);
 }
 
 /**

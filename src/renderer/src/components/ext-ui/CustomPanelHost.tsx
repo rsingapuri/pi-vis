@@ -111,12 +111,12 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
   // the palette recolors every buffered cell with no re-emit. The Terminal
   // persists across scheme changes (lifecycle effect rebuilds on panelId
   // only), so we update its theme in place here.
-  const colorScheme = useSettingsStore((s) => s.settings.colorScheme);
+  const activeColorScheme = useSettingsStore((s) => s.activeColorScheme);
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = buildXtermTheme(getTheme(colorScheme ?? "mocha"));
-  }, [colorScheme]);
+    term.options.theme = buildXtermTheme(getTheme(activeColorScheme));
+  }, [activeColorScheme]);
 
   // Re-run the sizing pass when the mode flips (overlay shown/hidden). The
   // lifecycle effect is keyed on panelId only, so it doesn't re-fire here.
@@ -156,7 +156,8 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     let unsubPanel: (() => void) | null = null;
 
     const fontFamily = resolveMonoFont();
-    const { colorScheme, fonts } = useSettingsStore.getState().settings;
+    const { settings, activeColorScheme } = useSettingsStore.getState();
+    const { fonts } = settings;
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: "block",
@@ -164,7 +165,7 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
       // app); the TUI's cols/rows derive from this, so it must not be hardcoded.
       fontSize: fonts?.code?.sizePx ?? 14,
       fontFamily,
-      theme: buildXtermTheme(getTheme(colorScheme ?? "mocha")),
+      theme: buildXtermTheme(getTheme(activeColorScheme)),
     });
     termRef.current = term;
 
