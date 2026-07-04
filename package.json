@@ -30,6 +30,7 @@
     "site:screenshots": "node scripts/site-screenshots.mjs"
   },
   "dependencies": {
+    "@fontsource/fraunces": "^5.2.9",
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@fontsource/inter": "^5.2.8",
     "@homebridge/node-pty-prebuilt-multiarch": "^0.14.0",

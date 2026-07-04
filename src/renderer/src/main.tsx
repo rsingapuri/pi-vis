@@ -6,6 +6,8 @@ import "@fontsource/inter/600.css";
 import "@fontsource/inter/600-italic.css";
 import "@fontsource/inter/700.css";
 import "@fontsource/inter/700-italic.css";
+import "@fontsource/fraunces/600.css";
+import "@fontsource/fraunces/700.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/400-italic.css";
 import "@fontsource/ibm-plex-mono/500.css";

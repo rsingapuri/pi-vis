@@ -227,11 +227,12 @@
   border: none;
   padding: 0;
   cursor: pointer;
-  font-family: var(--font-code);
-  font-size: 0.929em; /* ≈13px @ 14px root */
+  font-family: var(--font-accent);
+  font-size: 1em;
   font-weight: 600;
+  letter-spacing: var(--font-accent-tracking);
   color: var(--text-muted); /* muted at rest; brightens on hover, mauve when active */
-  line-height: 1.4; /* deterministic single-line height → see the × sizing below */
+  line-height: 1.286; /* 18px @ 14px root; matches the hover action buttons */
   /* min-width: 0 lets the flex item shrink below its min-content width so the
      fade truncation engages (same fix the session name uses). Clipping itself
      is owned by the FadeText child. */

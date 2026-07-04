@@ -35,9 +35,10 @@
   min-width: 0;
   flex: 1;
   color: var(--text);
-  font-family: var(--font-display);
-  font-size: 0.929em;
+  font-family: var(--font-accent);
+  font-size: 1.071em;
   font-weight: 600;
+  letter-spacing: var(--font-accent-tracking);
   line-height: var(--leading-label);
 }
 

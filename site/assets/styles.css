@@ -74,7 +74,8 @@ a:hover {
 h1,
 h2,
 h3 {
-  font-weight: 650;
+  font-family: "Fraunces", Georgia, serif;
+  font-weight: 400;
   letter-spacing: -0.02em;
   line-height: 1.15;
   text-wrap: balance;

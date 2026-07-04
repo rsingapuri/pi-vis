@@ -51,9 +51,10 @@
 }
 
 .confirm-dialog__title {
-  font-family: var(--font-display);
+  font-family: var(--font-accent);
   font-size: 1.071em;
   font-weight: 600;
+  letter-spacing: var(--font-accent-tracking);
   color: var(--text);
 }
 
