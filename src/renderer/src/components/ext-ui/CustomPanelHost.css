@@ -34,23 +34,6 @@
   overflow: hidden;
 }
 
-/* Invisible top resize handle. The strip is transparent (no background, no
-   border, no grip texture) — the `row-resize` cursor change is the only signal
-   that a drag is possible, per the design. It overlays the card's top edge
-   (there is no margin gap above the card to host it). The panel is bottom-
-   anchored, so dragging this top edge up grows the panel and down shrinks it.
-   z-index sits BELOW the force-close button so the ✕ stays clickable. The
-   overlay covers only the top sliver (~7px, well under one row) of the grid. */
-.custom-panel__resize {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 7px;
-  z-index: 1;
-  cursor: row-resize;
-}
-
 /* Force-close escape hatch — a minimal floating control in the top-right
    corner (no full-width header bar). Low-prominence until hovered so it
    doesn't compete with the panel content; positioned over the terminal grid.

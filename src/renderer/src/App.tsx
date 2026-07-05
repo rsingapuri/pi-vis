@@ -7,7 +7,11 @@ import { ImageLightbox } from "./components/common/ImageLightbox.js";
 import { Composer } from "./components/composer/Composer.js";
 import { WorktreeBar } from "./components/composer/WorktreeBar.js";
 import { DiffViewerHost } from "./components/diff/DiffViewerHost.js";
-import { CustomPanelHost } from "./components/ext-ui/CustomPanelHost.js";
+import {
+  CUSTOM_PANEL_MAX_HEIGHT_FRACTION,
+  CUSTOM_PANEL_MIN_HEIGHT_FRACTION,
+  CustomPanelHost,
+} from "./components/ext-ui/CustomPanelHost.js";
 import { ExtensionDialogHost } from "./components/ext-ui/ExtensionDialogHost.js";
 import { UnifiedTuiHost } from "./components/ext-ui/UnifiedTuiHost.js";
 import { NotificationStack } from "./components/notifications/NotificationStack.js";
@@ -119,6 +123,58 @@ export function App(): React.ReactElement {
     [updateSettings],
   );
 
+  // Custom-panel resize drag. The grab strip lives at the top of the dock /
+  // widget tray (rather than on the custom panel's top edge) so the whole
+  // above-composer stack reads as the resizable region. The grab offset keeps
+  // the panel from jumping even though the handle is visually above the panel.
+  const handleCustomPanelResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const session = (e.currentTarget as HTMLElement).closest(
+        ".app__session",
+      ) as HTMLElement | null;
+      const card = session?.querySelector(".custom-panel") as HTMLElement | null;
+      if (!session || !card) return;
+
+      const rect = card.getBoundingClientRect();
+      const panelBottom = rect.bottom;
+      const grabOffset = e.clientY - rect.top;
+      const sessionH = session.clientHeight;
+      const clamp = (f: number): number =>
+        Math.min(CUSTOM_PANEL_MAX_HEIGHT_FRACTION, Math.max(CUSTOM_PANEL_MIN_HEIGHT_FRACTION, f));
+      let latest = clamp((panelBottom - rect.top) / sessionH);
+
+      const emit = (fraction: number): void => {
+        window.dispatchEvent(
+          new CustomEvent("pivis:custom-panel-resize", { detail: { fraction } }),
+        );
+      };
+      const onMove = (ev: MouseEvent): void => {
+        const desiredTop = ev.clientY - grabOffset;
+        latest = clamp((panelBottom - desiredTop) / sessionH);
+        emit(latest);
+      };
+      const onUp = (): void => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        void updateSettings({ customPanelHeightFraction: latest });
+      };
+      document.body.style.cursor = "row-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [updateSettings],
+  );
+
+  const handleCustomPanelResizeReset = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("pivis:custom-panel-resize-reset"));
+    void updateSettings({ customPanelHeightFraction: null });
+  }, [updateSettings]);
+
   const toggleSidebar = useCallback(() => {
     void updateSettings({
       sidebarCollapsed: !useSettingsStore.getState().settings.sidebarCollapsed,
@@ -201,6 +257,8 @@ export function App(): React.ReactElement {
     if (!id) return false;
     return s.sessions.get(id)?.pendingPicker !== undefined;
   });
+
+  const customPanelSlotActive = hasOpenPanel && !hasPendingDialog;
 
   // Boot: load settings and check for pi
   useEffect(() => {
@@ -503,6 +561,20 @@ export function App(): React.ReactElement {
                 <TranscriptView sessionId={activeSessionId} />
                 <NotificationStack sessionId={activeSessionId} />
               </div>
+              {/* Custom panel resize handle. It is visually attached to the
+                  top of the dock / widget tray (rather than hidden on the
+                  custom view edge below the tray), which makes the tray feel
+                  like the grab point for the whole below-transcript stack. */}
+              {customPanelSlotActive && (
+                <div
+                  className="custom-panel-dock-resize"
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="Resize custom view (drag; double-click to reset)"
+                  onMouseDown={handleCustomPanelResizeStart}
+                  onDoubleClick={handleCustomPanelResizeReset}
+                />
+              )}
               {/* Session dock — the rigid (non-shrinking) stack of bars that
                   sits between the scrolling transcript and the composer. The
                   WorktreeBar + Dock (above-composer tray) stack as ordered,

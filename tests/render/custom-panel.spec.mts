@@ -107,7 +107,7 @@ test.describe("Custom() panel (CustomPanelHost) — stable viewport sizing", () 
 });
 
 test.describe("Custom() panel — manual resize handle", () => {
-  test("the handle is an invisible row-resize strip", async ({ page }) => {
+  test("the handle is a visible row-resize strip", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 900 });
     await page.goto("/?panel=1");
     await page.waitForLoadState("domcontentloaded");
@@ -115,12 +115,27 @@ test.describe("Custom() panel — manual resize handle", () => {
     await expect(panel).toBeVisible({ timeout: 20_000 });
     await expect(panel.locator(".xterm-rows")).toContainText("RTK", { timeout: 15_000 });
 
-    const handle = page.locator(".custom-panel__resize");
+    const handle = page.locator(".custom-panel-dock-resize");
     await expect(handle).toBeVisible();
-    // The strip itself is transparent (no background) — the cursor is the only
-    // affordance that a drag is possible.
+    // The strip is now attached to the top of the widget tray/dock, not inside
+    // the custom panel itself.
+    const insidePanel = await handle.evaluate((el) => el.closest(".custom-panel") !== null);
+    expect(insidePanel).toBe(false);
+    const handleBox = await handle.boundingBox();
+    const dockBox = await page.locator(".session-dock").boundingBox();
+    expect(handleBox).not.toBeNull();
+    expect(dockBox).not.toBeNull();
+    // The handle is its own gutter directly above the dock, not an overlay on
+    // top of it, so it cannot steal the dock's top-row clicks.
+    expect((handleBox?.y ?? 0) + (handleBox?.height ?? 0)).toBeCloseTo(dockBox?.y ?? 0, 0);
+    // The gutter itself is transparent, but it exposes a subtle centered pill
+    // so the resize affordance is visible.
     const bg = await handle.evaluate((el) => window.getComputedStyle(el).backgroundColor);
     expect(bg).toBe("rgba(0, 0, 0, 0)");
+    const affordanceBg = await handle.evaluate((el) =>
+      window.getComputedStyle(el, "::before").backgroundColor,
+    );
+    expect(affordanceBg).not.toBe("rgba(0, 0, 0, 0)");
     const cursor = await handle.evaluate((el) => window.getComputedStyle(el).cursor);
     expect(cursor).toBe("row-resize");
   });
@@ -133,7 +148,7 @@ test.describe("Custom() panel — manual resize handle", () => {
     await expect(panel).toBeVisible({ timeout: 20_000 });
     await expect(panel.locator(".xterm-rows")).toContainText("RTK", { timeout: 15_000 });
 
-    const handle = page.locator(".custom-panel__resize");
+    const handle = page.locator(".custom-panel-dock-resize");
     const before = await settledHeight(page);
     // Default cap is ~50% of the 900px column (~450px). Grow toward ~75% by
     // dragging the top edge up so the panel becomes ~675px.
@@ -178,7 +193,7 @@ test.describe("Custom() panel — manual resize handle", () => {
     await expect(panel).toBeVisible({ timeout: 20_000 });
     await expect(panel.locator(".xterm-rows")).toContainText("RTK", { timeout: 15_000 });
 
-    const handle = page.locator(".custom-panel__resize");
+    const handle = page.locator(".custom-panel-dock-resize");
     const defaultH = await settledHeight(page);
 
     // First grow the panel via a drag (toward ~75%).

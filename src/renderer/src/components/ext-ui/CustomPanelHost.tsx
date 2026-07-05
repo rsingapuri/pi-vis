@@ -55,8 +55,8 @@ function resolveMonoFont(): string {
 
 // Bounds for the manual resize (fraction of the transcript column). Mirrors
 // the Zod clamp on settings.customPanelHeightFraction.
-const MIN_HEIGHT_FRACTION = 0.2;
-const MAX_HEIGHT_FRACTION = 0.9;
+export const CUSTOM_PANEL_MIN_HEIGHT_FRACTION = 0.2;
+export const CUSTOM_PANEL_MAX_HEIGHT_FRACTION = 0.9;
 
 // ─── Component ────────────────────────────────────────────────────────────
 
@@ -135,6 +135,28 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
   useEffect(() => {
     syncRef.current?.();
   }, [customPanelHeightFraction]);
+
+  // The resize grab strip is rendered above the dock in App (so it sits at the
+  // top of the widget tray, not on the custom view itself). App sends live
+  // fractions through a DOM event; keeping the in-flight value here lets the
+  // sizer update immediately without persisting settings on every mousemove.
+  useEffect(() => {
+    const onResize = (event: Event): void => {
+      const { fraction } = (event as CustomEvent<{ fraction: number }>).detail;
+      dragFractionRef.current = fraction;
+      syncRef.current?.();
+    };
+    const onReset = (): void => {
+      dragFractionRef.current = null;
+      syncRef.current?.();
+    };
+    window.addEventListener("pivis:custom-panel-resize", onResize);
+    window.addEventListener("pivis:custom-panel-resize-reset", onReset);
+    return () => {
+      window.removeEventListener("pivis:custom-panel-resize", onResize);
+      window.removeEventListener("pivis:custom-panel-resize-reset", onReset);
+    };
+  }, []);
 
   // One lifecycle effect: build terminal, stream data, handle input, cleanup.
   //
@@ -293,75 +315,10 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     // Intentionally empty: see comment above.
   }, []);
 
-  // ── Top resize handle ──
-  // Drag the (invisible) top edge to resize the panel; the height is persisted
-  // as a FRACTION of the transcript column so it survives window/sidebar/font
-  // resizes (re-derived on every layout) and applies to future custom() panels.
-  // Double-click resets to the default. The panel is bottom-anchored in the
-  // composer slot, so dragging the top edge up grows it and down shrinks it — a
-  // direct, non-inverted mapping. Resizing snaps to terminal row boundaries
-  // (the grid is integer rows), as is standard for terminal panels.
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    const card = containerRef.current?.closest(".custom-panel") as HTMLElement | null;
-    const session = containerRef.current?.closest(".app__session") as HTMLElement | null;
-    if (!card || !session) return;
-    // The panel is bottom-anchored, so its bottom edge is fixed for the whole
-    // drag — capture once. The new height is (bottom − cursorY), expressed as a
-    // fraction of the (also fixed) session-column height.
-    const panelBottom = card.getBoundingClientRect().bottom;
-    const sessionH = session.clientHeight;
-    const clamp = (f: number): number =>
-      Math.min(MAX_HEIGHT_FRACTION, Math.max(MIN_HEIGHT_FRACTION, f));
-
-    const onMove = (ev: MouseEvent): void => {
-      const frac = clamp((panelBottom - ev.clientY) / sessionH);
-      dragFractionRef.current = frac;
-      syncRef.current?.();
-    };
-    const onUp = (): void => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      document.body.style.userSelect = "";
-      // Commit the final fraction so the NEXT custom() panel inherits it. Keep
-      // dragFractionRef set so the current panel stays at this size for the
-      // rest of its life (it resets on unmount).
-      const frac = dragFractionRef.current;
-      if (frac != null) {
-        void useSettingsStore.getState().update({ customPanelHeightFraction: frac });
-      }
-    };
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, []);
-
-  // Double-click the handle → reset to the default height (clear the override).
-  const handleResizeReset = useCallback(() => {
-    dragFractionRef.current = null;
-    void useSettingsStore.getState().update({ customPanelHeightFraction: null });
-    syncRef.current?.();
-  }, []);
-
   if (!panel) return <></>;
 
   return (
     <div className="custom-panel" onKeyDown={handleKeyDown}>
-      {/* Invisible top resize handle. Drag to resize (persisted as a fraction
-          of the transcript column, applies to future custom() panels);
-          double-click resets to the default height. The strip itself is
-          transparent — the `row-resize` cursor is the only affordance. It sits
-          above the scroll wrapper; the force-close button (higher z-index)
-          stays clickable in the top-right corner. */}
-      <div
-        className="custom-panel__resize"
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label="Resize panel (drag; double-click to reset)"
-        onMouseDown={handleResizeStart}
-        onDoubleClick={handleResizeReset}
-      />
       {/* Force-close escape hatch — a minimal floating control in the top-right
           corner (no full-width header bar). Low-prominence until hovered so it
           doesn't compete with the panel content; positioned over the terminal

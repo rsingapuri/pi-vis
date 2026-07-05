@@ -295,6 +295,37 @@
   min-width: 0;
 }
 
+/* Custom-panel resize handle. Rendered as its own non-overlapping gutter
+   immediately above `.session-dock`, so it cannot steal clicks from dock/widget
+   controls. The gutter stays transparent, with a subtle centered pill so the
+   resize affordance is discoverable without adding visual weight. */
+.custom-panel-dock-resize {
+  position: relative;
+  z-index: 4;
+  flex: 0 0 9px;
+  height: 9px;
+  cursor: row-resize;
+}
+
+.custom-panel-dock-resize::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2.286rem;
+  height: 2px;
+  background: var(--border-strong);
+  border-radius: var(--radius-pill);
+  opacity: 0.55;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.custom-panel-dock-resize:hover::before {
+  background: var(--text-muted);
+  opacity: 0.8;
+}
+
 /* Connected stack — when the Dock tray is present above one of the
    Composer-slot cards, that card flattens its top corners and lifts its
    border to --border-strong so the tray's flat bottom edge and the card's
