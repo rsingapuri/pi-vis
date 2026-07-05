@@ -198,6 +198,12 @@ interface WorkspaceState {
   activeSessions: SessionId[];
 }
 
+interface PendingNewSessionSetup {
+  worktreeMode?: "none" | "create" | "attach" | undefined;
+  worktreeAttachPath?: string | undefined;
+  worktreeBase?: string | null | undefined;
+}
+
 /**
  * A brand-new session that the user has not yet sent a message in. It is
  * hidden from the sidebar (the "+ New session" button is shown as selected
@@ -232,6 +238,19 @@ export function isPendingNewSessionActiveFor(
 ): boolean {
   const active = state.activeSessionId ? state.sessions.get(state.activeSessionId) : undefined;
   return isNewSessionPending(active) && active?.workspacePath === workspacePath;
+}
+
+function shouldReapPendingNewSession(s: SessionViewState | undefined | null): boolean {
+  if (!s || !isNewSessionPending(s)) return false;
+  return (
+    !s.isStreaming &&
+    !hasActiveBash(s) &&
+    s.pendingDialogs.length === 0 &&
+    !s.pendingPicker &&
+    !s.worktreeCreating &&
+    !s.panel &&
+    !s.unifiedPanel
+  );
 }
 
 /**
@@ -287,6 +306,25 @@ function setSessionDraftFor(
   return next;
 }
 
+function clearNewSessionSetupFor(
+  setups: Map<string, PendingNewSessionSetup>,
+  workspacePath: string,
+  shouldClear: boolean,
+): Map<string, PendingNewSessionSetup> {
+  if (!shouldClear || !setups.has(workspacePath)) return setups;
+  const next = new Map(setups);
+  next.delete(workspacePath);
+  return next;
+}
+
+function capturePendingNewSessionSetup(s: SessionViewState): PendingNewSessionSetup {
+  return {
+    worktreeMode: s.worktreeMode,
+    worktreeAttachPath: s.worktreeAttachPath,
+    worktreeBase: s.worktreeBase,
+  };
+}
+
 function hasActiveAgentWork(session: SessionViewState | undefined): boolean {
   const transcript = session?.transcript;
   return !!(transcript?.activeAssistantId || (transcript?.activeToolCallIds.size ?? 0) > 0);
@@ -327,17 +365,22 @@ interface SessionsStore {
   headerCompact: boolean;
 
   /** Per-workspace unsent composer text for the current pending new session.
-   *  Lets the user switch away from a brand-new (still-empty) session and
-   *  come back via "+ New session" without losing what they typed. Lives only
-   *  in memory — never persisted to settings — so closing & reopening the
-   *  app starts a clean slate. The Composer writes on every keystroke while
-   *  the active session is pending (`isNewSessionPending`) and the slot is
-   *  cleared the moment a message is actually sent. */
+   *  Lives only in memory — never persisted to settings — and is scoped to the
+   *  workspace's "+ New session" placeholder. Switching to another session
+   *  reaps that still-empty placeholder but preserves this draft, so the next
+   *  "+ New session" in the workspace starts clean at the session layer while
+   *  restoring the user's unsent text. The Composer writes on every keystroke
+   *  while the active session is pending (`isNewSessionPending`) and the slot
+   *  is cleared the moment a message is actually sent. */
   newSessionDrafts: Map<string, string>;
   /** Update (replace) the per-workspace draft for a pending new session. */
   setNewSessionDraft: (workspacePath: string, text: string) => void;
   /** Clear the per-workspace draft (called when the pending session sends). */
   clearNewSessionDraft: (workspacePath: string) => void;
+  /** Per-workspace setup selected in the WorktreeBar for a reaped pending
+   *  new-session placeholder. This is separate from the text draft so the
+   *  placeholder can be closed without losing pre-send setup state. */
+  newSessionSetupDrafts: Map<string, PendingNewSessionSetup>;
 
   /** Per-session unsent composer text for *non-pending* sessions — the
    *  generalization of `newSessionDrafts` to every session. The pending-new
@@ -349,8 +392,10 @@ interface SessionsStore {
    *  Lets the user switch away from any real session and come back without
    *  losing what they typed. Lives only in memory — never persisted — and is
    *  read via `getState()` in the Composer's seeding effect so per-keystroke
-   *  writes don't trigger re-renders (mirrors `newSessionDrafts`). Cleared
-   *  the moment a message is actually sent. */
+   *  writes don't trigger re-renders. Pending new sessions deliberately do
+   *  not use this map: switching away from "+ New session" closes that empty
+   *  placeholder, while the workspace-scoped draft remains available for the
+   *  next pending placeholder. Cleared the moment a message is actually sent. */
   sessionDrafts: Map<SessionId, string>;
   /** Update (replace) the per-session draft. Empty text deletes the entry. */
   setSessionDraft: (sessionId: SessionId, text: string) => void;
@@ -382,8 +427,11 @@ interface SessionsStore {
     sessionFile?: string,
     opts?: { focus?: boolean },
   ) => Promise<SessionId | null>;
-  closeSessionTab: (sessionId: SessionId) => Promise<void>;
-  removeSession: (sessionId: SessionId) => void;
+  closeSessionTab: (
+    sessionId: SessionId,
+    opts?: { preservePendingDraft?: boolean },
+  ) => Promise<void>;
+  removeSession: (sessionId: SessionId, opts?: { preservePendingDraft?: boolean }) => void;
   /** Archive a session: add its file path to archivedSessions in settings,
    *  close its live tab if one exists, and refresh the workspace list. */
   archiveSession: (
@@ -595,6 +643,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
   expandedWorkspaces: [],
   headerCompact: false,
   newSessionDrafts: new Map(),
+  newSessionSetupDrafts: new Map(),
   sessionDrafts: new Map(),
 
   addWorkspace: (path) => {
@@ -613,11 +662,14 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       workspaces.delete(path);
       const drafts = new Map(state.newSessionDrafts);
       drafts.delete(path);
+      const setupDrafts = new Map(state.newSessionSetupDrafts);
+      setupDrafts.delete(path);
       return {
         workspaces,
         activeWorkspacePath: state.activeWorkspacePath === path ? null : state.activeWorkspacePath,
         expandedWorkspaces: state.expandedWorkspaces.filter((p) => p !== path),
         newSessionDrafts: drafts,
+        newSessionSetupDrafts: setupDrafts,
       };
     });
   },
@@ -671,6 +723,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
   createSession: (sessionId, workspacePath, sessionFile, name, title, status) => {
     set((state) => {
       const sessions = new Map(state.sessions);
+      const pendingSetup = sessionFile ? undefined : state.newSessionSetupDrafts.get(workspacePath);
       sessions.set(sessionId, {
         sessionId,
         workspacePath,
@@ -689,10 +742,12 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         toasts: [],
         notificationPanelOpen: false,
         availableModels: [],
-        // Worktree fields start unset
-        worktreeMode: undefined,
-        worktreeAttachPath: undefined,
-        worktreeBase: undefined,
+        // Pending-new WorktreeBar setup is workspace-scoped so a switch-away
+        // reap can close the unused session while the next placeholder restores
+        // the user's selected mode/base/path.
+        worktreeMode: pendingSetup?.worktreeMode,
+        worktreeAttachPath: pendingSetup?.worktreeAttachPath,
+        worktreeBase: pendingSetup?.worktreeBase,
         worktreeCreating: undefined,
         worktreeError: undefined,
         worktreePath: undefined,
@@ -727,7 +782,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     });
   },
 
-  removeSession: (sessionId) => {
+  removeSession: (sessionId, opts) => {
     set((state) => {
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
@@ -741,15 +796,23 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
           activeSessions: ws.activeSessions.filter((id) => id !== sessionId),
         });
       }
-      // Dropping a still-pending new session also clears its per-workspace
-      // draft: the draft belongs to the pending new-session slot, and once
-      // that slot is gone (closed) the text shouldn't resurface on the next
-      // "+ New session".
-      const drafts = clearNewSessionDraftFor(
-        state.newSessionDrafts,
-        s.workspacePath,
-        isNewSessionPending(s),
-      );
+      const wasPending = isNewSessionPending(s);
+      // Dropping a still-pending new session normally clears its per-workspace
+      // draft/setup (explicit close/workspace removal). The automatic
+      // switch-away reap is the exception: it closes only the unused session
+      // record/process and keeps the draft + WorktreeBar setup so the next
+      // "+ New session" in that workspace restores the user's unsent state
+      // without accumulating hidden sessions.
+      const drafts = opts?.preservePendingDraft
+        ? state.newSessionDrafts
+        : clearNewSessionDraftFor(state.newSessionDrafts, s.workspacePath, wasPending);
+      const setupDrafts =
+        opts?.preservePendingDraft && wasPending
+          ? new Map(state.newSessionSetupDrafts).set(
+              s.workspacePath,
+              capturePendingNewSessionSetup(s),
+            )
+          : clearNewSessionSetupFor(state.newSessionSetupDrafts, s.workspacePath, wasPending);
       // Drop this session's per-session draft too — it should never resurface
       // on some other session. No-op if nothing was stored.
       const sessionDrafts = clearSessionDraftFor(state.sessionDrafts, sessionId);
@@ -758,6 +821,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         workspaces,
         activeSessionId: state.activeSessionId === sessionId ? null : state.activeSessionId,
         newSessionDrafts: drafts,
+        newSessionSetupDrafts: setupDrafts,
         sessionDrafts,
       };
     });
@@ -905,6 +969,11 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         transcript.blocks.length > s.transcript.blocks.length;
       const promoted = !!s.isNewPending && userEchoed;
       const drafts = clearNewSessionDraftFor(state.newSessionDrafts, s.workspacePath, promoted);
+      const setupDrafts = clearNewSessionSetupFor(
+        state.newSessionSetupDrafts,
+        s.workspacePath,
+        promoted,
+      );
       sessions.set(sessionId, {
         ...s,
         transcript,
@@ -917,7 +986,9 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         isNewPending: promoted ? false : s.isNewPending,
         editorInjection: promoted ? undefined : s.editorInjection,
       });
-      return promoted ? { sessions, newSessionDrafts: drafts } : { sessions };
+      return promoted
+        ? { sessions, newSessionDrafts: drafts, newSessionSetupDrafts: setupDrafts }
+        : { sessions };
     });
   },
 
@@ -972,12 +1043,22 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         s.workspacePath,
         !!s.isNewPending,
       );
+      const setupDrafts = clearNewSessionSetupFor(
+        state.newSessionSetupDrafts,
+        s.workspacePath,
+        !!s.isNewPending,
+      );
       // Clear the per-session draft (non-pending sessions) — content landed,
       // so the typed text is consumed and won't resurface on switch-back.
       // No-op when there's nothing stored (clearSessionDraftFor returns the
       // same ref). Same early-bail rationale as the per-workspace clear above.
       const sessionDrafts = clearSessionDraftFor(state.sessionDrafts, sessionId);
-      return { sessions, newSessionDrafts: drafts, sessionDrafts };
+      return {
+        sessions,
+        newSessionDrafts: drafts,
+        newSessionSetupDrafts: setupDrafts,
+        sessionDrafts,
+      };
     });
   },
 
@@ -1025,8 +1106,18 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         s.workspacePath,
         !!s.isNewPending,
       );
+      const setupDrafts = clearNewSessionSetupFor(
+        state.newSessionSetupDrafts,
+        s.workspacePath,
+        !!s.isNewPending,
+      );
       const sessionDrafts = clearSessionDraftFor(state.sessionDrafts, sessionId);
-      return { sessions, newSessionDrafts: drafts, sessionDrafts };
+      return {
+        sessions,
+        newSessionDrafts: drafts,
+        newSessionSetupDrafts: setupDrafts,
+        sessionDrafts,
+      };
     });
   },
 
@@ -2078,14 +2169,27 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         s.workspacePath,
         !!s.isNewPending,
       );
+      const setupDrafts = clearNewSessionSetupFor(
+        state.newSessionSetupDrafts,
+        s.workspacePath,
+        !!s.isNewPending,
+      );
       const sessionDrafts = clearSessionDraftFor(state.sessionDrafts, sessionId);
-      return { sessions, newSessionDrafts: drafts, sessionDrafts };
+      return {
+        sessions,
+        newSessionDrafts: drafts,
+        newSessionSetupDrafts: setupDrafts,
+        sessionDrafts,
+      };
     });
   },
 
   openSessionTab: async (workspacePath, sessionFile, opts) => {
-    if (typeof window === "undefined" || !window.pivis) return null;
     const focus = opts?.focus ?? true;
+    if (!sessionFile && focus && isPendingNewSessionActiveFor(get(), workspacePath)) {
+      return get().activeSessionId;
+    }
+    if (typeof window === "undefined" || !window.pivis) return null;
     try {
       // Renderer-side dedupe: a session already open with the same file is reused.
       // (Fast path; main's session.open is also idempotent so this is not load-bearing.)
@@ -2156,11 +2260,11 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     }
   },
 
-  closeSessionTab: async (sessionId) => {
+  closeSessionTab: async (sessionId, opts) => {
     if (typeof window !== "undefined" && window.pivis) {
       await window.pivis.invoke("session.close", { sessionId }).catch(console.error);
     }
-    get().removeSession(sessionId);
+    get().removeSession(sessionId, opts);
   },
 
   archiveSession: async (sessionId, filePath, workspacePath) => {
@@ -2187,6 +2291,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
   },
 
   setActiveSession: (sessionId) => {
+    const previousActiveId = get().activeSessionId;
     set((state) => {
       if (sessionId === null) {
         return { activeSessionId: null, activeWorkspacePath: null };
@@ -2212,6 +2317,17 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       }
       return { activeSessionId: sessionId, activeWorkspacePath: nextWs };
     });
+
+    if (
+      previousActiveId &&
+      previousActiveId !== sessionId &&
+      typeof window !== "undefined" &&
+      window.pivis &&
+      shouldReapPendingNewSession(get().sessions.get(previousActiveId))
+    ) {
+      void get().closeSessionTab(previousActiveId, { preservePendingDraft: true });
+    }
+
     if (sessionId && typeof window !== "undefined" && window.pivis) {
       const s = get().sessions.get(sessionId);
       if (s && (s.status === "cold" || s.status === "exited" || s.status === "failed")) {

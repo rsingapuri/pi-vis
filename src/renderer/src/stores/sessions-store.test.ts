@@ -1678,8 +1678,13 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
       workspaces: new Map(),
       activeWorkspacePath: null,
       newSessionDrafts: new Map(),
+      newSessionSetupDrafts: new Map(),
       sessionDrafts: new Map(),
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("createSession marks a fileless session pending and a resumed one not", () => {
@@ -1783,20 +1788,26 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("draft in progress");
   });
 
-  it("removeSession clears the draft of a still-pending session", () => {
+  it("removeSession clears the draft and setup of a still-pending session", () => {
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE);
     store.setNewSessionDraft(WORKSPACE, "lost on close");
+    store.setWorktreeMode(SESSION_A, "create");
     store.removeSession(SESSION_A);
     expect(useSessionsStore.getState().newSessionDrafts.has(WORKSPACE)).toBe(false);
+    expect(useSessionsStore.getState().newSessionSetupDrafts.has(WORKSPACE)).toBe(false);
   });
 
-  it("removeWorkspace clears its draft", () => {
+  it("removeWorkspace clears its draft and setup", () => {
     const store = useSessionsStore.getState();
     store.addWorkspace(WORKSPACE);
     store.setNewSessionDraft(WORKSPACE, "gone with the workspace");
+    useSessionsStore.setState({
+      newSessionSetupDrafts: new Map([[WORKSPACE, { worktreeMode: "create" }]]),
+    });
     store.removeWorkspace(WORKSPACE);
     expect(useSessionsStore.getState().newSessionDrafts.has(WORKSPACE)).toBe(false);
+    expect(useSessionsStore.getState().newSessionSetupDrafts.has(WORKSPACE)).toBe(false);
   });
 
   it("setNewSessionDraft / clearNewSessionDraft round-trip", () => {
@@ -1821,6 +1832,63 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     // Once A has content it is no longer a pending new session.
     store.addUserMessage(SESSION_A, "hi");
     expect(isPendingNewSessionActiveFor(useSessionsStore.getState(), WORKSPACE)).toBe(false);
+  });
+
+  it("reaps an idle pending new session when switching away but preserves draft and setup", async () => {
+    const invoke = vi.fn(async () => ({ success: true }));
+    vi.stubGlobal("window", { pivis: { invoke } });
+    const store = useSessionsStore.getState();
+    store.addWorkspace(WORKSPACE);
+    store.createSession(SESSION_A, WORKSPACE);
+    store.createSession(SESSION_B, WORKSPACE, "/f/b.jsonl", undefined, undefined, "ready");
+    store.setNewSessionDraft(WORKSPACE, "discard me");
+    store.setWorktreeMode(SESSION_A, "attach");
+    store.setWorktreeAttachPath(SESSION_A, "/tmp/worktree-a");
+    store.setWorktreeBase(SESSION_A, "main");
+    useSessionsStore.setState({ activeSessionId: SESSION_A, activeWorkspacePath: WORKSPACE });
+
+    store.setActiveSession(SESSION_B);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(invoke).toHaveBeenCalledWith("session.close", { sessionId: SESSION_A });
+    expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(false);
+    expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("discard me");
+    expect(useSessionsStore.getState().activeSessionId).toBe(SESSION_B);
+
+    store.createSession(SESSION_C, WORKSPACE);
+    const nextPending = useSessionsStore.getState().sessions.get(SESSION_C);
+    expect(nextPending?.worktreeMode).toBe("attach");
+    expect(nextPending?.worktreeAttachPath).toBe("/tmp/worktree-a");
+    expect(nextPending?.worktreeBase).toBe("main");
+  });
+
+  it("does not reap a pending session once a send is in flight", async () => {
+    const invoke = vi.fn(async () => ({ success: true }));
+    vi.stubGlobal("window", { pivis: { invoke } });
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
+    store.createSession(SESSION_B, WORKSPACE, "/f/b.jsonl", undefined, undefined, "ready");
+    store.setStreaming(SESSION_A, true);
+    useSessionsStore.setState({ activeSessionId: SESSION_A, activeWorkspacePath: WORKSPACE });
+
+    store.setActiveSession(SESSION_B);
+    await Promise.resolve();
+
+    expect(invoke).not.toHaveBeenCalledWith("session.close", { sessionId: SESSION_A });
+    expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(true);
+  });
+
+  it("openSessionTab no-ops for a repeated + New session click in the active workspace", async () => {
+    const invoke = vi.fn(async () => ({ outcome: "opened", sessionId: SESSION_B }));
+    vi.stubGlobal("window", { pivis: { invoke } });
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
+    useSessionsStore.setState({ activeSessionId: SESSION_A, activeWorkspacePath: WORKSPACE });
+
+    await expect(store.openSessionTab(WORKSPACE)).resolves.toBe(SESSION_A);
+    expect(invoke).not.toHaveBeenCalledWith("session.open", expect.anything());
+    expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(true);
   });
 
   it("tree history makes an empty visible branch count as real session history", () => {

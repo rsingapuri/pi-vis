@@ -141,9 +141,11 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
 
   // Whether the active session is a brand-new (still-empty) one. For such
   // sessions the unsent composer text is mirrored into a per-workspace store
-  // slot (`newSessionDrafts`) so it survives switching away and back — the
-  // "+ New session" button is shown as selected instead of a session row.
-  // For normal sessions we keep the text in local state as before.
+  // slot (`newSessionDrafts`) while the placeholder is active — the "+ New
+  // session" button is shown as selected instead of a session row. Switching
+  // to another session reaps that empty placeholder but preserves the draft
+  // (and WorktreeBar setup) for the next "+ New session" in the workspace. For
+  // normal sessions we keep the text in local state as before.
   const workspacePath = session?.workspacePath;
   const pending = useMemo(() => isNewSessionPending(session), [session]);
   // Track which workspace's draft is currently mirrored into `text`, so a
@@ -159,12 +161,14 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   workspacePathRef.current = workspacePath;
 
   // Seed / re-seed local text from the store draft when the pending session
-  // or its workspace changes (e.g. user switches away and clicks "+ New
-  // session" again — the typed text comes back). Non-pending sessions
-  // restore their own per-session draft the same way, so typed text survives
-  // switching to another session and back. We read the draft via getState()
-  // (not a reactive subscription) so per-keystroke draft writes don't
-  // trigger an extra render here — the setText in handleChange already does.
+  // or its workspace changes. For pending sessions this covers remounts while
+  // the placeholder remains active and the fresh placeholder created after a
+  // switch-away reap (session setup is restored when that placeholder session
+  // is created). Non-pending sessions restore their own per-session draft the
+  // same way, so typed text survives switching to another session and back.
+  // We read the draft via getState() (not a reactive subscription) so
+  // per-keystroke draft writes don't trigger an extra render here — the setText
+  // in handleChange already does.
   useEffect(() => {
     if (pending && workspacePath) {
       if (seededWorkspaceRef.current !== workspacePath) {
@@ -741,10 +745,10 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         // prompts/bash/template/skill sends. But non-promoting slash
         // commands (/model, /name, /settings, /diff, /login, …) add no
         // transcript block, so they'd leave their command text lingering in
-        // the draft — and it would resurface on the next "+ New session"
-        // (or, for non-pending sessions, on switch-back). Clear here too,
-        // once the action has dispatched successfully past all guards. This
-        // is idempotent with the store-side clears.
+        // the active pending draft (or, for non-pending sessions, on
+        // switch-back). Clear here too, once the action has dispatched
+        // successfully past all guards. This is idempotent with the
+        // store-side clears.
         // Read isNewPending from the store (authoritative at this moment)
         // rather than pendingRef.current, which may not have re-rendered yet
         // after addUserMessage flipped isNewPending to false during the await
