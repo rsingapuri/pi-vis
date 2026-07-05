@@ -525,11 +525,14 @@ export class SessionHost extends EventEmitter {
           if (pending) {
             if (pending.timer) clearTimeout(pending.timer);
             this.pending.delete(id);
-            if (msg.success) {
-              pending.resolve({ success: true, data: msg.data } as PiRpcResponse);
-            } else {
-              pending.reject(new Error(msg.error || "Host command failed"));
-            }
+            pending.resolve({
+              type: "response",
+              command: "host",
+              id,
+              success: msg.success,
+              data: msg.data,
+              error: msg.error,
+            } as PiRpcResponse);
             return;
           }
         }
@@ -742,7 +745,10 @@ export class SessionHost extends EventEmitter {
     }
     this.proc.kill("SIGTERM");
     this.killTimer = setTimeout(() => {
-      if (this.proc.exitCode === null && !this.proc.killed) {
+      // child.killed only means a signal was sent, not that the process exited.
+      // Escalate whenever the child still has neither an exit code nor an exit
+      // signal after the grace period.
+      if (this.proc.exitCode === null && this.proc.signalCode === null) {
         this.proc.kill("SIGKILL");
       }
     }, 3000);

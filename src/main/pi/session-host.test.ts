@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeHostProcess } from "../../../tests/fixtures/fake-host-process.mjs";
 import {
   HostVersionTooLowError,
@@ -227,6 +227,25 @@ describe("SessionHost", () => {
       await expect(p).resolves.toMatchObject({ success: true });
     });
 
+    it("resolves host command failures as success:false RPC responses", async () => {
+      await fake.emitReady("0.80.0");
+      await host.waitForReady();
+
+      const p = host.sendCommand({ type: "clone" } as never);
+      const sentCmd = fake.sent.find((m) => m.type === "command")!;
+      fake.emitMessage({
+        type: "response",
+        id: sentCmd.id,
+        success: false,
+        error: "Cannot clone an empty session",
+      });
+
+      await expect(p).resolves.toMatchObject({
+        success: false,
+        error: "Cannot clone an empty session",
+      });
+    });
+
     it("rejects when the host exits mid-command (rejectAllPending)", async () => {
       await fake.emitReady("0.80.0");
       await host.waitForReady();
@@ -345,12 +364,13 @@ describe("SessionHost", () => {
       await expect(host.sendCommand({ type: "get_state" })).rejects.toThrow(/closed/i);
     });
 
-    it("a command sent BEFORE ready is bounced 'Not initialized' by the host", async () => {
-      // The fake mirrors host.mjs:340. This is the failure the registry's
-      // _procReady gate prevents (P1-i); at the SessionHost layer the bounce
-      // is surfaced verbatim so a routing regression is visible, not silent.
-      const p = host.sendCommand({ type: "get_state" });
-      await expect(p).rejects.toThrow(/Not initialized/);
+    it("a command sent BEFORE ready resolves with the host's 'Not initialized' failure", async () => {
+      // The fake mirrors host.mjs. This is the failure the registry's
+      // _procReady gate prevents (P1-i); at the SessionHost layer command
+      // failures are normal RPC responses, not rejected IPC sends.
+      const res = await host.sendCommand({ type: "get_state" });
+      expect(res.success).toBe(false);
+      expect(res.error).toMatch(/Not initialized/);
     });
   });
 
@@ -413,6 +433,30 @@ describe("SessionHost", () => {
       const before = fake.sent.length;
       host.sendUnifiedSubmitResponse("u1", true);
       expect(fake.sent.length).toBe(before); // guarded — no channel-closed noise
+    });
+  });
+
+  describe("stop", () => {
+    it("escalates to SIGKILL when the host ignores SIGTERM", () => {
+      const signals: Array<NodeJS.Signals | undefined> = [];
+      (fake as unknown as { signalCode: NodeJS.Signals | null }).signalCode = null;
+      fake.kill = (signal?: NodeJS.Signals) => {
+        signals.push(signal);
+        fake.killed = true;
+        if (signal) fake.killSignal = signal;
+        // Deliberately do NOT emit exit: this fake host ignores SIGTERM.
+        return true;
+      };
+
+      vi.useFakeTimers();
+      try {
+        host.stop();
+        expect(signals).toEqual(["SIGTERM"]);
+        vi.advanceTimersByTime(3000);
+        expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

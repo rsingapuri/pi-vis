@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +8,28 @@ import { PiProcess } from "./pi-process.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const FAKE_PI = join(__dirname, "../../../tests/fixtures/fake-pi.mjs");
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 5000,
+  label = "condition",
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(`Timed out waiting for ${label} after ${timeoutMs}ms`);
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 describe("PiProcess", () => {
   const procs: PiProcess[] = [];
@@ -58,5 +82,45 @@ describe("PiProcess", () => {
     expect(response.data.success).toBe(true);
     expect(Array.isArray((response.data.data as { commands: unknown[] }).commands)).toBe(true);
     child.kill();
+  }, 10_000);
+
+  it("stop escalates to SIGKILL when the child ignores SIGTERM", async () => {
+    const tmp = fs.mkdtempSync(join(os.tmpdir(), "pivis-pi-stop-"));
+    const script = join(tmp, "ignore-term.mjs");
+    const pidFile = join(tmp, "pid");
+    let pid: number | undefined;
+    try {
+      fs.writeFileSync(
+        script,
+        [
+          "#!/usr/bin/env node",
+          'import fs from "node:fs";',
+          "fs.writeFileSync(process.env.PID_FILE, String(process.pid));",
+          'process.on("SIGTERM", () => {});',
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+
+      const proc = new PiProcess(script, tmp, undefined, { PID_FILE: pidFile });
+      procs.push(proc);
+      await waitFor(() => fs.existsSync(pidFile), 2000, "child pid file");
+      pid = Number(fs.readFileSync(pidFile, "utf8"));
+      expect(isPidAlive(pid)).toBe(true);
+
+      proc.stop();
+
+      await waitFor(() => !isPidAlive(pid as number), 6000, "child SIGKILL escalation");
+    } finally {
+      if (pid !== undefined && isPidAlive(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* already gone */
+        }
+      }
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   }, 10_000);
 });

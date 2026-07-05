@@ -1,15 +1,14 @@
-import { exec, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getSubprocessEnv } from "../auth.js";
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
-let cached: { path: string; version: string } | null = null;
+let cached: { key: string; path: string; version: string } | null = null;
 
-async function runCommand(cmd: string): Promise<string | null> {
+async function runCommand(file: string, args: string[]): Promise<string | null> {
   try {
-    const { stdout } = await execAsync(cmd, { timeout: 5000 });
+    const { stdout } = await execFileAsync(file, args, { timeout: 5000 });
     return stdout.trim();
   } catch {
     return null;
@@ -19,18 +18,24 @@ async function runCommand(cmd: string): Promise<string | null> {
 export async function locatePi(
   overridePath?: string | null,
 ): Promise<{ path: string; version: string } | null> {
-  if (cached && !overridePath) return cached;
+  const cacheKey = overridePath ?? "__auto__";
+  if (cached && cached.key === cacheKey) {
+    return { path: cached.path, version: cached.version };
+  }
   const candidates: string[] = [];
 
   if (overridePath) {
     candidates.push(overridePath);
   }
 
-  // macOS GUI apps don't inherit shell PATH — use login shell to resolve
-  const shellPath = await runCommand(`$SHELL -ilc 'command -v pi' 2>/dev/null`);
+  // macOS GUI apps don't inherit shell PATH — use login shell to resolve.
+  // execFile avoids interpolating SHELL through a shell (environment values can
+  // contain spaces/metacharacters and must never become shell syntax).
+  const shell = process.env.SHELL || "/bin/bash";
+  const shellPath = await runCommand(shell, ["-ilc", "command -v pi"]);
   if (shellPath) candidates.push(shellPath);
 
-  const whichPath = await runCommand("which pi");
+  const whichPath = await runCommand("which", ["pi"]);
   if (whichPath) candidates.push(whichPath);
 
   if (candidates.length === 0) return null;
@@ -53,8 +58,9 @@ export async function locatePi(
       });
       const version = stdout.trim();
       if (version) {
-        cached = { path: candidate, version };
-        return cached;
+        const successfulKey = overridePath && candidate === overridePath ? cacheKey : "__auto__";
+        cached = { key: successfulKey, path: candidate, version };
+        return { path: candidate, version };
       }
     } catch {
       // try next candidate

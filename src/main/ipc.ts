@@ -722,6 +722,11 @@ export function stopAllSessions(): void {
   } catch {
     /* best effort */
   }
+  try {
+    stopAuthWatch();
+  } catch {
+    /* best effort */
+  }
   registry?.stopAll();
 }
 

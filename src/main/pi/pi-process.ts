@@ -187,7 +187,10 @@ export class PiProcess extends EventEmitter {
     if (this.killTimer) return; // already stopping
     this.proc.kill("SIGTERM");
     this.killTimer = setTimeout(() => {
-      if (this.proc.exitCode === null && !this.proc.killed) {
+      // child.killed only means a signal was sent, not that the process exited.
+      // Escalate whenever the child still has neither an exit code nor an exit
+      // signal after the grace period.
+      if (this.proc.exitCode === null && this.proc.signalCode === null) {
         this.proc.kill("SIGKILL");
       }
     }, 3000);
