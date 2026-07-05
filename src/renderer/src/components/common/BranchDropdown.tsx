@@ -338,7 +338,10 @@ export function BranchDropdown({
             role="option"
             aria-selected={false}
             className={`branch-dropdown__checkbox-row${highlightedIndex === checkboxIndex ? " branch-dropdown__item--highlighted" : ""}`}
-            onClick={onToggleRemote}
+            onClick={(e) => {
+              if (e.target instanceof Element && e.target.closest("label")) return;
+              onToggleRemote();
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
@@ -351,7 +354,16 @@ export function BranchDropdown({
             }}
           >
             <label className="branch-dropdown__checkbox-label">
-              <input type="checkbox" checked={includeRemoteBranches} onChange={onToggleRemote} />
+              <input
+                type="checkbox"
+                checked={includeRemoteBranches}
+                onChange={onToggleRemote}
+                onClick={(e) => {
+                  // A label click synthesizes an input click; keep that event
+                  // from also bubbling into the clickable row.
+                  e.stopPropagation();
+                }}
+              />
               <span>Include remote branches</span>
             </label>
           </div>

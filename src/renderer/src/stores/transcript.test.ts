@@ -1,6 +1,11 @@
 import type { KnownPiEvent } from "@shared/pi-protocol/events.js";
 import { describe, expect, it } from "vitest";
-import { addUserBlock, applyPiEvent, createTranscriptState } from "./transcript.js";
+import {
+  addUserBlock,
+  applyPiEvent,
+  clearPendingUserEcho,
+  createTranscriptState,
+} from "./transcript.js";
 
 function e<T extends KnownPiEvent>(event: T): T {
   return event;
@@ -410,6 +415,56 @@ describe("transcript reducer — role-based message_start", () => {
       expect(state.blocks[0].data.content).toBe("what I typed");
     }
     expect(state.pendingEchoes).toEqual([]);
+  });
+
+  it("clearing a failed optimistic echo lets a later server user message render", () => {
+    let state = createTranscriptState();
+    state = addUserBlock(state, "failed send", undefined, true);
+    state = clearPendingUserEcho(state, "failed send");
+    expect(state.pendingEchoes).toEqual([]);
+
+    state = applyPiEvent(
+      state,
+      e({ type: "message_start", message: { role: "user", content: "from server later" } }),
+    );
+    expect(state.blocks).toHaveLength(1);
+    if (state.blocks[0]?.type === "user") {
+      expect(state.blocks[0].data.content).toBe("from server later");
+    }
+  });
+
+  it("clears only the tail-most matching user block, preserving an identical earlier one", () => {
+    // Two identical prompts: an earlier legitimate one already in history and a
+    // just-submitted optimistic one whose send then fails. Clearing must drop
+    // only the tail-most (optimistic) block, never the historical echo.
+    let state = createTranscriptState();
+    state = addUserBlock(state, "retry me", undefined, false); // history — no echo token
+    const historicalId = state.blocks[0]?.id;
+    state = addUserBlock(state, "retry me", undefined, true); // optimistic — registers echo
+    expect(state.blocks).toHaveLength(2);
+    expect(state.pendingEchoes).toEqual(["retry me"]);
+
+    state = clearPendingUserEcho(state, "retry me");
+
+    expect(state.blocks).toHaveLength(1);
+    expect(state.blocks[0]?.id).toBe(historicalId);
+    expect(state.pendingEchoes).toEqual([]);
+  });
+
+  it("a no-echo optimistic steer does not suppress the next real user echo", () => {
+    let state = createTranscriptState();
+    state = addUserBlock(state, "steer text", undefined, false);
+    expect(state.pendingEchoes).toEqual([]);
+
+    state = applyPiEvent(
+      state,
+      e({ type: "message_start", message: { role: "user", content: "next prompt" } }),
+    );
+
+    expect(state.blocks).toHaveLength(2);
+    if (state.blocks[1]?.type === "user") {
+      expect(state.blocks[1].data.content).toBe("next prompt");
+    }
   });
 
   it("user message_start with no pending echo appends a fresh user block (server/extension-originated)", () => {

@@ -71,7 +71,14 @@ export interface ExecuteDeps {
     type?: "info" | "error" | "warning" | "success",
   ) => void;
   /** Optimistically insert a user bubble for plain prompts. */
-  addUserMessage: (sessionId: SessionId, content: string, images?: string[]) => void;
+  addUserMessage: (
+    sessionId: SessionId,
+    content: string,
+    images?: string[],
+    opts?: { registerEcho?: boolean },
+  ) => void;
+  /** Clear an optimistic echo registration when the send failed before pi could echo it. */
+  clearPendingUserEcho: (sessionId: SessionId, content: string) => void;
   /** Bash lifecycle: start block, finish with output. */
   addBashCommand: (sessionId: SessionId, command: string) => void;
   finishBashCommand: (sessionId: SessionId, output: string, exitCode?: number) => void;
@@ -138,6 +145,19 @@ export type PickerRequest =
       projectTrusted: boolean;
       options: ProjectTrustOption[];
     };
+
+type InvokeEnvelope<T> = { success: boolean; data?: T; error?: string };
+
+function normalizeInvokeResult<T>(raw: unknown): InvokeEnvelope<T> {
+  if (
+    raw &&
+    typeof raw === "object" &&
+    typeof (raw as { success?: unknown }).success === "boolean"
+  ) {
+    return raw as InvokeEnvelope<T>;
+  }
+  return { success: true, data: raw as T };
+}
 
 export async function executeAction(
   sessionId: SessionId,
@@ -267,6 +287,15 @@ async function executeSendPrompt(
         command: extensionCommand,
         uiSurface: deps.uiSurface,
       })
+      .then((res) => {
+        if (!res.success) {
+          deps.addToast(
+            sessionId,
+            `Extension command failed: ${res.error ?? "Command failed"}`,
+            "error",
+          );
+        }
+      })
       .catch((err) => {
         console.error("[execute] extension command failed:", err);
         // P2-a: a dead session / failed send would otherwise vanish silently
@@ -282,23 +311,28 @@ async function executeSendPrompt(
     return;
   }
 
+  // If the model is mid-turn, send a `steer` instead of a new `prompt`.
+  // A `prompt` sent while busy is queued by pi and only runs after the
+  // current turn finishes; `steer` injects the message into the running
+  // turn so the user's course correction takes effect immediately.
+  const isSteer = deps.isStreaming(sessionId);
+
   // Plain text + prompt-template / skill / unknown /foo: pi will deliver a
   // user message via the wire (role: "user" message_start) which renders
   // the authoritative text — we still seed the bubble optimistically so
-  // the user sees their text instantly.
+  // the user sees their text instantly. Steer messages are optimistic too,
+  // but do not register a pending echo: pi does not echo steer as a normal
+  // user message_start, and a stale token would suppress the next real echo.
   if (action.commandSource === undefined) {
     deps.addUserMessage(
       sessionId,
       action.text,
       action.images?.map((i) => i.dataUrl),
+      { registerEcho: !isSteer },
     );
   }
 
-  // If the model is mid-turn, send a `steer` instead of a new `prompt`.
-  // A `prompt` sent while busy is queued by pi and only runs after the
-  // current turn finishes; `steer` injects the message into the running
-  // turn so the user's course correction takes effect immediately.
-  if (deps.isStreaming(sessionId)) {
+  if (isSteer) {
     const steerCommand: {
       type: "steer";
       message: string;
@@ -314,11 +348,27 @@ async function executeSendPrompt(
         mimeType: i.mimeType,
       }));
     }
-    await deps.invoke("session.sendCommand", {
-      sessionId,
-      command: steerCommand,
-      uiSurface: deps.uiSurface,
-    });
+    let res: { success: boolean; data?: unknown; error?: string };
+    try {
+      res = await deps.invoke("session.sendCommand", {
+        sessionId,
+        command: steerCommand,
+        uiSurface: deps.uiSurface,
+      });
+    } catch (err) {
+      if (action.commandSource === undefined) deps.clearPendingUserEcho(sessionId, action.text);
+      const message =
+        err instanceof Error ? err.message : `Failed to steer current turn: ${String(err)}`;
+      deps.addToast(sessionId, message, "error");
+      if (deps.uiSurface === "unified") throw new Error(message);
+      return;
+    }
+    if (!res.success) {
+      if (action.commandSource === undefined) deps.clearPendingUserEcho(sessionId, action.text);
+      const message = res.error ?? "Failed to steer current turn";
+      deps.addToast(sessionId, message, "error");
+      if (deps.uiSurface === "unified") throw new Error(message);
+    }
     return;
   }
 
@@ -352,10 +402,18 @@ async function executeSendPrompt(
     });
   } catch (err) {
     deps.setStreaming(sessionId, false);
-    throw err;
+    if (action.commandSource === undefined) deps.clearPendingUserEcho(sessionId, action.text);
+    const message = err instanceof Error ? err.message : `Failed to send prompt: ${String(err)}`;
+    deps.addToast(sessionId, message, "error");
+    if (deps.uiSurface === "unified") throw new Error(message);
+    return;
   }
   if (!res.success) {
     deps.setStreaming(sessionId, false);
+    if (action.commandSource === undefined) deps.clearPendingUserEcho(sessionId, action.text);
+    const message = res.error ?? "Failed to send prompt";
+    deps.addToast(sessionId, message, "error");
+    if (deps.uiSurface === "unified") throw new Error(message);
   }
 }
 
@@ -400,15 +458,11 @@ async function executeModel(
   // with the search prefilled.
   if (action.search) {
     const models = deps.getAvailableModels(sessionId);
-    // ModelInfo records can omit `provider` for some legacy shapes; the
-    // resolver needs a defined provider. Skip records that lack one.
-    const candidates = models
-      .filter((m): m is ModelInfo & { provider: string } => typeof m.provider === "string")
-      .map((m) =>
-        m.name !== undefined
-          ? { id: m.id, provider: m.provider, name: m.name }
-          : { id: m.id, provider: m.provider },
-      );
+    const candidates = models.map((m) =>
+      m.name !== undefined
+        ? { id: m.id, provider: m.provider, name: m.name }
+        : { id: m.id, provider: m.provider },
+    );
     const exact = findExactModelReferenceMatch(action.search, candidates);
     if (exact) {
       // Route through the same mutation path as the picker/dropdown so the
@@ -416,7 +470,7 @@ async function executeModel(
       // supersession-safe last-used persist too (mirrors applyModelChange).
       const model: ModelInfo = {
         id: exact.id,
-        provider: exact.provider,
+        ...(exact.provider !== undefined ? { provider: exact.provider } : {}),
         ...(exact.name !== undefined ? { name: exact.name } : {}),
       };
       const res = await deps.applyModelChange(sessionId, model);
@@ -449,10 +503,24 @@ async function executeName(
     }
     return;
   }
-  await deps.invoke("session.sendCommand", {
-    sessionId,
-    command: { type: "set_session_name", name: action.name },
-  });
+  let res: Awaited<ReturnType<ExecuteDeps["invoke"]>>;
+  try {
+    res = await deps.invoke("session.sendCommand", {
+      sessionId,
+      command: { type: "set_session_name", name: action.name },
+    });
+  } catch (err) {
+    deps.addToast(
+      sessionId,
+      `Failed to set session name: ${err instanceof Error ? err.message : String(err)}`,
+      "error",
+    );
+    return;
+  }
+  if (!res.success) {
+    deps.addToast(sessionId, res.error ?? "Failed to set session name", "error");
+    return;
+  }
   // Store updates via session_info_changed event (SessionHeader subscribes).
   deps.addToast(sessionId, `Session name set: ${action.name}`);
 }
@@ -690,15 +758,17 @@ async function executeTrust(sessionId: SessionId, deps: ExecuteDeps): Promise<vo
 // verbatim from main.
 
 async function executeShare(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
-  const res = await deps.invoke<{
+  type ShareResult = {
     ok: boolean;
     url?: string;
     gistUrl?: string;
     error?: string;
-  }>("session.share", { sessionId });
-  // `invoke` returns { success, data, error }; session.share's own result is
-  // { ok, url, gistUrl | error }. Reconcile the two layers explicitly rather
-  // than `res.data ?? res` (which would cast the wrapper shape on a miss).
+  };
+  const raw = (await deps.invoke<ShareResult>("session.share", { sessionId })) as unknown;
+  // session.share is a non-RPC IPC channel and returns {ok,...} directly from
+  // window.pivis.invoke; unit tests may still pass an envelope-shaped fake.
+  // Accept both so the command works in the real app and remains easy to test.
+  const res = normalizeInvokeResult<ShareResult>(raw);
   if (!res.success) {
     deps.addToast(sessionId, res.error ?? "Failed to share session", "error");
     return;
@@ -709,13 +779,22 @@ async function executeShare(sessionId: SessionId, deps: ExecuteDeps): Promise<vo
     return;
   }
   const url = result.url ?? "";
-  if (url) await deps.copyToClipboard(url);
+  let clipboardError: string | null = null;
+  if (url) {
+    try {
+      await deps.copyToClipboard(url);
+    } catch (err) {
+      clipboardError = err instanceof Error ? err.message : String(err);
+    }
+  }
   // Mirror pi's TUI, which surfaces both the viewer URL and the raw gist
-  // URL (so the user has the gist itself for inspection/deletion).
+  // URL (so the user has the gist itself for inspection/deletion). Show the
+  // URL even when clipboard write fails — sharing already succeeded.
   const gistUrl = result.gistUrl ?? "";
+  const message = gistUrl ? `Share URL: ${url}\nGist: ${gistUrl}` : `Share URL: ${url}`;
   deps.addToast(
     sessionId,
-    gistUrl ? `Share URL: ${url}\nGist: ${gistUrl}` : `Share URL: ${url}`,
+    clipboardError ? `${message}\nClipboard copy failed: ${clipboardError}` : message,
     "success",
   );
 }
@@ -728,10 +807,11 @@ async function executeShare(sessionId: SessionId, deps: ExecuteDeps): Promise<vo
 // renderer renders the raw markdown via the existing markdown renderer.
 
 async function executeChangelog(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
-  const res = await deps.invoke<{ ok: boolean; markdown?: string; error?: string }>(
-    "pi.changelog",
-    undefined,
-  );
+  type ChangelogResult = { ok: boolean; markdown?: string; error?: string };
+  const raw = (await deps.invoke<ChangelogResult>("pi.changelog", undefined)) as unknown;
+  // pi.changelog is a non-RPC IPC channel and returns {ok,...} directly from
+  // window.pivis.invoke; unit tests may still pass an envelope-shaped fake.
+  const res = normalizeInvokeResult<ChangelogResult>(raw);
   if (!res.success) {
     deps.addToast(sessionId, res.error ?? "Failed to load changelog", "error");
     return;

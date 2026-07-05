@@ -1069,11 +1069,13 @@ function Rail({
       const rail = railRef.current;
       if (!rail) return;
       const left = rail.getBoundingClientRect().left;
+      let latestWidth = railWidth;
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
 
       const onMove = (ev: MouseEvent) => {
         const w = Math.max(160, Math.min(560, ev.clientX - left));
+        latestWidth = w;
         setRailWidth(w);
       };
 
@@ -1082,10 +1084,10 @@ function Rail({
         document.body.style.userSelect = "";
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
-        // Persist width on release.
-        const finalWidth = railWidth;
+        // Persist width on release. Use the drag closure's latest value;
+        // `railWidth` is the render value from drag start and may be stale.
         import("../../stores/settings-store.js").then((mod) =>
-          mod.useSettingsStore.getState().update({ diffRailWidth: finalWidth }),
+          mod.useSettingsStore.getState().update({ diffRailWidth: latestWidth }),
         );
       };
 

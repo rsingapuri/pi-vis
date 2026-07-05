@@ -27,6 +27,7 @@ function makeDeps(overrides: Partial<ExecuteDeps> = {}): {
     setStreaming: make("setStreaming") as ExecuteDeps["setStreaming"],
     addToast: make("addToast") as ExecuteDeps["addToast"],
     addUserMessage: make("addUserMessage") as ExecuteDeps["addUserMessage"],
+    clearPendingUserEcho: make("clearPendingUserEcho") as ExecuteDeps["clearPendingUserEcho"],
     addBashCommand: make("addBashCommand") as ExecuteDeps["addBashCommand"],
     finishBashCommand: make("finishBashCommand") as ExecuteDeps["finishBashCommand"],
     applyModelChange: (async (...args: unknown[]) => {
@@ -89,6 +90,19 @@ describe("executeAction — model", () => {
     expect(calls["invoke"]).toBeUndefined();
   });
 
+  it("/model <providerless-id> applies the model directly when the id is unique", async () => {
+    const { deps, calls } = makeDeps({
+      getAvailableModels: () =>
+        [
+          { id: "local-model", name: "Local Model" },
+          { id: "deepseek-v3", provider: "deepseek", name: "DeepSeek V3" },
+        ] as never,
+    });
+    await executeAction(SID, { kind: "model", search: "local-model" }, deps);
+    expect(calls["applyModelChange"]).toEqual([[SID, { id: "local-model", name: "Local Model" }]]);
+    expect(calls["openPicker"]).toBeUndefined();
+  });
+
   it("/model <search> with no match opens the picker (search prefilled)", async () => {
     const { deps, calls } = makeDeps();
     await executeAction(SID, { kind: "model", search: "nope" }, deps);
@@ -110,6 +124,16 @@ describe("executeAction — name", () => {
       [{ sessionId: SID, command: { type: "set_session_name", name: "Hello" } }],
     ]);
     expect(calls["addToast"]).toEqual([[SID, "Session name set: Hello"]]);
+  });
+
+  it("/name <name> toasts an error when pi rejects the rename", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: false,
+      error: "name is reserved",
+    });
+    await executeAction(SID, { kind: "name", name: "Hello" }, deps);
+    expect(calls["addToast"]).toEqual([[SID, "name is reserved", "error"]]);
   });
 
   it("/name with no arg shows current name when one is set", async () => {
@@ -219,7 +243,54 @@ describe("executeAction — send-prompt vs steer", () => {
     const send = invocations.find((c) => c[0] === "session.sendCommand");
     expect(send).toBeDefined();
     expect(send![1].command.type).toBe("prompt");
+    expect(calls["addUserMessage"]).toEqual([[SID, "hello", undefined, { registerEcho: true }]]);
     expect(calls["setStreaming"]).toEqual([[SID, true]]);
+  });
+
+  it("toasts and clears streaming when an idle prompt is rejected", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: false,
+      error: "provider unavailable",
+    });
+    await executeAction(SID, { kind: "send-prompt", text: "hello" }, deps);
+    expect(calls["setStreaming"]).toEqual([
+      [SID, true],
+      [SID, false],
+    ]);
+    expect(calls["clearPendingUserEcho"]).toEqual([[SID, "hello"]]);
+    expect(calls["addToast"]).toEqual([[SID, "provider unavailable", "error"]]);
+  });
+
+  it("toasts and clears streaming when an idle prompt send throws", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("IPC channel closed"));
+    await expect(executeAction(SID, { kind: "send-prompt", text: "hello" }, deps)).resolves.toBe(
+      undefined,
+    );
+    expect(calls["setStreaming"]).toEqual([
+      [SID, true],
+      [SID, false],
+    ]);
+    expect(calls["clearPendingUserEcho"]).toEqual([[SID, "hello"]]);
+    expect(calls["addToast"]).toEqual([[SID, "IPC channel closed", "error"]]);
+  });
+
+  it("throws after toast on unified prompt failure so the host restores editor text", async () => {
+    const { deps, calls } = makeDeps({ uiSurface: "unified" });
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: false,
+      error: "provider unavailable",
+    });
+
+    await expect(executeAction(SID, { kind: "send-prompt", text: "hello" }, deps)).rejects.toThrow(
+      /provider unavailable/,
+    );
+    expect(calls["setStreaming"]).toEqual([
+      [SID, true],
+      [SID, false],
+    ]);
+    expect(calls["addToast"]).toEqual([[SID, "provider unavailable", "error"]]);
   });
 
   it("sends a `steer` command (and does not set streaming) when already streaming", async () => {
@@ -230,8 +301,49 @@ describe("executeAction — send-prompt vs steer", () => {
     expect(send).toBeDefined();
     expect(send![1].command.type).toBe("steer");
     expect(send![1].command.message).toBe("actually do X");
+    expect(calls["addUserMessage"]).toEqual([
+      [SID, "actually do X", undefined, { registerEcho: false }],
+    ]);
     // Streaming state must not be re-toggled mid-turn.
     expect(calls["setStreaming"]).toBeUndefined();
+  });
+
+  it("toasts when a steer command is rejected", async () => {
+    const { deps, calls } = makeDeps({ isStreaming: () => true });
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: false,
+      error: "cannot steer now",
+    });
+    await executeAction(SID, { kind: "send-prompt", text: "actually do X" }, deps);
+    expect(calls["setStreaming"]).toBeUndefined();
+    expect(calls["clearPendingUserEcho"]).toEqual([[SID, "actually do X"]]);
+    expect(calls["addToast"]).toEqual([[SID, "cannot steer now", "error"]]);
+  });
+
+  it("throws after toast on unified steer failure so the host restores editor text", async () => {
+    const { deps, calls } = makeDeps({ isStreaming: () => true, uiSurface: "unified" });
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: false,
+      error: "cannot steer now",
+    });
+
+    await expect(
+      executeAction(SID, { kind: "send-prompt", text: "actually do X" }, deps),
+    ).rejects.toThrow(/cannot steer now/);
+    expect(calls["setStreaming"]).toBeUndefined();
+    expect(calls["clearPendingUserEcho"]).toEqual([[SID, "actually do X"]]);
+    expect(calls["addToast"]).toEqual([[SID, "cannot steer now", "error"]]);
+  });
+
+  it("toasts when a steer command throws", async () => {
+    const { deps, calls } = makeDeps({ isStreaming: () => true });
+    (deps.invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("session exited"));
+    await expect(
+      executeAction(SID, { kind: "send-prompt", text: "actually do X" }, deps),
+    ).resolves.toBe(undefined);
+    expect(calls["setStreaming"]).toBeUndefined();
+    expect(calls["clearPendingUserEcho"]).toEqual([[SID, "actually do X"]]);
+    expect(calls["addToast"]).toEqual([[SID, "session exited", "error"]]);
   });
 });
 
@@ -272,7 +384,8 @@ describe("executeAction — changelog", () => {
     const { deps, calls } = makeDeps();
     (deps.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (ch: string) => {
       if (ch === "pi.changelog") {
-        return { success: true, data: { ok: true, markdown: "# v1.2.3\n- change" } };
+        // Real IPC returns this direct shape, not a {success,data} RPC envelope.
+        return { ok: true, markdown: "# v1.2.3\n- change" };
       }
       return { success: true, data: {} };
     });
@@ -285,12 +398,60 @@ describe("executeAction — changelog", () => {
   it("/changelog toasts on failure and does not open the modal", async () => {
     const { deps, calls } = makeDeps();
     (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
-      success: true,
-      data: { ok: false, error: "changelog not found" },
+      ok: false,
+      error: "changelog not found",
     });
     await executeAction(SID, { kind: "changelog" }, deps);
     expect(calls["addToast"]).toEqual([[SID, "changelog not found", "error"]]);
     expect(calls["openChangelog"]).toBeUndefined();
+  });
+});
+
+describe("executeAction — share", () => {
+  it("/share handles the direct IPC result, copies the URL, and toasts both links", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (ch: string) => {
+      if (ch === "session.share") {
+        // Real IPC returns this direct shape, not a {success,data} RPC envelope.
+        return { ok: true, url: "https://pi.dev/share/abc", gistUrl: "https://gist.github.com/g" };
+      }
+      return { success: true, data: {} };
+    });
+
+    await executeAction(SID, { kind: "share" }, deps);
+
+    expect(deps.copyToClipboard).toHaveBeenCalledWith("https://pi.dev/share/abc");
+    expect(calls["addToast"]).toEqual([
+      [SID, "Share URL: https://pi.dev/share/abc\nGist: https://gist.github.com/g", "success"],
+    ]);
+  });
+
+  it("/share still shows the share URL when clipboard copy fails", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (ch: string) => {
+      if (ch === "session.share") return { ok: true, url: "https://pi.dev/share/abc" };
+      return { success: true, data: {} };
+    });
+    (deps.copyToClipboard as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("denied"));
+
+    await executeAction(SID, { kind: "share" }, deps);
+
+    expect(calls["addToast"]).toEqual([
+      [SID, "Share URL: https://pi.dev/share/abc\nClipboard copy failed: denied", "success"],
+    ]);
+  });
+
+  it("/share toasts direct IPC failures", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      error: "gh not logged in",
+    });
+
+    await executeAction(SID, { kind: "share" }, deps);
+
+    expect(deps.copyToClipboard).not.toHaveBeenCalled();
+    expect(calls["addToast"]).toEqual([[SID, "gh not logged in", "error"]]);
   });
 });
 

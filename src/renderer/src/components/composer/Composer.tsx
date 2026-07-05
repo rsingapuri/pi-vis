@@ -678,6 +678,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           setStreaming,
           addToast,
           addUserMessage,
+          clearPendingUserEcho: useSessionsStore.getState().clearPendingUserEcho,
           addBashCommand,
           finishBashCommand,
           applyModelChange,

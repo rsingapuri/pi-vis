@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isNewSessionPending,
   isPendingNewSessionActiveFor,
+  isSessionAbortable,
   sessionHasHistory,
   shouldShowWorkingIndicator,
   useSessionsStore,
@@ -994,6 +995,69 @@ describe("sessions store - bootstrapModelState (model/thinking invariants)", () 
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.modelInitialized).toBe(true);
   });
 
+  it("does not overwrite available models with [] when get_available_models resolves success:false", async () => {
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    const existingModels = [{ id: "openrouter/model-x", provider: "openrouter" }];
+    useSessionsStore.getState().setAvailableModels(SESSION_A, existingModels);
+    vi.stubGlobal("window", {
+      pivis: {
+        invoke: vi.fn(async () => ({ success: false, error: "host not ready" })),
+      },
+    });
+
+    const models = await useSessionsStore.getState().refreshAvailableModels(SESSION_A);
+
+    expect(models).toEqual(existingModels);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.availableModels).toEqual(
+      existingModels,
+    );
+  });
+
+  it("does not optimistically set the last-used model when bootstrap set_model resolves success:false", async () => {
+    setLastUsedModel("openrouter/model-y");
+    vi.stubGlobal("window", {
+      pivis: {
+        invoke: vi.fn(async (_channel: string, payload: Payload) => {
+          const { sessionId, command } = payload;
+          switch (command.type) {
+            case "get_available_models":
+              return {
+                success: true,
+                data: {
+                  models: [
+                    { id: "openrouter/model-x", provider: "openrouter" },
+                    { id: "openrouter/model-y", provider: "openrouter" },
+                  ],
+                },
+              };
+            case "set_model":
+              setModelCalls.push({ sessionId, modelId: command.modelId as string });
+              return { success: false, error: "rejected" };
+            case "get_state":
+              return {
+                success: true,
+                data: {
+                  model: { id: "openrouter/model-x", provider: "openrouter" },
+                  thinkingLevel: "off",
+                  sessionId,
+                },
+              };
+            default:
+              return { success: true, data: {} };
+          }
+        }),
+      },
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+
+    expect(setModelCalls).toEqual([{ sessionId: SESSION_A, modelId: "openrouter/model-y" }]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
+      "openrouter/model-x",
+    );
+  });
+
   it("is a no-op on re-invocation — a remount cannot re-apply the preference", async () => {
     setLastUsedModel("openrouter/model-y");
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
@@ -1614,6 +1678,7 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
       workspaces: new Map(),
       activeWorkspacePath: null,
       newSessionDrafts: new Map(),
+      sessionDrafts: new Map(),
     });
   });
 
@@ -1637,6 +1702,32 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     store.addUserMessage(SESSION_A, "hello");
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.isNewPending).toBe(false);
     expect(useSessionsStore.getState().newSessionDrafts.has(WORKSPACE)).toBe(false);
+  });
+
+  it("clearPendingUserEcho removes a failed optimistic first prompt and restores the workspace draft", () => {
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
+    store.addUserMessage(SESSION_A, "retry me");
+
+    store.clearPendingUserEcho(SESSION_A, "retry me");
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.isNewPending).toBe(true);
+    expect(session?.transcript.blocks).toHaveLength(0);
+    expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("retry me");
+  });
+
+  it("clearPendingUserEcho removes a failed optimistic prompt in existing sessions and restores its draft", () => {
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    store.addUserMessage(SESSION_A, "retry me");
+
+    store.clearPendingUserEcho(SESSION_A, "retry me");
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.isNewPending).toBe(false);
+    expect(session?.transcript.blocks).toHaveLength(0);
+    expect(useSessionsStore.getState().sessionDrafts.get(SESSION_A)).toBe("retry me");
   });
 
   it("addBashCommand clears isNewPending and the workspace draft", () => {
@@ -2134,6 +2225,27 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     expect(blocks.some((b) => b.type === "user")).toBe(true);
   });
 
+  it("a prompt send failure replies bailed so the host restores unified editor text", async () => {
+    useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.sendCommand") {
+        return { success: false, error: "provider unavailable" };
+      }
+      return { success: true };
+    });
+
+    await useSessionsStore.getState().handleUnifiedSubmitRequest(SESSION_A, "id-fail", "hello");
+
+    expect(lastUnifiedResponse()).toMatchObject({
+      id: "id-fail",
+      ok: false,
+      bailed: true,
+      error: "provider unavailable",
+    });
+    const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
+    expect(toasts.at(-1)).toMatchObject({ type: "error", message: "provider unavailable" });
+  });
+
   it("a bash command (!prefix) bypasses the no-model guard and dispatches", async () => {
     // no currentModel set — bash must still go through (Composer parity)
     await useSessionsStore.getState().handleUnifiedSubmitRequest(SESSION_A, "id4", "!ls -la");
@@ -2274,13 +2386,32 @@ describe("sessions store - isStreaming turn-end truth (S1, S2) + abortSession (S
     expect(isStreaming()).toBe(false);
   });
 
-  it("setSessionStatus -> 'exited' from 'ready' clears isStreaming (S1)", () => {
+  it("setSessionStatus -> 'exited' from 'ready' clears isStreaming and active transcript work (S1)", () => {
     useSessionsStore.getState().setSessionStatus(SESSION_A, "ready");
     useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
+    useSessionsStore.getState().applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "assistant" },
+    });
+    useSessionsStore.getState().applyEvent(SESSION_A, {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "read",
+      args: {},
+    });
     expect(isStreaming()).toBe(true);
     useSessionsStore.getState().setSessionStatus(SESSION_A, "exited");
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(isStreaming()).toBe(false);
     expect(runningSince()).toBeUndefined();
+    expect(session?.transcript.activeAssistantId).toBeNull();
+    expect(session?.transcript.activeToolCallIds.size).toBe(0);
+    expect(
+      session?.transcript.blocks.every((b) =>
+        b.type === "assistant" || b.type === "tool_call" ? b.data.isStreaming === false : true,
+      ),
+    ).toBe(true);
+    expect(isSessionAbortable(session)).toBe(false);
   });
 
   it("setSessionStatus -> 'failed' from 'ready' clears isStreaming (S1)", () => {
@@ -2339,5 +2470,59 @@ describe("sessions store - isStreaming turn-end truth (S1, S2) + abortSession (S
     await Promise.resolve();
     await Promise.resolve();
     expect(true).toBe(true);
+  });
+});
+
+describe("sessions store - clearPendingUserEcho (failed optimistic send)", () => {
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+      newSessionDrafts: new Map(),
+      sessionDrafts: new Map(),
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+  });
+
+  it("brand-new session: removes the bubble, restores the workspace draft, and re-marks pending", () => {
+    const store = useSessionsStore.getState();
+    // The very first prompt of a brand-new (non-resumed) session is sent
+    // optimistically, then the send fails before pi echoes it.
+    store.addUserMessage(SESSION_A, "first prompt");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.blocks).toHaveLength(1);
+
+    store.clearPendingUserEcho(SESSION_A, "first prompt");
+
+    const after = useSessionsStore.getState();
+    // Optimistic bubble is gone...
+    expect(after.sessions.get(SESSION_A)?.transcript.blocks).toHaveLength(0);
+    // ...the text is handed back as the workspace's new-session draft...
+    expect(after.newSessionDrafts.get(WORKSPACE)).toBe("first prompt");
+    // ...and the session is re-marked pending so the composer shows new-session UI.
+    expect(after.sessions.get(SESSION_A)?.isNewPending).toBe(true);
+  });
+
+  it("established session: overwrites the per-session draft with the failed prompt (known clobber tradeoff)", () => {
+    const store = useSessionsStore.getState();
+    // Established session (has prior history), so the restore-to-new-session
+    // path does not apply.
+    store.addUserMessage(SESSION_A, "earlier message");
+    store.addUserMessage(SESSION_A, "message A");
+    // The user starts typing a NEW draft while "message A" is still in flight.
+    store.setSessionDraft(SESSION_A, "draft typed after send");
+
+    store.clearPendingUserEcho(SESSION_A, "message A");
+
+    const after = useSessionsStore.getState();
+    // The tail-most optimistic "message A" bubble is removed; history stands.
+    const blocks = after.sessions.get(SESSION_A)?.transcript.blocks ?? [];
+    expect(blocks).toHaveLength(1);
+    if (blocks[0]?.type === "user") expect(blocks[0].data.content).toBe("earlier message");
+    // KNOWN TRADEOFF: the failed content is written back as the session draft,
+    // overwriting the newer text the user had begun typing. Low-frequency and
+    // recoverable; pinned here so any change to this behavior is deliberate.
+    expect(after.sessionDrafts.get(SESSION_A)).toBe("message A");
   });
 });

@@ -141,6 +141,42 @@ export function createTranscriptState(): TranscriptState {
   };
 }
 
+export function finalizeActiveBlocks(state: TranscriptState): TranscriptState {
+  const activeIds = new Set<string>();
+  if (state.activeAssistantId) activeIds.add(state.activeAssistantId);
+  if (state.activeBashId) activeIds.add(state.activeBashId);
+  for (const blockId of state.activeToolCallIds.values()) activeIds.add(blockId);
+  if (activeIds.size === 0) return state;
+
+  const blocks = state.blocks.map((block): TypedTranscriptBlock => {
+    if (!activeIds.has(block.id)) return block;
+    switch (block.type) {
+      case "assistant":
+        return block.data.isStreaming
+          ? { ...block, data: { ...block.data, isStreaming: false } }
+          : block;
+      case "tool_call":
+        return block.data.isStreaming
+          ? { ...block, data: { ...block.data, isStreaming: false } }
+          : block;
+      case "bash":
+        return block.data.isStreaming
+          ? { ...block, data: { ...block.data, isStreaming: false } }
+          : block;
+      default:
+        return block;
+    }
+  });
+
+  return {
+    ...state,
+    blocks,
+    activeAssistantId: null,
+    activeToolCallIds: new Map(),
+    activeBashId: null,
+  };
+}
+
 export function seedFromHistory(
   state: TranscriptState,
   history: TranscriptBlock[],
@@ -874,6 +910,34 @@ export function addUserBlock(
       { id: blockId, type: "user", data: { role: "user", content, images } },
     ],
     pendingEchoes: registerEcho ? [...state.pendingEchoes, content] : state.pendingEchoes,
+  };
+}
+
+export function clearPendingUserEcho(state: TranscriptState, content: string): TranscriptState {
+  const index = state.pendingEchoes.indexOf(content);
+  let pendingEchoes = state.pendingEchoes;
+  if (index !== -1) {
+    pendingEchoes = [
+      ...state.pendingEchoes.slice(0, index),
+      ...state.pendingEchoes.slice(index + 1),
+    ];
+  }
+
+  // A failed prompt/steer never reaches pi, so remove the optimistic user
+  // bubble as well as its echo token. Prefer the tail-most matching user block:
+  // it is the just-submitted optimistic block, while older identical prompts
+  // are legitimate history.
+  const blockIndex = [...state.blocks]
+    .reverse()
+    .findIndex((block) => block.type === "user" && block.data.content === content);
+  if (blockIndex === -1) {
+    return pendingEchoes === state.pendingEchoes ? state : { ...state, pendingEchoes };
+  }
+  const removeIndex = state.blocks.length - 1 - blockIndex;
+  return {
+    ...state,
+    pendingEchoes,
+    blocks: [...state.blocks.slice(0, removeIndex), ...state.blocks.slice(removeIndex + 1)],
   };
 }
 

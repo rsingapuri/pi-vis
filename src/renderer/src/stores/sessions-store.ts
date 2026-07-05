@@ -23,7 +23,9 @@ import {
   addCustomMessageBlock,
   addUserBlock,
   applyPiEvent,
+  clearPendingUserEcho,
   createTranscriptState,
+  finalizeActiveBlocks,
   finishBashBlock,
   seedFromHistory,
 } from "./transcript.js";
@@ -265,6 +267,26 @@ function clearSessionDraftFor(
   return next;
 }
 
+function setNewSessionDraftFor(
+  drafts: Map<string, string>,
+  workspacePath: string,
+  text: string,
+): Map<string, string> {
+  const next = new Map(drafts);
+  next.set(workspacePath, text);
+  return next;
+}
+
+function setSessionDraftFor(
+  drafts: Map<SessionId, string>,
+  sessionId: SessionId,
+  text: string,
+): Map<SessionId, string> {
+  const next = new Map(drafts);
+  next.set(sessionId, text);
+  return next;
+}
+
 function hasActiveAgentWork(session: SessionViewState | undefined): boolean {
   const transcript = session?.transcript;
   return !!(transcript?.activeAssistantId || (transcript?.activeToolCallIds.size ?? 0) > 0);
@@ -289,7 +311,8 @@ function hasActiveBash(session: SessionViewState | undefined): boolean {
 }
 
 export function isSessionAbortable(session: SessionViewState | undefined): boolean {
-  return session?.isStreaming === true || hasActiveAgentWork(session) || hasActiveBash(session);
+  if (!session || session.status === "exited" || session.status === "failed") return false;
+  return session.isStreaming === true || hasActiveAgentWork(session) || hasActiveBash(session);
 }
 
 interface SessionsStore {
@@ -377,7 +400,13 @@ interface SessionsStore {
   ) => void;
   applyEvent: (sessionId: SessionId, event: PiEvent) => void;
   seedHistory: (sessionId: SessionId, history: TranscriptBlock[]) => void;
-  addUserMessage: (sessionId: SessionId, content: string, images?: string[]) => void;
+  addUserMessage: (
+    sessionId: SessionId,
+    content: string,
+    images?: string[],
+    opts?: { registerEcho?: boolean },
+  ) => void;
+  clearPendingUserEcho: (sessionId: SessionId, content: string) => void;
   addBashCommand: (sessionId: SessionId, command: string) => void;
   finishBashCommand: (sessionId: SessionId, output: string, exitCode?: number) => void;
   setStreaming: (sessionId: SessionId, isStreaming: boolean) => void;
@@ -761,10 +790,12 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         // Only store piVersion when explicitly provided (a non-host "ready"
         // or a status change without version info mustn't clobber a prior
         // value). See P1-c.
+        const transcript = becomingTerminal ? finalizeActiveBlocks(s.transcript) : s.transcript;
         sessions.set(sessionId, {
           ...s,
           status,
           error,
+          transcript,
           isStreaming: becomingTerminal ? false : s.isStreaming,
           runningSince: becomingTerminal ? undefined : s.runningSince,
           ...(piVersion !== undefined ? { piVersion } : {}),
@@ -905,12 +936,12 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     });
   },
 
-  addUserMessage: (sessionId, content, images) => {
+  addUserMessage: (sessionId, content, images, opts) => {
     set((state) => {
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
       if (!s) return {};
-      const transcript = addUserBlock(s.transcript, content, images, true);
+      const transcript = addUserBlock(s.transcript, content, images, opts?.registerEcho ?? true);
       // Self-label a brand-new session from its first prompt so the tab and
       // header have a meaningful identity before pi or the user renames it.
       // Do not overwrite a name set by pi (session_info_changed → sessionName)
@@ -947,6 +978,31 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       // same ref). Same early-bail rationale as the per-workspace clear above.
       const sessionDrafts = clearSessionDraftFor(state.sessionDrafts, sessionId);
       return { sessions, newSessionDrafts: drafts, sessionDrafts };
+    });
+  },
+
+  clearPendingUserEcho: (sessionId, content) => {
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      if (!s) return {};
+      const wasEmptyBeforeOptimisticSend = s.transcript.blocks.length <= 1;
+      const transcript = clearPendingUserEcho(s.transcript, content);
+      if (transcript === s.transcript) return {};
+      const restoredPending =
+        !s.resumed && wasEmptyBeforeOptimisticSend && transcript.blocks.length === 0;
+      sessions.set(sessionId, {
+        ...s,
+        transcript,
+        isNewPending: restoredPending ? true : s.isNewPending,
+      });
+      const newSessionDrafts = restoredPending
+        ? setNewSessionDraftFor(state.newSessionDrafts, s.workspacePath, content)
+        : state.newSessionDrafts;
+      const sessionDrafts = restoredPending
+        ? state.sessionDrafts
+        : setSessionDraftFor(state.sessionDrafts, sessionId, content);
+      return { sessions, newSessionDrafts, sessionDrafts };
     });
   },
 
@@ -1008,7 +1064,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
   abortSession: (sessionId) => {
     const s = get().sessions.get(sessionId);
-    if (!s) return;
+    if (!s || s.status === "exited" || s.status === "failed") return;
     const command =
       s.isStreaming || hasActiveAgentWork(s)
         ? { type: "abort" as const }
@@ -1271,6 +1327,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       setStreaming: get().setStreaming,
       addToast: get().addToast,
       addUserMessage: get().addUserMessage,
+      clearPendingUserEcho: get().clearPendingUserEcho,
       addBashCommand: get().addBashCommand,
       finishBashCommand: get().finishBashCommand,
       applyModelChange: get().applyModelChange,
@@ -1536,11 +1593,13 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
   refreshAvailableModels: async (sessionId) => {
     if (typeof window === "undefined" || !window.pivis) return [];
+    const currentModels = () => get().sessions.get(sessionId)?.availableModels ?? [];
     try {
       const res = await window.pivis.invoke("session.sendCommand", {
         sessionId,
         command: { type: "get_available_models" },
       });
+      if (!res.success) return currentModels();
       const raw = res.data as { models?: unknown[]; currentModelId?: string } | undefined;
       const list = Array.isArray(raw?.models) ? raw.models : [];
       const models = list
@@ -1553,7 +1612,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       return models;
     } catch {
       /* best effort — leave the dropdown showing whatever the store already has */
-      return [];
+      return currentModels();
     }
   },
 
@@ -1625,13 +1684,19 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         ? (sameId.find((m) => m.provider === lum.provider) ??
           (sameId.length === 1 ? sameId[0] : undefined))
         : undefined;
-      if (match?.provider) {
+      if (match) {
         await window.pivis
           .invoke("session.sendCommand", {
             sessionId,
-            command: { type: "set_model", provider: match.provider, modelId: match.id },
+            command: {
+              type: "set_model",
+              ...(match.provider ? { provider: match.provider } : {}),
+              modelId: match.id,
+            },
           })
-          .then(() => get().setCurrentModel(sessionId, match.id, match.provider))
+          .then((res) => {
+            if (res.success) get().setCurrentModel(sessionId, match.id, match.provider);
+          })
           .catch(() => {});
       } else {
         // No last-used match: fall back to pi's reported current model. The
@@ -1710,22 +1775,20 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     if (!before) return { ok: false, error: "Unknown session" };
     const prevModel = before.currentModel;
     const prevProvider = before.currentProvider;
-    // The provider we actually send to pi, and the one stored optimistically
-    // so the store matches the RPC during the in-flight window (avoids the
-    // dropdown falling back to id-only matching and highlighting a wrong
-    // same-id copy when `model.provider` is absent but the id carries one,
-    // e.g. "anthropic/claude-haiku"). `split("/")[0]` is `string | undefined`
-    // under noUncheckedIndexedAccess; the `?? ""` narrows it back to `string`.
-    const provider = model.provider ?? model.id.split("/")[0] ?? "";
+    // The provider we actually send to pi. True providerless registry entries
+    // must stay providerless: synthesizing one from the id makes the SDK host's
+    // exact provider+id lookup miss. The host supports id-only resolution when
+    // this is omitted.
+    const provider = model.provider;
 
     // Optimistic: show the requested model right away (invariant #1's "queued
-    // change about to be sent"). Store the resolved provider (what we send).
+    // change about to be sent").
     get().setCurrentModel(sessionId, model.id, provider);
 
     try {
       const res = await window.pivis.invoke("session.sendCommand", {
         sessionId,
-        command: { type: "set_model", provider, modelId: model.id },
+        command: { type: "set_model", ...(provider ? { provider } : {}), modelId: model.id },
       });
       if (!res.success) throw new Error(res.error ?? "set_model failed");
     } catch (err) {
@@ -1770,7 +1833,8 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         // ambiguous highlighting when duplicate same-id entries exist).
         if (raw?.model && typeof raw.model.id === "string") {
           persistId = raw.model.id;
-          if (typeof raw.model.provider === "string") persistProvider = raw.model.provider;
+          persistProvider =
+            typeof raw.model.provider === "string" ? raw.model.provider : persistProvider;
           get().setCurrentModel(sessionId, persistId, persistProvider);
         }
       } else {
@@ -1787,7 +1851,10 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
     if (shouldPersist) {
       void useSettingsStore.getState().update({
-        lastUsedModel: { provider: persistProvider, modelId: persistId },
+        lastUsedModel: {
+          ...(persistProvider ? { provider: persistProvider } : {}),
+          modelId: persistId,
+        },
       });
     }
     return { ok: true };
