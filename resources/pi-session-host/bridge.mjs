@@ -321,15 +321,20 @@ export function setupCommandBridge({
         // the registry exactly as rpc-mode does.
         case "set_model": {
           const models = await _session.modelRegistry.getAvailable();
-          const model = models.find(
-            (m) => m.provider === command.provider && m.id === command.modelId,
-          );
+          const provider = typeof command.provider === "string" ? command.provider : "";
+          const candidates = models.filter((m) => m.id === command.modelId);
+          const model = provider
+            ? candidates.find((m) => m.provider === provider)
+            : candidates.length === 1
+              ? candidates[0]
+              : candidates.find((m) => !m.provider);
           if (!model) {
+            const label = provider ? `${provider}/${command.modelId}` : command.modelId;
             send({
               type: "response",
               id,
               success: false,
-              error: `Model not found: ${command.provider}/${command.modelId}`,
+              error: `Model not found: ${label}`,
             });
             return;
           }

@@ -43,7 +43,10 @@ export const AppSettingsSchema = z.object({
   // workspaces. Independent of `lastActiveWorkspace` (which tracks focus).
   expandedWorkspaces: z.array(z.string()).default([]),
   lastActiveWorkspace: z.string().nullable().default(null),
-  lastUsedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().default(null),
+  lastUsedModel: z
+    .object({ provider: z.string().optional(), modelId: z.string() })
+    .nullable()
+    .default(null),
   lastUsedThinkingLevel: ThinkingLevelSchema.nullable().default(null),
   // Worktree associations: worktreePath → identity. Persisted so worktree
   // sessions survive app relaunch (their session-file cwd is the worktree,

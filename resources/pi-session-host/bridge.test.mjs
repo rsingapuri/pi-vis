@@ -155,6 +155,17 @@ describe("setupCommandBridge — command mapping", () => {
     expect(res.success).toBe(true);
   });
 
+  it("set_model resolves providerless models by id", async () => {
+    const { session, run } = setup({
+      modelRegistry: {
+        getAvailable: vi.fn(async () => [{ id: "local-model", name: "Local Model" }]),
+      },
+    });
+    const res = await run({ type: "set_model", modelId: "local-model" });
+    expect(session.setModel).toHaveBeenCalledWith({ id: "local-model", name: "Local Model" });
+    expect(res.success).toBe(true);
+  });
+
   it("set_model returns an error when the model is not found (no setModel call)", async () => {
     const { session, run } = setup();
     const res = await run({ type: "set_model", provider: "openai", modelId: "gpt" });

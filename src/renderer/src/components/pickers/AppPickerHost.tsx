@@ -72,7 +72,6 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           {...(picker.search !== undefined ? { search: picker.search } : {})}
           onClose={() => closePicker(sessionId)}
           onPick={async (model) => {
-            if (!model.provider) return;
             const res = await applyModelChange(sessionId, model);
             if (res.ok) {
               addToast(sessionId, `Model: ${modelDisplayName(model)}`);

@@ -50,7 +50,9 @@ export const AbortBashCommandSchema = BaseCommand.extend({
 
 export const SetModelCommandSchema = BaseCommand.extend({
   type: z.literal("set_model"),
-  provider: z.string(),
+  // Some pi model-registry entries are providerless. When omitted/empty, the
+  // SDK host resolves by id only (requiring an unambiguous model id).
+  provider: z.string().optional(),
   modelId: z.string(),
 });
 

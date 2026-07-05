@@ -23,6 +23,11 @@ describe("findExactModelReferenceMatch", () => {
     expect(findExactModelReferenceMatch("DEEPSEEK-V3", MODELS)).toEqual(MODELS[2]);
   });
 
+  it("matches a providerless model by unique bare id", () => {
+    const providerless: ModelCandidate[] = [{ id: "local-model", name: "Local Model" }];
+    expect(findExactModelReferenceMatch("LOCAL-MODEL", providerless)).toEqual(providerless[0]);
+  });
+
   it("rejects ambiguous bare id (multiple models share prefix)", () => {
     // "claude" matches both claude-sonnet and claude-haiku — ambiguous.
     expect(findExactModelReferenceMatch("claude", MODELS)).toBeUndefined();

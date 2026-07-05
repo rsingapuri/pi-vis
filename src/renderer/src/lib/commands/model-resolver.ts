@@ -17,7 +17,7 @@
 
 export interface ModelCandidate {
   id: string;
-  provider: string;
+  provider?: string | undefined;
   name?: string;
 }
 
@@ -29,8 +29,11 @@ export function findExactModelReferenceMatch(
   if (!trimmed) return undefined;
   const normalized = trimmed.toLowerCase();
 
-  // 1. Canonical `provider/id` form
-  const canonical = available.filter((m) => `${m.provider}/${m.id}`.toLowerCase() === normalized);
+  // 1. Canonical `provider/id` form. Providerless models cannot match this
+  //    form, but they remain eligible for bare-id matching below.
+  const canonical = available.filter(
+    (m) => m.provider !== undefined && `${m.provider}/${m.id}`.toLowerCase() === normalized,
+  );
   if (canonical.length === 1) return canonical[0];
   if (canonical.length > 1) return undefined;
 
@@ -43,6 +46,7 @@ export function findExactModelReferenceMatch(
     if (provider && modelId) {
       const providerMatches = available.filter(
         (m) =>
+          m.provider !== undefined &&
           m.provider.toLowerCase() === provider.toLowerCase() &&
           m.id.toLowerCase() === modelId.toLowerCase(),
       );
@@ -51,7 +55,7 @@ export function findExactModelReferenceMatch(
     }
   }
 
-  // 3. Bare id — only if exactly one match.
+  // 3. Bare id — only if exactly one match, including providerless models.
   const idMatches = available.filter((m) => m.id.toLowerCase() === normalized);
   return idMatches.length === 1 ? idMatches[0] : undefined;
 }
