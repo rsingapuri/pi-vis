@@ -1,6 +1,6 @@
 import type { SessionId } from "@shared/ids.js";
 import type React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { formatTokens } from "../../lib/format.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
@@ -33,6 +33,21 @@ export function ContextMeter({ sessionId }: { sessionId: SessionId }): React.Rea
     };
     document.addEventListener("mousedown", onMouseDown, true);
     return () => document.removeEventListener("mousedown", onMouseDown, true);
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, [open]);
 
   const pct = stats?.contextUsage?.percent != null ? Math.round(stats.contextUsage.percent) : null;

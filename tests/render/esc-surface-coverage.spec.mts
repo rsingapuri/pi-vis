@@ -118,6 +118,71 @@ test.describe("ESC surface coverage — claims prevent abort", () => {
     expect(await abortCount(page)).toBe(before);
   });
 
+  test("Context meter: ESC closes dropdown, then next ESC aborts", async ({ page }) => {
+    await page.locator(".context-ring").click();
+    await expect(page.locator(".context-dropdown")).toBeVisible({ timeout: 5_000 });
+
+    await startStreaming(page);
+    const before = await abortCount(page);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".context-dropdown")).toHaveCount(0);
+    expect(await abortCount(page)).toBe(before);
+
+    await page.keyboard.press("Escape");
+    expect(await abortCount(page)).toBeGreaterThan(before);
+  });
+
+  test("Model dropdown: ESC clears search, then closes dropdown, then next ESC aborts", async ({
+    page,
+  }) => {
+    const trigger = page.locator(".session-header__model-picker .session-header__picker-btn");
+    await expect(trigger).toBeEnabled({ timeout: 10_000 });
+    await trigger.click();
+    const dropdown = page.locator(".session-header__model-picker .session-header__dropdown");
+    await expect(dropdown).toBeVisible({ timeout: 5_000 });
+    const search = page.locator(".session-header__dropdown-search-input");
+    await search.fill("fable");
+
+    await startStreaming(page);
+    const before = await abortCount(page);
+
+    // First Escape is owned by the focused search input: clear the query, do
+    // not close the dropdown, and do not abort the running turn.
+    await page.keyboard.press("Escape");
+    await expect(search).toHaveValue("");
+    await expect(dropdown).toBeVisible();
+    expect(await abortCount(page)).toBe(before);
+
+    // Second Escape closes the now-empty model dropdown and still does not
+    // abort; the claim is released only after the surface closes.
+    await page.keyboard.press("Escape");
+    await expect(dropdown).toHaveCount(0);
+    expect(await abortCount(page)).toBe(before);
+
+    await page.keyboard.press("Escape");
+    expect(await abortCount(page)).toBeGreaterThan(before);
+  });
+
+  test("Thinking dropdown: ESC closes dropdown, then next ESC aborts", async ({ page }) => {
+    const trigger = page.locator(".session-header__thinking .session-header__picker-btn");
+    await expect(trigger).toBeEnabled({ timeout: 10_000 });
+    await trigger.click();
+    await expect(page.locator(".session-header__thinking .session-header__dropdown")).toBeVisible({
+      timeout: 5_000,
+    });
+
+    await startStreaming(page);
+    const before = await abortCount(page);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".session-header__thinking .session-header__dropdown")).toHaveCount(
+      0,
+    );
+    expect(await abortCount(page)).toBe(before);
+
+    await page.keyboard.press("Escape");
+    expect(await abortCount(page)).toBeGreaterThan(before);
+  });
+
   test("no surface open + streaming: ESC DOES abort (the positive case)", async ({ page }) => {
     await startStreaming(page);
     const before = await abortCount(page);

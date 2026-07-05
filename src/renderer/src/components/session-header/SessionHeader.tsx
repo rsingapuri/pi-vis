@@ -3,7 +3,7 @@ import type { ModelInfo, SessionStats } from "@shared/pi-protocol/responses.js";
 import { SessionStatsSchema } from "@shared/pi-protocol/responses.js";
 import { THINKING_LEVELS, type ThinkingLevel } from "@shared/pi-protocol/thinking.js";
 import type React from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { useVirtualList } from "../../hooks/useVirtualList.js";
 import { findCurrentModel, modelDisplayName, modelKey } from "../../lib/model-utils.js";
@@ -319,6 +319,26 @@ export function SessionControls({
   // background streaming session isn't aborted (each dropdown's own
   // outside-click / Escape handling closes it).
   useEscapeClaim(modelOpen || thinkingOpen);
+
+  useLayoutEffect(() => {
+    if (!modelOpen && !thinkingOpen) return;
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (e.isComposing || e.keyCode === 229) return;
+      // Preserve the model search field's two-step Escape behavior: its
+      // target handler clears a non-empty search first, then closes on the
+      // next Escape. React's preventDefault reaches this native bubble
+      // listener, so we only close if no inner control already handled it.
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setModelOpen(false);
+      setThinkingOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [modelOpen, thinkingOpen]);
 
   const currentModelInfo = useMemo<ModelInfo | undefined>(
     () =>
