@@ -15,6 +15,7 @@ import { computeMatches } from "../../lib/diff/search.js";
 import { useDiffStore } from "../../stores/diff-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { FadeText } from "../common/FadeText.js";
+import { useSyncedSpinnerStyle } from "../common/Spinner.js";
 import {
   IconCheck,
   IconChevronDown,
@@ -590,6 +591,8 @@ function ViewerHeader({
     }
     return { ins, del, count: files.length };
   }, [files]);
+  const refreshSpinning = phase === "loading" || refreshing;
+  const refreshSpinnerStyle = useSyncedSpinnerStyle(refreshSpinning);
   return (
     <div className="diff-viewer__header viewer-header">
       <div className="viewer-header__left">
@@ -628,7 +631,8 @@ function ViewerHeader({
         ) : null}
         <button
           type="button"
-          className={`diff-viewer__icon-btn${phase === "loading" || refreshing ? " diff-viewer__icon-btn--spinning" : ""}`}
+          className={`diff-viewer__icon-btn${refreshSpinning ? " diff-viewer__icon-btn--spinning" : ""}`}
+          style={refreshSpinnerStyle}
           onClick={onRefresh}
           title="Refresh"
           aria-label="Refresh"

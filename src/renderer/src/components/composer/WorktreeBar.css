@@ -185,19 +185,10 @@
   white-space: nowrap;
 }
 
-.worktree-bar__spinner-dot {
+.worktree-bar__spinner-dot.spinner {
   width: 0.5rem;
   height: 0.5rem;
-  border: 1.5px solid var(--accent);
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: worktree-bar__spin 0.7s linear infinite;
-}
-
-@keyframes worktree-bar__spin {
-  to {
-    transform: rotate(360deg);
-  }
+  border-width: 1.5px;
 }
 
 /* Inline, durable failure message — replaces the old ephemeral toast so the

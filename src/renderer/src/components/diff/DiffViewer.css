@@ -238,6 +238,7 @@
 
 .diff-viewer__icon-btn--spinning svg {
   animation: diff-spin 0.8s linear infinite;
+  animation-delay: var(--spinner-sync-delay, 0ms);
 }
 
 /* Stale indicator — a steady mauve dot (no pulse) shown to the left of the

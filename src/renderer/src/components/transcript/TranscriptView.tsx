@@ -18,6 +18,7 @@ import {
   hasAssistantContent,
 } from "../../stores/transcript.js";
 import { FadeText } from "../common/FadeText.js";
+import { Spinner } from "../common/Spinner.js";
 import { IconChevronRight } from "../common/icons.js";
 import { DiffBlock } from "./DiffBlock.js";
 import "./TranscriptView.css";
@@ -246,7 +247,7 @@ function WorkingRow({ sessionId }: { sessionId: SessionId }): React.ReactElement
     runningSince != null ? `Running for ${formatDuration(Date.now() - runningSince)}` : "Working…";
   return (
     <div className="working-row">
-      <span className="spinner" />
+      <Spinner />
       <span className="working-row__label">{label}</span>
     </div>
   );
@@ -571,7 +572,7 @@ const ToolCallBlock = memo(function ToolCallBlock({
           {subject}
         </FadeText>
       )}
-      {data.isStreaming && <span className="spinner tool-card__spinner" />}
+      {data.isStreaming && <Spinner className="tool-card__spinner" />}
       {data.isError && <span className="tool-card__badge">error</span>}
     </>
   );
@@ -686,7 +687,7 @@ const BashBlock = memo(function BashBlock({
       <FadeText className="tool-card__subject tool-card__subject--command" title={data.command}>
         {data.command}
       </FadeText>
-      {data.isStreaming && <span className="spinner tool-card__spinner" />}
+      {data.isStreaming && <Spinner className="tool-card__spinner" />}
       {isError && <span className="tool-card__badge">exit {data.exitCode}</span>}
     </>
   );

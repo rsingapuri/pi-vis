@@ -3,6 +3,7 @@ import type { SessionId } from "@shared/ids.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { gitRootForSession, useSessionsStore } from "../../stores/sessions-store.js";
 import { BranchDropdown } from "../common/BranchDropdown.js";
+import { Spinner } from "../common/Spinner.js";
 import { IconCheck } from "../common/icons.js";
 import "./WorktreeBar.css";
 
@@ -164,7 +165,7 @@ export function WorktreeBar({ sessionId }: WorktreeBarProps): React.ReactElement
 
         {creating && (
           <span className="worktree-bar__spinner">
-            <span className="worktree-bar__spinner-dot" aria-hidden="true" />
+            <Spinner className="worktree-bar__spinner-dot" aria-hidden="true" />
             {mode === "attach" ? "Attaching worktree…" : "Creating worktree…"}
           </span>
         )}
@@ -351,7 +352,7 @@ function AttachStatusLine({ sessionId }: { sessionId: SessionId }): React.ReactE
   if (status.kind === "validating") {
     return (
       <div className="worktree-bar__status worktree-bar__status--validating">
-        <span className="worktree-bar__spinner-dot" aria-hidden="true" />
+        <Spinner className="worktree-bar__spinner-dot" aria-hidden="true" />
         <span>Checking…</span>
       </div>
     );
