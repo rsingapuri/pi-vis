@@ -191,7 +191,11 @@ function execGitCapture(
 
 // ── Public: getChanges ─────────────────────────────────────────────────
 
-/** Resolve a base ref: returns "HEAD" for the default, or `git merge-base <base> HEAD` for a selected branch.
+/** Resolve the comparison base for GitHub-style branch diffs.
+ *  The selected branch is treated as the merge target, so compare from the
+ *  latest common ancestor (`git merge-base <base> HEAD`) rather than from the
+ *  selected branch tip. Otherwise files deleted on the base branch after the
+ *  local branch forked would appear as locally-added files.
  *  Falls back to `base` itself if merge-base fails (unrelated histories).
  */
 async function resolveBaseRef(

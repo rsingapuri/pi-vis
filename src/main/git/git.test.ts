@@ -414,6 +414,31 @@ describe("getChanges with base", () => {
     expect(res.files).toHaveLength(0);
   });
 
+  it("does not report files deleted on the selected base branch as added", async () => {
+    // GitHub-style compare uses the fork point, not the selected base tip.
+    // If main deletes a file after feature diverges, feature has not added it.
+    git(workDir, ["checkout", "-b", "feature"]);
+    git(workDir, ["checkout", "main"]);
+    fs.rmSync(path.join(workDir, "a.ts"));
+    git(workDir, ["add", "a.ts"]);
+    git(workDir, [...COMMIT_C, "commit", "-m", "delete on main"]);
+    git(workDir, ["checkout", "feature"]);
+
+    let res = await getChanges(workDir, "main");
+    expect(res.kind).toBe("ok");
+    if (res.kind !== "ok") return;
+    expect(res.files.map((f) => f.path)).not.toContain("a.ts");
+    expect(res.files).toHaveLength(0);
+
+    write(path.join(workDir, "new-untracked.ts"), "// still included\n");
+    res = await getChanges(workDir, "main");
+    expect(res.kind).toBe("ok");
+    if (res.kind !== "ok") return;
+    expect(res.files.map((f) => ({ path: f.path, untracked: f.untracked }))).toEqual([
+      { path: "new-untracked.ts", untracked: true },
+    ]);
+  });
+
   it("getFileDiff returns merge-base old side", async () => {
     // Write a.ts on main first.
     write(`${workDir}/a.ts`, "// content from main\n");
