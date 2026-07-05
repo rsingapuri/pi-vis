@@ -20,6 +20,7 @@
   background: var(--color-bg);
   padding: 0;
   flex-shrink: 0;
+  min-width: 0;
 }
 
 /* ── Attachments (enhanced image previews) ───────────────────────────── */

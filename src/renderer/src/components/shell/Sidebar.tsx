@@ -2,8 +2,12 @@ import type { SessionId } from "@shared/ids.js";
 import type { SessionStatus } from "@shared/ipc-contract.js";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSessionsStore } from "../../stores/sessions-store.js";
-import { isNewSessionPending, isPendingNewSessionActiveFor } from "../../stores/sessions-store.js";
+import {
+  isNewSessionPending,
+  isPendingNewSessionActiveFor,
+  sessionHasHistory,
+  useSessionsStore,
+} from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { FadeText } from "../common/FadeText.js";
 import { IconChevronRight, IconClose } from "../common/icons.js";
@@ -215,14 +219,16 @@ export function Sidebar({
           .map((s) => [s.filePath, s.lastActiveAt as number]),
       );
 
-      // Live sessions: those with content or the active one — but a
-      // brand-new pending session is never shown as a row (the "+ New
-      // session" button is shown as selected instead, and its unsent
-      // text lives in `newSessionDrafts`).
+      // Live sessions: those with transcript/tree history or the active one —
+      // but a brand-new pending session is never shown as a row (the "+ New
+      // session" button is shown as selected instead, and its unsent text lives
+      // in `newSessionDrafts`). `/tree` can navigate a real session to the root
+      // before any messages, leaving the visible transcript empty; `hasTreeHistory`
+      // keeps that session visible when it is no longer active.
       const liveSessions = activeSessionsForWs.filter((s) => {
         if (isNewSessionPending(s)) return false;
         if (s.sessionId === activeSessionId) return true;
-        return s.transcript.blocks.length > 0;
+        return sessionHasHistory(s);
       });
 
       // Stored sessions: dedupe against live (by filePath) and include only

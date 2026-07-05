@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isNewSessionPending,
   isPendingNewSessionActiveFor,
+  sessionHasHistory,
   shouldShowWorkingIndicator,
   useSessionsStore,
 } from "./sessions-store.js";
@@ -1729,6 +1730,29 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     // Once A has content it is no longer a pending new session.
     store.addUserMessage(SESSION_A, "hi");
     expect(isPendingNewSessionActiveFor(useSessionsStore.getState(), WORKSPACE)).toBe(false);
+  });
+
+  it("tree history makes an empty visible branch count as real session history", () => {
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    let session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.transcript.blocks).toEqual([]);
+    expect(sessionHasHistory(session)).toBe(false);
+
+    store.setTreeHistoryPresent(SESSION_A, true);
+    session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(sessionHasHistory(session)).toBe(true);
+    expect(isNewSessionPending(session)).toBe(false);
+  });
+
+  it("tree bootstrap entries do not promote a truly blank fileless pending session", () => {
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
+    store.setTreeHistoryPresent(SESSION_A, true);
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.hasTreeHistory).toBe(false);
+    expect(isNewSessionPending(session)).toBe(true);
   });
 });
 

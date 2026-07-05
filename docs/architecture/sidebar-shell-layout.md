@@ -96,11 +96,18 @@ The app is fully usable from the enforced floor (`minWidth: 480`, `minHeight: 40
   inside `.transcript-region` (a positioned flex wrapper around `TranscriptView`), so
   the container's layout containment doesn't affect them and they never reserve
   horizontal space.
-- **Overflow containment**: the transcript feed and the sidebar list are vertical
-  scrollers, so both set `overflow-x: hidden` — a long unbreakable token (a file path or
-  identifier in inline code) or a wide row must never spawn a horizontal scrollbar on the
+- **Overflow containment**: the app grid's content column is `minmax(0, 1fr)`
+  (and collapsed mode uses `minmax(0, 1fr)` too), with `min-width: 0` on the
+  title bar, main card, session, transcript region, and rigid dock/composer
+  slots. This is load-bearing: otherwise a long title/FadeText or other
+  min-content-sized child can widen the grid during sidebar collapse and make
+  the title bar/main pane clip against the viewport instead of shrinking. The
+  transcript feed and the sidebar list are vertical scrollers, so both set
+  `overflow-x: hidden` — a long unbreakable token (a file path or identifier in
+  inline code) or a wide row must never spawn a horizontal scrollbar on the
   whole pane. Wide things instead either wrap (`.transcript-block__content` /
-  `.inline-code` use `overflow-wrap: anywhere`; blocks carry `min-width: 0`) or scroll
-  inside their own box (code blocks, and markdown tables via `display: block; width:
-  max-content; overflow-x: auto`). `::-webkit-scrollbar-corner` is transparent so the
-  corner where two scrollbars meet doesn't render as a light square.
+  `.inline-code` use `overflow-wrap: anywhere`; blocks carry `min-width: 0`) or
+  scroll inside their own box (code blocks, and markdown tables via `display:
+  block; width: max-content; overflow-x: auto`). `::-webkit-scrollbar-corner`
+  is transparent so the corner where two scrollbars meet doesn't render as a
+  light square.

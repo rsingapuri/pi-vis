@@ -13,8 +13,11 @@ import { findCurrentModel } from "../../lib/model-utils.js";
 import { useChangelogStore } from "../../stores/changelog-store.js";
 import { openDiffForSession } from "../../stores/diff-store.js";
 import { useImageViewerStore } from "../../stores/image-viewer-store.js";
-import { useSessionsStore } from "../../stores/sessions-store.js";
-import { isNewSessionPending } from "../../stores/sessions-store.js";
+import {
+  isNewSessionPending,
+  sessionHasHistory,
+  useSessionsStore,
+} from "../../stores/sessions-store.js";
 import { useTreeStore } from "../../stores/tree-store.js";
 import { FadeText } from "../common/FadeText.js";
 import { IconClose, IconFile } from "../common/icons.js";
@@ -504,7 +507,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       //                gate — no client-side path check; an invalid path
       //                just comes back `{ok:false}` and the inline error
       //                shows up in the bar.
-      const isNewSession = (session?.transcript.blocks.length ?? 0) === 0;
+      const isNewSession = !sessionHasHistory(session);
       // Truthy-check on `session?.worktreeMode` narrows `session` to
       // defined inside this block (TS flow analysis), so the `session.*`
       // accesses below don't need optional chaining.

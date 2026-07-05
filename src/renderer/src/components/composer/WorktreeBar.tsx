@@ -1,7 +1,11 @@
 import type { GitBranch } from "@shared/git.js";
 import type { SessionId } from "@shared/ids.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { gitRootForSession, useSessionsStore } from "../../stores/sessions-store.js";
+import {
+  gitRootForSession,
+  sessionHasHistory,
+  useSessionsStore,
+} from "../../stores/sessions-store.js";
 import { BranchDropdown } from "../common/BranchDropdown.js";
 import { Spinner } from "../common/Spinner.js";
 import { IconCheck } from "../common/icons.js";
@@ -100,11 +104,12 @@ export function WorktreeBar({ sessionId }: WorktreeBarProps): React.ReactElement
 
   // Self-gate: hide once a worktree already exists for this session (so it
   // never reappears after the transcript resets via /new, /fork, /clone),
-  // if the session has any transcript blocks (already sent), or if we're not
-  // in a git repo context (no branches to base from).
+  // if the session has any known transcript/tree history (already sent, even
+  // when `/tree` is viewing the root before messages), or if we're not in a
+  // git repo context (no branches to base from).
   if (!session) return null;
   if (session.worktreePath) return null;
-  if (session.transcript.blocks.length > 0) return null;
+  if (sessionHasHistory(session)) return null;
   if (loading) return null;
   if (loadError || branches.length === 0) return null;
 

@@ -785,6 +785,21 @@ button.tool-card__header {
   font-style: italic;
 }
 
+.transcript-block__content hr,
+.thinking-block hr,
+.activity-card__markdown hr {
+  height: 1px;
+  border: 0;
+  margin: var(--space-4) 0;
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    var(--border-strong) 18%,
+    var(--border-strong) 82%,
+    transparent 100%
+  );
+}
+
 .transcript-block__content h1,
 .transcript-block__content h2,
 .transcript-block__content h3 {

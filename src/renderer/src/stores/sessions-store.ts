@@ -146,6 +146,11 @@ export interface SessionViewState {
   /** pi version reported by the SDK-host on ready (undefined for pi --mode rpc).
    *  Surfaced in the SessionHeader tooltip. See P1-c. */
   piVersion?: string | undefined;
+  /** True once we know the session has conversation-tree history outside the
+   *  currently-visible branch. `/tree` can navigate to the root before any
+   *  messages, which legitimately leaves `transcript.blocks` empty; sidebar /
+   *  first-send affordances must still treat that session as non-empty. */
+  hasTreeHistory?: boolean | undefined;
   /** True for a brand-new session (created without a session file) that
    *  has not yet sent its first message. Such sessions are hidden from
    *  the sidebar (the "+ New session" button shows as selected instead)
@@ -198,13 +203,18 @@ interface WorkspaceState {
  * (see `newSessionDrafts`). Once the first message lands the session becomes
  * a normal, visible tab.
  *
- * Defined as `isNewPending && empty transcript` so it self-clears the moment
- * content arrives — but `isNewPending` is also flipped to false on the first
- * content block so a subsequent `/new` (which resets the transcript) does not
- * re-hide a session that was once real.
+ * Defined as `isNewPending && no known history` so it self-clears the moment
+ * content arrives or tree/history metadata proves the session is real — but
+ * `isNewPending` is also flipped to false on the first content block so a
+ * subsequent `/new` (which resets the transcript) does not re-hide a session
+ * that was once real.
  */
+export function sessionHasHistory(s: SessionViewState | undefined | null): boolean {
+  return !!s && (s.transcript.blocks.length > 0 || !!s.hasTreeHistory);
+}
+
 export function isNewSessionPending(s: SessionViewState | undefined | null): boolean {
-  return !!s?.isNewPending && s.transcript.blocks.length === 0;
+  return !!s?.isNewPending && !sessionHasHistory(s);
 }
 
 /**
@@ -426,6 +436,7 @@ interface SessionsStore {
    *  and survives the toggle). */
   setUnifiedPanelHidden: (sessionId: SessionId, hidden: boolean) => void;
   setStats: (sessionId: SessionId, stats: SessionStats) => void;
+  setTreeHistoryPresent: (sessionId: SessionId, present: boolean) => void;
   setAvailableModels: (sessionId: SessionId, models: ModelInfo[]) => void;
   /** Re-fetch the session's effective available-models list from pi and
    *  update the store. This is the refresh path used after actions that
@@ -669,6 +680,9 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         // Resumed sessions had a file at open time; new sessions did not.
         // Gates last-used model/thinking-level preference (new sessions only).
         resumed: !!sessionFile,
+        // No tree has been loaded yet; this becomes true when history is
+        // discovered via loadHistory or the native `/tree` viewer.
+        hasTreeHistory: false,
         // Bootstrap hasn't run yet — it fires once when the session goes live.
         modelInitialized: false,
       });
@@ -882,7 +896,11 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       const s = sessions.get(sessionId);
       if (!s) return {};
       const transcript = seedFromHistory(s.transcript, history);
-      sessions.set(sessionId, { ...s, transcript });
+      sessions.set(sessionId, {
+        ...s,
+        transcript,
+        hasTreeHistory: s.hasTreeHistory || history.length > 0,
+      });
       return { sessions };
     });
   },
@@ -1485,6 +1503,27 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
     });
   },
 
+  setTreeHistoryPresent: (sessionId, present) => {
+    if (!present) return;
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const s = sessions.get(sessionId);
+      // Do not turn a truly brand-new, fileless, no-message tab into a visible
+      // session just because pi reports bootstrap/settings tree entries. Once
+      // the user sends anything, `isNewPending` is cleared and tree history can
+      // keep the session visible even when the active branch is empty.
+      if (
+        !s ||
+        s.hasTreeHistory ||
+        (s.isNewPending && !s.sessionFile && s.transcript.blocks.length === 0)
+      ) {
+        return {};
+      }
+      sessions.set(sessionId, { ...s, hasTreeHistory: true });
+      return { sessions };
+    });
+  },
+
   setAvailableModels: (sessionId, models) => {
     set((state) => {
       const sessions = new Map(state.sessions);
@@ -1848,6 +1887,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         ...s,
         sessionFile,
         transcript: createTranscriptState(),
+        hasTreeHistory: false,
         isStreaming: false,
         runningSince: undefined,
         unreadStatus: undefined,

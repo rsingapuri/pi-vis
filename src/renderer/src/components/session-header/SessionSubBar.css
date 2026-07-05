@@ -7,6 +7,7 @@
   min-height: 32px;
   display: flex;
   align-items: center;
+  min-width: 0;
   padding: 0.286rem 0.857rem;
   background: var(--bg-sunken);
   border-bottom: 1px solid var(--surface);

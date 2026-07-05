@@ -307,6 +307,15 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
       return;
     }
     const flat: FlatTreeNode[] = data?.nodes ?? [];
+    // A session may currently be navigated to an empty root branch while still
+    // having messages elsewhere in the DAG. Keep that knowledge on the session
+    // so sidebar / first-send affordances don't mistake it for a new blank tab.
+    // Ignore settings-only bootstrap entries; they should not promote a truly
+    // empty session.
+    const hasConversationHistory = flat.some(
+      (node) => node.entry.type === "message" || node.entry.type === "branch_summary",
+    );
+    useSessionsStore.getState().setTreeHistoryPresent(sessionId, hasConversationHistory);
     set({
       phase: "ready",
       errorMessage: null,

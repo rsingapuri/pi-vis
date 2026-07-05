@@ -29,7 +29,11 @@
      cap means the sidebar can never eat more than ~⅓ of a narrow window:
      it's a no-op on normal windows (38% ≫ the saved width) and only bites
      once the window gets small, keeping the content column usable. */
-  grid-template-columns: min(var(--sidebar-width, 15.714rem), 38%) 1fr;
+  /* `minmax(0, 1fr)` is load-bearing: grid tracks otherwise honor their
+     children's min-content width. A long title/FadeText inside the titlebar
+     can then widen the whole grid after sidebar-collapse, leaving the main
+     pane clipped by the viewport instead of shrinking. */
+  grid-template-columns: min(var(--sidebar-width, 15.714rem), 38%) minmax(0, 1fr);
   grid-template-areas:
     "titlebar titlebar"
     "sidebar main";
@@ -53,7 +57,7 @@
    a floating pill inset from the window edges. */
 .app--sidebar-collapsed {
   background: var(--bg);
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr;
   grid-template-areas:
     "titlebar"
@@ -181,7 +185,7 @@
   /* No title bar / sidebar in setup mode — override the app grid so the
      PiNotFound screen fills and centers in the whole window instead of
      being crammed into the (empty) sidebar column. */
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 1fr;
   grid-template-areas: "main";
   place-items: center;
@@ -189,10 +193,12 @@
 
 .titlebar {
   grid-area: titlebar;
+  min-width: 0;
 }
 
 .sidebar {
   grid-area: sidebar;
+  min-width: 0;
 }
 
 .app__sidebar-draghandle {
@@ -244,6 +250,7 @@
   border-radius: var(--radius-lg);
   box-shadow: var(--elevation-1);
   overflow: hidden;
+  min-width: 0;
   min-height: 0;
   /* Establish a size-query container so the transcript, empty state, and
      other descendants can respond to the *content* width (window minus the
@@ -257,6 +264,7 @@
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
@@ -270,6 +278,7 @@
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
@@ -283,6 +292,7 @@
   display: flex;
   flex-direction: column;
   flex: 0 0 auto;
+  min-width: 0;
 }
 
 /* Connected stack — when the Dock tray is present above one of the

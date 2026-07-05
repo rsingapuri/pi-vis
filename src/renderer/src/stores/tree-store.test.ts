@@ -93,6 +93,10 @@ describe("tree-store — open / refresh", () => {
       }
       return { success: false };
     };
+    // Mark the session as a real (non-pending) session, then clear the visible
+    // branch to mirror `/tree` selecting the root before any messages.
+    useSessionsStore.getState().addUserMessage(SESSION_A, "real session");
+    useSessionsStore.getState().seedHistory(SESSION_A, []);
 
     await useTreeStore.getState().openTreeForSession(SESSION_A);
 
@@ -103,6 +107,7 @@ describe("tree-store — open / refresh", () => {
     expect(state.nodes).toEqual(nested);
     expect(state.leafId).toBe("u2");
     expect(state.selectedId).toBe("u2");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.hasTreeHistory).toBe(true);
 
     expect(calls[0]).toEqual({
       channel: "session.sendCommand",
