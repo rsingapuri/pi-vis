@@ -99,6 +99,21 @@ describe("SessionRegistry", () => {
     expect(statusChanges.filter((s) => s.sessionId === id)).toHaveLength(0);
   });
 
+  it("openSession drops a superseded dead record for the same session file", () => {
+    const fileA = join(sessionsDir, "test-dead.jsonl");
+    fs.writeFileSync(fileA, "");
+    const id1 = registry.openSession(workspaceDir, fileA);
+    const rec1 = registry.getSession(id1);
+    if (!rec1) throw new Error("expected record");
+    rec1.status = "exited";
+
+    const id2 = registry.openSession(workspaceDir, fileA);
+
+    expect(id2).not.toBe(id1);
+    expect(registry.getSession(id1)).toBeUndefined();
+    expect(registry.getByFile(fileA)?.sessionId).toBe(id2);
+  });
+
   it("double-open guard rejects opening the same file twice while cold", () => {
     // First create a file on disk via fake-pi so we can reference it.
     const fileA = join(sessionsDir, "test-a.jsonl");
@@ -255,6 +270,74 @@ describe("SessionRegistry", () => {
     expect(stillReady).toHaveLength(0);
     expect(registry.getSession(id)?.status).toBe("ready");
   }, 15_000);
+
+  it("clears proc readiness and busy when a live process errors", async () => {
+    const id = registry.openSession(workspaceDir);
+    await registry.activateSession(id, FAKE_PI);
+    const rec = registry.getSession(id);
+    const proc = rec?.proc;
+    expect(proc).toBeDefined();
+    if (rec) rec.busy = true;
+
+    proc?.emit("error", new Error("boom"));
+
+    expect(registry.getSession(id)?.status).toBe("failed");
+    expect(registry.getSession(id)?.proc).toBeUndefined();
+    expect(registry.getSession(id)?._procReady).toBe(false);
+    expect(registry.getSession(id)?.busy).toBe(false);
+  });
+
+  it("setWorktreeAndRespawn rejects when activation fails and restores the old worktree", async () => {
+    const oldWorktree = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "pivis-old-wt-")));
+    const newWorktree = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "pivis-new-wt-")));
+    const id = registry.openSession(workspaceDir, undefined, oldWorktree);
+    await expect(
+      registry.setWorktreeAndRespawn(id, newWorktree, "/no/such/pi-binary"),
+    ).rejects.toThrow();
+    expect(registry.getSession(id)?.status).toBe("failed");
+    expect(registry.getSession(id)?.worktreePath).toBe(oldWorktree);
+
+    // The failed replacement activation must not leave a stale suppression
+    // flag that poisons a later normal activation.
+    await registry.activateSession(id, FAKE_PI);
+    const response = await registry.sendCommand(id, { type: "get_state" });
+    expect(response.success).toBe(true);
+    registry.closeSession(id);
+
+    fs.rmSync(oldWorktree, { recursive: true, force: true });
+    fs.rmSync(newWorktree, { recursive: true, force: true });
+  });
+
+  it("setWorktreeAndRespawn rejects queued commands when the replacement process exits immediately", async () => {
+    const crashingPi = join(sessionsDir, "crashing-pi.sh");
+    fs.writeFileSync(crashingPi, "#!/bin/sh\nexit 7\n");
+    fs.chmodSync(crashingPi, 0o755);
+    const id = registry.openSession(workspaceDir);
+
+    const respawn = registry.setWorktreeAndRespawn(id, workspaceDir, crashingPi);
+    const queuedCommand = registry.sendCommand(id, { type: "get_state" });
+
+    await expect(respawn).rejects.toThrow(/Exited with code 7|exited with code 7/i);
+    await expect(queuedCommand).rejects.toThrow(/Exited with code 7|exited with code 7/i);
+    expect(registry.getSession(id)?.status).toBe("exited");
+  });
+
+  it("clears proc readiness when a live process exits", async () => {
+    const id = registry.openSession(workspaceDir);
+    await registry.activateSession(id, FAKE_PI);
+    const proc = registry.getSession(id)?.proc;
+    expect(proc).toBeDefined();
+
+    proc?.emit("exit", 0, null);
+
+    const rec = registry.getSession(id);
+    expect(rec?.status).toBe("exited");
+    expect(rec?.proc).toBeUndefined();
+    expect(rec?._procReady).toBe(false);
+    await expect(registry.sendCommand(id, { type: "get_state" })).rejects.toThrow(
+      /No active process/,
+    );
+  });
 
   it("reloadSession restarts the pi process and re-reaches ready", async () => {
     const id = registry.openSession(workspaceDir);
@@ -570,6 +653,131 @@ describe("SessionRegistry concurrency & lock lifecycle", () => {
     await expect(cmdPromise).resolves.toMatchObject({ success: true });
   }, 15_000);
 
+  it("worktree respawn during host handshake keeps queued commands off the old cwd proc", async () => {
+    const firstHost = new FakeHostProcess();
+    const secondHost = new FakeHostProcess();
+    const hosts = [firstHost, secondHost];
+    __forkOverride.fn = () =>
+      hosts.shift() as unknown as ReturnType<typeof import("node:child_process").fork>;
+
+    const worktreeDir = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "pivis-pending-wt-")));
+    const id = registry.openSession(workspaceDir);
+    const activating = registry.activateSession(id, FAKE_PI, {}, true);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const command = registry.sendCommand(id, { type: "prompt", message: "run in worktree" });
+    const respawn = registry.setWorktreeAndRespawn(id, worktreeDir, FAKE_PI, {});
+    await new Promise((r) => setTimeout(r, 30));
+
+    firstHost.emitReady("0.81.0");
+    await activating;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(firstHost.sent.some((m) => m.type === "command")).toBe(false);
+
+    secondHost.emitReady("0.81.0");
+    await respawn;
+    await waitFor(
+      () => secondHost.sent.some((m) => m.type === "command"),
+      2000,
+      "new host command",
+    );
+    const cmd = secondHost.sent.find((m) => m.type === "command");
+    if (!cmd) throw new Error("expected queued command to flush to replacement host");
+    secondHost.emitMessage({ type: "response", id: cmd.id, success: true, data: { ok: true } });
+    await expect(command).resolves.toMatchObject({ success: true });
+
+    expect(secondHost.sent.find((m) => m.type === "init")?.cwd).toBe(worktreeDir);
+    fs.rmSync(worktreeDir, { recursive: true, force: true });
+  }, 15_000);
+
+  it("reloadSession during host handshake waits for quiescence and does not emit host_fallback", async () => {
+    const firstHost = new FakeHostProcess();
+    const secondHost = new FakeHostProcess();
+    const hosts = [firstHost, secondHost];
+    __forkOverride.fn = () =>
+      hosts.shift() as unknown as ReturnType<typeof import("node:child_process").fork>;
+
+    const id = registry.openSession(workspaceDir);
+    const activating = registry.activateSession(id, FAKE_PI, {}, true);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const reloadP = registry.reloadSession(id, FAKE_PI, {});
+    await new Promise((r) => setTimeout(r, 30));
+    expect(secondHost.sent).toHaveLength(0);
+
+    firstHost.emitReady("0.81.0");
+    await activating;
+    await new Promise((r) => setTimeout(r, 30));
+    secondHost.emitReady("0.81.0");
+    await reloadP;
+
+    expect(panelEvents.some((p) => p.event.type === "host_fallback")).toBe(false);
+    expect(registry.getSession(id)?.proc).toBeInstanceOf(SessionHost);
+  }, 15_000);
+
+  it("overlapping worktree respawns are serialized so final cwd matches final worktree", async () => {
+    const initialHost = new FakeHostProcess();
+    const hostA = new FakeHostProcess();
+    const hostB = new FakeHostProcess();
+    const hosts = [initialHost, hostA, hostB];
+    __forkOverride.fn = () =>
+      hosts.shift() as unknown as ReturnType<typeof import("node:child_process").fork>;
+
+    const worktreeA = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "pivis-conc-wt-a-")));
+    const worktreeB = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "pivis-conc-wt-b-")));
+    const id = registry.openSession(workspaceDir);
+    const activating = registry.activateSession(id, FAKE_PI, {}, true);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const respawnA = registry.setWorktreeAndRespawn(id, worktreeA, FAKE_PI, {});
+    const respawnB = registry.setWorktreeAndRespawn(id, worktreeB, FAKE_PI, {});
+
+    initialHost.emitReady("0.81.0");
+    await activating;
+    await waitFor(() => hostA.sent.some((m) => m.type === "init"), 2000, "host A init");
+    hostA.emitReady("0.81.0");
+    await respawnA;
+    await waitFor(() => hostB.sent.some((m) => m.type === "init"), 2000, "host B init");
+    hostB.emitReady("0.81.0");
+    await respawnB;
+
+    expect(hostA.sent.find((m) => m.type === "init")?.cwd).toBe(worktreeA);
+    expect(hostB.sent.find((m) => m.type === "init")?.cwd).toBe(worktreeB);
+    expect(registry.getSession(id)?.worktreePath).toBe(worktreeB);
+    expect(registry.getSession(id)?.proc).toBeInstanceOf(SessionHost);
+    fs.rmSync(worktreeA, { recursive: true, force: true });
+    fs.rmSync(worktreeB, { recursive: true, force: true });
+  }, 15_000);
+
+  it("setWorktreeAndRespawn during host handshake respawns host in the worktree cwd", async () => {
+    const firstHost = new FakeHostProcess();
+    const secondHost = new FakeHostProcess();
+    const hosts = [firstHost, secondHost];
+    __forkOverride.fn = () =>
+      hosts.shift() as unknown as ReturnType<typeof import("node:child_process").fork>;
+
+    const worktreeDir = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "pivis-conc-wt-")));
+    const id = registry.openSession(workspaceDir);
+    const activating = registry.activateSession(id, FAKE_PI, {}, true);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const respawnP = registry.setWorktreeAndRespawn(id, worktreeDir, FAKE_PI, {});
+    await new Promise((r) => setTimeout(r, 30));
+    expect(secondHost.sent).toHaveLength(0);
+
+    firstHost.emitReady("0.81.0");
+    await activating;
+    await new Promise((r) => setTimeout(r, 30));
+    secondHost.emitReady("0.81.0");
+    await respawnP;
+
+    const init = secondHost.sent.find((m) => m.type === "init");
+    expect(init?.cwd).toBe(worktreeDir);
+    expect(registry.getSession(id)?.worktreePath).toBe(worktreeDir);
+    expect(registry.getSession(id)?.proc).toBeInstanceOf(SessionHost);
+    fs.rmSync(worktreeDir, { recursive: true, force: true });
+  }, 15_000);
+
   it("P1-d: a compromised advisory lock does not throw in the main process", async () => {
     // proper-lockfile's default onCompromised throws, which fires from a
     // setTimeout (recurring update timer) when the lockfile mtime is
@@ -608,6 +816,19 @@ describe("SessionRegistry concurrency & lock lifecycle", () => {
       // biome-ignore lint/suspicious/noExplicitAny: restore the singleton.
       (lockfile as any).lock = origLock;
     }
+  }, 15_000);
+
+  it("stopAll stops live processes and releases advisory locks", async () => {
+    const file = join(sessionsDir, "stop-all.jsonl");
+    fs.writeFileSync(file, "");
+    const id = registry.openSession(workspaceDir, file);
+    await registry.activateSession(id, FAKE_PI, {}, false);
+    expect(fs.existsSync(`${file}.lock`)).toBe(true);
+
+    registry.stopAll();
+    await waitFor(() => !fs.existsSync(`${file}.lock`), 2000, "lock released by stopAll");
+    expect(registry.getSession(id)?.proc).toBeUndefined();
+    expect(registry.getSession(id)?._procReady).toBe(false);
   }, 15_000);
 
   it("P1-f: a failed activation releases the advisory lock (no leak)", async () => {

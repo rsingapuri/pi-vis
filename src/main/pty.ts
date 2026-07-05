@@ -17,19 +17,30 @@ import { getSettings } from "./settings-store.js";
 
 // Dynamic import for node-pty — it's a native module that may not be
 // installed or may fail to load. We fall back gracefully.
-let ptySpawn:
-  | ((
-      file: string,
-      args: string[],
-      opts: Record<string, unknown>,
-    ) => {
-      onData: (cb: (data: string) => void) => { dispose(): void };
-      onExit: (cb: (result: { exitCode: number }) => void) => { dispose(): void };
-      write: (data: string) => void;
-      resize: (cols: number, rows: number) => void;
-      kill: () => void;
-    })
-  | null = null;
+type PtySpawnFn = (
+  file: string,
+  args: string[],
+  opts: Record<string, unknown>,
+) => {
+  onData: (cb: (data: string) => void) => { dispose(): void };
+  onExit: (cb: (result: { exitCode: number }) => void) => { dispose(): void };
+  write: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  kill: () => void;
+};
+
+let ptySpawn: PtySpawnFn | null = null;
+
+export const __ptyTest = {
+  setSpawnForTests(spawn: PtySpawnFn | null): void {
+    ptySpawn = spawn;
+  },
+  resetForTests(): void {
+    instances.clear();
+    ptyCounter = 0;
+    safeSend = () => {};
+  },
+};
 
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -125,7 +136,14 @@ export async function startPty(opts: {
   // then detach this listener (node-pty's onData returns a disposable).
   if (opts.autoLogin) {
     const disposable = proc.onData(() => {
-      setTimeout(() => proc.write("/login\r"), 400);
+      setTimeout(() => {
+        if (!instances.has(ptyId)) return;
+        try {
+          proc.write("/login\r");
+        } catch {
+          // PTY exited between the data event and the delayed auto-login write.
+        }
+      }, 400);
       disposable.dispose();
     });
   }

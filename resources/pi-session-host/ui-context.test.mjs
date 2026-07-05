@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { createUIContext } from "./ui-context.mjs";
+import { createDialogResolver, createUIContext } from "./ui-context.mjs";
 
 // The host's ExtensionUIContext must hand extensions the SAME return values pi's
 // own uiContext does, or extension menu code breaks. The canonical contract
@@ -24,6 +24,25 @@ function ctxWithDialog(response) {
     tuiModules: {},
   }).context;
 }
+
+describe("createDialogResolver", () => {
+  it("assigns unique ids to same-method dialogs created in the same tick", async () => {
+    const sent = [];
+    const resolver = createDialogResolver((msg) => sent.push(msg));
+
+    const first = resolver.createDialog("select", "First");
+    const second = resolver.createDialog("select", "Second");
+
+    expect(sent).toHaveLength(2);
+    expect(sent[0].id).not.toBe(sent[1].id);
+
+    resolver.resolve({ type: "extension_ui_response", id: sent[1].id, value: "second" });
+    resolver.resolve({ type: "extension_ui_response", id: sent[0].id, value: "first" });
+
+    await expect(first).resolves.toMatchObject({ value: "first" });
+    await expect(second).resolves.toMatchObject({ value: "second" });
+  });
+});
 
 describe("uiContext dialog return-value contract", () => {
   it("select returns the chosen option STRING (not the response object)", async () => {

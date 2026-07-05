@@ -40,6 +40,7 @@ export class PiProcess extends EventEmitter {
   private pending = new Map<string, PendingRequest>();
   public stderrLog: string[] = [];
   public readonly sessionFile?: string | undefined;
+  public exitCode: number | null = null;
 
   constructor(
     piPath: string,
@@ -101,6 +102,7 @@ export class PiProcess extends EventEmitter {
     this.proc.stdin?.on("error", (err) => console.error("[pi-process] stdin error", err));
 
     this.proc.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+      this.exitCode = code;
       this.rejectAllPending(new Error(`pi process exited with code ${code}`));
       this.emit("exit", code, signal);
     });

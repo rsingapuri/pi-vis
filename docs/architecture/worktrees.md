@@ -83,7 +83,10 @@ returns code + **stderr** + signal + `timedOut`) and turned into an actionable
 message by `describeWorktreeAddFailure` (git's own stderr, or an explicit
 timeout message). The base ref is pre-flight-validated (`rev-parse --verify
 <base>^{commit}`) so a deleted/renamed base reads as a crisp message, not a
-verbose git error. During creation the **composer is frozen** (`worktreeCreating`
+verbose git error. The session's in-memory worktree association is committed
+only after the respawn succeeds; if the replacement pi process fails to start
+or exits immediately, the previous `worktreePath` is restored and any commands
+queued behind the restart are rejected rather than hanging. During creation the **composer is frozen** (`worktreeCreating`
 forces `live=false`, disabling the textarea) so the in-flight send reads as
 "sending", not stuck unsubmitted text. On failure the reason is shown **inline
 and durably** in the WorktreeBar (`session.worktreeError` → `.worktree-bar__error`,

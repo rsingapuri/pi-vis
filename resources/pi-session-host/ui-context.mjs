@@ -45,9 +45,11 @@ export function createDialogResolver(sendToMain) {
     d.resolve(response);
   };
 
+  let nextDialogId = 0;
+
   const createDialog = (method, title, { message, options, placeholder, prefill, opts } = {}) => {
     return new Promise((resolveFn) => {
-      const id = `${method}_${Date.now()}`;
+      const id = `${method}_${Date.now()}_${++nextDialogId}`;
       pending.set(id, { resolve: resolveFn });
       sendToMain({
         type: "extension_ui_request",

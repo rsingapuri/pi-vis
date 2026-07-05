@@ -33,6 +33,15 @@ export interface SessionRecord {
   _hasLock?: boolean;
   /** True while activateSession() is mid-flight — guards re-entrant double-spawn. */
   _activating?: boolean;
+  /** Resolves when the current activation attempt finishes (success, failure, or cancellation). */
+  _activationDone?: Promise<void> | undefined;
+  _resolveActivationDone?: (() => void) | undefined;
+  /** Serializes reload/worktree respawn requests so overlapping restarts cannot race cwd/mode. */
+  _restartChain?: Promise<void> | undefined;
+  /** True while a restart is queued/running; commands should queue instead of hitting the old proc. */
+  _restartInProgress?: boolean;
+  /** Suppress one activation's pending-command flush because a restart is replacing that proc. */
+  _suppressNextActivationFlush?: boolean;
   /**
    * Set by closeSession when it runs during activateSession's async window
    * (the lock-acquire / waitForReady awaits). activateSession checks this
@@ -132,6 +141,9 @@ export class SessionRegistry {
           throw new Error(`Session file already open: ${resolved}`);
         }
         this.byFile.delete(resolved);
+        if (rec && (rec.status === "exited" || rec.status === "failed")) {
+          this.sessions.delete(existing);
+        }
       }
     }
 
@@ -180,12 +192,15 @@ export class SessionRegistry {
     // didn't exist). The _activating flag closes it; reload/respawn paths
     // clear proc deliberately and call activateSession from a quiescent state,
     // so they're unaffected.
-    if (record._activating) return;
+    if (record._activating) return record._activationDone;
     if (record.proc && (record.status === "starting" || record.status === "ready")) {
       return;
     }
 
     record._activating = true;
+    record._activationDone = new Promise((resolve) => {
+      record._resolveActivationDone = resolve;
+    });
     // P2-b: remember what the caller REQUESTED (sticky across fallbacks) so
     // /reload can re-try the host after a prior fallback (user may have
     // upgraded pi). _useHost tracks the actual running mode; _hostRequested
@@ -406,6 +421,8 @@ export class SessionRegistry {
         clearTimeout(readyTimer);
         if (record.proc !== proc) return;
         record.status = "exited";
+        record.proc = undefined;
+        record._procReady = false;
         record.busy = false;
         if (code !== 0 && code !== null) {
           const tail = proc.stderrLog.slice(-5).join("").trim();
@@ -430,6 +447,9 @@ export class SessionRegistry {
       proc.on("error", (err) => {
         if (record.proc !== proc) return;
         record.status = "failed";
+        record.proc = undefined;
+        record._procReady = false;
+        record.busy = false;
         record.error = err.message;
         // P1-f: same as exit — async failure must release the lock.
         this._releaseLockIfHeld(sessionId);
@@ -441,21 +461,32 @@ export class SessionRegistry {
       // commands — and any arriving during/after the flush — route to the live
       // proc instead of re-queuing. Until this point sendCommand MUST queue,
       // even though record.proc was set early in host mode. See P1-i.
-      record._procReady = true;
-      // Flush any commands that arrived while the proc was being established
-      // (during the session-file lock await and, in host mode, the startup
-      // handshake). They were queued by sendCommand(); now that proc is live
-      // they can go out for real.
-      this._flushPending(sessionId);
+      if (record._suppressNextActivationFlush) {
+        record._suppressNextActivationFlush = false;
+      } else {
+        record._procReady = true;
+        // Flush any commands that arrived while the proc was being established
+        // (during the session-file lock await and, in host mode, the startup
+        // handshake). They were queued by sendCommand(); now that proc is live
+        // they can go out for real.
+        this._flushPending(sessionId);
+      }
     } catch (err) {
       record.status = "failed";
       record.error = err instanceof Error ? err.message : String(err);
+      // Suppression is scoped to the activation attempt used by a restart.
+      // If that attempt fails, do not let the stale flag poison a later normal
+      // activation by skipping _procReady/_flushPending on success.
+      record._suppressNextActivationFlush = false;
       this._rejectPending(sessionId, record.error);
       this._releaseLockIfHeld(sessionId); // P1-f: sync-failure path.
       this.onStatusChanged(sessionId, "failed", record.error);
       return;
     } finally {
       record._activating = false;
+      record._resolveActivationDone?.();
+      record._activationDone = undefined;
+      record._resolveActivationDone = undefined;
     }
 
     // After successful spawn, enforce the idle process limit
@@ -487,10 +518,10 @@ export class SessionRegistry {
     // pre-handshake (for the trust dialog), but the host bounces commands with
     // "Not initialized" until init completes. _procReady flips true exactly
     // when the proc can accept commands. See P1-i.
-    if (rec.proc && rec._procReady) {
+    if (!rec._restartInProgress && rec.proc && rec._procReady) {
       return rec.proc.sendCommand(command, options);
     }
-    if (rec.status === "starting") {
+    if (rec.status === "starting" || rec._restartInProgress) {
       return new Promise<PiRpcResponse>((resolve, reject) => {
         if (!rec._pendingSend) rec._pendingSend = [];
         rec._pendingSend.push({ command, uiSurface: options.uiSurface, resolve, reject });
@@ -533,6 +564,73 @@ export class SessionRegistry {
       })
       .catch(() => {});
     rec._hasLock = false;
+  }
+
+  /** Wait for an in-flight activation to reach a quiescent state before restart operations. */
+  private async _waitForActivationIfNeeded(record: SessionRecord): Promise<void> {
+    if (record._activating && record._activationDone) {
+      await record._activationDone;
+    }
+  }
+
+  /** Serialize reload/worktree restarts for a record. */
+  private async _runRestartExclusive(
+    record: SessionRecord,
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    if (record._activating) {
+      record._suppressNextActivationFlush = true;
+    }
+    record._restartInProgress = true;
+    const previous = record._restartChain ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = previous.then(
+      () => current,
+      () => current,
+    );
+    record._restartChain = chained;
+
+    await previous.catch(() => {});
+    let restartError: unknown;
+    try {
+      await fn();
+    } catch (err) {
+      restartError = err;
+      throw err;
+    } finally {
+      release();
+      if (record._restartChain === chained) {
+        record._restartChain = undefined;
+        record._restartInProgress = false;
+        if (record.proc && record._procReady) {
+          this._flushPending(record.sessionId);
+        } else {
+          const reason =
+            restartError instanceof Error
+              ? restartError.message
+              : (record.error ?? `Failed to activate session ${record.sessionId}`);
+          this._rejectPending(record.sessionId, reason);
+        }
+      }
+    }
+  }
+
+  /** Restart callers need activation failures as rejections, not only status events. */
+  private async _throwIfRestartFailed(sessionId: SessionId): Promise<void> {
+    // Give asynchronous spawn errors/exits a short window to reach the registry handlers.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const rec = this.sessions.get(sessionId);
+    if (!rec) throw new Error(`Unknown session: ${sessionId}`);
+    const procExitCode = rec.proc?.exitCode;
+    if (procExitCode !== undefined && procExitCode !== null) {
+      throw new Error(rec.error ?? `Exited with code ${procExitCode}`);
+    }
+    if (rec.status === "failed" || rec.error || !rec.proc || !rec._procReady) {
+      throw new Error(rec.error ?? `Failed to activate session ${sessionId}`);
+    }
   }
 
   /** Reject all queued commands (activation failed). */
@@ -656,23 +754,33 @@ export class SessionRegistry {
     if (!record) {
       throw new Error(`Unknown session: ${sessionId}`);
     }
-    if (record.busy) {
-      throw new Error("Wait for the current response to finish before reloading.");
-    }
-    // Stop the current process. Clearing record.proc first means the
-    // generation guard in the exit/error handlers swallows the upcoming
-    // events, and activateSession sees no live proc and re-spawns.
-    const proc = record.proc;
-    record.proc = undefined;
-    proc?.stop();
-    // P2-b: re-try the host on /reload iff the caller originally requested
-    // host mode. /reload re-reads everything from disk, and the user may have
-    // just upgraded pi specifically to get panel support — a transient prior
-    // failure shouldn't permanently disable the feature. A session the caller
-    // never wanted in host mode (_hostRequested false) stays rpc.
-    // (setWorktreeAndRespawn preserves the ACTUAL _useHost, since the pi
-    // install hasn't changed across a worktree respawn.)
-    await this.activateSession(sessionId, piPath, env, record._hostRequested ?? false);
+    await this._runRestartExclusive(record, async () => {
+      if (record.busy) {
+        throw new Error("Wait for the current response to finish before reloading.");
+      }
+      await this._waitForActivationIfNeeded(record);
+      if (!this.sessions.has(sessionId)) {
+        throw new Error(`Unknown session: ${sessionId}`);
+      }
+      // Stop the current process. Clearing record.proc first means the
+      // generation guard in the exit/error handlers swallows the upcoming
+      // events, and activateSession sees no live proc and re-spawns.
+      const proc = record.proc;
+      record.proc = undefined;
+      record._procReady = false;
+      proc?.stop();
+      // P2-b: re-try the host on /reload iff the caller originally requested
+      // host mode. /reload re-reads everything from disk, and the user may have
+      // just upgraded pi specifically to get panel support — a transient prior
+      // failure shouldn't permanently disable the feature. A session the caller
+      // never wanted in host mode (_hostRequested false) stays rpc.
+      // (setWorktreeAndRespawn preserves the ACTUAL _useHost, since the pi
+      // install hasn't changed across a worktree respawn.)
+      record._suppressNextActivationFlush = true;
+      await this.activateSession(sessionId, piPath, env, record._hostRequested ?? false);
+      if (record.proc) record._procReady = true;
+      await this._throwIfRestartFailed(sessionId);
+    });
   }
 
   /**
@@ -716,17 +824,35 @@ export class SessionRegistry {
     if (!record) {
       throw new Error(`Unknown session: ${sessionId}`);
     }
-    // Stop the current process with the generation guard.
-    const proc = record.proc;
-    record.proc = undefined;
-    proc?.stop();
-    record.worktreePath = worktreePath;
-    // Preserve the ACTUAL running mode across a worktree respawn: the pi
-    // install hasn't changed (same binary), so re-trying the host here would
-    // just re-fail the same way. Use _useHost (the outcome), not _hostRequested
-    // (the intent). Contrast with reloadSession, which re-tries the host via
-    // _hostRequested because /reload implies a pi upgrade is possible. See P2-b.
-    await this.activateSession(sessionId, piPath, env, record._useHost ?? false);
+    await this._runRestartExclusive(record, async () => {
+      await this._waitForActivationIfNeeded(record);
+      if (!this.sessions.has(sessionId)) {
+        throw new Error(`Unknown session: ${sessionId}`);
+      }
+      // Stop the current process with the generation guard.
+      const proc = record.proc;
+      const oldWorktreePath = record.worktreePath;
+      record.proc = undefined;
+      record._procReady = false;
+      proc?.stop();
+      record.worktreePath = worktreePath;
+      try {
+        // Preserve the ACTUAL running mode across a worktree respawn: the pi
+        // install hasn't changed (same binary), so re-trying the host here would
+        // just re-fail the same way. Use _useHost (the outcome), not _hostRequested
+        // (the intent). Contrast with reloadSession, which re-tries the host via
+        // _hostRequested because /reload implies a pi upgrade is possible. See P2-b.
+        record._suppressNextActivationFlush = true;
+        await this.activateSession(sessionId, piPath, env, record._useHost ?? false);
+        if (record.proc) record._procReady = true;
+        await this._throwIfRestartFailed(sessionId);
+      } catch (err) {
+        if (this.sessions.get(sessionId) === record) {
+          record.worktreePath = oldWorktreePath;
+        }
+        throw err;
+      }
+    });
   }
 
   /**
@@ -763,7 +889,7 @@ export class SessionRegistry {
     // Sort oldest-first so we kill the least-recently-used
     liveIdle.sort((a, b) => a.lastActiveAt - b.lastActiveAt);
 
-    while (liveIdle.length >= MAX_IDLE_PROCESSES) {
+    while (liveIdle.length > MAX_IDLE_PROCESSES) {
       const { id } = liveIdle.shift()!;
       this.deactivateSession(id);
     }
@@ -780,7 +906,12 @@ export class SessionRegistry {
 
   stopAll(): void {
     for (const rec of this.sessions.values()) {
-      rec.proc?.stop();
+      const proc = rec.proc;
+      rec.proc = undefined;
+      rec._procReady = false;
+      rec.busy = false;
+      proc?.stop();
+      this._releaseLockIfHeld(rec.sessionId);
     }
   }
 

@@ -234,13 +234,13 @@ export function initIpc(win: BrowserWindow): void {
           name: result.name,
           base: result.base,
         };
-        saveSettings({ worktrees });
-        registry?.setWorktreeAndRespawn(
+        await registry?.setWorktreeAndRespawn(
           args.sessionId,
           result.worktreePath,
           piInfo.path,
           loginShellEnv,
         );
+        saveSettings({ worktrees });
         return {
           ok: true,
           worktreePath: result.worktreePath,
@@ -290,8 +290,13 @@ export function initIpc(win: BrowserWindow): void {
           name: result.name,
           base: result.branch, // attached: no "cut from" relationship
         };
+        await registry?.setWorktreeAndRespawn(
+          args.sessionId,
+          result.path,
+          piInfo.path,
+          loginShellEnv,
+        );
         saveSettings({ worktrees });
-        registry?.setWorktreeAndRespawn(args.sessionId, result.path, piInfo.path, loginShellEnv);
         return {
           ok: true,
           worktreePath: result.path,
@@ -339,7 +344,7 @@ export function initIpc(win: BrowserWindow): void {
     if (!piInfo) return { success: false, error: "pi binary not found" };
     const loginShellEnv = await getHostEnv();
     try {
-      registry?.reloadSession(args.sessionId, piInfo.path, loginShellEnv);
+      await registry?.reloadSession(args.sessionId, piInfo.path, loginShellEnv);
       return { success: true };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };

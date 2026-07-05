@@ -155,6 +155,43 @@ describe("SessionHost", () => {
     });
   });
 
+  describe("post-exit best-effort sends", () => {
+    it("drops UI/panel replies after host exit without throwing or emitting error", () => {
+      const errors: Error[] = [];
+      host.on("error", (err) => errors.push(err));
+      fake.emitExit(1);
+
+      const originalSend = fake.send.bind(fake);
+      fake.send = ((msg: unknown, cb?: (err: Error | null) => void) => {
+        if (!fake.connected) throw new Error("Host process IPC channel closed");
+        return originalSend(msg as never, cb);
+      }) as typeof fake.send;
+
+      expect(() => {
+        host.sendUiResponse(JSON.stringify({ type: "extension_ui_response", id: "d", value: "x" }));
+        host.sendPanelInput(1, "x");
+        host.sendPanelResize(1, 80, 24);
+        host.sendPanelClose(1);
+      }).not.toThrow();
+      expect(errors).toHaveLength(0);
+    });
+
+    it("uses callback sends so channel-close races are swallowed", () => {
+      const errors: Error[] = [];
+      host.on("error", (err) => errors.push(err));
+
+      fake.send = ((msg: unknown, cb?: (err: Error | null) => void) => {
+        expect(msg).toMatchObject({ type: "panel_input", panelId: 1, data: "x" });
+        expect(typeof cb).toBe("function");
+        cb?.(new Error("Host process IPC channel closed"));
+        return false;
+      }) as typeof fake.send;
+
+      expect(() => host.sendPanelInput(1, "x")).not.toThrow();
+      expect(errors).toHaveLength(0);
+    });
+  });
+
   describe("sendCommand", () => {
     it("correlates a response by id and resolves with data", async () => {
       await fake.emitReady("0.80.0");

@@ -91,6 +91,23 @@ describe("listSessionsForWorkspace", () => {
     expect(summaries[0]?.messageCount).toBe(1);
   });
 
+  it("samples large session files without losing head preview or tail name", async () => {
+    const cwd = path.join(root, "workspace-A");
+    const filePath = writeSession("workspace-A", "large.jsonl", [
+      { type: "session", version: 3, id: "large", timestamp: "2024-01-01T00:00:00Z", cwd },
+      userEntry("e1", "large", "head-preview"),
+    ]);
+    const filler = JSON.stringify({ type: "tool_result", data: "x".repeat(1024) });
+    fs.appendFileSync(filePath, `${Array.from({ length: 1200 }, () => filler).join("\n")}\n`);
+    fs.appendFileSync(filePath, `${JSON.stringify(sessionInfo("tail", "e1", "Tail Name"))}\n`);
+
+    const summaries = await listSessionsForWorkspace(cwd);
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.preview).toBe("head-preview");
+    expect(summaries[0]?.name).toBe("Tail Name");
+  });
+
   it("invalidates the cache when the file is rewritten with a new name", async () => {
     const cwd = path.join(root, "workspace-A");
     const filePath = writeSession("workspace-A", "session1.jsonl", [

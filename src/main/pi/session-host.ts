@@ -636,11 +636,17 @@ export class SessionHost extends EventEmitter {
           id: string;
           bytes?: string | undefined;
           mimeType?: string | undefined;
-        },
+        }
+      | { type: "dialog_response"; response: unknown }
+      | { type: "panel_input"; panelId: number; data: string }
+      | { type: "panel_resize"; panelId: number; cols: number; rows: number; force?: true }
+      | { type: "panel_close_request"; panelId: number },
   ): void {
     if (this.proc.exitCode !== null || this.proc.killed || !this.proc.connected) return;
     try {
-      this.proc.send(msg);
+      this.proc.send(msg, () => {
+        // Best-effort post-exit/channel-closed response; ignore async send errors.
+      });
     } catch {
       /* channel closed between the check and the send — nothing to do */
     }
@@ -689,7 +695,7 @@ export class SessionHost extends EventEmitter {
       console.error("[SessionHost] Failed to parse UI response:", responseJson);
       return;
     }
-    this.proc.send({ type: "dialog_response", response });
+    this.sendToHost({ type: "dialog_response", response });
     // The dialog was answered — clear the dialog-outstanding timer (W1) and
     // re-arm the startup watchdog so the host finishes coming up within
     // STARTUP_TIMEOUT_MS. If already ready, armStartupTimer is a no-op.
@@ -701,11 +707,11 @@ export class SessionHost extends EventEmitter {
   }
 
   sendPanelInput(panelId: number, data: string): void {
-    this.proc.send({ type: "panel_input", panelId, data });
+    this.sendToHost({ type: "panel_input", panelId, data });
   }
 
   sendPanelResize(panelId: number, cols: number, rows: number, force = false): void {
-    this.proc.send({
+    this.sendToHost({
       type: "panel_resize",
       panelId,
       cols,
@@ -717,7 +723,7 @@ export class SessionHost extends EventEmitter {
   /** Force-close a custom panel from the UI (escape hatch). The host resolves
    *  the extension's custom() promise with undefined and tears it down. */
   sendPanelClose(panelId: number): void {
-    this.proc.send({ type: "panel_close_request", panelId });
+    this.sendToHost({ type: "panel_close_request", panelId });
   }
 
   private killTimer: ReturnType<typeof setTimeout> | null = null;
