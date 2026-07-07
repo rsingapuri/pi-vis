@@ -39,6 +39,14 @@ const MODELS = [
 
 let panelOpen = false;
 let panelTimer = null;
+let factoryWidgetActive = false;
+let deferredClose = false;
+let editorDraft = "";
+let submitCounter = 0;
+const pendingSubmits = new Map();
+const AUTO_CLOSE_MS = Number(process.env.PIVIS_TEST_UNIFIED_AUTO_CLOSE_MS || 0);
+const AUTO_CLOSE_AFTER_DRAFT = process.env.PIVIS_TEST_UNIFIED_AUTO_CLOSE_AFTER_DRAFT || "";
+let autoClosedAfterDraft = false;
 
 // The kitty keyboard protocol handshake the REAL host writes in
 // HostTerminal.start() (see keyboard-protocol.mjs): enable bracketed paste, then
@@ -58,6 +66,57 @@ function recordInput(data) {
     fs.appendFileSync(INPUT_FILE, data, { flag: "a" });
   } catch {
     /* best effort — input routing is asserted on a best-effort basis */
+  }
+}
+
+function stripControlSequences(data) {
+  // Remove CSI replies/releases/modified-key sequences so the tiny fake editor
+  // sees only the intended text-ish keypresses. The real host delegates this to
+  // pi-tui + the kitty negotiator; this fixture only needs enough state to
+  // model draft-retained close behavior in the E2E suite.
+  return data.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function maybeCloseDeferredUnifiedPanel() {
+  if (factoryWidgetActive) return;
+  if (pendingSubmits.size > 0) return;
+  if (editorDraft.trim().length > 0) return;
+  closeUnifiedPanel();
+}
+
+function submitUnifiedDraft() {
+  const text = editorDraft;
+  if (!text.trim()) {
+    maybeCloseDeferredUnifiedPanel();
+    return;
+  }
+  const id = `fake-submit-${++submitCounter}`;
+  pendingSubmits.set(id, text);
+  editorDraft = "";
+  send({ type: "unified_submit_request", id, text });
+}
+
+function updateFakeEditorDraft(data) {
+  if (!panelOpen) return;
+  const plain = stripControlSequences(data);
+  for (const ch of plain) {
+    if (ch === "\r") {
+      submitUnifiedDraft();
+    } else if (ch === "\b" || ch === "\x7f") {
+      editorDraft = editorDraft.slice(0, -1);
+      maybeCloseDeferredUnifiedPanel();
+    } else if (ch === "\n" || ch >= " ") {
+      editorDraft += ch;
+    }
+  }
+  if (
+    AUTO_CLOSE_AFTER_DRAFT &&
+    !autoClosedAfterDraft &&
+    factoryWidgetActive &&
+    editorDraft.includes(AUTO_CLOSE_AFTER_DRAFT)
+  ) {
+    autoClosedAfterDraft = true;
+    requestFactoryWidgetClose();
   }
 }
 
@@ -145,14 +204,19 @@ function handleCommand(id, command, uiSurface) {
 
 function renderRoster() {
   // Clear-screen + home + a recognizable fleet roster. UnifiedTuiHost renders
-  // this into xterm.js; the test greps for "Fleet" and an agent name.
-  return `\x1b[2J\x1b[H${[
-    "▸ Fleet (2 agents)        ↓/↑ navigate · Enter open",
-    "  ● swift-otter    running   3 turns",
-    "  ○ brave-falcon   queued    —",
-    "",
-    "  (unified TUI · type a prompt + Enter)",
-  ].join("\n")}\n`;
+  // this into xterm.js; the test greps for "Fleet" and an agent name. When the
+  // fake extension has self-closed its widget but a draft retains the panel,
+  // render an editor-only placeholder so the visible surface remains stable.
+  const lines = factoryWidgetActive
+    ? [
+        "▸ Fleet (2 agents)        ↓/↑ navigate · Enter open",
+        "  ● swift-otter    running   3 turns",
+        "  ○ brave-falcon   queued    —",
+        "",
+        "  (unified TUI · type a prompt + Enter)",
+      ]
+    : ["  (unified editor retained for unsent input)"];
+  return `\x1b[2J\x1b[H${lines.join("\n")}\n`;
 }
 
 function renderFrame() {
@@ -162,6 +226,11 @@ function renderFrame() {
 function openUnifiedPanel() {
   if (panelOpen) return;
   panelOpen = true;
+  factoryWidgetActive = true;
+  deferredClose = false;
+  editorDraft = "";
+  autoClosedAfterDraft = false;
+  pendingSubmits.clear();
   send({ type: "panel_open", panelId: PANEL_ID, overlay: false, unified: true });
   // Mirror the real host: push the kitty handshake so xterm answers it. The
   // reply (+ later keystrokes) is captured to PIVIS_TEST_HOST_INPUT_FILE.
@@ -170,11 +239,29 @@ function openUnifiedPanel() {
   // Keep streaming so a remount (e.g. session switch) re-seeds from the buffer.
   panelTimer = setInterval(renderFrame, 1000);
   if (panelTimer?.unref) panelTimer.unref();
+  if (AUTO_CLOSE_MS > 0) {
+    setTimeout(requestFactoryWidgetClose, AUTO_CLOSE_MS).unref?.();
+  }
+}
+
+function requestFactoryWidgetClose() {
+  if (!panelOpen) return;
+  factoryWidgetActive = false;
+  if (editorDraft.trim().length > 0 || pendingSubmits.size > 0) {
+    deferredClose = true;
+    renderFrame();
+    return;
+  }
+  closeUnifiedPanel();
 }
 
 function closeUnifiedPanel() {
   if (!panelOpen) return;
   panelOpen = false;
+  factoryWidgetActive = false;
+  deferredClose = false;
+  editorDraft = "";
+  pendingSubmits.clear();
   if (panelTimer) {
     clearInterval(panelTimer);
     panelTimer = null;
@@ -219,8 +306,12 @@ process.on("message", (msg) => {
         break;
       case "panel_input":
         // Keystrokes from UnifiedTuiHost's xterm → record for the input-routing
-        // assertion. (The real host would feed these to the TUI's editor.)
-        if (typeof msg?.data === "string") recordInput(msg.data);
+        // assertion and update a tiny fake editor draft so this fixture can
+        // model the real host's draft-retained self-close invariant.
+        if (typeof msg?.data === "string") {
+          recordInput(msg.data);
+          updateFakeEditorDraft(msg.data);
+        }
         break;
       case "panel_resize":
         // A force resize = xterm remounted (clean terminal). The real host
@@ -233,7 +324,15 @@ process.on("message", (msg) => {
       case "panel_close_request":
         closeUnifiedPanel();
         break;
-      case "unified_submit_response":
+      case "unified_submit_response": {
+        const snapshot = pendingSubmits.get(msg.id);
+        if (snapshot !== undefined) {
+          pendingSubmits.delete(msg.id);
+          if (msg.ok === false && msg.bailed === true) editorDraft = snapshot;
+        }
+        if (deferredClose) maybeCloseDeferredUnifiedPanel();
+        break;
+      }
       case "clipboard_read_image_response":
       case "dialog_response":
         // Renderer replies we don't need to act on for the render/input test.

@@ -48,6 +48,7 @@ async function makeFolders(): Promise<Folders> {
 
 async function launchApp(
   folders: Folders,
+  extraEnv: Record<string, string | undefined> = {},
 ): Promise<{ app: LaunchedElectronApplication; window: Page }> {
   fs.writeFileSync(
     join(folders.settingsDir, "settings.json"),
@@ -71,6 +72,7 @@ async function launchApp(
       // The seams that make this test deterministic:
       PIVIS_TEST_HOST_SCRIPT: FAKE_HOST,
       PIVIS_TEST_HOST_INPUT_FILE: folders.inputFile,
+      ...extraEnv,
       ELECTRON_RENDERER_URL: undefined,
     },
   });
@@ -140,6 +142,50 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
           },
         )
         .toContain("xyz");
+    } finally {
+      await app.close();
+      rmrf(folders.settingsDir);
+      rmrf(folders.workspaceDir);
+      rmrf(folders.piSessionsDir);
+    }
+  });
+
+  test("extension self-close retains the unified editor while unsent text exists, then closes after submit", async () => {
+    test.setTimeout(90_000);
+    const folders = await makeFolders();
+    const { app, window } = await launchApp(folders, {
+      // Deterministic self-close trigger: once the fake editor draft contains
+      // this text, the fake extension removes its final factory widget. This
+      // avoids racing a fixed timer against slow CI typing/focus startup.
+      PIVIS_TEST_UNIFIED_AUTO_CLOSE_AFTER_DRAFT: "do not lose me",
+    });
+
+    try {
+      await window.getByRole("button", { name: "New session" }).click();
+      const panel = window.locator(".unified-panel");
+      await expect(panel).toBeVisible({ timeout: 20_000 });
+      await panel.locator(".xterm").click();
+
+      await window.keyboard.type("do not lose me");
+      await expect
+        .poll(() => stripKittyReleases(readInput(folders)), { timeout: 10_000 })
+        .toContain("do not lose me");
+
+      // The fake extension has now cleared its last factory widget. Because the
+      // unified editor has unsent text, the panel stays visible instead of the
+      // app being shoved back to the native Composer.
+      await expect(panel).toBeVisible();
+      await expect(window.locator(".composer__textarea")).toHaveCount(0);
+      await expect(panel.locator(".xterm-rows")).toContainText("unified editor retained", {
+        timeout: 10_000,
+      });
+
+      // Submitting drains the draft + pending-submit roots. Since no factory
+      // widget remains, the host may finally close and return to the Composer.
+      await panel.locator(".xterm").click();
+      await window.keyboard.press("Enter");
+      await expect(window.locator(".unified-panel")).toHaveCount(0, { timeout: 15_000 });
+      await expect(window.locator(".composer__textarea")).toBeVisible({ timeout: 10_000 });
     } finally {
       await app.close();
       rmrf(folders.settingsDir);

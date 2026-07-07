@@ -234,11 +234,21 @@ export function createUIContext({
       widgetFactories: new Map(),
     };
 
+    // Retention check: when the last factory widget is gone, unsent editor text
+    // becomes the only root keeping the unified TUI alive. Watch user input and
+    // close the editor-only panel as soon as that draft is deleted. This runs as
+    // a pre-editor listener, so defer the check until after the focused Editor
+    // has handled the key in the same input turn.
+    tui.addInputListener(() => {
+      scheduleUnifiedRetentionCheck();
+    });
+
     // Editor submit → ask the renderer to run the shared submit pipeline, then
     // report the outcome so a guard bail can restore the text. Pi's
     // Editor.submitValue() clears the editor synchronously BEFORE invoking
     // onSubmit, so the editor is already empty by the time this fires; the text
-    // captured here is what gets restored on bail.
+    // captured here is what gets restored on bail. The pending submit itself is
+    // a retention root while the renderer may still ask us to restore on bail.
     editor.onSubmit = (text) => {
       const id = crypto.randomUUID();
       pendingSubmits.set(id, text);
@@ -293,6 +303,11 @@ export function createUIContext({
         unifiedTuiState.tui.requestRender();
       }
     }
+
+    // Re-evaluate roots after the pending-submit root drains. Success with no
+    // widgets and an empty editor closes; bail/failure restore keeps the panel;
+    // a new widget registered during the round-trip keeps it open.
+    maybeDisposeUnifiedTui();
   }
 
   function resolveClipboardImage(id, result) {
@@ -320,7 +335,39 @@ export function createUIContext({
     }
   }
 
-  // ─── Teardown ─────────────────────────────────────────────────────────────────
+  // ─── Unified-TUI retention / teardown ─────────────────────────────────────────
+
+  function unifiedEditorHasDraft() {
+    const editor = unifiedTuiState?.editor;
+    if (!editor) return false;
+    try {
+      const text =
+        typeof editor.getExpandedText === "function"
+          ? editor.getExpandedText()
+          : editor.getText?.();
+      return typeof text === "string" && text.trim().length > 0;
+    } catch {
+      // If the public editor getter ever throws, prefer preserving the panel
+      // over risking loss of unsent input.
+      return true;
+    }
+  }
+
+  function unifiedHasRetentionRoot() {
+    const state = unifiedTuiState;
+    if (!state) return false;
+    return state.widgetFactories.size > 0 || pendingSubmits.size > 0 || unifiedEditorHasDraft();
+  }
+
+  function maybeDisposeUnifiedTui() {
+    if (!unifiedTuiState) return;
+    if (unifiedHasRetentionRoot()) return;
+    disposeUnifiedTui();
+  }
+
+  function scheduleUnifiedRetentionCheck() {
+    queueMicrotask(maybeDisposeUnifiedTui);
+  }
 
   function disposeUnifiedTui() {
     if (!unifiedTuiState) return;
@@ -426,6 +473,7 @@ export function createUIContext({
       if (unifiedTuiState) {
         unifiedTuiState.editor.setText(text);
         unifiedTuiState.tui.requestRender();
+        maybeDisposeUnifiedTui();
       } else {
         sendToMain({
           type: "extension_ui_request",
@@ -484,10 +532,11 @@ export function createUIContext({
             tui.requestRender();
           }
 
-          // Tear down unified TUI if no factories remain
-          if (widgetFactories.size === 0) {
-            disposeUnifiedTui();
-          }
+          // Tear down only when ALL unified roots are gone. If the user has an
+          // unsent editor draft, keep an editor-only unified panel alive instead
+          // of shoving them back to the Composer and losing the text. If a
+          // submit is in flight, keep the panel too so a guard bail can restore.
+          maybeDisposeUnifiedTui();
         }
       } else if (Array.isArray(content)) {
         // Static string[] widget: existing behavior

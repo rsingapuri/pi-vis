@@ -353,7 +353,7 @@ describe("unified TUI: setWidget factory routing", () => {
     expect(h.panelBridge.openPanel).not.toHaveBeenCalled();
   });
 
-  it("setWidget(key, undefined) removes the widget and, when the last factory is gone, tears the unified TUI down", () => {
+  it("setWidget(key, undefined) removes the widget and, when no retention roots remain, tears the unified TUI down", () => {
     const h = makeHarness();
     const f = makeFactory();
     h.context.setWidget("k", f);
@@ -365,6 +365,112 @@ describe("unified TUI: setWidget factory routing", () => {
     expect(f.component.dispose).toHaveBeenCalled();
     expect(tui.stopped).toBe(true);
     expect(h.panelBridge.closePanel).toHaveBeenCalledWith(panelId);
+  });
+
+  it("setWidget(key, undefined) keeps an editor-only unified TUI alive when unsent text exists", () => {
+    const h = makeHarness();
+    const f = makeFactory();
+    h.context.setWidget("k", f);
+    const tui = h.tui;
+    h.editor.getExpandedText.mockReturnValue("draft in progress");
+
+    h.context.setWidget("k", undefined);
+
+    expect(f.component.dispose).toHaveBeenCalled();
+    expect(tui.stopped).toBe(false);
+    expect(h.panelBridge.closePanel).not.toHaveBeenCalled();
+  });
+
+  it("a draft-held editor-only unified TUI closes once the user deletes the draft", async () => {
+    const h = makeHarness();
+    h.context.setWidget("k", makeFactory());
+    const tui = h.tui;
+    const panelId = h.panelBridge.openPanel.mock.results[0].value;
+    h.editor.getExpandedText.mockReturnValue("draft");
+    h.context.setWidget("k", undefined);
+    expect(tui.stopped).toBe(false);
+
+    h.editor.getExpandedText.mockReturnValue("");
+    for (const listener of tui.inputListeners) listener("\b");
+    await Promise.resolve();
+
+    expect(tui.stopped).toBe(true);
+    expect(h.panelBridge.closePanel).toHaveBeenCalledWith(panelId);
+  });
+
+  it("setEditorText('') closes a draft-held widgetless unified TUI", () => {
+    const h = makeHarness();
+    h.context.setWidget("k", makeFactory());
+    const tui = h.tui;
+    const panelId = h.panelBridge.openPanel.mock.results[0].value;
+    h.editor.getExpandedText.mockReturnValue("draft");
+    h.context.setWidget("k", undefined);
+    expect(tui.stopped).toBe(false);
+
+    h.editor.getExpandedText.mockReturnValue("");
+    h.context.setEditorText("");
+
+    expect(h.editor.setText).toHaveBeenCalledWith("");
+    expect(tui.stopped).toBe(true);
+    expect(h.panelBridge.closePanel).toHaveBeenCalledWith(panelId);
+  });
+
+  it("a pending unified submit retains the TUI after the last widget is removed until the submit resolves", () => {
+    const h = makeHarness();
+    h.context.setWidget("k", makeFactory());
+    const tui = h.tui;
+    const panelId = h.panelBridge.openPanel.mock.results[0].value;
+    h.editor.getExpandedText.mockReturnValue("");
+
+    h.editor.onSubmit("send me");
+    h.context.setWidget("k", undefined);
+
+    expect(tui.stopped).toBe(false);
+    expect(h.panelBridge.closePanel).not.toHaveBeenCalled();
+
+    h.unified.resolveSubmit(lastSubmitId(h.sendToMain), { ok: true });
+
+    expect(tui.stopped).toBe(true);
+    expect(h.panelBridge.closePanel).toHaveBeenCalledWith(panelId);
+  });
+
+  it("a failed/bailed pending submit restores text and keeps a widgetless TUI alive", () => {
+    const h = makeHarness();
+    h.context.setWidget("k", makeFactory());
+    const tui = h.tui;
+    h.editor.getExpandedText.mockReturnValue("");
+    h.editor.getText.mockReturnValue("");
+
+    h.editor.onSubmit("retry me");
+    h.context.setWidget("k", undefined);
+    expect(tui.stopped).toBe(false);
+
+    h.editor.getExpandedText.mockReturnValue("retry me");
+    h.unified.resolveSubmit(lastSubmitId(h.sendToMain), { ok: false, bailed: true });
+
+    expect(h.editor.setText).toHaveBeenCalledWith("retry me");
+    expect(tui.stopped).toBe(false);
+    expect(h.panelBridge.closePanel).not.toHaveBeenCalled();
+  });
+
+  it("a new factory widget registered while draft-held prevents close after submit", () => {
+    const h = makeHarness();
+    const first = makeFactory("first");
+    h.context.setWidget("first", first);
+    const tui = h.tui;
+    h.editor.getExpandedText.mockReturnValue("draft");
+    h.context.setWidget("first", undefined);
+    expect(tui.stopped).toBe(false);
+
+    const second = makeFactory("second");
+    h.context.setWidget("second", second);
+    h.editor.getExpandedText.mockReturnValue("");
+    h.editor.onSubmit("draft");
+    h.unified.resolveSubmit(lastSubmitId(h.sendToMain), { ok: true });
+
+    expect(second.component.dispose).not.toHaveBeenCalled();
+    expect(tui.stopped).toBe(false);
+    expect(h.panelBridge.closePanel).not.toHaveBeenCalled();
   });
 });
 
@@ -448,12 +554,12 @@ describe("unified TUI: editor submit + guard bail-restore", () => {
     expect(h.editor.setText).not.toHaveBeenCalled();
   });
 
-  it("a resolveSubmit for an unknown id is a no-op (late reply after teardown)", () => {
+  it("a resolveSubmit for an id cleared by explicit dispose is a no-op (late reply after teardown)", () => {
     const h = makeHarness();
     h.context.setWidget("k", makeFactory());
     h.editor.onSubmit("x");
     const id = lastSubmitId(h.sendToMain);
-    h.context.setWidget("k", undefined); // teardown clears pendingSubmits
+    h.unified.dispose(); // explicit teardown clears pendingSubmits
 
     expect(() => h.unified.resolveSubmit(id, { ok: false, bailed: true })).not.toThrow();
     expect(h.editor.setText).not.toHaveBeenCalled();
