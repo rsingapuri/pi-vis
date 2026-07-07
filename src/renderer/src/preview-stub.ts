@@ -69,6 +69,15 @@ function registerPanelFrame(sessionId: unknown, panelId: number, frame: string):
   panelFrames.set(panelId, { sessionId, frame });
 }
 
+// The kitty keyboard handshake the real host writes in HostTerminal.start()
+// AND re-writes on a force resize (renegotiate — see keyboard-protocol.mjs):
+// bracketed paste + push flags 7 + query + DA sentinel. xterm 6.1 (with
+// vtExtensions.kittyKeyboard) answers it over onData → session.panelInput.
+// Emitted on unified panel open, and RE-emitted on a force:true panelResize —
+// without the re-emit a remounted xterm never sees the push, because the
+// unified replay buffer trims everything before the frame's `\x1b[2J`.
+const KITTY_HANDSHAKE = "\x1b[?2004h\x1b[>7u\x1b[?u\x1b[c";
+
 function emitEvent(event: Record<string, unknown>): void {
   emit("session.events", { sessionId: DEMO_SESSION_ID, events: [event] });
 }
@@ -705,10 +714,20 @@ const stub = {
         // the content re-lays-out top-anchored into the new grid (see
         // registerPanelFrame). Async (next tick) to match the host's frame and
         // avoid re-entering the sizer mid-pass.
-        const { panelId } = req as { panelId?: number };
+        const { panelId, force } = req as { panelId?: number; force?: boolean };
         const rec = panelId !== undefined ? panelFrames.get(panelId) : undefined;
         if (rec) {
           setTimeout(() => {
+            // A force resize = a freshly-(re)mounted xterm with no negotiated
+            // modes. Mirror the real host's renegotiate(): re-push the kitty
+            // handshake BEFORE the frame so xterm answers it (the replay buffer
+            // trimmed the open-time push at the frame's hard clear).
+            if (force === true) {
+              emit("session.panelEvent", {
+                sessionId: rec.sessionId,
+                event: { type: "panel_data", panelId, data: KITTY_HANDSHAKE },
+              });
+            }
             emit("session.panelEvent", {
               sessionId: rec.sessionId,
               event: { type: "panel_data", panelId, data: rec.frame },
@@ -970,6 +989,16 @@ function startUnifiedPanelPreview(): void {
     emit("session.panelEvent", {
       sessionId: activeId,
       event: { type: "panel_open", panelId: PANEL_ID, overlay: false, unified: true },
+    });
+    // Push the Kitty keyboard handshake the way the real host does in
+    // HostTerminal.start(). xterm 6.1 — served here with
+    // vtExtensions.kittyKeyboard — ANSWERS it over panelInput, and encodes
+    // modified keys as CSI-u. This lets the render suite prove the xterm-6.1
+    // behavior in isolation from host logic. (Re-pushed on force resize in the
+    // session.panelResize case above, mirroring the host's renegotiate().)
+    emit("session.panelEvent", {
+      sessionId: activeId,
+      event: { type: "panel_data", panelId: PANEL_ID, data: KITTY_HANDSHAKE },
     });
     emit("session.panelEvent", {
       sessionId: activeId,

@@ -25,5 +25,6 @@
     "tests/fixtures/**/*",
     "resources/pi-session-host/**/*",
     "electron.vite.config.ts"
-  ]
+  ],
+  "exclude": ["tests/fixtures/unified-widget-extension/**"]
 }

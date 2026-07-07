@@ -21,6 +21,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createKeyboardProtocolNegotiator, createKittyGlobalGate } from "./keyboard-protocol.mjs";
 
 // ─── Dialog resolver (promise-based, one-at-a-time) ───────────────────────────
 
@@ -88,8 +89,38 @@ export function createUIContext({
   sendToMain,
   tuiModules,
 }) {
-  const { TUI, KeybindingsManager, TUI_KEYBINDINGS, Container, Editor } = tuiModules;
+  const {
+    TUI,
+    KeybindingsManager,
+    TUI_KEYBINDINGS,
+    Container,
+    Editor,
+    // Kitty keyboard protocol: pi-tui's module-global setter (toggles legacy
+    // reinterpretation like bare `\n`→shift+enter) and the StdinBuffer that
+    // splits batched stdin into single sequences. Both are on pi-tui's PUBLIC
+    // index. Feature-detected (NOT version-compared): an old pi-tui without
+    // these exports yields a null gate, so the host performs NO negotiation at
+    // all and keeps today's behavior (no crash). See keyboard-protocol.mjs.
+    // isKeyRelease filters the release events kitty flag 2 surfaces to input
+    // listeners (the paste-image listener below runs in the input chain, which
+    // pi-tui does NOT pre-filter — unlike the focused editor).
+    setKittyProtocolActive,
+    StdinBuffer,
+    isKeyRelease,
+  } = tuiModules;
   const invocationSurface = new AsyncLocalStorage();
+
+  // One refcounted gate shared by every panel terminal this uiContext owns.
+  // Refcounting matters because multiple panels (unified + custom) can be open
+  // at once: closing one must NOT disable kitty decode for another. Null when
+  // pi-tui predates the kitty exports → no negotiation (status-quo).
+  const kittyGate =
+    typeof setKittyProtocolActive === "function"
+      ? createKittyGlobalGate(setKittyProtocolActive)
+      : null;
+  // Deps threaded into every createHostTerminal: the gate (or null) + the
+  // StdinBuffer constructor (or undefined for the no-splitting fallback).
+  const hostTerminalDeps = { kittyGate, StdinBuffer };
 
   const runWithInvocationSurface = (surface, fn) => {
     if (surface !== "composer" && surface !== "unified") return fn();
@@ -150,7 +181,7 @@ export function createUIContext({
     if (unifiedTuiState) return;
 
     const panelId = panelBridge.openPanel({ overlay: false, unified: true });
-    const hostTerminal = createHostTerminal(panelId, panelBridge);
+    const hostTerminal = createHostTerminal(panelId, panelBridge, hostTerminalDeps);
     const tui = new TUI(hostTerminal);
     // Local manager used ONLY by the paste input-listener below to detect the
     // paste-image key. Not installed globally — the base Editor keeps using
@@ -181,9 +212,14 @@ export function createUIContext({
     // remounts after a session/view switch: the renderer intentionally starts
     // from a clean terminal, so the host must discard pi-tui's differential
     // render state and send a complete repaint instead of a cursor-relative
-    // diff against the old, now-disposed xterm.
+    // diff against the old, now-disposed xterm. The same remount also drops
+    // any terminal modes the previous xterm had negotiated — including the
+    // Kitty keyboard enhancement — so a forced resize MUST re-push the
+    // handshake once the fresh xterm is alive (otherwise Shift+Enter breaks
+    // after switching sessions). See keyboard-protocol.mjs / I6.
     panelBridge.setResizeHandler(panelId, (cols, rows, force) => {
       hostTerminal.resize(cols, rows);
+      if (force === true) hostTerminal.renegotiate();
       tui.requestRender(force === true);
     });
 
@@ -217,7 +253,16 @@ export function createUIContext({
     // consumes the key. The clipboard read is an async round-trip to the main
     // process; the temp-file path is inserted when it resolves (fire-and-forget
     // — parity with pi, whose onPasteImage is also unawaited).
+    //
+    // RELEASE-EVENT GUARD: kitty flag 2 (event types) surfaces key-RELEASE
+    // sequences (\x1b[<cp>;<mod>:3u) to input listeners, and pi-tui's input-
+    // listener chain is NOT pre-filtered (unlike the focused editor, which
+    // drops release events unless it opts in via wantsKeyRelease). matches()
+    // matches BOTH press and release (it ignores event type), so without this
+    // guard a single Ctrl+V would fire TWO clipboard reads. isKeyRelease()
+    // rejects the release half. See keyboard-protocol.mjs risk note.
     tui.addInputListener((data) => {
+      if (typeof isKeyRelease === "function" && isKeyRelease(data)) return;
       if (!pasteKeybindings.matches(data, "app.clipboard.pasteImage")) return;
       const id = crypto.randomUUID();
       pendingClipboardReads.add(id);
@@ -596,7 +641,7 @@ export function createUIContext({
       // ── Standalone path: no unified TUI — spawn a dedicated panel/TUI. ──
       const isOverlay = options?.overlay ?? false;
       const panelId = panelBridge.openPanel({ overlay: isOverlay });
-      const hostTerminal = createHostTerminal(panelId, panelBridge);
+      const hostTerminal = createHostTerminal(panelId, panelBridge, hostTerminalDeps);
       // TUI / KeybindingsManager / TUI_KEYBINDINGS come from the createUIContext
       // scope destructure above — do NOT redeclare them here: a `const` in this
       // arrow body would shadow the outer binding for the WHOLE body and put it
@@ -611,9 +656,13 @@ export function createUIContext({
       // Keep the TUI's layout in sync with the actual xterm.js panel size.
       // The renderer sends panel_resize whenever the FitAddon recomputes cols/rows.
       // A force resize asks pi-tui to discard diff-render state and repaint a
-      // complete frame (used when a renderer xterm remounts).
+      // complete frame (used when a renderer xterm remounts). It ALSO re-pushes
+      // the kitty handshake: a remounted xterm starts without the enhancement,
+      // so a custom panel that survives a remount (e.g. via the replay buffer)
+      // must renegotiate or modified keys arrive as legacy bytes. See I6/I12.
       panelBridge.setResizeHandler(panelId, (cols, rows, force) => {
         hostTerminal.resize(cols, rows);
+        if (force === true) hostTerminal.renegotiate();
         tui.requestRender(force === true);
       });
 
@@ -689,13 +738,44 @@ export function createUIContext({
 /**
  * Implements pi-tui's Terminal interface.
  * Writes all output to the panel (via panelBridge) for display in xterm.js.
+ *
+ * Keyboard protocol: when a kitty gate is present, this terminal performs the
+ * same handshake pi's ProcessTerminal does (bracketed paste + push + query +
+ * DA over the panel wire), filters xterm's replies out of the input stream,
+ * and routes real keystrokes through a pi-tui StdinBuffer (so batched chunks
+ * split into single sequences for matchesKey/parseKey). A null gate (old pi-tui
+ * without the kitty exports) performs NO negotiation — today's behavior. See
+ * keyboard-protocol.mjs for the state machine and the byte-level contract.
  */
-function createHostTerminal(panelId, panelBridge) {
+function createHostTerminal(panelId, panelBridge, { kittyGate, StdinBuffer } = {}) {
   // Mutable dimensions — read by the TUI via the getters below and written by
   // resize(). Stored in closure scope (not `this`) so the getters always return
   // current values regardless of how the terminal is referenced.
   let cols = 80;
   let rows = 24;
+  // The TUI's onInput handler, captured in start() so the negotiator/StdinBuffer
+  // can forward real keystrokes to it.
+  let inputHandler = null;
+  let stdinBuffer = null;
+  // Gate-ref lifecycle: acquired in start(), released exactly once in stop().
+  // The flag (not bare acquire/release pairing) is what makes the release
+  // idempotent across double-stop and stop-without-start — an unbalanced
+  // release would hit refcount 0 early and kill kitty decode for OTHER panels.
+  let gateAcquired = false;
+
+  // Per-terminal negotiator. Null when there is no kitty gate (old pi-tui or
+  // feature detection failed) → the terminal is a plain pass-through.
+  const negotiator = kittyGate
+    ? createKeyboardProtocolNegotiator({
+        // Writes go to the panel (xterm.js) — the handshake bytes + fallbacks.
+        write: (data) => panelBridge.writePanel(panelId, data),
+        // Forwarded sequences are REAL keystrokes → the TUI's editor chain.
+        forward: (seq) => {
+          if (inputHandler) inputHandler(seq);
+        },
+        onKittyActive: () => kittyGate.markActive(),
+      })
+    : null;
 
   return {
     get columns() {
@@ -704,17 +784,99 @@ function createHostTerminal(panelId, panelBridge) {
     get rows() {
       return rows;
     },
-    kittyProtocolActive: false,
+    // Truthful: reflects whether THIS terminal negotiated nonzero kitty flags.
+    get kittyProtocolActive() {
+      return negotiator?.isActive ?? false;
+    },
 
     start(onInput, _onResize) {
-      // Store input handler so panelBridge can feed keystrokes to it.
       // (_onResize — the TUI's requestRender-on-resize — is unused: pi-vis
       // drives resizes explicitly via resize(), which calls requestRender.)
-      panelBridge.setInputHandler(panelId, onInput);
+      inputHandler = onInput;
+
+      // Route panel input through the negotiation filter. When a StdinBuffer is
+      // available (pi-tui public export), split batched chunks into single
+      // sequences first — exactly like ProcessTerminal.setupStdinBuffer() — so
+      // matchesKey/parseKey see one event at a time (release events, modified
+      // keys). The `data` handler runs the negotiator first; anything it does
+      // NOT consume (a real key) is forwarded to the TUI. The `paste` handler
+      // re-wraps bracketed-paste content for the editor's existing handling.
+      let dataHandler;
+      if (StdinBuffer && typeof StdinBuffer === "function") {
+        stdinBuffer = new StdinBuffer({ timeout: 10 });
+        stdinBuffer.on("data", (sequence) => {
+          if (negotiator?.filterInput(sequence)) return; // consumed
+          inputHandler?.(sequence);
+        });
+        stdinBuffer.on("paste", (content) => {
+          inputHandler?.(`\x1b[200~${content}\x1b[201~`);
+        });
+        dataHandler = (data) => stdinBuffer.process(data);
+      } else {
+        // Fallback (no StdinBuffer): filter the raw chunk, then forward. Less
+        // correct for batched multi-sequence chunks, but never blocks input —
+        // and a pi-tui old enough to lack StdinBuffer almost certainly lacks
+        // the kitty exports too (null negotiator ⇒ pure pass-through).
+        dataHandler = (data) => {
+          if (negotiator?.filterInput(data)) return;
+          inputHandler?.(data);
+        };
+      }
+      panelBridge.setInputHandler(panelId, dataHandler);
+
+      // Join the kitty pool + push the handshake. The renderer's xterm answers
+      // asynchronously; the guaranteed force-resize after mount renegotiates if
+      // this fires before the xterm is alive (start-time race, tolerated).
+      if (negotiator) {
+        if (!gateAcquired) {
+          kittyGate.acquire();
+          gateAcquired = true;
+        }
+        try {
+          negotiator.push();
+        } catch (err) {
+          // A failed push must never wedge the panel — log and carry on as a
+          // plain pass-through. The gate ref is deliberately KEPT: a later
+          // renegotiate() may still succeed and mark the global active, and the
+          // ref is what balances stop()'s release (releasing here would double-
+          // release on stop, or leave a later activation with no ref at all).
+          console.error("[pi-session-host] kitty push failed; degrading:", err?.message ?? err);
+        }
+      }
+    },
+
+    // Re-push the handshake after an xterm remount (force-resize). Idempotent;
+    // safe even if start()'s push raced before the xterm was alive.
+    renegotiate() {
+      try {
+        negotiator?.push();
+      } catch (err) {
+        console.error("[pi-session-host] kitty renegotiate failed:", err?.message ?? err);
+      }
     },
 
     stop() {
+      if (negotiator) {
+        try {
+          negotiator.stop();
+        } catch {
+          /* best-effort cleanup */
+        }
+        if (gateAcquired) {
+          kittyGate.release();
+          gateAcquired = false;
+        }
+      }
+      if (stdinBuffer) {
+        try {
+          stdinBuffer.destroy();
+        } catch {
+          /* already destroyed */
+        }
+        stdinBuffer = null;
+      }
       panelBridge.clearInputHandler(panelId);
+      inputHandler = null;
     },
 
     drainInput(_maxMs, _idleMs) {

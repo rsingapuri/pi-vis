@@ -125,12 +125,16 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
       await expect(panel.locator(".xterm-rows")).toContainText("swift-otter");
 
       // 4. Keystrokes route back to the host over panel_input (the side channel
-      //    file proves the wire round-trip, not just a visible cursor).
+      //    file proves the wire round-trip, not just a visible cursor). xterm 6.1
+      //    emits a release CSI-u after each press (kitty flag 2); strip them so
+      //    the assertion targets the press bytes the user intended.
       await panel.locator(".xterm").click();
       await window.keyboard.type("xyz");
       await expect
         .poll(
-          () => fs.existsSync(folders.inputFile) && fs.readFileSync(folders.inputFile, "utf8"),
+          () =>
+            fs.existsSync(folders.inputFile) &&
+            stripKittyReleases(fs.readFileSync(folders.inputFile, "utf8")),
           {
             timeout: 10_000,
           },
@@ -167,6 +171,126 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
       });
       await expect(window.locator(".unified-panel")).toHaveCount(0);
       await expect(window.locator(".composer__textarea")).toHaveCount(0);
+    } finally {
+      await app.close();
+      rmrf(folders.settingsDir);
+      rmrf(folders.workspaceDir);
+      rmrf(folders.piSessionsDir);
+    }
+  });
+
+  // ── Kitty keyboard protocol (renderer half) ──────────────────────────
+  // xterm 6.1 with vtExtensions.kittyKeyboard encodes Shift+Enter as
+  // \x1b[13;2u and answers the host's handshake. These prove the RENDERER emits
+  // the right bytes (the host half — decoding — is covered by the unit +
+  // host-render suites). Keystrokes + xterm's replies are captured to
+  // PIVIS_TEST_HOST_INPUT_FILE for byte-level assertion.
+
+  /** Read the host-input capture file (empty string until the first write). */
+  function readInput(f: Folders): string {
+    return fs.existsSync(f.inputFile) ? fs.readFileSync(f.inputFile, "utf8") : "";
+  }
+
+  /**
+   * Strip Kitty key-RELEASE sequences (the `:3` event-type marker) so a test
+   * can assert on the PRESS bytes a human intends. xterm 6.1 with flag 2 emits
+   * a release CSI-u after every key (`a` → `a` + `\x1b[97;1:3u`), so the raw
+   * capture interleaves presses with releases. The REAL TUI filters releases
+   * before the editor (isKeyRelease); the fake host records raw bytes, so this
+   * mirrors that filter for byte-level assertions.
+   */
+  function stripKittyReleases(s: string): string {
+    return s.replace(/\x1b\[[\d:;]*:3[u~]/g, "");
+  }
+
+  test("xterm 6.1 emits CSI-u for Shift+Enter and answers the kitty handshake (I2/I3/I4)", async () => {
+    test.setTimeout(90_000);
+    const folders = await makeFolders();
+    const { app, window } = await launchApp(folders);
+
+    try {
+      await window.getByRole("button", { name: "New session" }).click();
+      const panel = window.locator(".unified-panel");
+      await expect(panel).toBeVisible({ timeout: 20_000 });
+      await expect(panel.locator(".xterm")).toBeVisible({ timeout: 10_000 });
+
+      // Wait for xterm to ANSWER the handshake the fake host pushed on open.
+      // A nonzero kitty-flags reply (\x1b[?<n>u, n>0) proves xterm granted kitty.
+      await expect.poll(() => readInput(folders), { timeout: 15_000 }).toMatch(/\x1b\[\?[1-9]\d*u/);
+      // And a Device Attributes reply (terminator 'c') arrived too.
+      expect(readInput(folders)).toMatch(/\x1b\[\?[\d;]+c/);
+
+      // Focus the terminal and drive real DOM keys through real xterm 6.1.
+      await panel.locator(".xterm").click();
+
+      // Plain printable bytes arrive unchanged (I3). xterm emits a release
+      // CSI-u after each press (flag 2); strip them to assert the press bytes.
+      await window.keyboard.type("abc");
+      await expect
+        .poll(() => stripKittyReleases(readInput(folders)), { timeout: 10_000 })
+        .toContain("abc");
+
+      // Plain Enter → \r (I2).
+      await window.keyboard.press("Enter");
+      await expect
+        .poll(() => stripKittyReleases(readInput(folders)), { timeout: 10_000 })
+        .toContain("\r");
+
+      // Shift+Enter → \x1b[13;2u — THE fix. Under legacy encoding this would be
+      // an indistinguishable \r; under kitty it is a distinct CSI-u (I4).
+      await window.keyboard.press("Shift+Enter");
+      await expect
+        .poll(() => stripKittyReleases(readInput(folders)), { timeout: 10_000 })
+        .toContain("\x1b[13;2u");
+    } finally {
+      await app.close();
+      rmrf(folders.settingsDir);
+      rmrf(folders.workspaceDir);
+      rmrf(folders.piSessionsDir);
+    }
+  });
+
+  test("kitty survives an xterm remount: a session switch re-pushes the handshake and Shift+Enter still works (I6)", async () => {
+    test.setTimeout(120_000);
+    const folders = await makeFolders();
+    const { app, window } = await launchApp(folders);
+
+    try {
+      await window.getByRole("button", { name: "New session" }).click();
+      const panel = window.locator(".unified-panel");
+      await expect(panel).toBeVisible({ timeout: 20_000 });
+
+      // First kitty reply (handshake from panel open).
+      await expect.poll(() => readInput(folders), { timeout: 15_000 }).toMatch(/\x1b\[\?[1-9]\d*u/);
+      const firstReplies = (readInput(folders).match(/\x1b\[\?[1-9]\d*u/g) ?? []).length;
+
+      // Switch away to the native composer (unmounts the unified xterm)…
+      await window.getByRole("tab", { name: "Input" }).click();
+      await expect(window.locator(".composer__textarea")).toBeVisible({ timeout: 10_000 });
+      await expect(window.locator(".unified-panel")).toHaveCount(0);
+
+      // …and back. The remounted xterm starts clean and reports force:true on its
+      // first resize → the fake host re-pushes the handshake → a SECOND kitty
+      // reply must appear.
+      await window.getByRole("tab", { name: "Extension" }).click();
+      await expect(panel).toBeVisible({ timeout: 15_000 });
+      await expect(panel.locator(".xterm")).toBeVisible({ timeout: 10_000 });
+      await expect
+        .poll(() => (readInput(folders).match(/\x1b\[\?[1-9]\d*u/g) ?? []).length, {
+          timeout: 15_000,
+        })
+        .toBeGreaterThan(firstReplies);
+
+      // Shift+Enter must STILL encode as CSI-u after the remount (I6).
+      expect(
+        stripKittyReleases(readInput(folders)),
+        "baseline has no shift+enter yet",
+      ).not.toContain("\x1b[13;2u");
+      await panel.locator(".xterm").click();
+      await window.keyboard.press("Shift+Enter");
+      await expect
+        .poll(() => stripKittyReleases(readInput(folders)), { timeout: 10_000 })
+        .toContain("\x1b[13;2u");
     } finally {
       await app.close();
       rmrf(folders.settingsDir);

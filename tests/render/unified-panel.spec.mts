@@ -20,6 +20,19 @@ interface PreviewStoreState {
   ) => void;
 }
 
+interface PreviewHooks {
+  panelInputLog: string[];
+}
+
+/**
+ * Strip Kitty key-RELEASE sequences so a test asserts on PRESS bytes. xterm 6.1
+ * with flag 2 emits a release CSI-u after every press; the real TUI filters
+ * releases before the editor, and this mirrors that for byte assertions.
+ */
+function stripKittyReleases(s: string): string {
+  return s.replace(/\x1b\[[\d:;]*:3[u~]/g, "");
+}
+
 test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
   test("mounts UnifiedTuiHost with rendered roster content, replacing the composer", async ({
     page,
@@ -232,5 +245,57 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
       "aria-selected",
       "true",
     );
+  });
+
+  // ── Renderer-only Kitty keyboard proof ───────────────────────────────
+  // Isolates xterm 6.1's behavior from host logic: the preview stub pushes the
+  // kitty handshake (on panel open AND on the force:true first resize — the
+  // replay buffer trims the open-time push at the frame's hard clear, exactly
+  // like the real host path); xterm (served with vtExtensions.kittyKeyboard)
+  // ANSWERS it and encodes Shift+Enter as CSI-u. This is the renderer half of
+  // the fix; the host half (decoding) is covered by the unit + host suites.
+  test("xterm answers the kitty handshake and emits \x1b[13;2u for Shift+Enter", async ({
+    page,
+  }) => {
+    await page.goto("/?unified=1");
+    await page.waitForLoadState("domcontentloaded");
+
+    const panel = page.locator(".unified-panel");
+    await expect(panel).toBeVisible({ timeout: 20_000 });
+    await expect(panel.locator(".xterm")).toBeVisible({ timeout: 10_000 });
+
+    // xterm must answer the stub's push with a nonzero kitty-flags reply over
+    // panelInput — proof the kitty enhancement is ACTIVE in this xterm.
+    await expect
+      .poll(
+        async () =>
+          stripKittyReleases(
+            (await page.evaluate(() => {
+              const h = (window as unknown as { __pivisPreview?: PreviewHooks }).__pivisPreview;
+              return h ? h.panelInputLog.join("") : "";
+            })) ?? "",
+          ),
+        { timeout: 10_000 },
+      )
+      .toMatch(/\x1b\[\?[1-9]\d*u/);
+
+    // Focus the terminal and press Shift+Enter through real xterm 6.1.
+    await panel.locator(".xterm").click();
+    await page.keyboard.press("Shift+Enter");
+
+    // THE renderer-half invariant: Shift+Enter encodes as a distinct CSI-u,
+    // not an indistinguishable \r.
+    await expect
+      .poll(
+        async () =>
+          stripKittyReleases(
+            (await page.evaluate(() => {
+              const h = (window as unknown as { __pivisPreview?: PreviewHooks }).__pivisPreview;
+              return h ? h.panelInputLog.join("") : "";
+            })) ?? "",
+          ),
+        { timeout: 10_000 },
+      )
+      .toContain("\x1b[13;2u");
   });
 });

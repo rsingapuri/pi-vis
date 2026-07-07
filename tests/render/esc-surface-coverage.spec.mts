@@ -28,6 +28,7 @@ type PreviewHooks = {
 type PreviewStore = {
   getState: () => {
     activeSessionId: string | null;
+    sessions: Map<string, { isStreaming?: boolean }>;
     addUserMessage: (sessionId: string, content: string, images?: string[]) => void;
   };
 };
@@ -42,6 +43,23 @@ async function startStreaming(page: import("@playwright/test").Page): Promise<vo
   await page.evaluate(() => {
     (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview.startStreaming();
   });
+  // The global ESC-interrupt only fires for the ACTIVE session (G5) once it is
+  // abortable. agent_start targets `activeSessionId ?? DEMO_SESSION_ID`, and at
+  // boot the activation can settle AFTER the composer is visible — dispatching
+  // ESC before the active session reports isStreaming was a latent race that
+  // made the abort assertions flaky. Wait for the armed state, not a timeout.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const store = (window as unknown as { __pivisStore?: PreviewStore }).__pivisStore;
+          const state = store?.getState();
+          const sid = state?.activeSessionId;
+          return sid ? (state.sessions.get(sid)?.isStreaming ?? false) : false;
+        }),
+      { timeout: 10_000 },
+    )
+    .toBe(true);
 }
 
 test.describe("ESC surface coverage — claims prevent abort", () => {

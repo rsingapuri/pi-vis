@@ -35,7 +35,7 @@ import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { getTheme } from "../../theme/registry.js";
-import { buildXtermTheme } from "../../theme/xterm.js";
+import { basePanelTerminalOptions, buildXtermTheme } from "../../theme/xterm.js";
 import { DEFAULT_HEIGHT_FRACTION, createPanelSizer } from "./panel-sizer.js";
 import "@xterm/xterm/css/xterm.css";
 import "./CustomPanelHost.css";
@@ -181,6 +181,7 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     const { settings, activeColorScheme } = useSettingsStore.getState();
     const { fonts } = settings;
     const term = new Terminal({
+      ...basePanelTerminalOptions(),
       cursorBlink: true,
       cursorStyle: "block",
       // Honor the user's configured code-font size (matches the rest of the
@@ -220,6 +221,13 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     // hugs it capped at ~half the transcript column, and scrolls only past that
     // cap. This replaces the old fixed 50vh box, which clipped taller content
     // with no way to scroll to it and never re-expanded when the window grew.
+    //
+    // `forceNextResize` mirrors UnifiedTuiHost: the FIRST size report after a
+    // (re)mount carries `force:true`. That re-pushes the kitty handshake on the
+    // host (a freshly-opened xterm starts without the enhancement), so modified
+    // keys like Shift+Tab keep working as the panel re-mounts — same linchpin
+    // as the unified TUI's session-switch renegotiation (I6/I12).
+    let forceNextResize = true;
     const sizer = createPanelSizer({
       term,
       container,
@@ -230,8 +238,16 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
       getHeightFraction: () => fractionGetterRef.current(),
       fallbackFontSize: fonts?.code?.sizePx ?? 14,
       onReportSize: (cols, rows) => {
+        const force = forceNextResize;
+        forceNextResize = false;
         void window.pivis
-          .invoke("session.panelResize", { sessionId, panelId: currentPanel.id, cols, rows })
+          .invoke("session.panelResize", {
+            sessionId,
+            panelId: currentPanel.id,
+            cols,
+            rows,
+            ...(force ? { force: true } : {}),
+          })
           .catch(() => {});
       },
     });

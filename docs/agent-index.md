@@ -32,10 +32,11 @@ Read `docs/architecture/state-and-sessions.md` when touching:
 
 Read both `docs/architecture/processes-and-ipc.md` and `docs/architecture/state-and-sessions.md` when touching:
 
-- `resources/pi-session-host/**`
+- `resources/pi-session-host/**` (including `keyboard-protocol.mjs` — the Kitty keyboard handshake; see the "Keyboard protocol negotiation" subsection of processes-and-ipc.md)
 - SDK-host fallback behavior
 - extension UI request/response flow
 - custom or unified TUI panel host wiring
+- terminal keyboard encoding / Shift+Enter / Kitty protocol (renderer option in `src/renderer/src/theme/xterm.ts`; also read `docs/ui-conventions.md`'s Shift+Enter pattern)
 
 ## Renderer state, commands, and transcript
 

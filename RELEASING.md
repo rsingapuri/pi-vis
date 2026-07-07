@@ -90,6 +90,31 @@ release commit/tag (skipping both git push and GitHub Release creation), and
 `--skip-tests` is available only for emergency reruns after the exact same commit
 has already passed verification.
 
+### Mandatory pre-release checks
+
+The automated suite (`typecheck`, `lint`, `test`, `test:render`, `test:e2e`) is
+run by `npm run release`. Two behavior contracts are NOT covered by that suite
+and MUST be verified manually before publishing:
+
+1. **Real-pi end-to-end (Kitty keyboard protocol)**: Shift+Enter inserts a
+   newline (not a submit) in the unified editor; Enter submits; a multiline
+   paste inserts lines without submitting; session-switch keeps Shift+Enter
+   working. Run the gated spec against a real `pi` + provider auth (real API
+   spend):
+
+   ```bash
+   PI_E2E=1 npx playwright test -c tests/e2e/playwright.config.mts --grep kitty-real
+   ```
+
+   This is the one test that proves the user-visible fix across the real host +
+   real pi-tui + real xterm. If the `PI_E2E` lane is added to CI, this manual
+   step may be dropped once it runs green there.
+2. **Manual smoke** (`npm run dev`): Shift+Enter newline / Enter submit /
+   Alt+Enter follow-up in the unified editor; a 3-line paste (no submit); a
+   session switch away/back then repeat; ESC with autocomplete open and with an
+   overlay open; custom-panel arrows/Tab/Shift+Tab; the `/login` flow. Include
+   IME composition and macOS Option/dead-key input (not covered by any suite).
+
 ### Architecture
 
 Builds target **arm64 (Apple Silicon) only**. Apple Silicon is the assumed

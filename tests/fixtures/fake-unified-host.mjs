@@ -40,6 +40,14 @@ const MODELS = [
 let panelOpen = false;
 let panelTimer = null;
 
+// The kitty keyboard protocol handshake the REAL host writes in
+// HostTerminal.start() (see keyboard-protocol.mjs): enable bracketed paste, then
+// push flags 7 + query current flags + DA sentinel. xterm 6.1 (with
+// vtExtensions.kittyKeyboard) ANSWERS this over its onData → panel_input, so the
+// test can assert byte-level that xterm (a) granted kitty and (b) encodes
+// Shift+Enter as \x1b[13;2u. Re-emitted on a force-resize (the remount path).
+const KITTY_HANDSHAKE = "\x1b[?2004h\x1b[>7u\x1b[?u\x1b[c";
+
 function send(msg) {
   if (typeof process.send === "function") process.send(msg);
 }
@@ -155,6 +163,9 @@ function openUnifiedPanel() {
   if (panelOpen) return;
   panelOpen = true;
   send({ type: "panel_open", panelId: PANEL_ID, overlay: false, unified: true });
+  // Mirror the real host: push the kitty handshake so xterm answers it. The
+  // reply (+ later keystrokes) is captured to PIVIS_TEST_HOST_INPUT_FILE.
+  send({ type: "panel_data", panelId: PANEL_ID, data: KITTY_HANDSHAKE });
   renderFrame();
   // Keep streaming so a remount (e.g. session switch) re-seeds from the buffer.
   panelTimer = setInterval(renderFrame, 1000);
@@ -212,8 +223,15 @@ process.on("message", (msg) => {
         if (typeof msg?.data === "string") recordInput(msg.data);
         break;
       case "panel_resize":
+        // A force resize = xterm remounted (clean terminal). The real host
+        // re-pushes the handshake here; mirror it so a second kitty reply
+        // appears in the input file (the session-switch invariant, I6).
+        if (msg?.force === true && panelOpen) {
+          send({ type: "panel_data", panelId: PANEL_ID, data: KITTY_HANDSHAKE });
+        }
+        break;
       case "panel_close_request":
-        if (msg?.type === "panel_close_request") closeUnifiedPanel();
+        closeUnifiedPanel();
         break;
       case "unified_submit_response":
       case "clipboard_read_image_response":

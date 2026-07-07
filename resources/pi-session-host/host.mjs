@@ -236,6 +236,15 @@ async function handleInit(msg) {
       TUI_KEYBINDINGS: piTui.TUI_KEYBINDINGS,
       Container: piTui.Container,
       Editor: piTui.Editor,
+      // Kitty keyboard protocol exports (pi-tui public index). Feature-detected
+      // inside createUIContext: if absent (old pi-tui), the host performs no
+      // negotiation and keeps legacy behavior. setKittyProtocolActive toggles
+      // pi-tui's module-global legacy reinterpretation; StdinBuffer splits
+      // batched stdin into single sequences; isKeyRelease filters the release
+      // events kitty flag 2 surfaces to the host's paste-image listener.
+      setKittyProtocolActive: piTui.setKittyProtocolActive,
+      StdinBuffer: piTui.StdinBuffer,
+      isKeyRelease: piTui.isKeyRelease,
     };
 
     // Step 2: Bootstrap

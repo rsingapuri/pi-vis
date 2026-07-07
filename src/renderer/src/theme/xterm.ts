@@ -1,4 +1,32 @@
 import { PI_BG_ROLES, PI_ROLES, type Theme, buildPiThemeColors } from "@shared/theme";
+import type { ITerminalOptions } from "@xterm/xterm";
+
+// ─── Shared xterm.js terminal options ─────────────────────────────────────────
+//
+// @xterm/xterm is pinned at 6.1.0-beta.288 (exact pin) for Kitty keyboard
+// protocol support, which landed in 6.1.0-beta.x (xterm.js PR #5600) behind the
+// opt-in `vtExtensions.kittyKeyboard`. RE-PIN to 6.1.0 stable when released.
+//
+// Kitty is what makes Shift+Enter distinguishable from Enter in the in-process
+// Unified TUI (and custom() panels): with it enabled, xterm encodes modified
+// keys as CSI-u (Shift+Enter → `\x1b[13;2u`) and answers the host's handshake;
+// without it, Shift+Enter and Enter both arrive as `\r` (indistinguishable).
+// The host performs the matching handshake over the panel wire — see
+// resources/pi-session-host/keyboard-protocol.mjs — so enabling this here is
+// the renderer half of the fix (and alone fixes the /login pty path, where pi's
+// own ProcessTerminal negotiates against the real pty).
+
+/**
+ * Base xterm.js options shared by every terminal panel (UnifiedTuiHost,
+ * CustomPanelHost, LoginTerminal). The single source of truth for the Kitty
+ * keyboard flag — spread (`...basePanelTerminalOptions()`) into each
+ * `new Terminal(...)`. Components layer their own options (font, theme) on top.
+ */
+export function basePanelTerminalOptions(): ITerminalOptions {
+  return {
+    vtExtensions: { kittyKeyboard: true },
+  };
+}
 
 /**
  * Build an xterm.js theme from a resolved Theme's semantic colors. This is the

@@ -21,10 +21,39 @@ type PreviewHooks = {
   stopStreaming: () => void;
 };
 
+type PreviewStore = {
+  getState: () => {
+    activeSessionId: string | null;
+    sessions: Map<string, { isStreaming?: boolean }>;
+  };
+};
+
 async function getHooks(page: import("@playwright/test").Page): Promise<PreviewHooks> {
   return page.evaluate(() => {
     return (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview;
   });
+}
+
+async function startStreaming(page: import("@playwright/test").Page): Promise<void> {
+  await page.evaluate(() => {
+    (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview.startStreaming();
+  });
+  // Wait until the ACTIVE session is actually streaming — the global ESC
+  // handler aborts only the active session, and boot-time activation can
+  // settle after the composer paints. Dispatching ESC before the armed state
+  // was a latent race that made the abort assertions flaky.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const store = (window as unknown as { __pivisStore?: PreviewStore }).__pivisStore;
+          const state = store?.getState();
+          const sid = state?.activeSessionId;
+          return sid ? (state.sessions.get(sid)?.isStreaming ?? false) : false;
+        }),
+      { timeout: 10_000 },
+    )
+    .toBe(true);
 }
 
 test.describe("ESC-to-interrupt — renderer", () => {
@@ -38,9 +67,7 @@ test.describe("ESC-to-interrupt — renderer", () => {
     await expect(textarea).toBeVisible({ timeout: 20_000 });
 
     // Start a fake turn so isStreaming is true on the active session.
-    await page.evaluate(() => {
-      (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview.startStreaming();
-    });
+    await startStreaming(page);
 
     // Focus the composer and type "/" to open the autocomplete.
     await textarea.focus();
@@ -83,9 +110,7 @@ test.describe("ESC-to-interrupt — renderer", () => {
     await expect(panel).toBeVisible({ timeout: 20_000 });
 
     // Start streaming.
-    await page.evaluate(() => {
-      (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview.startStreaming();
-    });
+    await startStreaming(page);
 
     // Dispatch ESC at the window level (the global capture handler is what
     // we're pinning — it preempts regardless of where focus is, which is the
@@ -121,9 +146,7 @@ test.describe("ESC-to-interrupt — renderer", () => {
     // the ESC claim is active.
     await expect(panel.locator(".xterm-rows")).toContainText("inspect", { timeout: 15_000 });
 
-    await page.evaluate(() => {
-      (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview.startStreaming();
-    });
+    await startStreaming(page);
 
     const before = (await getHooks(page)).abortCalls;
     await page.evaluate(() => {
