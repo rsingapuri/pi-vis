@@ -5,6 +5,7 @@ import { Markdown } from "../../lib/markdown.js";
 import { htmlToMarkdown } from "../../lib/turndown.js";
 import { useImageViewerStore } from "../../stores/image-viewer-store.js";
 import { shouldShowWorkingIndicator, useSessionsStore } from "../../stores/sessions-store.js";
+import { useSettingsStore } from "../../stores/settings-store.js";
 import {
   type AssistantBlockData,
   type AssistantSegment,
@@ -860,6 +861,201 @@ const CustomMessageBlock = memo(function CustomMessageBlock({
   );
 });
 
+type TranscriptRenderItem =
+  | { kind: "block"; block: TypedTranscriptBlock }
+  | {
+      kind: "assistant_segment";
+      blockId: string;
+      segment: AssistantSegment;
+      segmentIndex: number;
+      isStreaming: boolean;
+    };
+
+type CompactRenderItem =
+  | { kind: "item"; item: TranscriptRenderItem }
+  | {
+      kind: "compact_group";
+      key: string;
+      items: TranscriptRenderItem[];
+      summary: string;
+      streaming: boolean;
+    };
+
+function renderItemKey(item: TranscriptRenderItem): string {
+  return item.kind === "block" ? item.block.id : `${item.blockId}-segment-${item.segmentIndex}`;
+}
+
+function renderItemStreaming(item: TranscriptRenderItem): boolean {
+  if (item.kind === "assistant_segment") return item.isStreaming;
+  switch (item.block.type) {
+    case "assistant":
+      return item.block.data.isStreaming;
+    case "tool_call":
+      return item.block.data.isStreaming;
+    case "bash":
+      return item.block.data.isStreaming;
+    default:
+      return false;
+  }
+}
+
+function summarizeCompactGroup(items: readonly TranscriptRenderItem[]): string {
+  let hasThinking = false;
+  let toolCalls = 0;
+  let notices = 0;
+  for (const item of items) {
+    if (item.kind === "assistant_segment") {
+      if (item.segment.kind === "thinking") hasThinking = true;
+      continue;
+    }
+    if (item.block.type === "tool_call" || item.block.type === "bash") {
+      toolCalls += 1;
+    } else if (item.block.type === "compaction" || item.block.type === "custom_message") {
+      notices += 1;
+    }
+  }
+  const parts: string[] = [];
+  if (hasThinking) parts.push("Thinking");
+  if (toolCalls > 0)
+    parts.push(`${toolCalls.toLocaleString()} tool call${toolCalls === 1 ? "" : "s"}`);
+  if (notices > 0) parts.push(`${notices.toLocaleString()} notice${notices === 1 ? "" : "s"}`);
+  return parts.length > 0 ? parts.join(", ") : "Activity";
+}
+
+function buildCompactRenderItems(
+  blocks: readonly TypedTranscriptBlock[],
+  showWorking: boolean,
+): CompactRenderItem[] {
+  const rendered: CompactRenderItem[] = [];
+  let group: TranscriptRenderItem[] = [];
+
+  const flushGroup = (final = false): void => {
+    const first = group[0];
+    if (!first) return;
+    const firstKey = renderItemKey(first);
+    const streaming = group.some(renderItemStreaming) || (final && showWorking);
+    rendered.push({
+      kind: "compact_group",
+      key: `compact-${firstKey}`,
+      items: group,
+      summary: summarizeCompactGroup(group),
+      streaming,
+    });
+    group = [];
+  };
+
+  for (const block of blocks) {
+    if (block.type === "assistant") {
+      block.data.segments.forEach((segment, segmentIndex) => {
+        if (!segment.content) return;
+        const item: TranscriptRenderItem = {
+          kind: "assistant_segment",
+          blockId: block.id,
+          segment,
+          segmentIndex,
+          isStreaming: block.data.isStreaming,
+        };
+        if (segment.kind === "text") {
+          flushGroup();
+          rendered.push({ kind: "item", item });
+        } else {
+          group.push(item);
+        }
+      });
+      continue;
+    }
+
+    const item: TranscriptRenderItem = { kind: "block", block };
+    if (block.type === "user" || block.type === "error") {
+      flushGroup();
+      rendered.push({ kind: "item", item });
+    } else {
+      group.push(item);
+    }
+  }
+
+  flushGroup(true);
+  return rendered;
+}
+
+function TranscriptItemView({
+  item,
+  preserveScroll,
+}: {
+  item: TranscriptRenderItem;
+  preserveScroll: (mutate: () => void) => void;
+}): React.ReactElement | null {
+  if (item.kind === "assistant_segment") {
+    return (
+      <AssistantBlock
+        data={{ role: "assistant", segments: [item.segment], isStreaming: item.isStreaming }}
+      />
+    );
+  }
+
+  const { block } = item;
+  switch (block.type) {
+    case "user":
+      return <UserBlock data={block.data} />;
+    case "assistant":
+      if (!hasAssistantContent(block.data)) return null;
+      return <AssistantBlock data={block.data} />;
+    case "tool_call":
+      return <ToolCallBlock data={block.data} preserveScroll={preserveScroll} />;
+    case "bash":
+      return <BashBlock data={block.data} preserveScroll={preserveScroll} />;
+    case "compaction":
+      return <CompactionBlock data={block.data} preserveScroll={preserveScroll} />;
+    case "custom_message":
+      return <CustomMessageBlock data={block.data} preserveScroll={preserveScroll} />;
+    case "error":
+      return <ErrorBlock data={block.data} />;
+    default:
+      return null;
+  }
+}
+
+const CompactTranscriptGroup = memo(function CompactTranscriptGroup({
+  items,
+  summary,
+  streaming,
+  preserveScroll,
+}: {
+  items: TranscriptRenderItem[];
+  summary: string;
+  streaming: boolean;
+  preserveScroll: (mutate: () => void) => void;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const toggle = useCallback(() => preserveScroll(() => setOpen((v) => !v)), [preserveScroll]);
+
+  return (
+    <div className={`compact-transcript-group${open ? " compact-transcript-group--open" : ""}`}>
+      <button
+        type="button"
+        className="compact-transcript-group__summary"
+        onClick={toggle}
+        aria-expanded={open}
+      >
+        <IconChevronRight className="compact-transcript-group__chevron" />
+        <span>{summary}</span>
+        {streaming && <Spinner className="compact-transcript-group__spinner" />}
+      </button>
+      {open && (
+        <div className="compact-transcript-group__content">
+          {items.map((item) => (
+            <TranscriptItemView
+              key={renderItemKey(item)}
+              item={item}
+              preserveScroll={preserveScroll}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
 // ── Main view ────────────────────────────────────────────────────────────
 
 interface TranscriptViewProps {
@@ -869,6 +1065,7 @@ interface TranscriptViewProps {
 export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
   const loadEarlierHistory = useSessionsStore((s) => s.loadEarlierHistory);
+  const transcriptStyle = useSettingsStore((s) => s.settings.transcriptStyle);
   const [showAll, setShowAll] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -955,6 +1152,10 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     showAll || allBlocks.length <= MAX_VISIBLE_BLOCKS
       ? allBlocks
       : allBlocks.slice(allBlocks.length - MAX_VISIBLE_BLOCKS);
+  const compactRenderItems = useMemo(
+    () => buildCompactRenderItems(visibleBlocks, showWorking),
+    [showWorking, visibleBlocks],
+  );
   const earlierUnloaded = session?.historyCursor?.startIndex ?? 0;
 
   const handleShowEarlier = useCallback(() => {
@@ -1203,39 +1404,31 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
             earlier messages
           </button>
         )}
-        {visibleBlocks.map((block) => {
-          switch (block.type) {
-            case "user":
-              return <UserBlock key={block.id} data={block.data} />;
-            case "assistant":
-              if (!hasAssistantContent(block.data)) {
-                return null;
-              }
-              return <AssistantBlock key={block.id} data={block.data} />;
-            case "tool_call":
-              return (
-                <ToolCallBlock key={block.id} data={block.data} preserveScroll={preserveScroll} />
-              );
-            case "bash":
-              return <BashBlock key={block.id} data={block.data} preserveScroll={preserveScroll} />;
-            case "compaction":
-              return (
-                <CompactionBlock key={block.id} data={block.data} preserveScroll={preserveScroll} />
-              );
-            case "custom_message":
-              return (
-                <CustomMessageBlock
-                  key={block.id}
-                  data={block.data}
+        {transcriptStyle === "compact"
+          ? compactRenderItems.map((item) =>
+              item.kind === "item" ? (
+                <TranscriptItemView
+                  key={renderItemKey(item.item)}
+                  item={item.item}
                   preserveScroll={preserveScroll}
                 />
-              );
-            case "error":
-              return <ErrorBlock key={block.id} data={block.data} />;
-            default:
-              return null;
-          }
-        })}
+              ) : (
+                <CompactTranscriptGroup
+                  key={item.key}
+                  items={item.items}
+                  summary={item.summary}
+                  streaming={item.streaming}
+                  preserveScroll={preserveScroll}
+                />
+              ),
+            )
+          : visibleBlocks.map((block) => (
+              <TranscriptItemView
+                key={block.id}
+                item={{ kind: "block", block }}
+                preserveScroll={preserveScroll}
+              />
+            ))}
         {queuedMessages?.steering.map((message) => (
           <QueuedBubble key={message.id} text={message.text} kind="steering" />
         ))}

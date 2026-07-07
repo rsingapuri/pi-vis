@@ -15,6 +15,8 @@ describe("AppSettingsSchema", () => {
     expect(parsed.darkColorScheme).toBe("mocha");
     expect(parsed.themeMode).toBe("system");
     expect(parsed.piEnv).toEqual({});
+    expect(parsed.transcriptStyle).toBe("verbose");
+    expect(parsed.groupModelsByProvider).toBe(false);
     expect(parsed.fonts.display).toEqual({ sizePx: 14 });
     expect(parsed.fonts.code).toEqual({ family: "IBM Plex Mono", sizePx: 14 });
   });
@@ -108,5 +110,16 @@ describe("AppSettingsSchema", () => {
     if (!result.success) return;
     expect(result.data.workspaceOrder).toEqual(["/repo-a", "/repo-b"]);
     expect(result.data.expandedWorkspaces).toEqual(["/repo-a"]);
+  });
+
+  it("round-trips display preferences", () => {
+    const result = AppSettingsSchema.safeParse({
+      transcriptStyle: "compact",
+      groupModelsByProvider: true,
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.transcriptStyle).toBe("compact");
+    expect(result.data.groupModelsByProvider).toBe(true);
   });
 });

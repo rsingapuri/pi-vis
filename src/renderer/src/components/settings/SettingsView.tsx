@@ -1,7 +1,7 @@
 import type { AppUpdateStatus } from "@shared/app-updates.js";
 import type { ProviderAuthStatus } from "@shared/auth.js";
 import { PROVIDERS } from "@shared/auth.js";
-import type { ThemeMode } from "@shared/settings.js";
+import type { ThemeMode, TranscriptStyle } from "@shared/settings.js";
 import type { UpdateStatus } from "@shared/updates.js";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -581,6 +581,10 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
     { value: "dark", label: "Dark" },
     { value: "system", label: "System" },
   ];
+  const transcriptStyleOptions: readonly { value: TranscriptStyle; label: string }[] = [
+    { value: "verbose", label: "Verbose" },
+    { value: "compact", label: "Compact" },
+  ];
 
   // ── Helper: source badge ─────────────────────────────────────────────
 
@@ -685,6 +689,41 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                     </button>
                   ))}
                 </div>
+              </div>
+              <div className="settings-row">
+                <span className="settings-label">Transcript</span>
+                <div
+                  className="settings-segmented settings-segmented--two"
+                  role="group"
+                  aria-label="Transcript style"
+                >
+                  {transcriptStyleOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`settings-segmented__btn${
+                        settings.transcriptStyle === option.value
+                          ? " settings-segmented__btn--active"
+                          : ""
+                      }`}
+                      aria-pressed={settings.transcriptStyle === option.value}
+                      onClick={() => update({ transcriptStyle: option.value })}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="settings-row">
+                <span className="settings-label">Group models by provider</span>
+                <button
+                  type="button"
+                  className={`settings-toggle ${settings.groupModelsByProvider ? "settings-toggle--on" : "settings-toggle--off"}`}
+                  onClick={() => update({ groupModelsByProvider: !settings.groupModelsByProvider })}
+                  aria-pressed={settings.groupModelsByProvider}
+                >
+                  <span className="settings-toggle__knob" />
+                </button>
               </div>
               <div className="settings-row">
                 <span className="settings-label">Font Size</span>

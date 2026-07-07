@@ -9,6 +9,7 @@ import { useVirtualList } from "../../hooks/useVirtualList.js";
 import { findCurrentModel, modelDisplayName, modelKey } from "../../lib/model-utils.js";
 import { openDiffForSession, useDiffStore } from "../../stores/diff-store.js";
 import { gitRootForSession, useSessionsStore } from "../../stores/sessions-store.js";
+import { useSettingsStore } from "../../stores/settings-store.js";
 import { FadeText } from "../common/FadeText.js";
 import { IconBranch, IconCheck, IconChevronDown } from "../common/icons.js";
 import { UnifiedViewToggle } from "../ext-ui/UnifiedViewToggle.js";
@@ -19,6 +20,12 @@ import "./SessionHeader.css";
 interface SessionHeaderProps {
   sessionId: SessionId;
 }
+
+type GroupedModelHighlight =
+  | { type: "provider"; providerKey: string }
+  | { type: "model"; providerKey: string; modelKey: string };
+
+type GroupedModelKeyboardItem = GroupedModelHighlight & { model?: ModelInfo };
 
 export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
@@ -226,14 +233,17 @@ export function SessionControls({
   const applyModelChange = useSessionsStore((s) => s.applyModelChange);
   const applyThinkingLevel = useSessionsStore((s) => s.applyThinkingLevel);
   const addToast = useSessionsStore((s) => s.addToast);
+  const groupModelsByProvider = useSettingsStore((s) => s.settings.groupModelsByProvider);
 
   // ── Model picker state ────────────────────────────────────────────
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const [activeProviderKey, setActiveProviderKey] = useState<string | null>(null);
+  const [groupedHighlight, setGroupedHighlight] = useState<GroupedModelHighlight | null>(null);
   const modelHighlightSourceRef = useRef<"keyboard" | "pointer" | "programmatic">("programmatic");
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
 
   const filteredModels = useMemo(() => {
     const q = modelSearch.toLowerCase();
@@ -248,16 +258,50 @@ export function SessionControls({
     });
   }, [session?.availableModels, modelSearch]);
 
+  const providerGroups = useMemo(() => {
+    const groups = new Map<string, { key: string; label: string; models: ModelInfo[] }>();
+    for (const model of session?.availableModels ?? []) {
+      const key = model.provider ?? "";
+      const label = model.provider ?? "Other";
+      const existing = groups.get(key);
+      if (existing) {
+        existing.models.push(model);
+      } else {
+        groups.set(key, { key, label, models: [model] });
+      }
+    }
+    return [...groups.values()];
+  }, [session?.availableModels]);
+
+  const showProviderGroups =
+    groupModelsByProvider && modelSearch.trim().length === 0 && providerGroups.length > 0;
+
+  const groupedKeyboardItems = useMemo<GroupedModelKeyboardItem[]>(() => {
+    const items: GroupedModelKeyboardItem[] = [];
+    for (const group of providerGroups) {
+      items.push({ type: "provider", providerKey: group.key });
+      if (activeProviderKey === group.key) {
+        for (const model of group.models) {
+          items.push({ type: "model", providerKey: group.key, modelKey: modelKey(model), model });
+        }
+      }
+    }
+    return items;
+  }, [activeProviderKey, providerGroups]);
+
   useEffect(() => {
     if (!modelOpen) {
       setModelSearch("");
       modelHighlightSourceRef.current = "programmatic";
       setHighlightedIndex(0);
+      setGroupedHighlight(null);
       return;
     }
     setModelSearch("");
     modelHighlightSourceRef.current = "programmatic";
     setHighlightedIndex(0);
+    setActiveProviderKey(null);
+    setGroupedHighlight(null);
     setTimeout(() => searchInputRef.current?.focus(), 10);
   }, [modelOpen]);
 
@@ -266,6 +310,21 @@ export function SessionControls({
     modelHighlightSourceRef.current = "programmatic";
     setHighlightedIndex(0);
   }, [modelSearch]);
+
+  useEffect(() => {
+    if (!modelOpen || !showProviderGroups) return;
+    setActiveProviderKey((current) =>
+      current && providerGroups.some((group) => group.key === current) ? current : null,
+    );
+    setGroupedHighlight((current) => {
+      if (!current) return null;
+      const group = providerGroups.find((candidate) => candidate.key === current.providerKey);
+      if (!group) return null;
+      if (current.type === "provider") return current;
+      if (activeProviderKey !== current.providerKey) return null;
+      return group.models.some((model) => modelKey(model) === current.modelKey) ? current : null;
+    });
+  }, [activeProviderKey, modelOpen, providerGroups, showProviderGroups]);
 
   const modelVirtualList = useVirtualList<HTMLDivElement>({
     count: filteredModels.length,
@@ -282,17 +341,17 @@ export function SessionControls({
   }, [filteredModels.length]);
 
   useEffect(() => {
-    if (!modelOpen) return;
+    if (!modelOpen || showProviderGroups) return;
     // Hover should update only the visual highlight; keyboard/programmatic
     // navigation is the only path that should scroll the dropdown.
     if (modelHighlightSourceRef.current === "pointer") return;
     modelVirtualList.ensureIndexVisible(highlightedIndex);
-  }, [highlightedIndex, modelOpen, modelVirtualList.ensureIndexVisible]);
+  }, [highlightedIndex, modelOpen, modelVirtualList.ensureIndexVisible, showProviderGroups]);
 
   useEffect(() => {
     if (!modelOpen) return;
     const onMouseDown = (e: MouseEvent) => {
-      if (!dropdownRef.current?.contains(e.target as Node)) {
+      if (!modelPickerRef.current?.contains(e.target as Node)) {
         setModelOpen(false);
       }
     };
@@ -311,9 +370,69 @@ export function SessionControls({
     [sessionId, addToast, applyModelChange],
   );
 
+  const activateGroupedKeyboardItem = useCallback((item: GroupedModelKeyboardItem): void => {
+    setGroupedHighlight(
+      item.type === "provider"
+        ? { type: "provider", providerKey: item.providerKey }
+        : { type: "model", providerKey: item.providerKey, modelKey: item.modelKey },
+    );
+    setActiveProviderKey(item.providerKey);
+  }, []);
+
+  const moveGroupedHighlight = useCallback(
+    (delta: -1 | 1): void => {
+      if (groupedKeyboardItems.length === 0) return;
+      const currentIndex = groupedKeyboardItems.findIndex((item) => {
+        if (!groupedHighlight) return false;
+        if (
+          item.type !== groupedHighlight.type ||
+          item.providerKey !== groupedHighlight.providerKey
+        ) {
+          return false;
+        }
+        if (groupedHighlight.type === "provider") return true;
+        return item.type === "model" && item.modelKey === groupedHighlight.modelKey;
+      });
+      const nextIndex =
+        currentIndex === -1
+          ? delta > 0
+            ? 0
+            : groupedKeyboardItems.length - 1
+          : (currentIndex + delta + groupedKeyboardItems.length) % groupedKeyboardItems.length;
+      activateGroupedKeyboardItem(groupedKeyboardItems[nextIndex]!);
+    },
+    [activateGroupedKeyboardItem, groupedHighlight, groupedKeyboardItems],
+  );
+
+  const chooseGroupedHighlight = useCallback((): void => {
+    if (groupedKeyboardItems.length === 0) return;
+    const currentItem = groupedKeyboardItems.find((item) => {
+      if (!groupedHighlight) return false;
+      if (
+        item.type !== groupedHighlight.type ||
+        item.providerKey !== groupedHighlight.providerKey
+      ) {
+        return false;
+      }
+      if (groupedHighlight.type === "provider") return true;
+      return item.type === "model" && item.modelKey === groupedHighlight.modelKey;
+    });
+    const item = currentItem ?? groupedKeyboardItems[0];
+    if (!item) return;
+    if (item.type === "model" && item.model) {
+      void handleModelChange(item.model);
+      return;
+    }
+    const group = providerGroups.find((candidate) => candidate.key === item.providerKey);
+    const firstModel = group?.models[0];
+    if (firstModel) {
+      void handleModelChange(firstModel);
+    }
+  }, [groupedHighlight, groupedKeyboardItems, handleModelChange, providerGroups]);
+
   // ── Thinking level picker state ───────────────────────────────────
   const [thinkingOpen, setThinkingOpen] = useState(false);
-  const thinkingDropdownRef = useRef<HTMLDivElement>(null);
+  const thinkingPickerRef = useRef<HTMLDivElement>(null);
 
   // Claim ESC while either the model or thinking dropdown is open so a
   // background streaming session isn't aborted (each dropdown's own
@@ -385,7 +504,7 @@ export function SessionControls({
   useEffect(() => {
     if (!thinkingOpen) return;
     const onMouseDown = (e: MouseEvent) => {
-      if (!thinkingDropdownRef.current?.contains(e.target as Node)) {
+      if (!thinkingPickerRef.current?.contains(e.target as Node)) {
         setThinkingOpen(false);
       }
     };
@@ -415,7 +534,7 @@ export function SessionControls({
       )}
       <ChangesButton sessionId={sessionId} />
       {/* Model picker */}
-      <div className="session-header__model-picker">
+      <div className="session-header__model-picker" ref={modelPickerRef}>
         <button
           type="button"
           className="session-header__picker-btn session-header__model-btn fade-scope"
@@ -426,7 +545,9 @@ export function SessionControls({
           <IconChevronDown className="session-header__caret" />
         </button>
         {modelOpen && (
-          <div className="session-header__dropdown" ref={dropdownRef}>
+          <div
+            className={`session-header__dropdown${showProviderGroups ? " session-header__dropdown--providers" : ""}`}
+          >
             <div className="session-header__dropdown-search">
               <input
                 ref={searchInputRef}
@@ -447,25 +568,47 @@ export function SessionControls({
                     case "ArrowDown":
                       e.preventDefault();
                       modelHighlightSourceRef.current = "keyboard";
-                      setHighlightedIndex((i) => (i < filteredModels.length - 1 ? i + 1 : 0));
+                      if (showProviderGroups) {
+                        moveGroupedHighlight(1);
+                      } else {
+                        setHighlightedIndex((i) => (i < filteredModels.length - 1 ? i + 1 : 0));
+                      }
                       break;
                     case "ArrowUp":
                       e.preventDefault();
                       modelHighlightSourceRef.current = "keyboard";
-                      setHighlightedIndex((i) => (i > 0 ? i - 1 : filteredModels.length - 1));
+                      if (showProviderGroups) {
+                        moveGroupedHighlight(-1);
+                      } else {
+                        setHighlightedIndex((i) => (i > 0 ? i - 1 : filteredModels.length - 1));
+                      }
                       break;
                     case "Home":
                       e.preventDefault();
                       modelHighlightSourceRef.current = "keyboard";
-                      setHighlightedIndex(0);
+                      if (showProviderGroups) {
+                        const firstItem = groupedKeyboardItems[0];
+                        if (firstItem) activateGroupedKeyboardItem(firstItem);
+                      } else {
+                        setHighlightedIndex(0);
+                      }
                       break;
                     case "End":
                       e.preventDefault();
                       modelHighlightSourceRef.current = "keyboard";
-                      setHighlightedIndex(filteredModels.length - 1);
+                      if (showProviderGroups) {
+                        const lastItem = groupedKeyboardItems[groupedKeyboardItems.length - 1];
+                        if (lastItem) activateGroupedKeyboardItem(lastItem);
+                      } else {
+                        setHighlightedIndex(filteredModels.length - 1);
+                      }
                       break;
                     case "Enter":
                       e.preventDefault();
+                      if (showProviderGroups) {
+                        chooseGroupedHighlight();
+                        return;
+                      }
                       if (filteredModels[highlightedIndex]) {
                         void handleModelChange(filteredModels[highlightedIndex]);
                       }
@@ -476,12 +619,102 @@ export function SessionControls({
                 aria-expanded={modelOpen}
                 aria-controls="model-listbox"
                 aria-activedescendant={
-                  filteredModels.length > 0 ? `model-option-${highlightedIndex}` : undefined
+                  !showProviderGroups && filteredModels.length > 0
+                    ? `model-option-${highlightedIndex}`
+                    : undefined
                 }
                 aria-autocomplete="list"
               />
             </div>
-            {filteredModels.length === 0 ? (
+            {showProviderGroups ? (
+              <div className="session-header__provider-menu">
+                <div
+                  role="listbox"
+                  id="model-listbox"
+                  className="session-header__dropdown-list session-header__provider-list"
+                >
+                  {providerGroups.map((group) => {
+                    const active = group.key === activeProviderKey;
+                    const providerHighlighted =
+                      groupedHighlight?.type === "provider" &&
+                      groupedHighlight.providerKey === group.key;
+                    const selected = group.models.some(
+                      (model) =>
+                        currentModelInfo != null && modelKey(model) === modelKey(currentModelInfo),
+                    );
+                    return (
+                      <div key={group.key} className="session-header__provider-group">
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          aria-expanded={active}
+                          className={`session-header__dropdown-item session-header__provider-item${providerHighlighted ? " session-header__dropdown-item--highlighted" : ""}${selected ? " session-header__dropdown-item--active" : ""}`}
+                          onClick={() => {
+                            setGroupedHighlight({ type: "provider", providerKey: group.key });
+                            setActiveProviderKey(active ? null : group.key);
+                          }}
+                          onMouseEnter={() => {
+                            setGroupedHighlight({ type: "provider", providerKey: group.key });
+                          }}
+                        >
+                          <span className="session-header__dropdown-item-check" aria-hidden>
+                            {selected ? <IconCheck /> : null}
+                          </span>
+                          <span className="session-header__dropdown-item-label" title={group.label}>
+                            {group.label}
+                          </span>
+                          <span className="session-header__provider-count">
+                            {group.models.length.toLocaleString()}
+                          </span>
+                          <IconChevronDown className="session-header__provider-caret" />
+                        </button>
+                        {active && (
+                          <div className="session-header__provider-model-list" role="group">
+                            {group.models.map((m) => {
+                              const label = modelDisplayName(m);
+                              const key = modelKey(m);
+                              const modelSelected =
+                                currentModelInfo != null && key === modelKey(currentModelInfo);
+                              const modelHighlighted =
+                                groupedHighlight?.type === "model" &&
+                                groupedHighlight.modelKey === key;
+                              return (
+                                <button
+                                  type="button"
+                                  key={key}
+                                  role="option"
+                                  aria-selected={modelSelected}
+                                  className={`session-header__dropdown-item session-header__provider-model-item fade-scope${modelHighlighted ? " session-header__dropdown-item--highlighted" : ""}${modelSelected ? " session-header__dropdown-item--active" : ""}`}
+                                  onClick={() => void handleModelChange(m)}
+                                  onMouseEnter={() => {
+                                    setGroupedHighlight({
+                                      type: "model",
+                                      providerKey: group.key,
+                                      modelKey: key,
+                                    });
+                                  }}
+                                >
+                                  <span className="session-header__dropdown-item-check" aria-hidden>
+                                    {modelSelected ? <IconCheck /> : null}
+                                  </span>
+                                  <span
+                                    className="session-header__dropdown-item-label"
+                                    title={label}
+                                  >
+                                    {label}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : filteredModels.length === 0 ? (
               <div className="session-header__dropdown-empty">No models found</div>
             ) : (
               <div
@@ -545,7 +778,7 @@ export function SessionControls({
       {/* Thinking level — custom dropdown so its popup uses the
           Catppuccin surface like the model selector, and its line-height
           can accommodate descenders ('g' in "high") without clipping. */}
-      <div className="session-header__thinking">
+      <div className="session-header__thinking" ref={thinkingPickerRef}>
         <button
           type="button"
           className="session-header__picker-btn"
@@ -561,7 +794,7 @@ export function SessionControls({
           <IconChevronDown className="session-header__caret" />
         </button>
         {thinkingOpen && !thinkingDisabled && (
-          <div className="session-header__dropdown" ref={thinkingDropdownRef}>
+          <div className="session-header__dropdown">
             <div className="session-header__dropdown-list">
               {thinkingOptions.map((l) => {
                 const selected = session?.thinkingLevel === l;

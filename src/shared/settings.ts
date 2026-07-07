@@ -3,6 +3,8 @@ import { ThinkingLevelSchema } from "./pi-protocol/thinking.js";
 
 export const ThemeModeSchema = z.enum(["light", "dark", "system"]);
 export type ThemeMode = z.infer<typeof ThemeModeSchema>;
+export const TranscriptStyleSchema = z.enum(["verbose", "compact"]);
+export type TranscriptStyle = z.infer<typeof TranscriptStyleSchema>;
 export type ThemeAppearance = "light" | "dark";
 
 const DisplayFontSettingsSchema = z.object({
@@ -92,6 +94,14 @@ export const AppSettingsSchema = z.object({
     .max(1024)
     .default(5),
   statusBarVisible: z.boolean().default(true),
+  // Transcript display preference. Verbose preserves the chronological block
+  // rendering exactly; compact folds thinking/tool activity between visible
+  // output prose under disclosure rows. Display-only: the transcript state is
+  // not rewritten, so users can toggle either view for existing sessions.
+  transcriptStyle: TranscriptStyleSchema.default("verbose"),
+  // Model picker preference. When enabled, the header dropdown groups models
+  // by provider unless the user is actively searching (search stays flat).
+  groupModelsByProvider: z.boolean().default(false),
   // Sidebar chrome (user-controlled layout). Persisted so the width and
   // collapsed state survive relaunch. Width is clamped to [160, 500] by the
   // resize handle; the grid additionally caps it to a fraction of the window

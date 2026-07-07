@@ -769,6 +769,63 @@ button.tool-card__header {
   white-space: pre-wrap;
 }
 
+.compact-transcript-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.571rem;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.compact-transcript-group__summary {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.429rem;
+  max-width: 100%;
+  padding: 0.143rem 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  line-height: var(--leading-label);
+  text-align: left;
+}
+
+.compact-transcript-group__summary:hover {
+  color: var(--text);
+}
+
+.compact-transcript-group__chevron {
+  width: 0.857em;
+  height: 0.857em;
+  flex-shrink: 0;
+  color: var(--text-ghost);
+  /* IconChevronRight's stroke sits a hair low in its 12px viewBox; nudge it
+     upward so the disclosure marker optically centers against the summary text. */
+  transform: translateY(-0.071rem);
+  transition: transform 0.15s ease;
+}
+
+.compact-transcript-group--open .compact-transcript-group__chevron {
+  transform: translateY(-0.071rem) rotate(90deg);
+}
+
+.compact-transcript-group__spinner {
+  font-size: 0.786em;
+}
+
+.compact-transcript-group__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-left: 0.429rem;
+  padding-left: 0.857rem;
+  border-left: 1px solid var(--border-faint);
+}
+
 /* Working indicator shown while the agent is running */
 .working-row {
   display: flex;
