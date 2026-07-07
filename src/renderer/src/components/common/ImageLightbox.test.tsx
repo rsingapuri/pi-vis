@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type React from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -137,7 +138,10 @@ describe("ImageLightbox", () => {
   });
 
   it("keeps the dialog viewport-bounded and lets the image pane scroll", () => {
-    const css = readFileSync(new URL("./ImageLightbox.css", import.meta.url), "utf8");
+    const css = readFileSync(
+      join(process.cwd(), "src/renderer/src/components/common/ImageLightbox.css"),
+      "utf8",
+    );
 
     expect(css).toMatch(/\.image-lightbox__dialog\s*{[^}]*block-size:\s*min\(90dvh,/s);
     expect(css).toMatch(/\.image-lightbox__body\s*{[^}]*min-height:\s*0;[^}]*overflow:\s*auto;/s);

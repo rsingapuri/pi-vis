@@ -78,7 +78,7 @@ describe("Sidebar boot workspace restore", () => {
     (globalThis.window as unknown as { pivis?: unknown }).pivis = { invoke };
 
     useSettingsStore.setState({
-      settings: { ...defaultSettings, lastActiveWorkspace: WS_A },
+      settings: { ...defaultSettings, lastActiveWorkspace: WS_A, expandedWorkspaces: [WS_C] },
       loaded: true,
     });
     useSessionsStore.getState().addWorkspace(WS_A);
@@ -87,6 +87,9 @@ describe("Sidebar boot workspace restore", () => {
     useSessionsStore
       .getState()
       .createSession(SESSION_C, WS_C, "/tmp/session-c.jsonl", "Session C", undefined, "ready");
+    useSessionsStore.getState().addUserMessage(SESSION_C, "hello", undefined, {
+      registerEcho: false,
+    });
 
     const { container, unmount } = mount(<Sidebar onOpenSettings={() => {}} />);
     await flushEffects();
@@ -141,7 +144,7 @@ describe("Sidebar boot workspace restore", () => {
     (globalThis.window as unknown as { pivis?: unknown }).pivis = { invoke };
 
     useSettingsStore.setState({
-      settings: { ...defaultSettings, lastActiveWorkspace: WS_A },
+      settings: { ...defaultSettings, lastActiveWorkspace: WS_A, expandedWorkspaces: [WS_C] },
       loaded: true,
     });
     useSessionsStore.getState().addWorkspace(WS_A);
