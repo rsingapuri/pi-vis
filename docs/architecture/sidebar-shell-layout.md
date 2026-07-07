@@ -5,7 +5,12 @@
 The sidebar renders workspaces in **manual order** — the user drags a hover-revealed
 grip handle on a workspace row to reorder, and the new order is persisted to
 `settings.workspaceOrder` (`src/shared/settings.ts`). Ordering is **stable across
-restarts**: nothing reorders workspaces on close/reopen. A newly-picked workspace
+restarts**: nothing reorders workspaces on close/reopen. Cold boot restores
+`settings.lastActiveWorkspace` only after the full ordered workspace list has
+loaded, so seeing an earlier workspace first cannot consume the one-shot restore
+before the most-recent workspace is present. `lastActiveWorkspace` is updated by
+explicit user workspace activation, including workspace headers, live/stored
+session rows, and `+ New session` — not just by header clicks. A newly-picked workspace
 (via `+` → Open Workspace) is **appended to the bottom** and **auto-expanded** —
 never prepended to slot 0 (the old `recentWorkspaces` recency-sort behavior was
 dropped because ambient activity mutating order is a bug, not a feature). The main

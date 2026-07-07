@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import type { SessionId } from "@shared/ids.js";
 import type { ModelInfo } from "@shared/pi-protocol/responses.js";
+import { defaultSettings } from "@shared/settings.js";
 import type React from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -63,9 +64,9 @@ function setSession(): void {
   } as SessionViewState;
 
   useSessionsStore.setState({ sessions: new Map([[sessionId, session]]) });
-  useSettingsStore.setState((state) => ({
-    settings: { ...state.settings, groupModelsByProvider: false },
-  }));
+  useSettingsStore.setState({
+    settings: { ...defaultSettings, groupModelsByProvider: false },
+  });
 }
 
 function pointerClick(button: HTMLButtonElement): void {
@@ -78,6 +79,7 @@ function pointerClick(button: HTMLButtonElement): void {
 describe("SessionControls dropdown toggles", () => {
   afterEach(() => {
     useSessionsStore.setState({ sessions: new Map() });
+    useSettingsStore.setState({ settings: defaultSettings });
     (globalThis.window as unknown as { pivis?: unknown }).pivis = undefined;
     document.body.innerHTML = "";
   });
@@ -112,10 +114,15 @@ describe("SessionControls dropdown toggles", () => {
 
   it("supports keyboard selection when models are grouped by provider", async () => {
     setSession();
-    useSettingsStore.setState((state) => ({
-      settings: { ...state.settings, groupModelsByProvider: true },
-    }));
-    const invoke = vi.fn(async (_channel: string, payload: { command?: { type?: string } }) => {
+    useSettingsStore.setState({
+      settings: { ...defaultSettings, groupModelsByProvider: true },
+    });
+    const unhandledRejection = vi.fn();
+    process.on("unhandledRejection", unhandledRejection);
+    const invoke = vi.fn(async (channel: string, payload: { command?: { type?: string } }) => {
+      if (channel === "settings.set") {
+        return { ...defaultSettings, ...payload };
+      }
       if (payload.command?.type === "get_state") {
         return { success: true, data: { model: { id: "claude", provider: "anthropic" } } };
       }
@@ -155,6 +162,20 @@ describe("SessionControls dropdown toggles", () => {
         command: { type: "set_model", provider: "anthropic", modelId: "claude" },
       }),
     );
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(
+        "settings.set",
+        expect.objectContaining({
+          lastUsedModel: { provider: "anthropic", modelId: "claude" },
+        }),
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(unhandledRejection).not.toHaveBeenCalled();
+    process.off("unhandledRejection", unhandledRejection);
     unmount();
   });
 });

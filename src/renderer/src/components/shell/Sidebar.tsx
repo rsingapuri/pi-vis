@@ -184,6 +184,7 @@ export function Sidebar({
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
   // Archive confirm dialog state
   const [archiveTarget, setArchiveTarget] = useState<ArchiveConfirmState | null>(null);
+  const [workspaceListLoaded, setWorkspaceListLoaded] = useState(false);
 
   const getVisibleCount = useCallback(
     (wsPath: string) => visibleCounts[wsPath] ?? VISIBLE_PAGE_SIZE,
@@ -337,9 +338,11 @@ export function Sidebar({
       if (isPendingNewSessionActiveFor(useSessionsStore.getState(), workspacePath)) {
         return;
       }
+      setActiveWorkspace(workspacePath);
+      void updateSettings({ lastActiveWorkspace: workspacePath });
       void openSessionTab(workspacePath);
     },
-    [openSessionTab],
+    [openSessionTab, setActiveWorkspace, updateSettings],
   );
 
   // Clicking a workspace header activates it (sets focus + opens/switches
@@ -386,9 +389,21 @@ export function Sidebar({
 
   const handleResumeSession = useCallback(
     (workspacePath: string, filePath: string, makeActive = true) => {
+      if (makeActive) {
+        setActiveWorkspace(workspacePath);
+        void updateSettings({ lastActiveWorkspace: workspacePath });
+      }
       void openSessionTab(workspacePath, filePath, { focus: makeActive });
     },
-    [openSessionTab],
+    [openSessionTab, setActiveWorkspace, updateSettings],
+  );
+
+  const handleSelectLiveSession = useCallback(
+    (sessionId: SessionId, workspacePath: string) => {
+      setActiveSession(sessionId);
+      void updateSettings({ lastActiveWorkspace: workspacePath });
+    },
+    [setActiveSession, updateSettings],
   );
 
   const handleArchiveConfirm = useCallback(() => {
@@ -408,18 +423,26 @@ export function Sidebar({
   // Load the ordered workspace list on mount. NOTE: This effect MUST NOT
   // select any workspace. Selection is the sole responsibility of the boot
   // effect below.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: run-once boot effect
   useEffect(() => {
+    let cancelled = false;
     window.pivis
       .invoke("workspace.list", undefined)
       .then((ordered) => {
+        if (cancelled) return;
         for (const path of ordered) {
           addWorkspace(path);
           void refreshWorkspaceSessions(path);
         }
+        setWorkspaceListLoaded(true);
       })
-      .catch(console.error);
-  }, []);
+      .catch((err) => {
+        console.error(err);
+        if (!cancelled) setWorkspaceListLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [addWorkspace, refreshWorkspaceSessions]);
 
   // Sync persisted expansion state into the store once settings finish
   // loading. This MUST wait for `settingsLoaded`: settings load asynchronously
@@ -441,6 +464,7 @@ export function Sidebar({
   useEffect(() => {
     if (bootSessionRef.current) return;
     if (!settingsLoaded) return;
+    if (!workspaceListLoaded) return;
     if (workspaces.size === 0) return;
     bootSessionRef.current = true;
 
@@ -464,6 +488,7 @@ export function Sidebar({
     }
   }, [
     settingsLoaded,
+    workspaceListLoaded,
     workspaces.size,
     lastActiveWorkspace,
     openSessionTab,
@@ -642,11 +667,11 @@ export function Sidebar({
                                       }
                                     : undefined
                                 }
-                                onClick={() => setActiveSession(entry.sessionId)}
+                                onClick={() => handleSelectLiveSession(entry.sessionId, ws.path)}
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter" || e.key === " ") {
                                     e.preventDefault();
-                                    setActiveSession(entry.sessionId);
+                                    handleSelectLiveSession(entry.sessionId, ws.path);
                                   }
                                 }}
                               >

@@ -833,12 +833,13 @@ button.tool-card__header {
   gap: 0.571rem;
   padding: 0.286rem 0;
   color: var(--text-muted);
-  font-family: var(--font-code);
-  font-size: var(--font-size-code);
+  font-family: var(--font-display);
+  font-size: 0.929em;
+  line-height: var(--leading-label);
 }
 
 .working-row__label {
-  font-style: italic;
+  font-style: normal;
 }
 
 /* Activity cards (compaction summaries, custom notices) intentionally use the
