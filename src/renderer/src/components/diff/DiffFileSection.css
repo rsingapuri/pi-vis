@@ -187,7 +187,7 @@
 
 .diff-row {
   display: grid;
-  grid-template-columns: var(--gutter-w) var(--gutter-w) 1.143rem 1fr;
+  grid-template-columns: 1.571rem var(--gutter-w) var(--gutter-w) 1.143rem 1fr;
   align-items: stretch;
   font-family: var(--font-code);
   font-size: var(--font-size-code);
@@ -195,7 +195,7 @@
 }
 
 .diff-row--split {
-  grid-template-columns: var(--gutter-w) 1fr var(--gutter-w) 1fr;
+  grid-template-columns: 1.571rem var(--gutter-w) 1fr var(--gutter-w) 1fr;
 }
 
 .diff-row__num {
@@ -297,6 +297,224 @@
   background: var(--warning-soft);
 }
 
+.diff-row__comment-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.diff-row__comment-btn {
+  width: 1.25rem;
+  height: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-ghost);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.diff-row:hover .diff-row__comment-btn,
+.diff-row__comment-btn:focus-visible,
+.diff-row__comment-btn--has-comment {
+  opacity: 1;
+}
+
+.diff-row__comment-btn:hover,
+.diff-row__comment-btn:focus-visible {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.diff-row__comment-btn--has-comment,
+.diff-row__comment-btn--open {
+  color: var(--info);
+}
+
+.diff-row__comment-btn--relocated {
+  color: var(--warning-soft);
+}
+
+.diff-row__comment-btn--stale {
+  color: var(--danger);
+}
+
+.diff-comment-thread {
+  display: grid;
+  grid-template-columns: 1.571rem var(--gutter-w) var(--gutter-w) 1.143rem 1fr;
+  background: color-mix(in srgb, var(--surface-2) 20%, transparent);
+  font-family: var(--font-display);
+  font-size: var(--font-size-base);
+  line-height: var(--leading-normal);
+}
+
+.diff-comment-thread--split {
+  grid-template-columns: 1.571rem var(--gutter-w) 1fr var(--gutter-w) 1fr;
+}
+
+.diff-comment-thread__rail {
+  grid-column: 1;
+}
+
+.diff-comment-thread__card {
+  grid-column: 5;
+  min-width: 0;
+  margin: 0.286rem 0.714rem 0.571rem 0;
+  padding: 0.571rem;
+  border: 1px solid color-mix(in srgb, var(--info) 30%, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--elevation-1);
+  color: var(--text);
+}
+
+.diff-comment-thread--split .diff-comment-thread__card {
+  grid-column: 3 / -1;
+}
+
+.diff-comment-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.429rem;
+}
+
+.diff-comment-body__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.571rem;
+  color: var(--text-muted);
+  font-size: var(--font-size-small);
+}
+
+.diff-comment-body__status {
+  color: var(--warning-soft);
+}
+
+.diff-comment-body__status--stale {
+  color: var(--danger);
+}
+
+.diff-comment-body__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.diff-comment-body__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.diff-comment-body__edit {
+  padding: 0.214rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: var(--font-size-small);
+}
+
+.diff-comment-body__edit:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.diff-comment-editor {
+  width: 100%;
+  font-family: var(--font-display);
+  color: var(--text);
+}
+
+.diff-comment-editor__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.571rem;
+  margin-bottom: 0.429rem;
+  color: var(--text-muted);
+  font-size: var(--font-size-small);
+}
+
+.diff-comment-editor__textarea {
+  width: 100%;
+  min-height: 5.5rem;
+  resize: vertical;
+  padding: 0.571rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: var(--font-size-base);
+  line-height: var(--leading-normal);
+  outline: none;
+}
+
+.diff-comment-editor__textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.diff-comment-editor__actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.429rem;
+  margin-top: 0.5rem;
+}
+
+.diff-comment-editor__actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.286rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: 0.286rem 0.571rem;
+  font-family: var(--font-display);
+  font-size: var(--font-size-small);
+  cursor: pointer;
+}
+
+.diff-comment-editor__ghost,
+.diff-comment-editor__delete {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.diff-comment-editor__ghost:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.diff-comment-editor__delete {
+  margin-right: auto;
+  color: var(--danger);
+}
+
+.diff-comment-editor__delete:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.diff-comment-editor__save {
+  background: var(--accent-fill);
+  color: var(--on-accent);
+}
+
+.diff-comment-editor__save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Row hover overlay (subtle — aids horizontal tracking in split view). */
 .diff-row:hover {
   background: color-mix(in srgb, var(--surface-2) 30%, transparent);
@@ -331,7 +549,7 @@
   /* Width matches the two number columns + marker column in unified
      view, so the expander buttons sit over the gutter and the code
      stays aligned. */
-  width: calc(var(--gutter-w) * 2 + 1.143rem);
+  width: calc(1.571rem + var(--gutter-w) * 2 + 1.143rem);
   text-align: center;
   color: var(--text-ghost);
   flex-shrink: 0;
@@ -409,6 +627,11 @@
 .diff-row {
   content-visibility: auto;
   contain-intrinsic-size: auto 1.43em;
+}
+
+.diff-comment-thread {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 6rem;
 }
 
 .diff-row--reveal {

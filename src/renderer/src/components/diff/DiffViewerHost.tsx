@@ -13,6 +13,7 @@ import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import type { SearchMatch, SearchableFile } from "../../lib/diff/search.js";
 import { computeMatches } from "../../lib/diff/search.js";
 import { useDiffStore } from "../../stores/diff-store.js";
+import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { FadeText } from "../common/FadeText.js";
 import { useSyncedSpinnerStyle } from "../common/Spinner.js";
@@ -35,6 +36,25 @@ interface DiffViewerHostProps {
 const SPLIT_MIN_WIDTH = 880; // px — below this, split view is disabled
 const SCROLL_SPY_SUPPRESS_MS = 400;
 const EAGER_LOAD_FIRST = 5;
+
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest(".diff-comment-editor")) return true;
+  if (target.isContentEditable) return true;
+  if (target instanceof HTMLTextAreaElement) return true;
+  if (!(target instanceof HTMLInputElement)) return false;
+  return ![
+    "button",
+    "checkbox",
+    "color",
+    "file",
+    "image",
+    "radio",
+    "range",
+    "reset",
+    "submit",
+  ].includes(target.type);
+}
 
 export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactElement | null {
   // Claim ESC while the diff viewer is open so a background streaming
@@ -62,6 +82,10 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
   const ensureFileLoaded = useDiffStore((s) => s.ensureFileLoaded);
   const refresh = useDiffStore((s) => s.refresh);
   const toggleCollapsed = useDiffStore((s) => s.toggleCollapsed);
+  const commentsForSession = useSessionsStore((s) => s.diffComments.get(sessionId));
+  const markDiffCommentsStaleForMissingFiles = useSessionsStore(
+    (s) => s.markDiffCommentsStaleForMissingFiles,
+  );
 
   // ── In-diff find ─────────────────────────────────────────────────
   const searchOpen = useDiffStore((s) => s.search.open);
@@ -170,6 +194,31 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
       window.removeEventListener("focus", onFocus);
     };
   }, [visible, sessionId, refresh]);
+
+  // ── Keep pending diff-comment anchors checked against current files ─
+  // Files with comments are loaded eagerly after refresh so RowsView can
+  // reconcile moved/changed line anchors even if the user does not scroll to
+  // that file. Comments for files that no longer appear in the diff are marked
+  // stale immediately so the prompt metadata never presents them as current.
+  useEffect(() => {
+    if (!visible || phase !== "ready" || !commentsForSession || commentsForSession.size === 0) {
+      return;
+    }
+    const currentPaths = new Set(files.map((f) => f.path));
+    markDiffCommentsStaleForMissingFiles(sessionId, currentPaths);
+    const commentedPaths = new Set(Array.from(commentsForSession.values(), (c) => c.filePath));
+    for (const path of commentedPaths) {
+      if (currentPaths.has(path)) void ensureFileLoaded(path);
+    }
+  }, [
+    visible,
+    phase,
+    files,
+    commentsForSession,
+    sessionId,
+    ensureFileLoaded,
+    markDiffCommentsStaleForMissingFiles,
+  ]);
 
   // ── Re-tokenize open diff when the color scheme changes ───────────
   // CSS variables don't reach Shiki's baked-in hex tokens, so a scheme
@@ -287,6 +336,10 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
       const target = e.target as HTMLElement | null;
       const isInFilter = target?.classList.contains("diff-rail__search-input") ?? false;
       const isInSearch = target?.classList.contains("diff-search__input") ?? false;
+      const isInsideViewer = target?.closest(".diff-viewer") != null;
+      const isGeneralTextEntry =
+        isInsideViewer && isTextEntryTarget(target) && !isInFilter && !isInSearch;
+      if (isGeneralTextEntry) return;
 
       // Cmd/Ctrl+F — open the find bar and focus it (overriding browser find).
       if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "f" || e.key === "F")) {
@@ -541,6 +594,7 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
             {phase === "ready" && files.length === 0 && <CleanState />}
             {phase === "ready" && files.length > 0 && (
               <FileSections
+                sessionId={sessionId}
                 files={files}
                 fileState={fileState}
                 viewMode={viewMode}
@@ -1234,12 +1288,14 @@ function basename(p: string): string {
 // ── File sections container ─────────────────────────────────────────
 
 function FileSections({
+  sessionId,
   files,
   fileState,
   viewMode,
   narrow,
   registerSection,
 }: {
+  sessionId: SessionId;
   files: GitChangedFile[];
   fileState: Map<string, import("../../stores/diff-store.js").FileState>;
   viewMode: "unified" | "split";
@@ -1253,6 +1309,7 @@ function FileSections({
         return (
           <DiffFileSection
             key={f.path}
+            sessionId={sessionId}
             file={f}
             state={st}
             viewMode={viewMode}

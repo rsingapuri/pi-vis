@@ -96,6 +96,15 @@ export function IconFile(props: IconProps): React.ReactElement {
   );
 }
 
+/** Comment bubble — code-review notes. */
+export function IconComment(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <path d="M2.5 2.5h7v4.75h-3L4.4 9.5V7.25H2.5z" />
+    </Icon>
+  );
+}
+
 /** Bell — notification history / alerts. */
 export function IconBell(props: IconProps): React.ReactElement {
   return (

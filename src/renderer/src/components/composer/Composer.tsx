@@ -10,6 +10,7 @@ import {
   executeAction,
   parseComposerInput,
 } from "../../lib/commands/index.js";
+import { prependCodeCommentsToPrompt } from "../../lib/diff-comments.js";
 import { findCurrentModel } from "../../lib/model-utils.js";
 import { useChangelogStore } from "../../stores/changelog-store.js";
 import { openDiffForSession } from "../../stores/diff-store.js";
@@ -21,7 +22,7 @@ import {
 } from "../../stores/sessions-store.js";
 import { useTreeStore } from "../../stores/tree-store.js";
 import { FadeText } from "../common/FadeText.js";
-import { IconClose, IconFile } from "../common/icons.js";
+import { IconClose, IconComment, IconFile } from "../common/icons.js";
 import "./Composer.css";
 
 interface ComposerProps {
@@ -212,6 +213,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const setNewSessionDraft = useSessionsStore((s) => s.setNewSessionDraft);
   const setSessionDraft = useSessionsStore((s) => s.setSessionDraft);
   const clearEditorInjection = useSessionsStore((s) => s.clearEditorInjection);
+  const diffCommentCount = useSessionsStore((s) => s.diffComments.get(sessionId)?.size ?? 0);
+  const clearDiffComments = useSessionsStore((s) => s.clearDiffComments);
+  const clearSubmittedDiffComments = useSessionsStore((s) => s.clearSubmittedDiffComments);
 
   const worktreeCreating = session?.worktreeCreating ?? false;
   // The composer is interactive only when the session is live AND we're not
@@ -493,7 +497,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const handleSubmit = useCallback(
     async (overrideContent?: string) => {
       const content = overrideContent ?? text;
-      if (!content.trim() && fileAttachments.length === 0) return;
+      const pendingDiffComments = useSessionsStore.getState().getDiffCommentsForPrompt(sessionId);
+      if (!content.trim() && fileAttachments.length === 0 && pendingDiffComments.length === 0)
+        return;
       // Drop a second concurrent invocation: a held/auto-repeat Enter can
       // re-fire this before the `text` state below commits, which would
       // otherwise read the same `content` twice and dispatch two sends.
@@ -608,6 +614,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         }
         if (action.kind === "send-prompt" && attachedFilePaths.length > 0) {
           promptText = textWithPrependedFilePaths(action.text, attachedFilePaths);
+        }
+        if (action.kind === "send-prompt" && pendingDiffComments.length > 0) {
+          promptText = prependCodeCommentsToPrompt(promptText, pendingDiffComments);
         }
         // If the user attached enhanced image previews and then switched to a
         // text-only model, preserve TUI parity by sending the image paths in
@@ -745,9 +754,21 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
             useSessionsStore.getState().sessions.get(sid)?.workspacePath,
           listSessions: (p: string) =>
             window.pivis.invoke("workspace.listSessions", { workspacePath: p }),
+          onPromptAccepted: () => {
+            if (finalAction.kind === "send-prompt" && pendingDiffComments.length > 0) {
+              clearSubmittedDiffComments(sessionId, pendingDiffComments);
+            }
+          },
         };
 
         await executeAction(sessionId, finalAction, deps);
+        if (
+          finalAction.kind === "send-prompt" &&
+          finalAction.commandSource !== "extension" &&
+          pendingDiffComments.length > 0
+        ) {
+          clearSubmittedDiffComments(sessionId, pendingDiffComments);
+        }
 
         // The store actions for content-bearing sends
         // (addUserMessage/addBashCommand/addCustomMessage) and applyEvent's
@@ -819,6 +840,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       fileAttachments,
       modelSupportsImages,
       modelLabel,
+      clearSubmittedDiffComments,
     ],
   );
 
@@ -1011,8 +1033,34 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           {/* Image previews live inside the input card, above the typed text,
               so attachments read as part of the pending message rather than a
               separate horizontal tray. */}
-          {(attachments.length > 0 || fileAttachments.length > 0) && (
+          {(attachments.length > 0 || fileAttachments.length > 0 || diffCommentCount > 0) && (
             <div className="composer__attachments">
+              {diffCommentCount > 0 && (
+                <div className="composer__attachment-item composer__attachment-item--comments">
+                  <div
+                    className="composer__file-attachment composer__comment-attachment"
+                    title={`${diffCommentCount} code ${diffCommentCount === 1 ? "comment" : "comments"} will be prepended to your next prompt`}
+                  >
+                    <span className="composer__comment-attachment-icon-wrap" aria-hidden>
+                      <IconComment className="composer__file-attachment-icon" size="1.55em" />
+                    </span>
+                    <span className="composer__comment-attachment-count" aria-hidden>
+                      {diffCommentCount}
+                    </span>
+                    <span className="composer__file-attachment-name">
+                      {diffCommentCount === 1 ? "comment" : "comments"}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="composer__attachment-remove"
+                    onClick={() => clearDiffComments(sessionId)}
+                    aria-label="Clear code comments"
+                  >
+                    <IconClose size="0.714em" />
+                  </button>
+                </div>
+              )}
               {fileAttachments.map((att, i) => (
                 <div
                   key={`${att.path}-${i}`}

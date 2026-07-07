@@ -608,6 +608,40 @@ describe("executeAction — extension commands (fire-and-forget)", () => {
     expect(invokeResolved).toBe(true);
   });
 
+  it("calls onPromptAccepted only after an extension prompt eventually succeeds", async () => {
+    const onPromptAccepted = vi.fn();
+    const { deps } = makeDeps({ onPromptAccepted });
+
+    await executeAction(
+      SID,
+      { kind: "send-prompt", text: "/mcp", commandSource: "extension" },
+      deps,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onPromptAccepted).toHaveBeenCalledWith(SID);
+  });
+
+  it("does not call onPromptAccepted when an extension prompt fails", async () => {
+    const onPromptAccepted = vi.fn();
+    const { deps } = makeDeps({
+      onPromptAccepted,
+      invoke: vi.fn(async () => ({
+        success: false,
+        error: "extension failed",
+      })) as ExecuteDeps["invoke"],
+    });
+
+    await executeAction(
+      SID,
+      { kind: "send-prompt", text: "/mcp", commandSource: "extension" },
+      deps,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onPromptAccepted).not.toHaveBeenCalled();
+  });
+
   it("tags extension prompts with the invoking UI surface", async () => {
     const { deps, calls } = makeDeps({ uiSurface: "composer" });
 

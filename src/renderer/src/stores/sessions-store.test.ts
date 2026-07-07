@@ -2,6 +2,7 @@ import type { SessionId } from "@shared/ids.js";
 import { ExtensionUiRequestSchema } from "@shared/pi-protocol/extension-ui.js";
 import type { ModelInfo } from "@shared/pi-protocol/responses.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildDiffModel } from "../lib/diff/diff-model.js";
 import {
   isNewSessionPending,
   isPendingNewSessionActiveFor,
@@ -17,6 +18,241 @@ const SESSION_A = "session-a" as SessionId;
 const SESSION_B = "session-b" as SessionId;
 const SESSION_C = "session-c" as SessionId;
 const WORKSPACE = "/tmp/test-workspace";
+
+describe("sessions store - diff comments", () => {
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+      diffComments: new Map(),
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+  });
+
+  it("clears only the submitted comment snapshot", () => {
+    const store = useSessionsStore.getState();
+    store.setDiffComment(SESSION_A, {
+      filePath: "a.ts",
+      lineNumber: 10,
+      lineText: "line 10",
+      text: "first",
+    });
+    store.setDiffComment(SESSION_A, {
+      filePath: "a.ts",
+      lineNumber: 20,
+      lineText: "line 20",
+      text: "second",
+    });
+    const submitted = store.getDiffCommentsForPrompt(SESSION_A);
+
+    store.setDiffComment(SESSION_A, {
+      filePath: "a.ts",
+      lineNumber: 20,
+      lineText: "line 20 edited",
+      text: "edited later",
+    });
+    store.setDiffComment(SESSION_A, {
+      filePath: "b.ts",
+      lineNumber: 1,
+      lineText: "line 1",
+      text: "new later",
+    });
+    store.clearSubmittedDiffComments(SESSION_A, submitted);
+
+    const remaining = useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A);
+    expect(remaining.map((c) => `${c.filePath}:${c.lineNumber}:${c.text}`).sort()).toEqual([
+      "a.ts:20:edited later",
+      "b.ts:1:new later",
+    ]);
+  });
+
+  it("relocates an anchor when its saved line text moves uniquely", () => {
+    const store = useSessionsStore.getState();
+    store.setDiffComment(SESSION_A, {
+      filePath: "a.ts",
+      lineNumber: 2,
+      lineText: "target();",
+      text: "This should follow the line.",
+    });
+    const model = buildDiffModel(
+      "alpha();\ntarget();\nomega();\n",
+      "intro();\nalpha();\ntarget();\nomega();\n",
+    );
+    if (model.kind !== "ok") throw new Error("expected ok model");
+
+    store.reconcileDiffCommentsForFile(SESSION_A, "a.ts", model);
+
+    const comments = useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      lineNumber: 3,
+      originalLineNumber: 2,
+      anchorStatus: "relocated",
+    });
+  });
+
+  it("marks an anchor stale when its saved line text no longer exists uniquely", () => {
+    const store = useSessionsStore.getState();
+    store.setDiffComment(SESSION_A, {
+      filePath: "a.ts",
+      lineNumber: 2,
+      lineText: "target();",
+      text: "This might be stale.",
+    });
+    const model = buildDiffModel(
+      "alpha();\ntarget();\nomega();\n",
+      "alpha();\nchanged();\nomega();\n",
+    );
+    if (model.kind !== "ok") throw new Error("expected ok model");
+
+    store.reconcileDiffCommentsForFile(SESSION_A, "a.ts", model);
+
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)[0]).toMatchObject({
+      lineNumber: 2,
+      anchorStatus: "stale",
+    });
+  });
+
+  it("marks a blank-line anchor stale when that line is no longer blank", () => {
+    const store = useSessionsStore.getState();
+    store.setDiffComment(SESSION_A, {
+      filePath: "a.ts",
+      lineNumber: 2,
+      lineText: "",
+      text: "This blank separator matters.",
+    });
+    const model = buildDiffModel("alpha();\n\nomega();\n", "alpha();\nchanged();\nomega();\n");
+    if (model.kind !== "ok") throw new Error("expected ok model");
+
+    store.reconcileDiffCommentsForFile(SESSION_A, "a.ts", model);
+
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)[0]).toMatchObject({
+      lineNumber: 2,
+      anchorStatus: "stale",
+    });
+  });
+
+  it("marks comments stale when their file disappears from the diff", () => {
+    const store = useSessionsStore.getState();
+    store.setDiffComment(SESSION_A, {
+      filePath: "a.ts",
+      lineNumber: 2,
+      lineText: "target();",
+      text: "This file was reverted.",
+    });
+    store.setDiffComment(SESSION_A, {
+      filePath: "b.ts",
+      lineNumber: 1,
+      lineText: "still changed",
+      text: "This file is still visible.",
+    });
+
+    store.markDiffCommentsStaleForMissingFiles(SESSION_A, new Set(["b.ts"]));
+
+    const byFile = new Map(
+      useSessionsStore
+        .getState()
+        .getDiffCommentsForPrompt(SESSION_A)
+        .map((c) => [c.filePath, c]),
+    );
+    expect(byFile.get("a.ts")).toMatchObject({ anchorStatus: "stale" });
+    expect(byFile.get("b.ts")).toMatchObject({ anchorStatus: "current" });
+  });
+
+  it("keeps an existing anchor when a relocated comment would collide with it", () => {
+    const store = useSessionsStore.getState();
+    store.setDiffComment(SESSION_A, {
+      filePath: "a.ts",
+      lineNumber: 2,
+      lineText: "target();",
+      text: "This one cannot move onto an occupied line.",
+    });
+    store.setDiffComment(SESSION_A, {
+      filePath: "a.ts",
+      lineNumber: 3,
+      lineText: "target();",
+      text: "Keep this line's own comment.",
+    });
+    const model = buildDiffModel(
+      "alpha();\ntarget();\nspacer();\n",
+      "alpha();\nchanged();\ntarget();\n",
+    );
+    if (model.kind !== "ok") throw new Error("expected ok model");
+
+    store.reconcileDiffCommentsForFile(SESSION_A, "a.ts", model);
+
+    const byLine = new Map(
+      useSessionsStore
+        .getState()
+        .getDiffCommentsForPrompt(SESSION_A)
+        .map((c) => [c.lineNumber, c]),
+    );
+    expect(byLine.get(2)).toMatchObject({
+      text: "This one cannot move onto an occupied line.",
+      anchorStatus: "stale",
+    });
+    expect(byLine.get(3)).toMatchObject({
+      text: "Keep this line's own comment.",
+      anchorStatus: "current",
+    });
+  });
+
+  it("preserves pending diff comments when a live session tab is closed", () => {
+    const store = useSessionsStore.getState();
+    store.setDiffComment(SESSION_A, {
+      filePath: "a.ts",
+      lineNumber: 2,
+      lineText: "target();",
+      text: "Keep this for resume.",
+    });
+
+    store.removeSession(SESSION_A);
+
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)[0]).toMatchObject({
+      text: "Keep this for resume.",
+    });
+  });
+
+  it("reattaches pending diff comments when a closed session file is reopened", async () => {
+    const sessionFile = "/tmp/session-a.jsonl";
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    const invokeMock = vi.fn(async (channel: string) => {
+      if (channel === "session.open") {
+        return {
+          outcome: "opened",
+          sessionId: SESSION_B,
+          name: "Session A",
+          preview: "Preview",
+          sessionStatus: "cold",
+        };
+      }
+      if (channel === "session.loadHistory") return { blocks: [], startIndex: 0, total: 0 };
+      throw new Error(`unexpected channel ${channel}`);
+    });
+    (globalThis as { window: unknown }).window = { pivis: { invoke: invokeMock } };
+    try {
+      useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, sessionFile);
+      useSessionsStore.getState().setDiffComment(SESSION_A, {
+        filePath: "a.ts",
+        lineNumber: 2,
+        lineText: "target();",
+        text: "Keep this for resume.",
+      });
+      useSessionsStore.getState().removeSession(SESSION_A);
+
+      await useSessionsStore.getState().openSessionTab(WORKSPACE, sessionFile);
+
+      expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_B)[0]).toMatchObject({
+        text: "Keep this for resume.",
+      });
+    } finally {
+      if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+      else (globalThis as { window: unknown }).window = originalWindow;
+    }
+  });
+});
 
 /**
  * These tests pin the invariant that drives the SessionHeader thinking
@@ -2604,6 +2840,7 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
       activeSessionId: null,
       workspaces: new Map(),
       activeWorkspacePath: null,
+      diffComments: new Map(),
     });
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
     invokeMock.mockReset();
@@ -2636,11 +2873,38 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
         c[0] === "session.sendCommand" &&
         (c[1] as { command?: { type?: string } }).command?.type === t,
     );
+  const sentPromptMessage = () =>
+    (
+      invokeMock.mock.calls.find(
+        (c) =>
+          c[0] === "session.sendCommand" &&
+          (c[1] as { command?: { type?: string } }).command?.type === "prompt",
+      )?.[1] as { command?: { message?: string } } | undefined
+    )?.command?.message;
 
   it("an empty submit bails without dispatching a prompt", async () => {
     await useSessionsStore.getState().handleUnifiedSubmitRequest(SESSION_A, "id1", "   ");
     expect(lastUnifiedResponse()).toMatchObject({ id: "id1", ok: false, bailed: true });
     expect(sentCommandType("prompt")).toBe(false);
+  });
+
+  it("a comments-only submit sends the pending diff comments", async () => {
+    useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/a.ts",
+      lineNumber: 42,
+      lineText: "if (flag) return a;",
+      text: "Please simplify this branch.",
+    });
+
+    await useSessionsStore.getState().handleUnifiedSubmitRequest(SESSION_A, "id-comments", "   ");
+
+    expect(sentCommandType("prompt")).toBe(true);
+    expect(sentPromptMessage()).toContain("### User comments on the code");
+    expect(sentPromptMessage()).toContain("File: src/a.ts");
+    expect(sentPromptMessage()).toContain("Line: 42");
+    expect(lastUnifiedResponse()).toMatchObject({ id: "id-comments", ok: true });
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toEqual([]);
   });
 
   it("a send-prompt with no model bails + toasts (no-model guard parity)", async () => {

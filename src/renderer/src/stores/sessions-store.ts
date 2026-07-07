@@ -18,6 +18,15 @@ import { create } from "zustand";
 import type { PickerRequest } from "../lib/commands/execute.js";
 import { executeAction } from "../lib/commands/execute.js";
 import { parseComposerInput } from "../lib/commands/parse.js";
+import {
+  type CodeComment,
+  codeCommentKey,
+  createCodeCommentId,
+  loadPersistedCodeComments,
+  persistCodeComments,
+  prependCodeCommentsToPrompt,
+} from "../lib/diff-comments.js";
+import type { DiffModel } from "../lib/diff/diff-model.js";
 import { useChangelogStore } from "./changelog-store.js";
 import { openDiffForSession } from "./diff-store.js";
 import { useSettingsStore } from "./settings-store.js";
@@ -325,6 +334,33 @@ function setSessionDraftFor(
   return next;
 }
 
+function newSideLineText(model: DiffModel): Map<number, string> {
+  const lines = new Map<number, string>();
+  for (const line of model.lines) {
+    if (line.type === "del") continue;
+    if (line.newNo !== null) lines.set(line.newNo, line.text);
+  }
+  return lines;
+}
+
+function findUniqueLineByText(lines: Map<number, string>, text: string): number | null {
+  let found: number | null = null;
+  for (const [lineNumber, lineText] of lines) {
+    if (lineText !== text) continue;
+    if (found !== null) return null;
+    found = lineNumber;
+  }
+  return found;
+}
+
+function sameCommentRevision(a: CodeComment, b: CodeComment): boolean {
+  return a.id === b.id && a.revision === b.revision;
+}
+
+function diffCommentsStorageSessionKey(sessionFile: string): SessionId {
+  return `file:${sessionFile}` as SessionId;
+}
+
 function clearNewSessionSetupFor(
   setups: Map<string, PendingNewSessionSetup>,
   workspacePath: string,
@@ -481,6 +517,23 @@ interface SessionsStore {
   sessionDrafts: Map<SessionId, string>;
   /** Update (replace) the per-session draft. Empty text deletes the entry. */
   setSessionDraft: (sessionId: SessionId, text: string) => void;
+
+  /** Diff-viewer comments keyed per session, then by file+new-side line. */
+  diffComments: Map<SessionId, Map<string, CodeComment>>;
+  setDiffComment: (
+    sessionId: SessionId,
+    comment: { filePath: string; lineNumber: number; lineText: string; text: string },
+  ) => void;
+  deleteDiffComment: (sessionId: SessionId, filePath: string, lineNumber: number) => void;
+  clearDiffComments: (sessionId: SessionId) => void;
+  clearSubmittedDiffComments: (sessionId: SessionId, submitted: readonly CodeComment[]) => void;
+  reconcileDiffCommentsForFile: (sessionId: SessionId, filePath: string, model: DiffModel) => void;
+  markDiffCommentsStaleForMissingFiles: (
+    sessionId: SessionId,
+    currentFilePaths: ReadonlySet<string>,
+  ) => void;
+  getDiffCommentsForPrompt: (sessionId: SessionId) => CodeComment[];
+  prependDiffCommentsToPrompt: (sessionId: SessionId, prompt: string) => string;
 
   addWorkspace: (path: string) => void;
   removeWorkspace: (path: string) => void;
@@ -744,6 +797,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
   newSessionDrafts: new Map(),
   newSessionSetupDrafts: new Map(),
   sessionDrafts: new Map(),
+  diffComments: loadPersistedCodeComments(),
 
   addWorkspace: (path) => {
     set((state) => {
@@ -922,6 +976,14 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       // Drop this session's per-session draft too — it should never resurface
       // on some other session. No-op if nothing was stored.
       const sessionDrafts = clearSessionDraftFor(state.sessionDrafts, sessionId);
+      const existingComments = state.diffComments.get(sessionId);
+      const diffComments =
+        s.sessionFile && existingComments ? new Map(state.diffComments) : state.diffComments;
+      if (s.sessionFile && existingComments && diffComments !== state.diffComments) {
+        diffComments.delete(sessionId);
+        diffComments.set(diffCommentsStorageSessionKey(s.sessionFile), existingComments);
+        persistCodeComments(diffComments);
+      }
       return {
         sessions,
         workspaces,
@@ -929,6 +991,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         newSessionDrafts: drafts,
         newSessionSetupDrafts: setupDrafts,
         sessionDrafts,
+        ...(diffComments !== state.diffComments ? { diffComments } : {}),
       };
     });
   },
@@ -1631,11 +1694,14 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
   handleUnifiedSubmitRequest: async (sessionId, id, text) => {
     const trimmed = text.trim();
+    const state = get();
+    const session = state.sessions.get(sessionId);
+    const pendingDiffComments = state.getDiffCommentsForPrompt(sessionId);
     // Mirror the React Composer's early bail: an empty/whitespace submit is a
-    // no-op (pi's submitValue already cleared the editor; the dispatcher would
-    // no-op anyway). Tell the host it bailed so it can restore — though empty
-    // restore is a no-op, keeping the contract uniform is simplest.
-    if (!trimmed) {
+    // no-op unless pending diff comments are the prompt body. Tell the host it
+    // bailed so it can restore — though empty restore is a no-op, keeping the
+    // contract uniform is simplest.
+    if (!trimmed && pendingDiffComments.length === 0) {
       void window.pivis.invoke("session.unifiedSubmitResponse", {
         sessionId,
         id,
@@ -1645,10 +1711,15 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       return;
     }
 
-    const state = get();
-    const session = state.sessions.get(sessionId);
     const discovered = new Map((session?.commands ?? []).map((c) => [c.name, c]));
-    const action = parseComposerInput(trimmed, { discovered });
+    const parsedAction = parseComposerInput(trimmed, { discovered });
+    const action =
+      parsedAction.kind === "send-prompt" && pendingDiffComments.length > 0
+        ? {
+            ...parsedAction,
+            text: prependCodeCommentsToPrompt(parsedAction.text, pendingDiffComments),
+          }
+        : parsedAction;
 
     // No-model guard (send-prompt only; /model and bash bypass). A bail here
     // tells the host to restore the editor text so the prompt isn't lost.
@@ -1716,10 +1787,22 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       getSessionWorkspacePath: (sid: SessionId) => get().sessions.get(sid)?.workspacePath,
       listSessions: (p: string) =>
         window.pivis.invoke("workspace.listSessions", { workspacePath: p }),
+      onPromptAccepted: () => {
+        if (action.kind === "send-prompt" && pendingDiffComments.length > 0) {
+          get().clearSubmittedDiffComments(sessionId, pendingDiffComments);
+        }
+      },
     };
 
     try {
       await executeAction(sessionId, action, deps);
+      if (
+        action.kind === "send-prompt" &&
+        action.commandSource !== "extension" &&
+        pendingDiffComments.length > 0
+      ) {
+        get().clearSubmittedDiffComments(sessionId, pendingDiffComments);
+      }
       void window.pivis.invoke("session.unifiedSubmitResponse", {
         sessionId,
         id,
@@ -2546,6 +2629,19 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         preview ?? undefined,
         res.outcome === "existing" ? sessionStatus : "cold",
       );
+      if (sessionFile) {
+        const storageKey = diffCommentsStorageSessionKey(sessionFile);
+        const storedComments = get().diffComments.get(storageKey);
+        if (storedComments) {
+          set((state) => {
+            const diffComments = new Map(state.diffComments);
+            diffComments.delete(storageKey);
+            diffComments.set(sessionId, storedComments);
+            persistCodeComments(diffComments);
+            return { diffComments };
+          });
+        }
+      }
       // Re-attach worktree identity for a resumed worktree session so the
       // chip renders and git operations target the worktree (not the parent
       // workspace). New sessions have no worktree and skip this.
@@ -2692,6 +2788,170 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       drafts.set(sessionId, text);
       return { sessionDrafts: drafts };
     });
+  },
+
+  setDiffComment: (sessionId, comment) => {
+    const text = comment.text.trim();
+    if (text.length === 0) {
+      get().deleteDiffComment(sessionId, comment.filePath, comment.lineNumber);
+      return;
+    }
+    set((state) => {
+      const diffComments = new Map(state.diffComments);
+      const existingForSession = diffComments.get(sessionId) ?? new Map<string, CodeComment>();
+      const comments = new Map(existingForSession);
+      const key = codeCommentKey(comment.filePath, comment.lineNumber);
+      const existing = comments.get(key);
+      const now = Date.now();
+      comments.set(key, {
+        id: existing?.id ?? createCodeCommentId(),
+        filePath: comment.filePath,
+        lineNumber: comment.lineNumber,
+        originalLineNumber: existing?.originalLineNumber ?? comment.lineNumber,
+        lineText: comment.lineText,
+        anchorStatus: "current",
+        text,
+        revision: (existing?.revision ?? 0) + 1,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      });
+      diffComments.set(sessionId, comments);
+      persistCodeComments(diffComments);
+      return { diffComments };
+    });
+  },
+
+  deleteDiffComment: (sessionId, filePath, lineNumber) => {
+    set((state) => {
+      const existingForSession = state.diffComments.get(sessionId);
+      if (!existingForSession) return {};
+      const key = codeCommentKey(filePath, lineNumber);
+      if (!existingForSession.has(key)) return {};
+      const comments = new Map(existingForSession);
+      comments.delete(key);
+      const diffComments = new Map(state.diffComments);
+      if (comments.size === 0) diffComments.delete(sessionId);
+      else diffComments.set(sessionId, comments);
+      persistCodeComments(diffComments);
+      return { diffComments };
+    });
+  },
+
+  clearDiffComments: (sessionId) => {
+    set((state) => {
+      if (!state.diffComments.has(sessionId)) return {};
+      const diffComments = new Map(state.diffComments);
+      diffComments.delete(sessionId);
+      persistCodeComments(diffComments);
+      return { diffComments };
+    });
+  },
+
+  clearSubmittedDiffComments: (sessionId, submitted) => {
+    if (submitted.length === 0) return;
+    set((state) => {
+      const existingForSession = state.diffComments.get(sessionId);
+      if (!existingForSession) return {};
+      const comments = new Map(existingForSession);
+      let changed = false;
+      for (const submittedComment of submitted) {
+        for (const [key, current] of comments) {
+          if (sameCommentRevision(current, submittedComment)) {
+            comments.delete(key);
+            changed = true;
+            break;
+          }
+        }
+      }
+      if (!changed) return {};
+      const diffComments = new Map(state.diffComments);
+      if (comments.size === 0) diffComments.delete(sessionId);
+      else diffComments.set(sessionId, comments);
+      persistCodeComments(diffComments);
+      return { diffComments };
+    });
+  },
+
+  reconcileDiffCommentsForFile: (sessionId, filePath, model) => {
+    const currentLines = newSideLineText(model);
+    set((state) => {
+      const existingForSession = state.diffComments.get(sessionId);
+      if (!existingForSession) return {};
+      let comments: Map<string, CodeComment> | null = null;
+      const ensureComments = (): Map<string, CodeComment> => {
+        comments ??= new Map(existingForSession);
+        return comments;
+      };
+      let changed = false;
+
+      for (const [key, comment] of existingForSession) {
+        if (comment.filePath !== filePath) continue;
+        const currentText = currentLines.get(comment.lineNumber);
+        if (currentText === comment.lineText) {
+          if (comment.anchorStatus !== "current") {
+            ensureComments().set(key, { ...comment, anchorStatus: "current" });
+            changed = true;
+          }
+          continue;
+        }
+
+        const relocatedLine = findUniqueLineByText(currentLines, comment.lineText);
+        if (relocatedLine !== null) {
+          const nextKey = codeCommentKey(filePath, relocatedLine);
+          const nextComments = ensureComments();
+          const occupant = nextComments.get(nextKey);
+          if (!occupant || occupant.id === comment.id) {
+            const nextComment: CodeComment = {
+              ...comment,
+              lineNumber: relocatedLine,
+              originalLineNumber: comment.originalLineNumber,
+              anchorStatus: relocatedLine === comment.originalLineNumber ? "current" : "relocated",
+            };
+            nextComments.delete(key);
+            nextComments.set(nextKey, nextComment);
+            changed = true;
+            continue;
+          }
+        }
+
+        if (comment.anchorStatus !== "stale") {
+          ensureComments().set(key, { ...comment, anchorStatus: "stale" });
+          changed = true;
+        }
+      }
+
+      if (!changed || !comments) return {};
+      const diffComments = new Map(state.diffComments);
+      diffComments.set(sessionId, comments);
+      persistCodeComments(diffComments);
+      return { diffComments };
+    });
+  },
+
+  markDiffCommentsStaleForMissingFiles: (sessionId, currentFilePaths) => {
+    set((state) => {
+      const existingForSession = state.diffComments.get(sessionId);
+      if (!existingForSession) return {};
+      let comments: Map<string, CodeComment> | null = null;
+      for (const [key, comment] of existingForSession) {
+        if (currentFilePaths.has(comment.filePath) || comment.anchorStatus === "stale") continue;
+        comments ??= new Map(existingForSession);
+        comments.set(key, { ...comment, anchorStatus: "stale" });
+      }
+      if (!comments) return {};
+      const diffComments = new Map(state.diffComments);
+      diffComments.set(sessionId, comments);
+      persistCodeComments(diffComments);
+      return { diffComments };
+    });
+  },
+
+  getDiffCommentsForPrompt: (sessionId) => {
+    return Array.from(get().diffComments.get(sessionId)?.values() ?? []);
+  },
+
+  prependDiffCommentsToPrompt: (sessionId, prompt) => {
+    return prependCodeCommentsToPrompt(prompt, get().getDiffCommentsForPrompt(sessionId));
   },
 }));
 

@@ -182,6 +182,132 @@ test.describe("Diff viewer", () => {
     rmrf(folders.piSessionsDir);
   });
 
+  test("code comments can be added, edited, deleted, submitted, and cleared", async () => {
+    test.setTimeout(60_000);
+    const folders = await makeFolders();
+    setupRepoWithChanges(folders.workspaceDir);
+    const { app, window } = await launchApp(folders);
+
+    await window.getByRole("button", { name: "New session" }).click();
+    await expect(window.locator(".session-header__model-btn")).toContainText("Fake Model [fake]", {
+      timeout: 15_000,
+    });
+    const changesBtn = window.locator('[data-testid="changes-button"]');
+    await expect(changesBtn).toContainText("2", { timeout: 10_000 });
+    await changesBtn.click();
+
+    const viewer = window.locator(".diff-viewer");
+    const aSection = viewer.locator('[data-testid="diff-section-a.ts"]');
+    await expect(aSection).toBeVisible({ timeout: 5_000 });
+    await expect(
+      aSection.locator('.diff-row--del [data-testid="diff-comment-button"]'),
+    ).toHaveCount(0);
+
+    const line10Button = viewer.locator(
+      '[data-testid="diff-comment-button"][data-file="a.ts"][data-line="10"]',
+    );
+    await line10Button.click();
+    let commentBox = viewer.getByRole("textbox", { name: "Code comment" });
+    await commentBox.pressSequentially("jk\\ helper");
+    await expect(commentBox).toHaveValue("jk\\ helper");
+    await commentBox.press("Escape");
+    await expect(viewer.getByRole("dialog", { name: "Comment on line 10" })).toHaveCount(0);
+    await expect(viewer).toBeVisible();
+
+    await line10Button.click();
+    commentBox = viewer.getByRole("textbox", { name: "Code comment" });
+    await commentBox.fill("Prefer the shared helper here.");
+    await viewer.getByRole("button", { name: "Save" }).click();
+    await expect(line10Button).toHaveClass(/diff-row__comment-btn--has-comment/);
+    await expect(
+      viewer.locator('[data-testid="diff-comment-thread"]').filter({
+        hasText: "Prefer the shared helper here.",
+      }),
+    ).toBeVisible();
+    const line10Row = line10Button.locator(
+      "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' diff-row ')][1]",
+    );
+    const [line10ButtonBox, line10RowBox] = await Promise.all([
+      line10Button.boundingBox(),
+      line10Row.boundingBox(),
+    ]);
+    expect(line10ButtonBox).not.toBeNull();
+    expect(line10RowBox).not.toBeNull();
+    if (!line10ButtonBox || !line10RowBox) throw new Error("missing comment button bounds");
+    expect(
+      Math.abs(
+        line10ButtonBox.y + line10ButtonBox.height / 2 - (line10RowBox.y + line10RowBox.height / 2),
+      ),
+    ).toBeLessThan(3);
+
+    const line30Button = viewer.locator(
+      '[data-testid="diff-comment-button"][data-file="a.ts"][data-line="30"]',
+    );
+    await line30Button.click();
+    await viewer.getByRole("textbox", { name: "Code comment" }).fill("This branch can be simpler.");
+    await viewer.getByRole("button", { name: "Save" }).click();
+    await expect(
+      viewer.locator('[data-testid="diff-comment-thread"]').filter({
+        hasText: "This branch can be simpler.",
+      }),
+    ).toBeVisible();
+
+    await line10Button.click();
+    await viewer.getByRole("textbox", { name: "Code comment" }).fill("Edited note for the helper.");
+    await viewer.getByRole("button", { name: "Save" }).click();
+
+    await line30Button.click();
+    await viewer.getByRole("button", { name: "Delete" }).click();
+    await expect(line30Button).not.toHaveClass(/diff-row__comment-btn--has-comment/);
+    await expect(
+      viewer.locator('[data-testid="diff-comment-thread"]').filter({
+        hasText: "This branch can be simpler.",
+      }),
+    ).toHaveCount(0);
+
+    await window.keyboard.press("Escape");
+    await expect(viewer).toBeHidden({ timeout: 5_000 });
+
+    const commentTile = window.locator(".composer__attachment-item--comments");
+    await expect(commentTile).toBeVisible({ timeout: 5_000 });
+    await expect(commentTile).toContainText("1");
+    await expect(commentTile).toContainText("comment");
+    const [countBox, clearBox] = await Promise.all([
+      commentTile.locator(".composer__comment-attachment-count").boundingBox(),
+      commentTile.getByRole("button", { name: "Clear code comments" }).boundingBox(),
+    ]);
+    expect(countBox).not.toBeNull();
+    expect(clearBox).not.toBeNull();
+    if (!countBox || !clearBox) throw new Error("missing comment tile bounds");
+    expect(countBox.x + countBox.width).toBeLessThan(clearBox.x);
+
+    await changesBtn.click();
+    await expect(
+      viewer.locator('[data-testid="diff-comment-thread"]').filter({
+        hasText: "Edited note for the helper.",
+      }),
+    ).toBeVisible({ timeout: 5_000 });
+    await window.keyboard.press("Escape");
+    await expect(viewer).toBeHidden({ timeout: 5_000 });
+
+    const textarea = window.locator(".composer__textarea");
+    await textarea.fill("Please review this change.");
+    await textarea.press("Enter");
+
+    const userBlock = window.locator(".transcript-block--user").first();
+    await expect(userBlock).toContainText("User comments on the code", { timeout: 10_000 });
+    await expect(userBlock).toContainText("File: a.ts");
+    await expect(userBlock).toContainText("Line: 10");
+    await expect(userBlock).toContainText("Edited note for the helper.");
+    await expect(userBlock).toContainText("Please review this change.");
+    await expect(commentTile).toHaveCount(0, { timeout: 10_000 });
+
+    await app.close();
+    rmrf(folders.settingsDir);
+    rmrf(folders.workspaceDir);
+    rmrf(folders.piSessionsDir);
+  });
+
   test("Split mode toggles, persists across close/reopen", async () => {
     test.setTimeout(60_000);
     const folders = await makeFolders();
@@ -205,13 +331,31 @@ test.describe("Diff viewer", () => {
     // The unified rows are now split-pair rows.
     await expect(viewer.locator(".diff-row--split").first()).toBeVisible({ timeout: 5_000 });
 
+    const line10Button = viewer.locator(
+      '[data-testid="diff-comment-button"][data-file="a.ts"][data-line="10"]',
+    );
+    await line10Button.click();
+    await viewer.getByRole("textbox", { name: "Code comment" }).fill("Visible in split view.");
+    await viewer.getByRole("button", { name: "Save" }).click();
+    await expect(
+      viewer
+        .locator('[data-testid="diff-comment-thread"]')
+        .filter({ hasText: "Visible in split view." }),
+    ).toBeVisible();
+    await expect(line10Button).toHaveClass(/diff-row__comment-btn--has-comment/);
+
     // Close and reopen.
     await viewer.locator(".diff-viewer__icon-btn").last().click(); // close
     await expect(viewer).toBeHidden({ timeout: 5_000 });
     await changesBtn.click();
     await expect(viewer).toBeVisible({ timeout: 5_000 });
-    // Split should be remembered.
+    // Split and pending comment threads should be remembered.
     await expect(viewer.locator(".diff-row--split").first()).toBeVisible({ timeout: 5_000 });
+    await expect(
+      viewer
+        .locator('[data-testid="diff-comment-thread"]')
+        .filter({ hasText: "Visible in split view." }),
+    ).toBeVisible();
 
     await app.close();
     rmrf(folders.settingsDir);

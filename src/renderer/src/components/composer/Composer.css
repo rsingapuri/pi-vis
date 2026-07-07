@@ -46,6 +46,10 @@
   background: var(--surface-inset);
 }
 
+.composer__attachment-item--comments {
+  background: var(--surface-inset);
+}
+
 .composer__file-attachment {
   display: flex;
   width: 100%;
@@ -62,6 +66,30 @@
 .composer__file-attachment-icon {
   color: var(--text);
   flex-shrink: 0;
+}
+
+.composer__comment-attachment {
+  color: var(--info);
+}
+
+.composer__comment-attachment-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--info);
+}
+
+.composer__comment-attachment-count {
+  min-width: 1.35em;
+  height: 1.35em;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--info) 16%, transparent);
+  color: var(--info);
+  font-family: var(--font-display);
+  font-size: 0.714em;
+  font-weight: 650;
+  line-height: 1.35em;
+  text-align: center;
 }
 
 .composer__file-attachment-name {

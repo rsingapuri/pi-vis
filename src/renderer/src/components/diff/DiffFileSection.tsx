@@ -6,9 +6,11 @@
 // it never lands in copied text.
 
 import type { GitChangedFile } from "@shared/git.js";
+import type { SessionId } from "@shared/ids.js";
 import type React from "react";
-import { useEffect, useMemo } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ThemedToken } from "shiki";
+import { type CodeComment, codeCommentKey } from "../../lib/diff-comments.js";
 import {
   type DiffModel,
   type GapState,
@@ -22,8 +24,16 @@ import { findOccurrences } from "../../lib/diff/search.js";
 import type { MatchSide } from "../../lib/diff/search.js";
 import type { FileState } from "../../stores/diff-store.js";
 import { useDiffStore } from "../../stores/diff-store.js";
+import { useSessionsStore } from "../../stores/sessions-store.js";
 import { FadeText } from "../common/FadeText.js";
-import { IconChevronDown, IconChevronRight, IconChevronUp } from "../common/icons.js";
+import {
+  IconCheck,
+  IconChevronDown,
+  IconChevronRight,
+  IconChevronUp,
+  IconClose,
+  IconComment,
+} from "../common/icons.js";
 import "./DiffFileSection.css";
 
 const ROW_RENDER_CAP = 5_000;
@@ -62,6 +72,7 @@ function cellSearch(
 }
 
 interface DiffFileSectionProps {
+  sessionId: SessionId;
   file: GitChangedFile;
   state: FileState;
   viewMode: "unified" | "split";
@@ -73,6 +84,7 @@ interface DiffFileSectionProps {
 }
 
 export function DiffFileSection({
+  sessionId,
   file,
   state,
   viewMode,
@@ -137,6 +149,7 @@ export function DiffFileSection({
       </div>
       {open && (
         <FileBody
+          sessionId={sessionId}
           file={file}
           state={state}
           viewMode={viewMode}
@@ -152,6 +165,7 @@ export function DiffFileSection({
 // ── Body ──────────────────────────────────────────────────────────────
 
 function FileBody({
+  sessionId,
   file,
   state,
   viewMode,
@@ -159,6 +173,7 @@ function FileBody({
   search,
   onExpandGap,
 }: {
+  sessionId: SessionId;
   file: GitChangedFile;
   state: FileState;
   viewMode: "unified" | "split";
@@ -224,6 +239,7 @@ function FileBody({
   const useSplit = viewMode === "split" && !narrowWindow;
   return (
     <RowsView
+      sessionId={sessionId}
       model={model}
       gapState={state.gapState ?? model.gaps.map(() => ({ top: 0, bottom: 0 }))}
       oldTokens={state.oldTokens}
@@ -240,6 +256,7 @@ function FileBody({
 // ── RowsView: unified / split switch ─────────────────────────────────
 
 function RowsView({
+  sessionId,
   model,
   gapState,
   oldTokens,
@@ -250,6 +267,7 @@ function RowsView({
   filePath,
   onExpandGap,
 }: {
+  sessionId: SessionId;
   model: DiffModel;
   gapState: GapState[];
   oldTokens: ThemedToken[][] | null | undefined;
@@ -278,6 +296,12 @@ function RowsView({
   const remainingRows = Math.max(0, effectiveRows.length - shownCount);
   const bumpRenderCap = useDiffStore((s) => s.bumpRenderCap);
   const showNextRows = () => bumpRenderCap(filePath, shownCount + ROW_RENDER_CAP);
+  const [editingLine, setEditingLine] = useState<number | null>(null);
+  const commentsForSession = useSessionsStore((s) => s.diffComments.get(sessionId));
+  const reconcileDiffCommentsForFile = useSessionsStore((s) => s.reconcileDiffCommentsForFile);
+  useEffect(() => {
+    reconcileDiffCommentsForFile(sessionId, filePath, model);
+  }, [sessionId, filePath, model, reconcileDiffCommentsForFile]);
 
   // Build old/new line index → token-line map for split view. Each
   // entry is the (1-based) line number. We index by line number into
@@ -312,88 +336,132 @@ function RowsView({
             );
           }
           if (row.type === "split-context") {
+            const comment = commentForLine(commentsForSession, filePath, row.rightNo);
             return (
-              <div
-                className="diff-row diff-row--split"
+              <Fragment
                 // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
                 key={idx}
               >
-                <div className="diff-row__num">{row.leftNo}</div>
+                <div className="diff-row diff-row--split">
+                  <CommentCell
+                    filePath={filePath}
+                    lineNumber={row.rightNo}
+                    comment={comment}
+                    editingLine={editingLine}
+                    setEditingLine={setEditingLine}
+                  />
+                  <div className="diff-row__num">{row.leftNo}</div>
+                  <div
+                    className="diff-row__code"
+                    data-side="old"
+                    data-selecting="auto"
+                    onMouseDown={(e) => onSelectSide(e, "old")}
+                  >
+                    {renderTokens(
+                      row.text,
+                      oldTokenByLineNo?.(row.leftNo),
+                      null,
+                      "old",
+                      cellSearch(search, row.lineIdx, "context"),
+                    )}
+                  </div>
+                  <div className="diff-row__num diff-row__num--right">{row.rightNo}</div>
+                  <div
+                    className="diff-row__code"
+                    data-side="new"
+                    data-selecting="auto"
+                    onMouseDown={(e) => onSelectSide(e, "new")}
+                  >
+                    {renderTokens(
+                      row.text,
+                      newTokenByLineNo?.(row.rightNo),
+                      null,
+                      "new",
+                      cellSearch(search, row.lineIdx, "context"),
+                    )}
+                  </div>
+                </div>
+                <CommentThreadRow
+                  sessionId={sessionId}
+                  filePath={filePath}
+                  lineNumber={row.rightNo}
+                  lineText={row.text}
+                  comment={comment}
+                  editing={editingLine === row.rightNo}
+                  viewMode="split"
+                  onEdit={() => setEditingLine(row.rightNo)}
+                  onClose={() => setEditingLine(null)}
+                />
+              </Fragment>
+            );
+          }
+          const comment = commentForLine(commentsForSession, filePath, row.rightNo);
+          return (
+            <Fragment
+              // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
+              key={idx}
+            >
+              <div className="diff-row diff-row--split">
+                <CommentCell
+                  filePath={filePath}
+                  lineNumber={row.rightNo}
+                  comment={comment}
+                  editingLine={editingLine}
+                  setEditingLine={setEditingLine}
+                />
                 <div
-                  className="diff-row__code"
+                  className={`diff-row__num${row.leftText === "" ? " diff-row__num--empty" : ""}`}
+                >
+                  {row.leftNo ?? ""}
+                </div>
+                <div
+                  className={`diff-row__code${row.leftText === "" ? " diff-row__code--empty" : ""}`}
                   data-side="old"
                   data-selecting="auto"
                   onMouseDown={(e) => onSelectSide(e, "old")}
                 >
                   {renderTokens(
-                    row.text,
+                    row.leftText,
                     oldTokenByLineNo?.(row.leftNo),
-                    null,
+                    row.leftEmphasis,
                     "old",
-                    cellSearch(search, row.lineIdx, "context"),
+                    cellSearch(search, row.leftIdx, "old"),
                   )}
                 </div>
-                <div className="diff-row__num diff-row__num--right">{row.rightNo}</div>
                 <div
-                  className="diff-row__code"
+                  className={`diff-row__num diff-row__num--right${row.rightText === "" ? " diff-row__num--empty" : ""}`}
+                >
+                  {row.rightNo ?? ""}
+                </div>
+                <div
+                  className={`diff-row__code${row.rightText === "" ? " diff-row__code--empty" : ""}`}
                   data-side="new"
                   data-selecting="auto"
                   onMouseDown={(e) => onSelectSide(e, "new")}
                 >
                   {renderTokens(
-                    row.text,
+                    row.rightText,
                     newTokenByLineNo?.(row.rightNo),
-                    null,
+                    row.rightEmphasis,
                     "new",
-                    cellSearch(search, row.lineIdx, "context"),
+                    cellSearch(search, row.rightIdx, "new"),
                   )}
                 </div>
               </div>
-            );
-          }
-          return (
-            <div
-              className="diff-row diff-row--split"
-              // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
-              key={idx}
-            >
-              <div className={`diff-row__num${row.leftText === "" ? " diff-row__num--empty" : ""}`}>
-                {row.leftNo ?? ""}
-              </div>
-              <div
-                className={`diff-row__code${row.leftText === "" ? " diff-row__code--empty" : ""}`}
-                data-side="old"
-                data-selecting="auto"
-                onMouseDown={(e) => onSelectSide(e, "old")}
-              >
-                {renderTokens(
-                  row.leftText,
-                  oldTokenByLineNo?.(row.leftNo),
-                  row.leftEmphasis,
-                  "old",
-                  cellSearch(search, row.leftIdx, "old"),
-                )}
-              </div>
-              <div
-                className={`diff-row__num diff-row__num--right${row.rightText === "" ? " diff-row__num--empty" : ""}`}
-              >
-                {row.rightNo ?? ""}
-              </div>
-              <div
-                className={`diff-row__code${row.rightText === "" ? " diff-row__code--empty" : ""}`}
-                data-side="new"
-                data-selecting="auto"
-                onMouseDown={(e) => onSelectSide(e, "new")}
-              >
-                {renderTokens(
-                  row.rightText,
-                  newTokenByLineNo?.(row.rightNo),
-                  row.rightEmphasis,
-                  "new",
-                  cellSearch(search, row.rightIdx, "new"),
-                )}
-              </div>
-            </div>
+              <CommentThreadRow
+                sessionId={sessionId}
+                filePath={filePath}
+                lineNumber={row.rightNo}
+                lineText={row.rightText}
+                comment={comment}
+                editing={editingLine === row.rightNo}
+                viewMode="split"
+                onEdit={() => {
+                  if (row.rightNo !== null) setEditingLine(row.rightNo);
+                }}
+                onClose={() => setEditingLine(null)}
+              />
+            </Fragment>
           );
         })}
         {remainingRows > 0 && (
@@ -427,25 +495,45 @@ function RowsView({
           );
         }
         if (row.type === "context") {
+          const comment = commentForLine(commentsForSession, filePath, row.line.newNo);
           return (
-            <div
-              className="diff-row"
+            <Fragment
               // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
               key={idx}
             >
-              <div className="diff-row__num">{row.line.oldNo}</div>
-              <div className="diff-row__num">{row.line.newNo}</div>
-              <div className="diff-row__marker" />
-              <div className="diff-row__code">
-                {renderTokens(
-                  row.line.text,
-                  null,
-                  null,
-                  "old",
-                  cellSearch(search, row.lineIdx, "context"),
-                )}
+              <div className="diff-row">
+                <CommentCell
+                  filePath={filePath}
+                  lineNumber={row.line.newNo}
+                  comment={comment}
+                  editingLine={editingLine}
+                  setEditingLine={setEditingLine}
+                />
+                <div className="diff-row__num">{row.line.oldNo}</div>
+                <div className="diff-row__num">{row.line.newNo}</div>
+                <div className="diff-row__marker" />
+                <div className="diff-row__code">
+                  {renderTokens(
+                    row.line.text,
+                    null,
+                    null,
+                    "old",
+                    cellSearch(search, row.lineIdx, "context"),
+                  )}
+                </div>
               </div>
-            </div>
+              <CommentThreadRow
+                sessionId={sessionId}
+                filePath={filePath}
+                lineNumber={row.line.newNo}
+                lineText={row.line.text}
+                comment={comment}
+                editing={editingLine === row.line.newNo}
+                viewMode="unified"
+                onEdit={() => setEditingLine(row.line.newNo)}
+                onClose={() => setEditingLine(null)}
+              />
+            </Fragment>
           );
         }
         if (row.type === "del") {
@@ -455,6 +543,13 @@ function RowsView({
               // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
               key={idx}
             >
+              <CommentCell
+                filePath={filePath}
+                lineNumber={null}
+                comment={undefined}
+                editingLine={editingLine}
+                setEditingLine={setEditingLine}
+              />
               <div className="diff-row__num">{row.line.oldNo}</div>
               <div className="diff-row__num diff-row__num--empty" />
               <div className="diff-row__marker" />
@@ -470,25 +565,45 @@ function RowsView({
             </div>
           );
         }
+        const comment = commentForLine(commentsForSession, filePath, row.line.newNo);
         return (
-          <div
-            className="diff-row diff-row--add"
+          <Fragment
             // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
             key={idx}
           >
-            <div className="diff-row__num diff-row__num--empty" />
-            <div className="diff-row__num">{row.line.newNo}</div>
-            <div className="diff-row__marker" />
-            <div className="diff-row__code">
-              {renderTokens(
-                row.line.text,
-                newTokenByLineNo?.(row.line.newNo),
-                row.line.emphasis,
-                "new",
-                cellSearch(search, row.lineIdx, "new"),
-              )}
+            <div className="diff-row diff-row--add">
+              <CommentCell
+                filePath={filePath}
+                lineNumber={row.line.newNo}
+                comment={comment}
+                editingLine={editingLine}
+                setEditingLine={setEditingLine}
+              />
+              <div className="diff-row__num diff-row__num--empty" />
+              <div className="diff-row__num">{row.line.newNo}</div>
+              <div className="diff-row__marker" />
+              <div className="diff-row__code">
+                {renderTokens(
+                  row.line.text,
+                  newTokenByLineNo?.(row.line.newNo),
+                  row.line.emphasis,
+                  "new",
+                  cellSearch(search, row.lineIdx, "new"),
+                )}
+              </div>
             </div>
-          </div>
+            <CommentThreadRow
+              sessionId={sessionId}
+              filePath={filePath}
+              lineNumber={row.line.newNo}
+              lineText={row.line.text}
+              comment={comment}
+              editing={editingLine === row.line.newNo}
+              viewMode="unified"
+              onEdit={() => setEditingLine(row.line.newNo)}
+              onClose={() => setEditingLine(null)}
+            />
+          </Fragment>
         );
       })}
       {remainingRows > 0 && (
@@ -497,6 +612,241 @@ function RowsView({
           {remainingRows.toLocaleString()} remaining)
         </button>
       )}
+    </div>
+  );
+}
+
+// ── Line comments ─────────────────────────────────────────────────────
+
+function commentForLine(
+  commentsForSession: Map<string, CodeComment> | undefined,
+  filePath: string,
+  lineNumber: number | null,
+): CodeComment | undefined {
+  if (lineNumber === null) return undefined;
+  return commentsForSession?.get(codeCommentKey(filePath, lineNumber));
+}
+
+function CommentCell({
+  filePath,
+  lineNumber,
+  comment,
+  editingLine,
+  setEditingLine,
+}: {
+  filePath: string;
+  lineNumber: number | null;
+  comment: CodeComment | undefined;
+  editingLine: number | null;
+  setEditingLine: React.Dispatch<React.SetStateAction<number | null>>;
+}): React.ReactElement {
+  if (lineNumber === null) return <div className="diff-row__comment-cell" />;
+  const stale = comment?.anchorStatus === "stale";
+  const relocated = comment?.anchorStatus === "relocated";
+  const open = editingLine === lineNumber;
+  return (
+    <div className="diff-row__comment-cell">
+      <button
+        type="button"
+        className={`diff-row__comment-btn${comment ? " diff-row__comment-btn--has-comment" : ""}${open ? " diff-row__comment-btn--open" : ""}${stale ? " diff-row__comment-btn--stale" : ""}${relocated ? " diff-row__comment-btn--relocated" : ""}`}
+        onClick={() => setEditingLine((line) => (line === lineNumber ? null : lineNumber))}
+        aria-label={`${comment ? "Edit" : "Add"} comment on ${filePath}:${lineNumber}`}
+        title={
+          stale
+            ? "Comment anchor may be stale"
+            : relocated
+              ? "Comment was relocated after the diff changed"
+              : `${comment ? "Edit" : "Add"} comment`
+        }
+        data-testid="diff-comment-button"
+        data-file={filePath}
+        data-line={lineNumber}
+      >
+        <IconComment size="0.9em" />
+      </button>
+    </div>
+  );
+}
+
+function CommentThreadRow({
+  sessionId,
+  filePath,
+  lineNumber,
+  lineText,
+  comment,
+  editing,
+  viewMode,
+  onEdit,
+  onClose,
+}: {
+  sessionId: SessionId;
+  filePath: string;
+  lineNumber: number | null;
+  lineText: string;
+  comment: CodeComment | undefined;
+  editing: boolean;
+  viewMode: "unified" | "split";
+  onEdit: () => void;
+  onClose: () => void;
+}): React.ReactElement | null {
+  if (lineNumber === null || (!comment && !editing)) return null;
+  return (
+    <div className={`diff-comment-thread diff-comment-thread--${viewMode}`}>
+      <div className="diff-comment-thread__rail" aria-hidden />
+      <div className="diff-comment-thread__card" data-testid="diff-comment-thread">
+        {editing ? (
+          <CommentEditor
+            sessionId={sessionId}
+            filePath={filePath}
+            lineNumber={lineNumber}
+            lineText={lineText}
+            comment={comment}
+            onClose={onClose}
+          />
+        ) : comment ? (
+          <CommentBody comment={comment} onEdit={onEdit} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function CommentBody({
+  comment,
+  onEdit,
+}: { comment: CodeComment; onEdit: () => void }): React.ReactElement {
+  const relocated = comment.anchorStatus === "relocated";
+  const stale = comment.anchorStatus === "stale";
+  return (
+    <div className="diff-comment-body">
+      <div className="diff-comment-body__meta">
+        <span>
+          {comment.filePath}:{comment.lineNumber}
+        </span>
+        {(relocated || stale) && (
+          <span
+            className={`diff-comment-body__status${stale ? " diff-comment-body__status--stale" : ""}`}
+          >
+            {stale
+              ? "stale anchor"
+              : comment.originalLineNumber !== comment.lineNumber
+                ? `moved from ${comment.originalLineNumber}`
+                : "relocated"}
+          </span>
+        )}
+      </div>
+      <div className="diff-comment-body__text">{comment.text}</div>
+      <div className="diff-comment-body__actions">
+        <button type="button" className="diff-comment-body__edit" onClick={onEdit}>
+          Edit
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CommentEditor({
+  sessionId,
+  filePath,
+  lineNumber,
+  lineText,
+  comment,
+  onClose,
+}: {
+  sessionId: SessionId;
+  filePath: string;
+  lineNumber: number;
+  lineText: string;
+  comment: CodeComment | undefined;
+  onClose: () => void;
+}): React.ReactElement {
+  const [draft, setDraft] = useState(comment?.text ?? "");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const setDiffComment = useSessionsStore((s) => s.setDiffComment);
+  const deleteDiffComment = useSessionsStore((s) => s.deleteDiffComment);
+
+  useEffect(() => {
+    setDraft(comment?.text ?? "");
+  }, [comment?.text]);
+
+  useEffect(() => {
+    textareaRef.current?.focus();
+    textareaRef.current?.select();
+  }, []);
+
+  const trimmed = draft.trim();
+  const canSave = trimmed.length > 0;
+  return (
+    <div
+      className="diff-comment-editor"
+      role="dialog"
+      aria-label={`Comment on line ${lineNumber}`}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
+      <div className="diff-comment-editor__meta">
+        <span>{filePath}</span>
+        <span>
+          Line {lineNumber}
+          {comment?.anchorStatus === "relocated" && comment.originalLineNumber !== lineNumber
+            ? ` (moved from ${comment.originalLineNumber})`
+            : ""}
+          {comment?.anchorStatus === "stale" ? " (stale?)" : ""}
+        </span>
+      </div>
+      <textarea
+        ref={textareaRef}
+        className="diff-comment-editor__textarea"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            onClose();
+          }
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && canSave) {
+            e.preventDefault();
+            setDiffComment(sessionId, { filePath, lineNumber, lineText, text: trimmed });
+            onClose();
+          }
+        }}
+        aria-label="Code comment"
+      />
+      <div className="diff-comment-editor__actions">
+        {comment && (
+          <button
+            type="button"
+            className="diff-comment-editor__delete"
+            onClick={() => {
+              deleteDiffComment(sessionId, filePath, lineNumber);
+              onClose();
+            }}
+          >
+            Delete
+          </button>
+        )}
+        <button type="button" className="diff-comment-editor__ghost" onClick={onClose}>
+          <IconClose size="0.85em" />
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="diff-comment-editor__save"
+          disabled={!canSave}
+          onClick={() => {
+            if (!canSave) return;
+            setDiffComment(sessionId, { filePath, lineNumber, lineText, text: trimmed });
+            onClose();
+          }}
+        >
+          <IconCheck size="0.85em" />
+          Save
+        </button>
+      </div>
     </div>
   );
 }

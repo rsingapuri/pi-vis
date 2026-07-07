@@ -130,6 +130,8 @@ export interface ExecuteDeps {
   getSessionWorkspacePath: (sessionId: SessionId) => string | undefined;
   /** List sessions in a workspace (for /resume). */
   listSessions: (workspacePath: string) => Promise<SessionSummary[]>;
+  /** Called once a fire-and-forget extension prompt eventually reports success. */
+  onPromptAccepted?: (sessionId: SessionId) => void;
 }
 
 export class InputNotConsumedError extends Error {
@@ -298,7 +300,9 @@ async function executeSendPrompt(
         uiSurface: deps.uiSurface,
       })
       .then((res) => {
-        if (!res.success) {
+        if (res.success) {
+          deps.onPromptAccepted?.(sessionId);
+        } else {
           deps.addToast(
             sessionId,
             `Extension command failed: ${res.error ?? "Command failed"}`,
