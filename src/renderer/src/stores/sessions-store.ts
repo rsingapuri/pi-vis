@@ -27,6 +27,7 @@ import {
   prependCodeCommentsToPrompt,
 } from "../lib/diff-comments.js";
 import type { DiffModel } from "../lib/diff/diff-model.js";
+import { reanchorCommentsForEdit } from "../lib/diff/edit-anchor.js";
 import { useChangelogStore } from "./changelog-store.js";
 import { openDiffForSession } from "./diff-store.js";
 import { useSettingsStore } from "./settings-store.js";
@@ -528,6 +529,20 @@ interface SessionsStore {
   clearDiffComments: (sessionId: SessionId) => void;
   clearSubmittedDiffComments: (sessionId: SessionId, submitted: readonly CodeComment[]) => void;
   reconcileDiffCommentsForFile: (sessionId: SessionId, filePath: string, model: DiffModel) => void;
+  /** Edit-aware deterministic re-anchor run BEFORE the new model becomes
+   *  visible, so the generic reconcileDiffCommentsForFile sees consistent
+   *  anchors and no-ops. Wraps the pure `reanchorCommentsForEdit` with Map
+   *  re-keying + persistence. */
+  applyDiffEditReanchor: (
+    sessionId: SessionId,
+    filePath: string,
+    edit: {
+      startNewNo: number;
+      endNewNo: number;
+      replacementLines: string[];
+      newLineCount: number;
+    },
+  ) => void;
   markDiffCommentsStaleForMissingFiles: (
     sessionId: SessionId,
     currentFilePaths: ReadonlySet<string>,
@@ -2939,6 +2954,29 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         comments.set(key, { ...comment, anchorStatus: "stale" });
       }
       if (!comments) return {};
+      const diffComments = new Map(state.diffComments);
+      diffComments.set(sessionId, comments);
+      persistCodeComments(diffComments);
+      return { diffComments };
+    });
+  },
+
+  applyDiffEditReanchor: (sessionId, filePath, edit) => {
+    set((state) => {
+      const existingForSession = state.diffComments.get(sessionId);
+      if (!existingForSession) return {};
+      const hasFile = Array.from(existingForSession.values()).some((c) => c.filePath === filePath);
+      if (!hasFile) return {};
+      const reanchored = reanchorCommentsForEdit(
+        Array.from(existingForSession.values()),
+        filePath,
+        edit,
+      );
+      // Re-key the Map (lineNumbers may have moved) and drop any stale dupes.
+      const comments = new Map<string, CodeComment>();
+      for (const c of reanchored) {
+        comments.set(codeCommentKey(c.filePath, c.lineNumber), c);
+      }
       const diffComments = new Map(state.diffComments);
       diffComments.set(sessionId, comments);
       persistCodeComments(diffComments);

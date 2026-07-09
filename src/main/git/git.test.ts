@@ -10,11 +10,12 @@
 // HEAD, file with spaces in name.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { getBranches, getChanges, getChangesCount, getFileDiff } from "./git.js";
+import { getBranches, getChanges, getChangesCount, getFileDiff, writeWorkingFile } from "./git.js";
 
 let tmpRoot = "";
 let workDir = "";
@@ -905,5 +906,106 @@ describe("inspectWorktree", () => {
 
     git(repo, ["worktree", "remove", "--force", wtDir]);
     git(repo, ["branch", "-D", "feature"]);
+  });
+});
+
+/** sha256 hex of the UTF-8 encoding of `text` — exactly how the renderer hashes its base. */
+function utf8Sha(text: string): string {
+  return createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex");
+}
+
+describe("writeWorkingFile", () => {
+  it("writes when the expected hash matches (happy path)", async () => {
+    makeRepo();
+    write(path.join(workDir, "f.ts"), "a\nb\nc\n");
+    const res = await writeWorkingFile(workDir, "f.ts", "a\nB\nc\n", utf8Sha("a\nb\nc\n"));
+    expect(res).toEqual({ kind: "ok" });
+    expect(fs.readFileSync(path.join(workDir, "f.ts"), "utf8")).toBe("a\nB\nc\n");
+  });
+
+  it("returns conflict when the file changed on disk (hash mismatch)", async () => {
+    makeRepo();
+    write(path.join(workDir, "f.ts"), "a\nb\nc\n");
+    // The editor's base was "a\nb\nc\n" but disk now has "a\nX\nc\n".
+    write(path.join(workDir, "f.ts"), "a\nX\nc\n");
+    const res = await writeWorkingFile(workDir, "f.ts", "a\nB\nc\n", utf8Sha("a\nb\nc\n"));
+    expect(res).toEqual({ kind: "conflict" });
+    // Disk untouched.
+    expect(fs.readFileSync(path.join(workDir, "f.ts"), "utf8")).toBe("a\nX\nc\n");
+  });
+
+  it("returns conflict when the file was deleted (ENOENT)", async () => {
+    makeRepo();
+    write(path.join(workDir, "f.ts"), "a\nb\nc\n");
+    fs.unlinkSync(path.join(workDir, "f.ts"));
+    const res = await writeWorkingFile(workDir, "f.ts", "a\nB\nc\n", utf8Sha("a\nb\nc\n"));
+    expect(res).toEqual({ kind: "conflict" });
+  });
+
+  it("rejects an absolute path", async () => {
+    makeRepo();
+    const res = await writeWorkingFile(workDir, "/etc/hosts", "x", "anything");
+    expect(res.kind).toBe("error");
+  });
+
+  it("rejects a path that escapes the repo root (.. traversal)", async () => {
+    makeRepo();
+    write(path.join(workDir, "f.ts"), "a\n");
+    const res = await writeWorkingFile(workDir, "../escape.txt", "x", utf8Sha("a\n"));
+    expect(res.kind).toBe("error");
+    expect(fs.existsSync(path.join(tmpRoot, "escape.txt"))).toBe(false);
+  });
+
+  it("rejects a symlink target", async () => {
+    makeRepo();
+    write(path.join(workDir, "real.ts"), "a\nb\n");
+    fs.symlinkSync(path.join(workDir, "real.ts"), path.join(workDir, "link.ts"));
+    const res = await writeWorkingFile(workDir, "link.ts", "x", utf8Sha("a\nb\n"));
+    expect(res.kind).toBe("error");
+  });
+
+  it("rejects a symlinked parent directory", async () => {
+    makeRepo();
+    const outside = fs.mkdtempSync(path.join(tmpRoot, "outside-"));
+    write(path.join(outside, "f.ts"), "a\nb\n");
+    fs.symlinkSync(outside, path.join(workDir, "linked-dir"));
+
+    const res = await writeWorkingFile(workDir, "linked-dir/f.ts", "x\n", utf8Sha("a\nb\n"));
+
+    expect(res.kind).toBe("error");
+    expect(fs.readFileSync(path.join(outside, "f.ts"), "utf8")).toBe("a\nb\n");
+  });
+
+  it("round-trips a CRLF file byte-identically outside the edited range", async () => {
+    makeRepo();
+    const original = "a\r\nb\r\nc\r\nd\r\n";
+    write(path.join(workDir, "f.ts"), original);
+    // Splice only line 2 ("b") → "B", preserving CRLF (the renderer's splice job).
+    const next = "a\r\nB\r\nc\r\nd\r\n";
+    const res = await writeWorkingFile(workDir, "f.ts", next, utf8Sha(original));
+    expect(res).toEqual({ kind: "ok" });
+    const written = fs.readFileSync(path.join(workDir, "f.ts"));
+    expect(Buffer.from(written)).toEqual(Buffer.from(next));
+  });
+
+  it("preserves a BOM prefix when the edited range keeps it", async () => {
+    makeRepo();
+    const original = "\uFEFFa\nb\nc\n";
+    write(path.join(workDir, "f.ts"), original);
+    // Buffer seeded from model line 1 ("\uFEFFa") keeps the BOM.
+    const next = "\uFEFFa\nB\nc\n";
+    const res = await writeWorkingFile(workDir, "f.ts", next, utf8Sha(original));
+    expect(res).toEqual({ kind: "ok" });
+    expect(fs.readFileSync(path.join(workDir, "f.ts"), "utf8")).toBe(next);
+  });
+
+  it("preserves a missing final newline on the edited file", async () => {
+    makeRepo();
+    const original = "a\nb\nc"; // no trailing newline
+    write(path.join(workDir, "f.ts"), original);
+    const next = "a\nB\nc"; // still no trailing newline
+    const res = await writeWorkingFile(workDir, "f.ts", next, utf8Sha(original));
+    expect(res).toEqual({ kind: "ok" });
+    expect(fs.readFileSync(path.join(workDir, "f.ts"), "utf8")).toBe(next);
   });
 });

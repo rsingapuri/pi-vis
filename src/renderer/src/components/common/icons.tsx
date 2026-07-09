@@ -126,3 +126,13 @@ export function IconBranch(props: IconProps): React.ReactElement {
     </Icon>
   );
 }
+
+/** Pencil — inline edit affordance. */
+export function IconPencil(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <path d="M2.4 9.6l.5-2 6-6 1.5 1.5-6 6z" />
+      <path d="M7.4 3.1l1.5 1.5" />
+    </Icon>
+  );
+}

@@ -27,6 +27,7 @@ import type {
   GitFileStatus,
   GitWorktreeInspect,
   GitWorktreeResult,
+  GitWriteFileResult,
 } from "@shared/git.js";
 import { getSubprocessEnv } from "../auth.js";
 import { mapLimit } from "../util/concurrency.js";
@@ -661,6 +662,120 @@ export async function getFileDiff(
     oldMissingNewline,
     newMissingNewline,
   };
+}
+
+// ── Public: writeWorkingFile ────────────────────────────────────────────
+
+/**
+ * Compare-and-swap write of a working-tree file from the diff editor.
+ *
+ * The renderer sends `expectedHash` = sha256 of the UTF-8 bytes of the
+ * `newText` its edit buffer was derived from. We re-read the file, hash the
+ * decoded-string re-encoding the SAME way (Buffer.from(current, "utf8")), and
+ * only write when the hashes agree — so a save can never clobber disk content
+ * that changed underneath the editor.
+ *
+ *   - repo root via `rev-parse --show-toplevel` (mirrors getFileDiff).
+ *   - absolute paths and paths escaping the repo root are rejected (`error`).
+ *   - symlinks are rejected via `lstat` (`error`) — never followed.
+ *   - a missing file (ENOENT) is a `conflict` (the base vanished).
+ *   - a hash mismatch is a `conflict` (stale base).
+ *   - on a match, a plain `fs.writeFile(abs, content, "utf8")` → `ok`.
+ *
+ * TOCTOU window between the read and the write is accepted (single-user
+ * desktop; the working-tree fingerprint machinery catches concurrent losers
+ * and the viewer re-baselines on the next refresh).
+ */
+async function lstatRepoPathWithoutSymlinks(
+  repoRoot: string,
+  rel: string,
+): Promise<
+  { kind: "ok"; stat: Stats } | { kind: "conflict" } | { kind: "error"; message: string }
+> {
+  let cur = repoRoot;
+  let stat: Stats;
+  const parts = rel.split(path.sep).filter(Boolean);
+  if (parts.length === 0) {
+    try {
+      stat = await fs.lstat(cur);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "conflict" };
+      return { kind: "error", message: errorMessage(err) };
+    }
+    return { kind: "ok", stat };
+  }
+
+  for (const part of parts) {
+    cur = path.join(cur, part);
+    try {
+      stat = await fs.lstat(cur);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "conflict" };
+      return { kind: "error", message: errorMessage(err) };
+    }
+    if (stat.isSymbolicLink()) {
+      return { kind: "error", message: "Refusing to write through a symlink." };
+    }
+  }
+
+  return { kind: "ok", stat: stat! };
+}
+
+export async function writeWorkingFile(
+  root: string,
+  filePath: string,
+  content: string,
+  expectedHash: string,
+): Promise<GitWriteFileResult> {
+  // Reject absolute inputs up front: path.resolve(repoRoot, "/abs") would
+  // otherwise collapse to the absolute path and escape the repo.
+  if (path.isAbsolute(filePath)) {
+    return { kind: "error", message: "Refusing to write an absolute path." };
+  }
+  const env = { ...(await getSubprocessEnv()), GIT_OPTIONAL_LOCKS: "0" };
+  let repoRoot: string;
+  try {
+    const r = await execGitText(["rev-parse", "--show-toplevel"], root, env);
+    repoRoot = r.stdout.trim();
+  } catch (err) {
+    return { kind: "error", message: errorMessage(err) };
+  }
+  if (!repoRoot) return { kind: "error", message: "Not a git repository" };
+
+  const abs = path.resolve(repoRoot, filePath);
+  const rel = path.relative(repoRoot, abs);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    return { kind: "error", message: "Path escapes the repository root." };
+  }
+
+  // Reject symlinks anywhere in the path (lstat each component, never follow)
+  // and anything not a regular file. Checking only the leaf is insufficient: a
+  // symlinked parent directory would otherwise let the write escape repoRoot.
+  const statRes = await lstatRepoPathWithoutSymlinks(repoRoot, rel);
+  if (statRes.kind !== "ok") return statRes;
+  const stat = statRes.stat;
+  if (!stat.isFile()) {
+    return { kind: "error", message: "Refusing to write a non-regular file." };
+  }
+
+  // Hash the current contents the same way the renderer hashed its base: the
+  // UTF-8 encoding of the JS string.
+  let current: string;
+  try {
+    current = await fs.readFile(abs, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "conflict" };
+    return { kind: "error", message: errorMessage(err) };
+  }
+  const currentHash = createHash("sha256").update(Buffer.from(current, "utf8")).digest("hex");
+  if (currentHash !== expectedHash) return { kind: "conflict" };
+
+  try {
+    await fs.writeFile(abs, content, "utf8");
+  } catch (err) {
+    return { kind: "error", message: errorMessage(err) };
+  }
+  return { kind: "ok" };
 }
 
 // ── Parsers (NUL-delimited) ────────────────────────────────────────────

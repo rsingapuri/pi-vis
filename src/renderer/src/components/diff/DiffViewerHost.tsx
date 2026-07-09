@@ -25,6 +25,7 @@ import {
   IconClose,
 } from "../common/icons.js";
 import { BaseBranchDropdown } from "./BaseBranchDropdown.js";
+import { DiffEditBubble } from "./DiffEditBubble.js";
 import { DiffFileSection } from "./DiffFileSection.js";
 import "../common/viewer-header.css";
 import "./DiffViewer.css";
@@ -63,6 +64,8 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
   useEscapeClaim(open);
   const storeSessionId = useDiffStore((s) => s.sessionId);
   const closeViewer = useDiffStore((s) => s.closeViewer);
+  const editSession = useDiffStore((s) => s.editSession);
+  const requestCancelEdit = useDiffStore((s) => s.requestCancelEdit);
   const phase = useDiffStore((s) => s.phase);
   const files = useDiffStore((s) => s.files);
   const truncated = useDiffStore((s) => s.truncated);
@@ -139,6 +142,14 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
   // Only render when the viewer is open *for this session*. A session
   // switch while open closes the viewer.
   const visible = open && storeSessionId === sessionId;
+
+  const closeOrCancelEdit = useCallback(() => {
+    if (editSession) {
+      requestCancelEdit();
+      return;
+    }
+    closeViewer();
+  }, [closeViewer, editSession, requestCancelEdit]);
 
   // ── Session-switch guard ──────────────────────────────────────────
   const lastSessionRef = useRef<SessionId | null>(null);
@@ -369,6 +380,22 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
       }
 
       if (e.key === "Escape") {
+        // While an edit session is open, Escape routes to the card's cancel
+        // (confirm if dirty) instead of closing the viewer. (The card's own
+        // textarea Escape stopPropagation already handles in-editor Esc; this
+        // covers Escape while focus is elsewhere.)
+        if (useDiffStore.getState().editSession) {
+          e.preventDefault();
+          useDiffStore.getState().requestCancelEdit();
+          return;
+        }
+        // A visible edit bubble owns this Escape: dismiss it (its own capture
+        // listener hides it) without closing the viewer. Fallback for when
+        // listener registration order lets this handler run first.
+        if (document.querySelector(".diff-edit-bubble")) {
+          e.preventDefault();
+          return;
+        }
         if (isInFilter && filter) {
           // Clear filter and consume.
           setFilter("");
@@ -510,8 +537,15 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
     <div
       className="diff-overlay"
       onMouseDown={(e) => {
-        // Backdrop click closes (target === overlay, not a child).
-        if (e.target === e.currentTarget) closeViewer();
+        // While an edit session is open, a backdrop click routes to the card's
+        // cancel (confirm if dirty) instead of closing the viewer.
+        if (e.target === e.currentTarget) {
+          if (useDiffStore.getState().editSession) {
+            useDiffStore.getState().requestCancelEdit();
+          } else {
+            closeViewer();
+          }
+        }
       }}
     >
       <div
@@ -542,7 +576,7 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
               });
             }
           }}
-          onClose={closeViewer}
+          onClose={closeOrCancelEdit}
           onRefresh={() => void refresh()}
           onSetViewMode={setViewMode}
         />
@@ -602,6 +636,7 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
                 registerSection={registerSection}
               />
             )}
+            <DiffEditBubble />
           </div>
         </div>
       </div>

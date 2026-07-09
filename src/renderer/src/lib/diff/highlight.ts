@@ -7,7 +7,7 @@
 // and render plain text — misaligned colors are worse than no colors.
 
 import type { ThemedToken } from "shiki";
-import { getHighlighter, getShikiTheme } from "../shiki.js";
+import { getHighlighter, getLoadedHighlighter, getShikiTheme } from "../shiki.js";
 
 // ── Language map ───────────────────────────────────────────────────────
 
@@ -101,6 +101,45 @@ export async function tokenizeLines(
   if (tokenLines.length === lines.length) return tokenLines;
   // Sometimes shiki's output is +1 when the text ends with a newline
   // and the last token line is empty. Tolerate exactly that.
+  if (tokenLines.length === lines.length + 1 && tokenLines[tokenLines.length - 1]?.length === 0) {
+    return tokenLines.slice(0, lines.length);
+  }
+  return null;
+}
+
+/**
+ * Synchronous tokenization for the diff editor's per-keystroke highlight.
+ *
+ * Same caps + alignment guard as {@link tokenizeLines}, but never awaits: it
+ * uses the already-warm highlighter singleton (warmed at app boot). If the
+ * highlighter isn't ready yet, the lang is unknown, or tokenization's line
+ * count disagrees with the model, it returns `null` and the caller renders
+ * plain text — never blocked. The initial overlay seeds from existing
+ * `FileState.newTokens`, so the first paint is instant regardless.
+ */
+export function tokenizeLinesSync(text: string, lang: string | null): ThemedToken[][] | null {
+  if (lang === null) return null;
+  if (text.length === 0) return [];
+  if (text.length > MAX_SIDE_BYTES) return null;
+  const lines = text.split("\n");
+  if (text.endsWith("\n")) lines.pop();
+  if (lines.length > MAX_SIDE_LINES) return null;
+  if (lines.length === 0) return [];
+
+  const highlighter = getLoadedHighlighter();
+  if (!highlighter) return null;
+
+  let result: ReturnType<typeof highlighter.codeToTokens>;
+  try {
+    result = highlighter.codeToTokens(text, {
+      lang: lang as never,
+      theme: getShikiTheme(),
+    });
+  } catch {
+    return null;
+  }
+  const tokenLines = result.tokens;
+  if (tokenLines.length === lines.length) return tokenLines;
   if (tokenLines.length === lines.length + 1 && tokenLines[tokenLines.length - 1]?.length === 0) {
     return tokenLines.slice(0, lines.length);
   }

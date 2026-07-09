@@ -30,6 +30,7 @@ import {
   getChangesCount,
   getFileDiff,
   inspectWorktree,
+  writeWorkingFile,
 } from "./git/git.js";
 import { readPiChangelog } from "./pi-changelog.js";
 import { mergeUserPiEnv } from "./pi-env.js";
@@ -656,6 +657,20 @@ export function initIpc(win: BrowserWindow): void {
       return { kind: "error", message: err instanceof Error ? err.message : String(err) };
     }
   });
+
+  // Compare-and-swap write of a working-tree file from the diff editor. The
+  // renderer sends the sha256 of the `newText` its buffer was derived from;
+  // main refuses to write when the file on disk no longer matches (conflict).
+  ipcMain.handle(
+    "git.writeWorkingFile",
+    async (_evt, args: { root: string; path: string; content: string; expectedHash: string }) => {
+      try {
+        return await writeWorkingFile(args.root, args.path, args.content, args.expectedHash);
+      } catch (err) {
+        return { kind: "error", message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
 
   // ── Auth IPC ──────────────────────────────────────────────────────────
 

@@ -1,0 +1,265 @@
+/* DiffEditCard — the inline editor that replaces a selected diff-row slice.
+ *
+ * Design contract (zero-shift open): the card takes NO flow space for chrome —
+ * no border, no padding on the root; the ring is an inset box-shadow and the
+ * footer is absolutely positioned. The editable segment reuses the exact
+ * `.diff-row` grid template (gutter widths preserved, cells emptied) so opening
+ * the card shifts no glyph. Inert del/comment rows reuse the existing row
+ * markup, just dimmed and read-only. */
+
+.diff-edit-card {
+  position: relative;
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  /* Layout-neutral chrome: an inset ring, no border/padding that would shift
+     surrounding rows. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent);
+  animation: diff-edit-fade 120ms ease-out;
+}
+
+@keyframes diff-edit-fade {
+  from {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diff-edit-card {
+    animation: none;
+  }
+}
+
+/* ── Editable segment row (same grid as .diff-row) ─────────────────── */
+
+.diff-edit-card .diff-row--edit-segment {
+  /* gutter-w inherited from the body inline style. */
+  background: transparent;
+}
+
+.diff-edit-card .diff-row--edit-segment .diff-row__comment-cell,
+.diff-edit-card .diff-row--edit-segment .diff-row__num,
+.diff-edit-card .diff-row--edit-segment .diff-row__marker {
+  /* Keep the cell widths (no layout shift) but empty them: no number text, no
+     marker glyph, no comment button. */
+  background: transparent;
+}
+
+.diff-edit-card .diff-row--edit-segment > .diff-row__code {
+  /* Keep exactly the normal code-cell inset here. The layered editor inside is
+     padding-free, so the text/caret occupy the same x/y as the row it replaces
+     instead of receiving the inset twice. */
+  padding: 0 0.714rem 0 0.286rem;
+  min-height: 1.43em;
+}
+
+/* ── Inert del rows (copyable, dimmed) ─────────────────────────────── */
+
+.diff-edit-card .diff-row--inert-del {
+  opacity: 0.55;
+  user-select: text;
+}
+
+.diff-edit-card .diff-row--inert-del:hover {
+  background: transparent;
+}
+
+/* No hover comment button on inert rows. */
+.diff-edit-card .diff-row--inert-del .diff-row__comment-btn {
+  display: none;
+}
+
+/* ── Inert comment threads (read-only) ─────────────────────────────── */
+
+.diff-edit-card .diff-comment-thread--inert {
+  opacity: 0.7;
+}
+
+.diff-edit-card .diff-comment-thread--inert .diff-comment-body__actions {
+  display: none;
+}
+
+/* ── Layered editor (react-simple-code-editor technique) ───────────── */
+/* One shared metrics class on BOTH layers so the transparent textarea caret
+   sits exactly over the token-colored pre. The pre determines the wrapper's
+   auto height; the textarea overlays it absolutely. */
+
+.diff-edit-editor {
+  position: relative;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: var(--leading-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+  font-variant-numeric: tabular-nums;
+  /* The wrapper .diff-row__code supplies the normal code-cell padding; keeping
+     this layer padding-free avoids a visible nudge on open. */
+  padding: 0;
+  min-height: 1.43em;
+}
+
+.diff-edit-pre {
+  margin: 0;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: var(--leading-code);
+  font-variant-numeric: tabular-nums;
+  /* The pre is in flow and sizes the wrapper; the textarea overlays it. */
+  position: relative;
+  z-index: 0;
+}
+
+.diff-edit-textarea {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: var(--leading-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+  font-variant-numeric: tabular-nums;
+  color: transparent;
+  caret-color: var(--cursor, var(--text));
+  background: transparent;
+  resize: none;
+  overflow: hidden;
+  outline: none;
+  z-index: 1;
+}
+
+.diff-edit-textarea::selection {
+  background: var(--selection, color-mix(in srgb, var(--accent) 30%, transparent));
+}
+
+.diff-edit-textarea:disabled {
+  cursor: default;
+}
+
+/* ── Footer pill (absolute, takes no flow space) ───────────────────── */
+
+.diff-edit-card__footer {
+  position: absolute;
+  right: 0.857rem;
+  top: 100%;
+  transform: translateY(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.286rem;
+  padding: 0.214rem;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--elevation-2);
+}
+
+.diff-edit-card__message {
+  color: var(--danger);
+  font-family: var(--font-display);
+  font-size: var(--font-size-small);
+  padding: 0 0.429rem;
+}
+
+.diff-edit-card__cancel {
+  padding: 0.214rem 0.571rem;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: var(--font-size-small);
+  cursor: pointer;
+}
+
+.diff-edit-card__cancel:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.diff-edit-card__save {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.286rem;
+  padding: 0.214rem 0.714rem;
+  border-radius: var(--radius-pill);
+  border: 0;
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  font-family: var(--font-display);
+  font-size: var(--font-size-small);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.diff-edit-card__save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.diff-edit-card__kbd {
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+/* Clipping guard: the .diff-file body hides overflow, so the footer pill (which
+   overhangs the card's bottom edge) would clip. While an editor is open we add
+   bottom padding to the body equal to the overhang (space below only — shifts no
+   glyph above). */
+.diff-file__body--editing {
+  padding-bottom: 1.5rem;
+}
+
+/* ── Edit bubble (floating over a selection) ──────────────────────── */
+
+.diff-edit-bubble {
+  /* Absolutely anchored in .diff-content coordinates (its positioning
+     context), so it scrolls with the text it points at — no scroll listener,
+     no per-frame repositioning. */
+  position: absolute;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.286rem;
+  height: 1.714rem;
+  padding: 0 0.571rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--elevation-2);
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: var(--font-size-small);
+  cursor: pointer;
+  /* Never selectable: a drag passing over the bubble must not be able to
+     extend the text selection into it (its DOM position is after all file
+     sections, so that would jump the highlight across the whole pane). */
+  user-select: none;
+  animation: diff-edit-bubble-in 100ms ease-out;
+}
+
+.diff-edit-bubble:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+@keyframes diff-edit-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diff-edit-bubble {
+    animation: none;
+  }
+}

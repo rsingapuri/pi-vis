@@ -209,6 +209,16 @@ export function getShikiTheme(): string {
   return currentTheme;
 }
 
+/**
+ * The warm highlighter singleton, or null if it hasn't finished initializing yet.
+ * Used by the diff editor's synchronous per-keystroke tokenization: if it isn't
+ * ready yet, text renders plain (never blocks). Once warmed at app boot it is
+ * effectively synchronous.
+ */
+export function getLoadedHighlighter(): Highlighter | null {
+  return highlighter;
+}
+
 export function highlightCode(code: string, lang: string): string {
   if (!highlighter) return "";
   try {

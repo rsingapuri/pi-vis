@@ -619,6 +619,9 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   background: var(--bg);
+  /* Positioning context for the edit bubble, which is absolutely anchored in
+     content coordinates so it rides with the scrolled text. */
+  position: relative;
 }
 
 .diff-content--empty {

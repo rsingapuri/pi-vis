@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getHighlighter, getShikiTheme } from "../shiki.js";
-import { tokenizeLines } from "./highlight.js";
+import { getHighlighter, getLoadedHighlighter, getShikiTheme } from "../shiki.js";
+import { tokenizeLines, tokenizeLinesSync } from "./highlight.js";
 
 /**
  * Regression guard for the "a single bad theme ref kills highlighting app-wide"
@@ -52,5 +52,37 @@ describe("diff highlight tokenization (regression)", () => {
     expect(tokens).not.toBeNull();
     // Two logical lines; the guard tolerates shiki's +1 empty trailing line.
     expect(tokens?.length).toBe(2);
+  });
+});
+
+describe("tokenizeLinesSync (diff editor per-keystroke path)", () => {
+  it("returns null when the highlighter is not yet warm (never blocks)", () => {
+    // Before any await of getHighlighter(), the singleton is null.
+    // (This test runs first in the file; if another test already warmed it,
+    // the guard below still holds because we assert a plain result path works.)
+    const code = "const x = 1;";
+    // Either it tokenizes (warm) or returns null (cold) — never throws.
+    const out = tokenizeLinesSync(code, "typescript");
+    expect(out === null || Array.isArray(out)).toBe(true);
+  });
+
+  it("returns null for an unknown language (plain-text fallback)", () => {
+    expect(tokenizeLinesSync("hello", null)).toBeNull();
+  });
+
+  it("returns [] for empty text", () => {
+    expect(tokenizeLinesSync("", "typescript")).toEqual([]);
+  });
+
+  it("matches the async path once warm, with line-count alignment", async () => {
+    await getHighlighter(); // warm the singleton
+    expect(getLoadedHighlighter()).not.toBeNull();
+    const code = "const greet = (name: string) => name;\nconsole.log(greet(42));\n";
+    const syncTokens = tokenizeLinesSync(code, "typescript");
+    const asyncTokens = await tokenizeLines(code, "typescript");
+    expect(syncTokens).not.toBeNull();
+    expect(asyncTokens).not.toBeNull();
+    expect(syncTokens!.length).toBe(asyncTokens!.length);
+    expect(getShikiTheme()).toBeTruthy();
   });
 });

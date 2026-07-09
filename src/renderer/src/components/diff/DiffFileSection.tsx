@@ -34,6 +34,7 @@ import {
   IconClose,
   IconComment,
 } from "../common/icons.js";
+import { DiffEditCard } from "./DiffEditCard.js";
 import "./DiffFileSection.css";
 
 const ROW_RENDER_CAP = 5_000;
@@ -303,6 +304,33 @@ function RowsView({
     reconcileDiffCommentsForFile(sessionId, filePath, model);
   }, [sessionId, filePath, model, reconcileDiffCommentsForFile]);
 
+  // Inline edit: while a card is open for this file, the selected row slice is
+  // replaced by the card and the in-range rows/threads are suppressed.
+  const editSession = useDiffStore((s) => s.editSession);
+  const editingThisFile = editSession?.path === filePath;
+  // Reset any open comment editor when a card opens (the card owns the slice).
+  useEffect(() => {
+    if (editingThisFile) setEditingLine(null);
+  }, [editingThisFile]);
+
+  // Split view: precompute which split-row indices fall inside the edit range
+  // (a split row covers one or two model line indices), and the first one where
+  // the card renders. Unified view keys directly off row.lineIdx instead.
+  const splitEditMap = useMemo(() => {
+    if (!editingThisFile || !editSession || !splitRows) return null;
+    const inRange = new Set<number>();
+    let first = -1;
+    for (let i = 0; i < splitRows.length; i++) {
+      const r = splitRows[i]!;
+      const idxs = splitRowIndices(r);
+      if (idxs.some((x) => x >= editSession.startLineIdx && x <= editSession.endLineIdx)) {
+        inRange.add(i);
+        if (first === -1) first = i;
+      }
+    }
+    return { inRange, first };
+  }, [editingThisFile, editSession, splitRows]);
+
   // Build old/new line index → token-line map for split view. Each
   // entry is the (1-based) line number. We index by line number into
   // `oldTokens[newNo - 1]` etc.
@@ -318,11 +346,44 @@ function RowsView({
   if (viewMode === "split" && splitRows) {
     return (
       <div
-        className="diff-file__body diff-file__body--open"
+        className={`diff-file__body diff-file__body--open${editingThisFile ? " diff-file__body--editing" : ""}`}
         style={{ ["--gutter-w" as string]: gutterW }}
       >
         {splitRows.slice(0, shownCount).map((row, idx) => {
+          // Inline edit card: replace the in-range slice; suppress in-range rows.
+          if (splitEditMap?.inRange.has(idx)) {
+            if (idx === splitEditMap.first && editSession) {
+              return (
+                <DiffEditCard
+                  key="diff-edit-card"
+                  session={editSession}
+                  model={model}
+                  oldTokens={oldTokens}
+                  commentsForSession={commentsForSession}
+                  sessionId={sessionId}
+                  filePath={filePath}
+                  gutterW={gutterW}
+                  basename={filePath.split("/").pop() ?? filePath}
+                  viewMode="split"
+                />
+              );
+            }
+            return null; // rendered inertly inside the card
+          }
           if (row.type === "split-gap") {
+            // A gap overlapped by the edit range is revealed inside the card
+            // (the card renders every model line in range), so its row must
+            // not render alongside it.
+            if (editingThisFile && editSession) {
+              const gap = model.gaps[row.gapIndex];
+              if (
+                gap &&
+                gap.startIdx <= editSession.endLineIdx &&
+                gap.endIdx >= editSession.startLineIdx
+              ) {
+                return null;
+              }
+            }
             return (
               <GapRow
                 // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
@@ -354,6 +415,7 @@ function RowsView({
                   <div
                     className="diff-row__code"
                     data-side="old"
+                    data-line-idx={row.lineIdx}
                     data-selecting="auto"
                     onMouseDown={(e) => onSelectSide(e, "old")}
                   >
@@ -369,6 +431,7 @@ function RowsView({
                   <div
                     className="diff-row__code"
                     data-side="new"
+                    data-line-idx={row.lineIdx}
                     data-selecting="auto"
                     onMouseDown={(e) => onSelectSide(e, "new")}
                   >
@@ -417,6 +480,7 @@ function RowsView({
                 <div
                   className={`diff-row__code${row.leftText === "" ? " diff-row__code--empty" : ""}`}
                   data-side="old"
+                  data-line-idx={row.leftIdx ?? undefined}
                   data-selecting="auto"
                   onMouseDown={(e) => onSelectSide(e, "old")}
                 >
@@ -436,6 +500,7 @@ function RowsView({
                 <div
                   className={`diff-row__code${row.rightText === "" ? " diff-row__code--empty" : ""}`}
                   data-side="new"
+                  data-line-idx={row.rightIdx ?? undefined}
                   data-selecting="auto"
                   onMouseDown={(e) => onSelectSide(e, "new")}
                 >
@@ -477,11 +542,46 @@ function RowsView({
   // Unified view
   return (
     <div
-      className="diff-file__body diff-file__body--open"
+      className={`diff-file__body diff-file__body--open${editingThisFile ? " diff-file__body--editing" : ""}`}
       style={{ ["--gutter-w" as string]: gutterW }}
     >
       {rows.slice(0, shownCount).map((row, idx) => {
+        // Inline edit card: replace the selected slice; suppress in-range rows.
+        if (editingThisFile && editSession && row.type !== "gap") {
+          if (row.lineIdx === editSession.startLineIdx) {
+            return (
+              <DiffEditCard
+                key="diff-edit-card"
+                session={editSession}
+                model={model}
+                oldTokens={oldTokens}
+                commentsForSession={commentsForSession}
+                sessionId={sessionId}
+                filePath={filePath}
+                gutterW={gutterW}
+                basename={filePath.split("/").pop() ?? filePath}
+                viewMode="unified"
+              />
+            );
+          }
+          if (row.lineIdx > editSession.startLineIdx && row.lineIdx <= editSession.endLineIdx) {
+            return null; // rendered inertly inside the card
+          }
+        }
         if (row.type === "gap") {
+          // A gap overlapped by the edit range is revealed inside the card
+          // (the card renders every model line in range), so its row must not
+          // render alongside it.
+          if (editingThisFile && editSession) {
+            const gap = model.gaps[row.gapIndex];
+            if (
+              gap &&
+              gap.startIdx <= editSession.endLineIdx &&
+              gap.endIdx >= editSession.startLineIdx
+            ) {
+              return null;
+            }
+          }
           return (
             <GapRow
               // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
@@ -501,7 +601,7 @@ function RowsView({
               // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
               key={idx}
             >
-              <div className="diff-row">
+              <div className="diff-row" data-line-idx={row.lineIdx}>
                 <CommentCell
                   filePath={filePath}
                   lineNumber={row.line.newNo}
@@ -540,6 +640,7 @@ function RowsView({
           return (
             <div
               className="diff-row diff-row--del"
+              data-line-idx={row.lineIdx}
               // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
               key={idx}
             >
@@ -571,7 +672,7 @@ function RowsView({
             // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
             key={idx}
           >
-            <div className="diff-row diff-row--add">
+            <div className="diff-row diff-row--add" data-line-idx={row.lineIdx}>
               <CommentCell
                 filePath={filePath}
                 lineNumber={row.line.newNo}
@@ -617,6 +718,19 @@ function RowsView({
 }
 
 // ── Line comments ─────────────────────────────────────────────────────
+
+/** Model line indices a split row covers (one for context, up to two for a
+ *  change pair). Used to map an edit range onto split rows. */
+function splitRowIndices(row: SplitRow): number[] {
+  if (row.type === "split-context") return [row.lineIdx];
+  if (row.type === "split-pair") {
+    const out: number[] = [];
+    if (row.leftIdx !== null) out.push(row.leftIdx);
+    if (row.rightIdx !== null) out.push(row.rightIdx);
+    return out;
+  }
+  return [];
+}
 
 function commentForLine(
   commentsForSession: Map<string, CodeComment> | undefined,

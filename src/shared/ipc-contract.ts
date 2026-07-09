@@ -7,6 +7,7 @@ import type {
   GitChangesResult,
   GitFileDiffResult,
   GitFileStatus,
+  GitWriteFileResult,
 } from "./git.js";
 import type { SessionId } from "./ids.js";
 import type { PiRpcCommand } from "./pi-protocol/commands.js";
@@ -226,6 +227,15 @@ export interface IpcInvokeContract {
     res: GitFileDiffResult;
   };
   "git.branches": { req: { root: string }; res: GitBranchesResult };
+  // Compare-and-swap write of a working-tree file from the diff editor. The
+  // renderer derives `expectedHash` (sha256 of UTF-8) from the `newText` its
+  // edit buffer was built on; main refuses to write when the file on disk no
+  // longer matches that base (returns `conflict`). `content` is the spliced
+  // new file text. See `writeWorkingFile` in src/main/git/git.ts.
+  "git.writeWorkingFile": {
+    req: { root: string; path: string; content: string; expectedHash: string };
+    res: GitWriteFileResult;
+  };
 
   // ── Auth ────────────────────────────────────────────────────────────
   "auth.status": { req: undefined; res: ProviderAuthStatus[] };

@@ -71,6 +71,17 @@ export type GitBranchesResult =
   | { kind: "git-missing" }
   | { kind: "error"; message: string };
 
+/** Compare-and-swap write of a working-tree file. The renderer sends the
+ *  sha256 (UTF-8) of the `newText` it derived its edit buffer from; main
+ *  re-reads the file, hashes the decoded-string re-encoding the same way, and
+ *  only writes when the hashes match — so a save never overwrites disk content
+ *  that moved underneath the editor. `conflict` surfaces a stale-base state;
+ *  the renderer re-anchors and retries once. */
+export type GitWriteFileResult =
+  | { kind: "ok" }
+  | { kind: "conflict" }
+  | { kind: "error"; message: string };
+
 export interface GitWorktreeCreated {
   /** Absolute path to the worktree directory. */
   worktreePath: string;

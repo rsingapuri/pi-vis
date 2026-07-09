@@ -512,8 +512,13 @@ export function buildSplitRows(rows: Row[]): SplitRow[] {
  * Split a text into individual lines and normalize trailing CRs.
  * Drops the empty element that `split("\n")` adds when the text ends
  * with `\n` (so "a\nb\n" → ["a", "b"], not ["a", "b", ""]).
+ *
+ * Exported so the diff-edit machinery (splice / re-anchor) splits conflict-fresh
+ * text with the EXACT same rule the model used — a CRLF file's lines must
+ * re-align after a save without a trailing-\r throwing off the line count.
+ * The model line text is CR-free; raw `newText` keeps its CRLF/BOM intact.
  */
-function splitAndNormalizeLines(text: string): string[] {
+export function splitAndNormalizeLines(text: string): string[] {
   if (text === "") return [];
   const parts = text.split("\n");
   if (parts.length > 0 && parts[parts.length - 1] === "") parts.pop();
@@ -522,6 +527,68 @@ function splitAndNormalizeLines(text: string): string[] {
     if (p?.endsWith("\r")) parts[i] = p.slice(0, -1);
   }
   return parts;
+}
+
+// ── Edit-support: visible-line / gap carry-over ────────────────────────
+
+/**
+ * The set of model line indices currently rendered as rows — i.e. NOT hidden
+ * inside a collapsed gap. (The edit bubble deliberately does NOT use this for
+ * eligibility — it passes every model index so a gap-crossing selection stays
+ * editable, with the card revealing the hidden lines.)
+ */
+export function visibleLineIndices(model: AnyDiffModel, gapState: GapState[]): Set<number> {
+  const set = new Set<number>();
+  for (const row of visibleRows(model, gapState)) {
+    if (row.type === "gap") continue;
+    set.add(row.lineIdx);
+  }
+  return set;
+}
+
+/**
+ * The set of OLD-side line numbers currently visible (revealed gap lines plus
+ * always-visible hunk lines). Save never changes the old side, so old-side line
+ * numbers are a stable key for carrying gap reveal state across a save.
+ */
+export function visibleOldLineNos(model: DiffModel, gapState: GapState[]): Set<number> {
+  const set = new Set<number>();
+  for (const row of visibleRows(model, gapState)) {
+    if (row.type === "context") {
+      if (row.line.oldNo !== null) set.add(row.line.oldNo);
+    } else if (row.type === "del") {
+      set.add(row.line.oldNo);
+    }
+  }
+  return set;
+}
+
+/**
+ * Reconstruct gap reveal state for a freshly-built model so revealed context
+ * stays revealed after a save (the edit changes only new-side text, so old-side
+ * line numbers key the carry-over). A new gap whose old-side lines were ALL
+ * visible before stays fully revealed; otherwise it collapses (the user can
+ * re-expand). This handles "edit inside a revealed gap → both halves stay
+ * revealed".
+ */
+export function carryGapState(newModel: DiffModel, visibleOldNos: Set<number>): GapState[] {
+  return newModel.gaps.map((gap) => {
+    let anyOld = false;
+    let allVisible = true;
+    for (let i = gap.startIdx; i <= gap.endIdx; i++) {
+      const ln = newModel.lines[i];
+      if (!ln) continue;
+      const oldNo = ln.type === "del" ? ln.oldNo : ln.type === "context" ? ln.oldNo : null;
+      if (oldNo === null) continue;
+      anyOld = true;
+      if (!visibleOldNos.has(oldNo)) {
+        allVisible = false;
+        break;
+      }
+    }
+    if (anyOld && allVisible) return { top: gap.size, bottom: gap.size };
+    return { top: 0, bottom: 0 };
+  });
 }
 
 // ── Intraline ranges (re-exported for convenience) ─────────────────────

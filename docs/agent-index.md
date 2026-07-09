@@ -40,6 +40,12 @@ Read both `docs/architecture/processes-and-ipc.md` and `docs/architecture/state-
 
 ## Renderer state, commands, and transcript
 
+Read `docs/architecture/diff-editing.md` when touching:
+
+- inline line editing in the diff viewer (`DiffEditBubble`, `DiffEditCard`, the edit session in `diff-store.ts`)
+- `src/renderer/src/lib/diff/splice.ts` / `auto-indent.ts` / `edit-range.ts` / `edit-anchor.ts`
+- the `git.writeWorkingFile` IPC channel / CAS save protocol / comment re-anchor
+
 Read `docs/ui-conventions.md` when touching:
 
 - transcript rendering or scrolling

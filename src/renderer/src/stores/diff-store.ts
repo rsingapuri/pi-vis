@@ -19,11 +19,21 @@ import type { GitBranch } from "@shared/git.js";
 import type { SessionId } from "@shared/ids.js";
 import type { ThemedToken } from "shiki";
 import { create } from "zustand";
+import { detectIndentUnit } from "../lib/diff/auto-indent.js";
 import type { AnyDiffModel, DiffModel, GapState } from "../lib/diff/diff-model.js";
-import { buildDiffModel } from "../lib/diff/diff-model.js";
-import { tokenizeLines } from "../lib/diff/highlight.js";
+import {
+  buildDiffModel,
+  carryGapState,
+  splitAndNormalizeLines,
+  visibleOldLineNos,
+} from "../lib/diff/diff-model.js";
+import { findUniqueBlock } from "../lib/diff/edit-anchor.js";
+import type { EditBlockKind, EditRange } from "../lib/diff/edit-range.js";
+import { tokenizeLines, tokenizeLinesSync } from "../lib/diff/highlight.js";
 import { langForPath } from "../lib/diff/highlight.js";
 import type { SearchMatch } from "../lib/diff/search.js";
+import { spliceNewLines } from "../lib/diff/splice.js";
+import { getLoadedHighlighter } from "../lib/shiki.js";
 import { gitRootForSession, useSessionsStore } from "./sessions-store.js";
 import { useSettingsStore } from "./settings-store.js";
 
@@ -42,6 +52,44 @@ export interface FileState {
   collapsed: boolean;
   renderCap?: number | undefined;
   error?: string;
+}
+
+/** An in-progress inline edit of one file's new-side line range.
+ *
+ *  Buffers are NOT store state (the card's textareas are uncontrolled); the
+ *  card passes the segment buffers to `saveEditSession` at save time. While a
+ *  session exists for file F, F is FROZEN: `handleChangesResult`/`refresh`
+ *  reuse F's FileState verbatim and keep F's GitChangedFile entry even if it
+ *  drops out of `git.changes`; queued changes apply on close. */
+export interface EditCursorPosition {
+  /** Edit-block (textarea) index that should receive initial focus. */
+  segmentIndex: number;
+  /** Cursor offset within that segment's initial text. */
+  offset: number;
+}
+
+export interface EditSession {
+  path: string;
+  /** Initial cursor placement derived from the highlighted text. */
+  initialCursor: EditCursorPosition | null;
+  /** Frozen model line indices of the selected slice. */
+  startLineIdx: number;
+  endLineIdx: number;
+  /** New-side line range being replaced. */
+  startNewNo: number;
+  endNewNo: number;
+  /** Ordered block sequence (edit segments + inert del/comment rows). */
+  blocks: EditBlockKind[];
+  /** FileState.newText captured at open — the CAS base. */
+  baseNewText: string;
+  /** Original new-side lines [startNewNo..endNewNo] (conflict re-anchor key). */
+  originalLines: string[];
+  indentUnit: string;
+  phase: "editing" | "saving" | "conflict" | "error";
+  errorMessage?: string | undefined;
+  dirty: boolean;
+  /** Set when the file changed/vanished on disk while frozen; flushed on close. */
+  queuedRefresh: boolean;
 }
 
 export interface DiffBadge {
@@ -65,6 +113,14 @@ export interface DiffStore {
   filter: string;
   viewMode: "unified" | "split";
   fileState: Map<string, FileState>;
+
+  /** At most one inline edit session is open at a time (one editor at a time).
+   *  While non-null, that file is frozen against refreshes. */
+  editSession: EditSession | null;
+  /** Bumped to ask the open edit card to run its cancel flow (confirm if
+   *  dirty). Lets the viewer's Esc / backdrop / close route to the card's
+   *  ConfirmDialog without the card needing to own those inputs. */
+  editCancelNonce: number;
 
   // in-diff find: highlight + jump between every visible occurrence of a
   // string across all changed files. `activeMatch` is the currently-focused
@@ -130,6 +186,20 @@ export interface DiffStore {
   toggleSearchCaseSensitive: () => void;
   setActiveMatch: (m: SearchMatch | null) => void;
   bumpRenderCap: (path: string, cap: number) => void;
+
+  // ── Inline edit session ───────────────────────────────────────────
+  /** Open an edit session for a resolved selection. No-op if one is already
+   *  open. Requires the file to be `ready` with a `kind:"ok"` model + newText. */
+  openEditSession: (path: string, range: EditRange, cursor?: EditCursorPosition | null) => void;
+  /** Mark the open session dirty (a buffer changed). */
+  markEditDirty: () => void;
+  /** Cancel/close the open session, flushing a queued refresh if any. */
+  cancelEditSession: () => void;
+  /** Save the open session: splice + CAS write + commit. `buffers` is the
+   *  per-edit-segment buffer text, in block order (only edit blocks). */
+  saveEditSession: (buffers: string[]) => Promise<void>;
+  /** Ask the open edit card to cancel (confirm if dirty). */
+  requestCancelEdit: () => void;
 }
 
 const EMPTY_SEARCH = {
@@ -162,6 +232,13 @@ function totals(files: GitChangedFile[]): { insertions: number; deletions: numbe
 function isStale(generation: number, my: number): boolean {
   return generation !== my;
 }
+
+// Paths saved in the current tick: handleChangesResult reuses their FileState
+// verbatim (WE are the change) and clears the mark, so a save neither reloads
+// the file nor lights the stale dot (invariant 10). Module-level because the
+// single-instance viewer's reconcile (handleChangesResult) is also
+// module-level and must clear it.
+const justSavedPaths = new Set<string>();
 
 /** Cheap signature for a changed file — used to detect actual changes across refreshes. */
 function fileSig(f: GitChangedFile): string {
@@ -204,6 +281,8 @@ export const useDiffStore = create<DiffStore>((set, get) => {
     railWidth: 280,
     railVisible: true,
     fileState: new Map(),
+    editSession: null,
+    editCancelNonce: 0,
 
     badge: null,
     badgeKind: "loading",
@@ -242,6 +321,8 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         railWidth: settings.diffRailWidth,
         railVisible: settings.diffRailVisible,
         fileState: new Map(),
+        editSession: null,
+        editCancelNonce: 0,
         // Reset branch selection on open.
         selectedBase: null,
         includeRemoteBranches: includeRemote,
@@ -268,6 +349,8 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         selectedPath: null,
         filter: "",
         fileState: new Map(),
+        editSession: null,
+        editCancelNonce: 0,
         refreshing: false,
         search: { ...EMPTY_SEARCH },
       });
@@ -322,6 +405,8 @@ export const useDiffStore = create<DiffStore>((set, get) => {
     },
 
     ensureFileLoaded: async (path) => {
+      // Freeze: while an edit session is open for this file, never reload it.
+      if (get().editSession?.path === path) return;
       const file = get().files.find((f) => f.path === path);
       const state = get().fileState.get(path);
       if (!file) return;
@@ -407,22 +492,35 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       const model = buildDiffModel(res.oldText, res.newText);
       const gapState: GapState[] =
         model.kind === "ok" ? model.gaps.map(() => ({ top: 0, bottom: 0 })) : [];
+      // Tokenize in the SAME commit whenever the highlighter is warm (it is,
+      // after app boot). A deferred plain→colored token swap rewrites every
+      // row's text nodes, which visibly remaps any active text selection in
+      // the file — the "shifting highlight" bug. One commit ⇒ one paint.
+      const lang = langForPath(path);
+      const warm = getLoadedHighlighter() !== null;
+      const oldTokens = warm ? tokenizeLinesSync(res.oldText, lang) : null;
+      const newTokens = warm ? tokenizeLinesSync(res.newText, lang) : null;
       const m3 = new Map(get().fileState);
       m3.set(path, {
         ...(state ?? { collapsed: false }),
         status: "ready",
         model,
         gapState,
-        oldTokens: null,
-        newTokens: null,
+        oldTokens,
+        newTokens,
         oldText: res.oldText,
         newText: res.newText,
       });
       set({ fileState: m3 });
 
-      // Tokenize in macrotasks so we don't block the main thread.
-      scheduleTokenization(path, "old", res.oldText, myGen);
-      scheduleTokenization(path, "new", res.newText, myGen);
+      // Cold-start fallback only: the highlighter wasn't ready yet, so
+      // tokenize in macrotasks and swap in when done. (When warm, sync
+      // tokenization already ran; a null there means unknown lang / over
+      // caps, which the async path would also return null for.)
+      if (!warm) {
+        scheduleTokenization(path, "old", res.oldText, myGen);
+        scheduleTokenization(path, "new", res.newText, myGen);
+      }
     },
 
     expandGap: (path, gapIndex, dir) => {
@@ -574,6 +672,58 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       m.set(path, { ...cur, renderCap: cap });
       set({ fileState: m });
     },
+
+    // ── Inline edit session ─────────────────────────────────────────
+
+    openEditSession: (path, range, cursor = null) => {
+      if (get().editSession) return; // one editor at a time
+      const state = get().fileState.get(path);
+      if (!state || state.status !== "ready" || !state.model || state.model.kind !== "ok") return;
+      if (state.newText === undefined) return;
+      const allLines = splitAndNormalizeLines(state.newText);
+      const originalLines = allLines.slice(range.startNewNo - 1, range.endNewNo);
+      set({
+        editSession: {
+          path,
+          initialCursor: cursor,
+          startLineIdx: range.startLineIdx,
+          endLineIdx: range.endLineIdx,
+          startNewNo: range.startNewNo,
+          endNewNo: range.endNewNo,
+          blocks: range.blocks,
+          baseNewText: state.newText,
+          originalLines,
+          indentUnit: detectIndentUnit(state.newText),
+          phase: "editing",
+          dirty: false,
+          queuedRefresh: false,
+        },
+        editCancelNonce: 0,
+      });
+    },
+
+    markEditDirty: () => {
+      const s = get().editSession;
+      if (!s || s.dirty) return;
+      set({ editSession: { ...s, dirty: true } });
+    },
+
+    cancelEditSession: () => {
+      const s = get().editSession;
+      if (!s) return;
+      set({ editSession: null });
+      if (s.queuedRefresh) void get().refresh();
+    },
+
+    requestCancelEdit: () => {
+      const session = get().editSession;
+      if (!session || session.phase === "saving") return;
+      set({ editCancelNonce: get().editCancelNonce + 1 });
+    },
+
+    saveEditSession: async (buffers) => {
+      await doSave(buffers);
+    },
   };
 
   // ── internal helpers (closed over) ────────────────────────────────
@@ -600,6 +750,204 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       });
       set({ fileState: m });
     }, 0);
+  }
+
+  // ── Inline edit save orchestration ────────────────────────────────
+
+  /** Splice + CAS write against `baseText`. Returns the spliced new text on
+   *  ok so the caller can commit it. Never throws across IPC. */
+  async function tryWrite(
+    root: string,
+    path: string,
+    baseText: string,
+    startNewNo: number,
+    endNewNo: number,
+    replacementLines: string[],
+  ): Promise<
+    { kind: "ok"; newText: string } | { kind: "conflict" } | { kind: "error"; message: string }
+  > {
+    const nextNewText = spliceNewLines(baseText, startNewNo, endNewNo, replacementLines);
+    const expectedHash = await sha256Hex(baseText);
+    try {
+      const res = await window.pivis.invoke("git.writeWorkingFile", {
+        root,
+        path,
+        content: nextNewText,
+        expectedHash,
+      });
+      if (res.kind === "ok") return { kind: "ok", newText: nextNewText };
+      if (res.kind === "conflict") return { kind: "conflict" };
+      return { kind: "error", message: res.message };
+    } catch (err) {
+      return { kind: "error", message: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /** Commit the save in ONE store update: rebuild model, tokenize, carry gaps,
+   *  re-anchor comments FIRST (invariant 7), then set FileState + clear the
+   *  session, then refresh() to re-baseline the fingerprint (no stale dot). */
+  async function commitSave(
+    session: EditSession,
+    editRange: { startNewNo: number; endNewNo: number },
+    replacementLines: string[],
+    nextNewText: string,
+  ): Promise<void> {
+    const path = session.path;
+    const state = get().fileState.get(path);
+    if (!state) return;
+    const sessionId = get().sessionId;
+    const root = get().root;
+    const newModel = buildDiffModel(state.oldText ?? "", nextNewText);
+    const lang = langForPath(path);
+    // Warm highlighter → effectively synchronous; no plain-text flash.
+    const newTokens = await tokenizeLines(nextNewText, lang);
+    const oldVisible =
+      state.model && state.model.kind === "ok"
+        ? visibleOldLineNos(
+            state.model,
+            state.gapState ?? state.model.gaps.map(() => ({ top: 0, bottom: 0 })),
+          )
+        : new Set<number>();
+    const newGapState = newModel.kind === "ok" ? carryGapState(newModel, oldVisible) : [];
+    const newLineCount = newModel.kind === "ok" ? newModel.newCount : 0;
+    // Re-anchor comments BEFORE the new model becomes visible (invariant 7).
+    if (sessionId && root) {
+      useSessionsStore.getState().applyDiffEditReanchor(sessionId, path, {
+        startNewNo: editRange.startNewNo,
+        endNewNo: editRange.endNewNo,
+        replacementLines,
+        newLineCount,
+      });
+    }
+    // Discard any in-flight tokenization for this file.
+    fileGenerations.set(path, (fileGenerations.get(path) ?? 0) + 1);
+    const m = new Map(get().fileState);
+    const cur = m.get(path) ?? { collapsed: false };
+    m.set(path, {
+      ...cur,
+      ...state,
+      status: "ready",
+      model: newModel,
+      newText: nextNewText,
+      newTokens,
+      gapState: newGapState,
+    });
+    justSavedPaths.add(path);
+    set({ fileState: m, editSession: null });
+    // Re-baseline the fingerprint so the stale dot stays dark (invariant 10).
+    void get().refresh();
+  }
+
+  async function doSave(buffers: string[]): Promise<void> {
+    const session = get().editSession;
+    if (!session || session.phase === "saving") return;
+    const path = session.path;
+    const root = get().root;
+    const sessionId = get().sessionId;
+    if (!root || !sessionId) return;
+    const state = get().fileState.get(path);
+    if (!state || state.model?.kind !== "ok") return;
+
+    // replacementLines = concat of edit-block buffers (empty buffer → 0 lines).
+    const replacementLines: string[] = [];
+    let bi = 0;
+    for (const block of session.blocks) {
+      if (block.kind !== "edit") continue;
+      const buf = buffers[bi++] ?? "";
+      if (buf === "") continue;
+      replacementLines.push(...buf.split("\n"));
+    }
+
+    set({ editSession: { ...session, phase: "saving", errorMessage: undefined } });
+
+    const outcome = await tryWrite(
+      root,
+      path,
+      session.baseNewText,
+      session.startNewNo,
+      session.endNewNo,
+      replacementLines,
+    );
+
+    if (outcome.kind === "ok") {
+      await commitSave(
+        session,
+        { startNewNo: session.startNewNo, endNewNo: session.endNewNo },
+        replacementLines,
+        outcome.newText,
+      );
+      return;
+    }
+    if (outcome.kind === "error") {
+      const cur = get().editSession;
+      if (cur) set({ editSession: { ...cur, phase: "error", errorMessage: outcome.message } });
+      return;
+    }
+
+    // conflict → re-fetch fresh text, re-anchor the original range, retry ONCE.
+    const file = get().files.find((f) => f.path === path);
+    let freshNewText: string | null = null;
+    if (file) {
+      try {
+        const base = get().selectedBase ?? undefined;
+        const params: {
+          root: string;
+          path: string;
+          status: import("@shared/git.js").GitFileStatus;
+          untracked: boolean;
+          oldPath?: string;
+          base?: string;
+        } = { root, path: file.path, status: file.status, untracked: file.untracked };
+        if (file.oldPath) params.oldPath = file.oldPath;
+        if (base !== undefined) params.base = base;
+        const res = await window.pivis.invoke("git.fileDiff", params);
+        if (res.kind === "ok") freshNewText = res.newText;
+      } catch {
+        freshNewText = null;
+      }
+    }
+    const cur = get().editSession;
+    if (!cur) return;
+    if (freshNewText === null) {
+      set({ editSession: { ...cur, phase: "conflict" } });
+      return;
+    }
+    const loc = findUniqueBlock(freshNewText, session.originalLines);
+    if (!loc) {
+      set({ editSession: { ...cur, phase: "conflict" } });
+      return;
+    }
+    const freshNext = spliceNewLines(freshNewText, loc.startLine, loc.endLine, replacementLines);
+    const freshHash = await sha256Hex(freshNewText);
+    let retry: import("@shared/git.js").GitWriteFileResult;
+    try {
+      retry = await window.pivis.invoke("git.writeWorkingFile", {
+        root,
+        path,
+        content: freshNext,
+        expectedHash: freshHash,
+      });
+    } catch (err) {
+      retry = { kind: "error", message: err instanceof Error ? err.message : String(err) };
+    }
+    const cur2 = get().editSession;
+    if (!cur2) return;
+    if (retry.kind === "ok") {
+      await commitSave(
+        session,
+        { startNewNo: loc.startLine, endNewNo: loc.endLine },
+        replacementLines,
+        freshNext,
+      );
+      return;
+    }
+    set({
+      editSession: {
+        ...cur2,
+        phase: retry.kind === "conflict" ? "conflict" : "error",
+        ...(retry.kind === "error" ? { errorMessage: retry.message } : {}),
+      },
+    });
   }
 
   // Single-flight wrapper around doBadgeRefresh: bounds badge scans to one at
@@ -716,6 +1064,17 @@ function handleChangesResult(
     prevSigs.set(pf.path, fileSig(pf));
   }
 
+  // Freeze + just-saved handling:
+  //  - While an edit session is open for file F, F's FileState is reused
+  //    verbatim regardless of signature, F's GitChangedFile is kept even if it
+  //    drops out of `git.changes`, and `queuedRefresh` is set when F's sig
+  //    changed/vanished (flushed on close).
+  //  - A path saved in this tick is the change WE just made: reuse its
+  //    FileState verbatim (no reload, no stale dot) and clear the mark.
+  const frozenPath = get().editSession?.path ?? null;
+  const frozenPrevFile = frozenPath ? prevFiles.find((f) => f.path === frozenPath) : undefined;
+  let queuedRefresh = false;
+
   // Reconcile: reuse FileState for files whose signature is unchanged,
   // create idle for new/changed files.
   const fileState = new Map<string, FileState>();
@@ -725,7 +1084,14 @@ function handleChangesResult(
     const prevSig = prevSigs.get(f.path);
     const sig = fileSig(f);
 
-    if (prev && prevSig === sig && prev.status !== "error") {
+    if (f.path === frozenPath && prev) {
+      // Frozen: reuse verbatim; flag a queued refresh if the sig moved.
+      fileState.set(f.path, prev);
+      if (prevSig !== sig) queuedRefresh = true;
+    } else if (justSavedPaths.has(f.path) && prev) {
+      // Just-saved (we are the change): reuse verbatim.
+      fileState.set(f.path, prev);
+    } else if (prev && prevSig === sig && prev.status !== "error") {
       // Signature unchanged — reuse the previous FileState verbatim.
       // This preserves parsed diff models, Shiki tokens, gaps, and
       // collapse state so the diff viewer doesn't flash/reload.
@@ -738,12 +1104,32 @@ function handleChangesResult(
       });
     }
   }
+  justSavedPaths.clear();
+
+  // Frozen file vanished from results → keep its previous GitChangedFile AND
+  // FileState so the section/card stays mounted (it applies queued changes on
+  // close). Without the FileState copy, FileSections falls back to an idle state
+  // and ensureFileLoaded immediately returns because the file is frozen, leaving
+  // the editor replaced by a permanent Loading… notice.
+  let filesOut = res.files;
+  if (frozenPath && frozenPrevFile && !res.files.some((f) => f.path === frozenPath)) {
+    filesOut = [...res.files, frozenPrevFile];
+    const prevFrozenState = prevFileState.get(frozenPath);
+    if (prevFrozenState) fileState.set(frozenPath, prevFrozenState);
+    queuedRefresh = true;
+  }
+
+  // Carry the queuedRefresh flag onto the open edit session (if any).
+  const session = get().editSession;
+  if (session && queuedRefresh && !session.queuedRefresh) {
+    set({ editSession: { ...session, queuedRefresh: true } });
+  }
 
   set({
     phase: "ready",
     errorMessage: null,
     repoRoot: res.repoRoot,
-    files: res.files,
+    files: filesOut,
     truncated: res.truncated,
     fileState,
     selectedPath: isFirst && res.files.length > 0 ? res.files[0]!.path : get().selectedPath,
@@ -765,4 +1151,19 @@ export function openDiffForSession(sessionId: SessionId): void {
   const root = gitRootForSession(session);
   if (!root) return;
   useDiffStore.getState().openViewer(sessionId, root);
+}
+
+/** sha256 hex of the UTF-8 encoding of `text` — symmetric with main's
+ *  `createHash("sha256").update(Buffer.from(current, "utf8"))`, so the CAS
+ *  hash the renderer derives from `newText` matches the hash main derives from
+ *  the disk file's decoded string. */
+export async function sha256Hex(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  let hex = "";
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i]!.toString(16).padStart(2, "0");
+  }
+  return hex;
 }
