@@ -352,6 +352,13 @@ describe("SessionHost", () => {
       host.sendPanelClose(3);
       expect(fake.sent).toContainEqual({ type: "panel_close_request", panelId: 3 });
     });
+
+    it("sendInterrupt emits {type:interrupt}", async () => {
+      await fake.emitReady("0.80.0");
+      await host.waitForReady();
+      host.sendInterrupt();
+      expect(fake.sent).toContainEqual({ type: "interrupt" });
+    });
   });
 
   describe("fake-fidelity: command failure modes", () => {

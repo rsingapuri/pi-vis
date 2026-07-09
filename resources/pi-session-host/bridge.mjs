@@ -115,7 +115,7 @@ export function assertHostCapabilities(session, runtime) {
  *   hasTrustRequiringProjectResources)
  * @param {string} ctx.agentDir - pi.getAgentDir() (for the ProjectTrustStore)
  * @param {string} ctx.cwd - the session cwd (for /trust state + options)
- * @returns {{ handleCommand: Function, bindExtensions: Function }}
+ * @returns {{ handleCommand: Function, bindExtensions: Function, interruptActiveOperation: Function }}
  */
 export function setupCommandBridge({
   runtime,
@@ -133,9 +133,65 @@ export function setupCommandBridge({
   let _unsubscribe = null;
   let retryPending = false;
   let lastStreamingState;
+  const activeInterrupts = new Map();
+  let nextInterruptId = 1;
+  let lastInterruptStateKey;
 
   function logicalStreamingState() {
     return !!(_session?.isStreaming || retryPending);
+  }
+
+  function currentInterruptState() {
+    const latest = [...activeInterrupts.values()].at(-1);
+    return {
+      interruptible: activeInterrupts.size > 0,
+      operation: latest?.kind,
+    };
+  }
+
+  function emitInterruptStateIfChanged() {
+    const state = currentInterruptState();
+    const key = `${state.interruptible}:${state.operation ?? ""}`;
+    if (key === lastInterruptStateKey) return;
+    lastInterruptStateKey = key;
+    send({
+      type: "event",
+      event: {
+        type: "interrupt_state",
+        interruptible: state.interruptible,
+        ...(state.operation ? { operation: state.operation } : {}),
+      },
+    });
+  }
+
+  function trackInterruptibleOperation(kind, interrupt, run) {
+    const id = nextInterruptId++;
+    activeInterrupts.set(id, { kind, interrupt });
+    emitInterruptStateIfChanged();
+    let promise;
+    try {
+      promise = run();
+    } catch (err) {
+      if (activeInterrupts.delete(id)) emitInterruptStateIfChanged();
+      throw err;
+    }
+    return Promise.resolve(promise).finally(() => {
+      if (activeInterrupts.delete(id)) emitInterruptStateIfChanged();
+    });
+  }
+
+  async function interruptActiveOperation() {
+    const ops = [...activeInterrupts.values()];
+    for (const op of ops) {
+      try {
+        await op.interrupt();
+      } catch (err) {
+        console.error(
+          `[pi-session-host] Failed to interrupt ${op.kind}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
   }
 
   function updateRetryPending(event) {
@@ -158,6 +214,7 @@ export function setupCommandBridge({
     _unsubscribe?.();
     retryPending = false;
     lastStreamingState = undefined;
+    lastInterruptStateKey = undefined;
     _unsubscribe = s.subscribe((event) => {
       // Forward raw event to main process (structured clone over process.send).
       // AgentSessionEvent is a plain serializable object.
@@ -172,6 +229,7 @@ export function setupCommandBridge({
       }
     });
     emitStreamingIfChanged();
+    emitInterruptStateIfChanged();
   }
 
   subscribeSession(_session);
@@ -229,6 +287,8 @@ export function setupCommandBridge({
     // controller is passed in explicitly (not via globalThis) so the wiring is
     // testable and there's no implicit host-global coupling.
     disposeUnifiedTui?.();
+    activeInterrupts.clear();
+    emitInterruptStateIfChanged();
   });
 
   // ─── State helpers (mirror RpcSessionState / RPC get_commands) ─────────
@@ -317,18 +377,23 @@ export function setupCommandBridge({
               ...(errMsg ? { error: errMsg } : {}),
             });
           };
-          void runForSurface(() =>
-            _session.prompt(command.message, {
-              ...(command.images?.length ? { images: command.images } : {}),
-              ...(command.streamingBehavior
-                ? { streamingBehavior: command.streamingBehavior }
-                : {}),
-              source: "rpc",
-              preflightResult: (didSucceed) => {
-                if (didSucceed) respond(true);
-                else respond(false, "Prompt rejected");
-              },
-            }),
+          void trackInterruptibleOperation(
+            "agent",
+            () => _session.abort(),
+            () =>
+              runForSurface(() =>
+                _session.prompt(command.message, {
+                  ...(command.images?.length ? { images: command.images } : {}),
+                  ...(command.streamingBehavior
+                    ? { streamingBehavior: command.streamingBehavior }
+                    : {}),
+                  source: "rpc",
+                  preflightResult: (didSucceed) => {
+                    if (didSucceed) respond(true);
+                    else respond(false, "Prompt rejected");
+                  },
+                }),
+              ),
           ).catch((err) => respond(false, err instanceof Error ? err.message : String(err)));
           break;
         }
@@ -493,11 +558,16 @@ export function setupCommandBridge({
         // data.output / data.exitCode; returning the full BashResult (which
         // also carries cancelled/truncated) matches rpc-mode and is a superset.
         case "bash": {
-          const result = await _session.executeBash(command.command, undefined, {
-            ...(command.excludeFromContext !== undefined
-              ? { excludeFromContext: command.excludeFromContext }
-              : {}),
-          });
+          const result = await trackInterruptibleOperation(
+            "bash",
+            () => _session.abortBash(),
+            () =>
+              _session.executeBash(command.command, undefined, {
+                ...(command.excludeFromContext !== undefined
+                  ? { excludeFromContext: command.excludeFromContext }
+                  : {}),
+              }),
+          );
           send({ type: "response", id, success: true, data: result });
           break;
         }
@@ -513,7 +583,11 @@ export function setupCommandBridge({
         // object. The old bridge passed { customInstructions } and pi silently
         // stringified it to "[object Object]".
         case "compact": {
-          await _session.compact(command.customInstructions);
+          await trackInterruptibleOperation(
+            "compact",
+            () => _session.abort(),
+            () => _session.compact(command.customInstructions),
+          );
           send({ type: "response", id, success: true });
           break;
         }
@@ -817,7 +891,7 @@ export function setupCommandBridge({
     }
   }
 
-  return { handleCommand, bindExtensions };
+  return { handleCommand, bindExtensions, interruptActiveOperation };
 }
 
 // ── Scoped-models helpers ────────────────────────────────────────────────

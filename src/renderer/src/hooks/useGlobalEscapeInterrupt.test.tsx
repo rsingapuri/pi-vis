@@ -11,11 +11,6 @@ import { useGlobalEscapeInterrupt } from "./useGlobalEscapeInterrupt.js";
 
 const SESSION_A = "session-a" as SessionId;
 
-interface InvokeArgs {
-  channel: string;
-  payload: { sessionId: SessionId; command: { type: string } };
-}
-
 function mountHook(): { unmount: () => void } {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -101,12 +96,9 @@ describe("useGlobalEscapeInterrupt — G1–G5", () => {
     expect(defaultPrevented).toBe(true);
     expect(secondListenerCalled).toBe(false); // stopImmediatePropagation
     expect(invokeSpy).toHaveBeenCalledTimes(1);
-    const args = invokeSpy.mock.calls[0] as [
-      string,
-      { sessionId: SessionId; command: { type: string } },
-    ];
-    expect(args[0]).toBe("session.sendCommand");
-    expect(args[1]).toEqual({ sessionId: SESSION_A, command: { type: "abort" } });
+    const args = invokeSpy.mock.calls[0] as [string, { sessionId: SessionId }];
+    expect(args[0]).toBe("session.interrupt");
+    expect(args[1]).toEqual({ sessionId: SESSION_A });
   });
 
   it("G1: claim active + streaming -> NOT called, NOT prevented", () => {
@@ -130,28 +122,24 @@ describe("useGlobalEscapeInterrupt — G1–G5", () => {
     expect(invokeSpy).not.toHaveBeenCalled();
   });
 
-  it("G2: no claim + active tool call -> abort called even if streaming flag is stale", () => {
+  it("G2: no claim + runtime interruptible state -> interrupt called even if streaming flag is stale", () => {
     mountHook();
     setActive(SESSION_A);
     useSessionsStore.getState().applyEvent(SESSION_A, {
-      type: "tool_execution_start",
-      toolCallId: "tool-1",
-      toolName: "read",
-      args: {},
+      type: "interrupt_state",
+      interruptible: true,
+      operation: "agent",
     });
     const { defaultPrevented, secondListenerCalled } = dispatchKey();
     expect(defaultPrevented).toBe(true);
     expect(secondListenerCalled).toBe(false);
     expect(invokeSpy).toHaveBeenCalledTimes(1);
-    const args = invokeSpy.mock.calls[0] as [
-      string,
-      { sessionId: SessionId; command: { type: string } },
-    ];
-    expect(args[0]).toBe("session.sendCommand");
-    expect(args[1]).toEqual({ sessionId: SESSION_A, command: { type: "abort" } });
+    const args = invokeSpy.mock.calls[0] as [string, { sessionId: SessionId }];
+    expect(args[0]).toBe("session.interrupt");
+    expect(args[1]).toEqual({ sessionId: SESSION_A });
   });
 
-  it("G2: no claim + active standalone bash -> abort_bash called", () => {
+  it("G2: no claim + active standalone bash -> session.interrupt called", () => {
     mountHook();
     setActive(SESSION_A);
     useSessionsStore.getState().addBashCommand(SESSION_A, "sleep 100");
@@ -159,12 +147,9 @@ describe("useGlobalEscapeInterrupt — G1–G5", () => {
     expect(defaultPrevented).toBe(true);
     expect(secondListenerCalled).toBe(false);
     expect(invokeSpy).toHaveBeenCalledTimes(1);
-    const args = invokeSpy.mock.calls[0] as [
-      string,
-      { sessionId: SessionId; command: { type: string } },
-    ];
-    expect(args[0]).toBe("session.sendCommand");
-    expect(args[1]).toEqual({ sessionId: SESSION_A, command: { type: "abort_bash" } });
+    const args = invokeSpy.mock.calls[0] as [string, { sessionId: SessionId }];
+    expect(args[0]).toBe("session.interrupt");
+    expect(args[1]).toEqual({ sessionId: SESSION_A });
   });
 
   it("G4: modified ESC (meta/ctrl/alt/shift) -> NOT called", () => {

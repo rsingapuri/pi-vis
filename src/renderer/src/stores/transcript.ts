@@ -517,6 +517,7 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
     case "turn_end":
     case "queue_update":
     case "streaming_state":
+    case "interrupt_state":
     case "auto_retry_start":
     case "auto_retry_end":
     case "extension_error":

@@ -64,6 +64,9 @@ export interface SessionViewState {
   isStreaming: boolean;
   queuedMessages?: { steering: QueuedMessage[]; followUp: QueuedMessage[] } | undefined;
   promptsInFlight: number;
+  bashInFlight: number;
+  interruptible: boolean;
+  interruptKind?: "agent" | "bash" | "compact" | undefined;
   retryPending: boolean;
   streamingEpoch: number;
   queueEpoch: number;
@@ -458,6 +461,9 @@ function resetRuntimeState(
     ...session,
     isStreaming: false,
     promptsInFlight: 0,
+    bashInFlight: 0,
+    interruptible: false,
+    interruptKind: undefined,
     retryPending: false,
     runningSince: undefined,
     queuedMessages: undefined,
@@ -469,7 +475,12 @@ function resetRuntimeState(
 
 export function isSessionAbortable(session: SessionViewState | undefined): boolean {
   if (!session || session.status === "exited" || session.status === "failed") return false;
-  return isSessionWorking(session) || hasActiveAgentWork(session) || hasActiveBash(session);
+  return (
+    session.interruptible ||
+    session.promptsInFlight > 0 ||
+    session.bashInFlight > 0 ||
+    session.isStreaming
+  );
 }
 
 interface SessionsStore {
@@ -625,9 +636,9 @@ interface SessionsStore {
     snapshot: unknown,
     captured: { identityEpoch: number; streamingEpoch: number; queueEpoch: number },
   ) => void;
-  /** Interrupt the active turn or standalone bash command. No-op (no IPC)
-   *  when the session has nothing abortable; rejection-safe when it does send
-   *  (host-fallback transition can reject). S3. */
+  /** Interrupt the active runtime operation. Main/host choose the concrete
+   *  abort primitive; no-op (no IPC) when the session has nothing abortable;
+   *  rejection-safe when it does send (host-fallback transition can reject). S3. */
   abortSession: (sessionId: SessionId) => void;
   addUiRequest: (sessionId: SessionId, request: ExtensionUiRequest) => void;
   handlePanelEvent: (sessionId: SessionId, event: PanelEvent) => void;
@@ -903,6 +914,9 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         isStreaming: false,
         queuedMessages: undefined,
         promptsInFlight: 0,
+        bashInFlight: 0,
+        interruptible: false,
+        interruptKind: undefined,
         retryPending: false,
         streamingEpoch: 0,
         queueEpoch: 0,
@@ -1109,12 +1123,19 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
           unreadStatus = "error";
           turnErrored = false;
         }
+        let interruptPatch: Pick<SessionViewState, "interruptible" | "interruptKind"> | null = null;
         if (event.type === "streaming_state") {
           livenessPatch = event.isStreaming
             ? { isStreaming: true }
             : current.retryPending
               ? {}
               : { isStreaming: false };
+        }
+        if (event.type === "interrupt_state") {
+          interruptPatch = {
+            interruptible: event.interruptible,
+            interruptKind: event.interruptible ? event.operation : undefined,
+          };
         }
         if (event.type === "queue_update") {
           queuePatch = {
@@ -1148,6 +1169,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
           turnErrored,
           sessionName,
           thinkingLevel,
+          ...(interruptPatch ?? {}),
           ...(queuePatch ?? {}),
           isNewPending: promoted ? false : current.isNewPending,
           editorInjection: promoted ? undefined : current.editorInjection,
@@ -1317,6 +1339,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       sessions.set(sessionId, {
         ...s,
         transcript,
+        bashInFlight: s.bashInFlight + 1,
         isNewPending: false,
         editorInjection: undefined,
       });
@@ -1348,7 +1371,11 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       const s = sessions.get(sessionId);
       if (!s) return {};
       const transcript = finishBashBlock(s.transcript, output, exitCode);
-      sessions.set(sessionId, { ...s, transcript });
+      sessions.set(sessionId, {
+        ...s,
+        transcript,
+        bashInFlight: Math.max(0, s.bashInFlight - 1),
+      });
       return { sessions };
     });
   },
@@ -1496,15 +1523,8 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
   abortSession: (sessionId) => {
     const s = get().sessions.get(sessionId);
-    if (!s || s.status === "exited" || s.status === "failed") return;
-    const command =
-      isSessionWorking(s) || hasActiveAgentWork(s)
-        ? { type: "abort" as const }
-        : hasActiveBash(s)
-          ? { type: "abort_bash" as const }
-          : null;
-    if (!command) return; // S3 no-op when idle
-    void window.pivis.invoke("session.sendCommand", { sessionId, command }).catch(() => {}); // S3 rejection-safe
+    if (!isSessionAbortable(s)) return; // S3 no-op when idle
+    void window.pivis.invoke("session.interrupt", { sessionId }).catch(() => {}); // S3 rejection-safe
   },
 
   addUiRequest: (sessionId, request) => {

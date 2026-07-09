@@ -78,13 +78,14 @@ function setup(sessionOverrides) {
   const runtime = makeRuntime(session);
   const send = vi.fn();
   const panelBridge = { closeAll: vi.fn(() => false) };
-  const { handleCommand } = setupCommandBridge({
+  const bridge = setupCommandBridge({
     runtime,
     session,
     uiContext: {},
     send,
     panelBridge,
   });
+  const { handleCommand } = bridge;
   let nextId = 0;
   const run = async (command) => {
     const id = `cmd-${++nextId}`;
@@ -95,7 +96,14 @@ function setup(sessionOverrides) {
       .filter((m) => m.type === "response" && m.id === id);
     return responses[responses.length - 1];
   };
-  return { session, runtime, send, panelBridge, run };
+  return {
+    session,
+    runtime,
+    send,
+    panelBridge,
+    interruptActiveOperation: bridge.interruptActiveOperation,
+    run,
+  };
 }
 
 // ─── Wiring on setup ─────────────────────────────────────────────────────────
@@ -132,6 +140,18 @@ describe("setupCommandBridge — wiring", () => {
     });
   });
 
+  it("re-announces interrupt state on rebind even when the value is unchanged", async () => {
+    const { runtime, send } = setup();
+    send.mockClear();
+    const rebind = runtime.setRebindSession.mock.calls[0][0];
+    const nextSession = makeSession();
+    await rebind(nextSession);
+    expect(send).toHaveBeenCalledWith({
+      type: "event",
+      event: { type: "interrupt_state", interruptible: false },
+    });
+  });
+
   it("keeps synthetic streaming true across retry backoff", async () => {
     const { session, send, run } = setup();
     const subscriber = session.subscribe.mock.calls[0][0];
@@ -149,6 +169,36 @@ describe("setupCommandBridge — wiring", () => {
     });
     const res = await run({ type: "get_state" });
     expect(res.data.isStreaming).toBe(true);
+  });
+
+  it("tracks prompt operations as interruptible until the prompt promise settles", async () => {
+    let resolvePrompt;
+    const promptPromise = new Promise((resolve) => {
+      resolvePrompt = resolve;
+    });
+    const { session, send, run, interruptActiveOperation } = setup({
+      prompt: vi.fn((_message, options) => {
+        options.preflightResult(true);
+        return promptPromise;
+      }),
+    });
+
+    const res = await run({ type: "prompt", message: "/mcp" });
+    expect(res.success).toBe(true);
+    expect(send).toHaveBeenCalledWith({
+      type: "event",
+      event: { type: "interrupt_state", interruptible: true, operation: "agent" },
+    });
+
+    await interruptActiveOperation();
+    expect(session.abort).toHaveBeenCalledTimes(1);
+
+    resolvePrompt();
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledWith({
+      type: "event",
+      event: { type: "interrupt_state", interruptible: false },
+    });
   });
 
   it("before-invalidate only emits panel_clear_all when a panel was open", () => {

@@ -150,6 +150,12 @@ export const StreamingStateEventSchema = z.object({
   isStreaming: z.boolean(),
 });
 
+export const InterruptStateEventSchema = z.object({
+  type: z.literal("interrupt_state"),
+  interruptible: z.boolean(),
+  operation: z.enum(["agent", "bash", "compact"]).optional(),
+});
+
 export const CompactionStartEventSchema = z.object({
   type: z.literal("compaction_start"),
   reason: z.enum(["manual", "threshold", "overflow"]).optional(),
@@ -220,6 +226,7 @@ const KnownPiEventSchema = z.discriminatedUnion("type", [
   ToolExecutionEndEventSchema,
   QueueUpdateEventSchema,
   StreamingStateEventSchema,
+  InterruptStateEventSchema,
   CompactionStartEventSchema,
   CompactionEndEventSchema,
   AutoRetryStartEventSchema,

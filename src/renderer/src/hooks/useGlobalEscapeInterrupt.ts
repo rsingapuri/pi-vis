@@ -2,7 +2,7 @@
 //
 // Precedence (active session), first match wins:
 //   1. hasClaim()  -> DEFER (an overlay/autocomplete owns ESC)
-//   2. abortable op -> INTERRUPT (agent turn or standalone bash command)
+//   2. interruptible runtime op -> INTERRUPT (main/host routes the abort)
 //   3. else         -> no-op (let ESC reach whatever is focused)
 //
 // Capture phase + stopImmediatePropagation: preempts React's synthetic

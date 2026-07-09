@@ -159,6 +159,11 @@ export interface IpcInvokeContract {
     req: { sessionId: SessionId; command: PiRpcCommand; uiSurface?: "composer" | "unified" };
     res: PiRpcResponse;
   };
+  /** Interrupt the active runtime operation for a session. This is deliberately
+   *  not transcript-derived: main/host decide whether the live operation is an
+   *  agent turn, MCP/tool call, standalone bash, or compaction and route to the
+   *  correct abort primitive. Safe no-op when idle. */
+  "session.interrupt": { req: { sessionId: SessionId }; res: undefined };
   "session.respondToUiRequest": {
     req: { sessionId: SessionId; response: ExtensionUiResponse };
     res: undefined;

@@ -24,7 +24,7 @@ type PreviewHooks = {
 type PreviewStore = {
   getState: () => {
     activeSessionId: string | null;
-    sessions: Map<string, { isStreaming?: boolean }>;
+    sessions: Map<string, { isStreaming?: boolean; interruptible?: boolean }>;
   };
 };
 
@@ -38,7 +38,7 @@ async function startStreaming(page: import("@playwright/test").Page): Promise<vo
   await page.evaluate(() => {
     (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview.startStreaming();
   });
-  // Wait until the ACTIVE session is actually streaming — the global ESC
+  // Wait until the ACTIVE session is actually interruptible — the global ESC
   // handler aborts only the active session, and boot-time activation can
   // settle after the composer paints. Dispatching ESC before the armed state
   // was a latent race that made the abort assertions flaky.
@@ -49,7 +49,8 @@ async function startStreaming(page: import("@playwright/test").Page): Promise<vo
           const store = (window as unknown as { __pivisStore?: PreviewStore }).__pivisStore;
           const state = store?.getState();
           const sid = state?.activeSessionId;
-          return sid ? (state.sessions.get(sid)?.isStreaming ?? false) : false;
+          const session = sid ? state.sessions.get(sid) : undefined;
+          return !!(session?.interruptible || session?.isStreaming);
         }),
       { timeout: 10_000 },
     )
@@ -66,7 +67,7 @@ test.describe("ESC-to-interrupt — renderer", () => {
     const textarea = page.locator(".composer__textarea");
     await expect(textarea).toBeVisible({ timeout: 20_000 });
 
-    // Start a fake turn so isStreaming is true on the active session.
+    // Start a fake turn so the active session is interruptible.
     await startStreaming(page);
 
     // Focus the composer and type "/" to open the autocomplete.

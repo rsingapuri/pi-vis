@@ -239,6 +239,147 @@ describe("SessionRegistry", () => {
     );
   });
 
+  it("clears RPC fallback interrupt state when a prompt completes without agent events", async () => {
+    const id = registry.openSession(workspaceDir);
+    await registry.activateSession(id, FAKE_PI);
+
+    const res = await registry.sendCommand(id, { type: "prompt", message: "/widget-on" });
+
+    expect(res.success).toBe(true);
+    expect(registry.getSession(id)?.interruptible).toBe(false);
+    expect(registry.getSession(id)?.interruptKind).toBeUndefined();
+    expect(registry.getSession(id)?.busy).toBe(false);
+  }, 15_000);
+
+  it("marks RPC fallback synthetic interrupt operations busy until the command settles", async () => {
+    const id = registry.openSession(workspaceDir);
+    const rec = registry.getSession(id);
+    expect(rec).toBeDefined();
+    if (!rec) return;
+    let resolveCommand!: (value: {
+      success: true;
+      data: { output: string; exitCode: number };
+    }) => void;
+    const commandPromise = new Promise<{
+      success: true;
+      data: { output: string; exitCode: number };
+    }>((resolve) => {
+      resolveCommand = resolve;
+    });
+    rec.proc = {
+      sendCommand: async () => commandPromise,
+      stop: () => {},
+      stderrLog: [],
+    } as never;
+    rec._procReady = true;
+
+    const send = registry.sendCommand(id, { type: "bash", command: "sleep 10" });
+
+    expect(registry.getSession(id)?.interruptible).toBe(true);
+    expect(registry.getSession(id)?.interruptKind).toBe("bash");
+    expect(registry.getSession(id)?.busy).toBe(true);
+
+    resolveCommand({ success: true, data: { output: "", exitCode: 0 } });
+    await expect(send).resolves.toMatchObject({ success: true });
+    expect(registry.getSession(id)?.interruptible).toBe(false);
+    expect(registry.getSession(id)?.busy).toBe(false);
+  });
+
+  it("interruptSession cancels interruptible commands queued during startup", async () => {
+    const id = registry.openSession(workspaceDir);
+    const rec = registry.getSession(id);
+    expect(rec).toBeDefined();
+    if (!rec) return;
+    const resolved: unknown[] = [];
+    const queued = [
+      { type: "prompt" as const, message: "queued" },
+      { type: "steer" as const, message: "queued steer" },
+      { type: "follow_up" as const, message: "queued follow-up" },
+    ].map(
+      (command) =>
+        new Promise((resolve) => {
+          const item = {
+            command,
+            resolve: (value: unknown) => {
+              resolved.push(value);
+              resolve(value);
+            },
+            reject: () => {},
+          };
+          rec._pendingSend = [...(rec._pendingSend ?? []), item];
+        }),
+    );
+
+    await registry.interruptSession(id);
+
+    await Promise.all(queued);
+    expect(resolved).toEqual([
+      {
+        type: "response",
+        command: "prompt",
+        success: false,
+        error: "Interrupted before session was ready",
+      },
+      {
+        type: "response",
+        command: "steer",
+        success: false,
+        error: "Interrupted before session was ready",
+      },
+      {
+        type: "response",
+        command: "follow_up",
+        success: false,
+        error: "Interrupted before session was ready",
+      },
+    ]);
+    expect(rec._pendingSend).toBeUndefined();
+  });
+
+  it("interruptSession leaves non-interruptible startup commands queued", async () => {
+    const id = registry.openSession(workspaceDir);
+    const rec = registry.getSession(id);
+    expect(rec).toBeDefined();
+    if (!rec) return;
+    const queued = {
+      command: { type: "get_state" as const },
+      resolve: () => {},
+      reject: () => {},
+    };
+    rec._pendingSend = [queued];
+
+    await registry.interruptSession(id);
+
+    expect(rec._pendingSend).toEqual([queued]);
+  });
+
+  it("interruptSession sends every required RPC fallback abort primitive", async () => {
+    const id = registry.openSession(workspaceDir);
+    const rec = registry.getSession(id);
+    expect(rec).toBeDefined();
+    if (!rec) return;
+    const commands: string[] = [];
+    rec.proc = {
+      sendCommand: async (command: { type: string }) => {
+        commands.push(command.type);
+        return { success: true };
+      },
+      stop: () => {},
+      stderrLog: [],
+    } as never;
+    rec._procReady = true;
+    rec._interruptOps = new Map([
+      [1, { kind: "agent", source: "event" }],
+      [2, { kind: "bash", source: "command" }],
+    ]);
+    rec.interruptible = true;
+    rec.interruptKind = "bash";
+
+    await registry.interruptSession(id);
+
+    expect(commands).toEqual(["abort", "abort_bash"]);
+  });
+
   it("activateSession respawns after the previous process exits", async () => {
     const id = registry.openSession(workspaceDir);
     await registry.activateSession(id, FAKE_PI);

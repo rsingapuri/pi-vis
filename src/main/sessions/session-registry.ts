@@ -10,9 +10,12 @@ import type { PiRpcResponse } from "@shared/pi-protocol/responses.js";
 import lockfile from "proper-lockfile";
 import { resolveHostExecPath } from "../pi/locate-node.js";
 import { PiProcess } from "../pi/pi-process.js";
-import { HostVersionTooLowError, SessionHost } from "../pi/session-host.js";
+import { HostVersionTooLowError, SessionHost, isSessionHost } from "../pi/session-host.js";
 
 export type SessionCommandUiSurface = "composer" | "unified";
+export type SessionInterruptKind = "agent" | "bash" | "compact";
+type SessionInterruptSource = "command" | "event";
+type SessionInterruptOperation = { kind: SessionInterruptKind; source: SessionInterruptSource };
 
 export interface SessionRecord {
   sessionId: SessionId;
@@ -30,6 +33,10 @@ export interface SessionRecord {
   /** True while the agent is actively processing a command (busy = ineligible for idle kill). */
   busy: boolean;
   retryPending: boolean;
+  interruptible: boolean;
+  interruptKind?: SessionInterruptKind | undefined;
+  _interruptOps?: Map<number, SessionInterruptOperation> | undefined;
+  _nextInterruptOpId?: number | undefined;
   /** Whether we hold the proper-lockfile advisory lock on the session file. */
   _hasLock?: boolean;
   /** True while activateSession() is mid-flight — guards re-entrant double-spawn. */
@@ -158,6 +165,7 @@ export class SessionRegistry {
       lastActiveAt: Date.now(),
       busy: false,
       retryPending: false,
+      interruptible: false,
     };
     this.sessions.set(sessionId, record);
 
@@ -411,17 +419,33 @@ export class SessionRegistry {
         } else if (event.type === "agent_start") {
           record.busy = true;
           record.retryPending = false;
+          if (!isSessionHost(proc)) this._beginInterruptOperation(record, "agent");
         } else if (event.type === "agent_end") {
           record.retryPending = !!event.willRetry;
           record.busy = !!event.willRetry;
+          if (!isSessionHost(proc) && !event.willRetry) {
+            this._endInterruptOperationsByKind(record, "agent");
+          }
         } else if (event.type === "auto_retry_start") {
           record.retryPending = true;
           record.busy = true;
+          if (!isSessionHost(proc)) this._beginInterruptOperation(record, "agent");
         } else if (event.type === "auto_retry_end" && event.success === false) {
           record.retryPending = false;
           record.busy = false;
+          if (!isSessionHost(proc)) this._endInterruptOperationsByKind(record, "agent");
         } else if (event.type === "streaming_state") {
-          if (event.isStreaming) record.busy = true;
+          if (event.isStreaming) {
+            record.busy = true;
+            if (!isSessionHost(proc)) this._beginInterruptOperation(record, "agent");
+          } else if (!record.retryPending) {
+            record.busy = false;
+            if (!isSessionHost(proc)) this._endInterruptOperationsByKind(record, "agent");
+          }
+        } else if (event.type === "interrupt_state") {
+          record.interruptible = event.interruptible;
+          record.interruptKind = event.interruptible ? event.operation : undefined;
+          if (event.interruptible) record.busy = true;
           else if (!record.retryPending) record.busy = false;
         }
         if (record.status === "starting") {
@@ -443,6 +467,7 @@ export class SessionRegistry {
         record._procReady = false;
         record.busy = false;
         record.retryPending = false;
+        this._clearInterruptOperations(record);
         if (code !== 0 && code !== null) {
           const tail = proc.stderrLog.slice(-5).join("").trim();
           record.error = tail
@@ -470,6 +495,7 @@ export class SessionRegistry {
         record._procReady = false;
         record.busy = false;
         record.retryPending = false;
+        this._clearInterruptOperations(record);
         record.error = err.message;
         // P1-f: same as exit — async failure must release the lock.
         this._releaseLockIfHeld(sessionId);
@@ -513,6 +539,103 @@ export class SessionRegistry {
     this.enforceIdleLimit(sessionId);
   }
 
+  private _currentInterruptKind(record: SessionRecord): SessionInterruptKind | undefined {
+    const ops = record._interruptOps;
+    if (!ops || ops.size === 0) return undefined;
+    let latest: SessionInterruptKind | undefined;
+    for (const op of ops.values()) latest = op.kind;
+    return latest;
+  }
+
+  private _emitInterruptStateFromOps(record: SessionRecord): void {
+    const kind = this._currentInterruptKind(record);
+    const interruptible = kind !== undefined;
+    if (record.interruptible === interruptible && record.interruptKind === kind) return;
+    record.interruptible = interruptible;
+    record.interruptKind = kind;
+    if (interruptible) record.busy = true;
+    else if (!record.retryPending) record.busy = false;
+    this.onEvent(record.sessionId, {
+      type: "interrupt_state",
+      interruptible,
+      ...(kind ? { operation: kind } : {}),
+    });
+  }
+
+  private _beginInterruptOperation(
+    record: SessionRecord,
+    kind: SessionInterruptKind,
+    source: SessionInterruptSource = "event",
+  ): number {
+    if (!record._interruptOps) record._interruptOps = new Map();
+    const id = record._nextInterruptOpId ?? 1;
+    record._nextInterruptOpId = id + 1;
+    record._interruptOps.set(id, { kind, source });
+    this._emitInterruptStateFromOps(record);
+    return id;
+  }
+
+  private _endInterruptOperation(record: SessionRecord, id: number): void {
+    if (!record._interruptOps?.delete(id)) return;
+    this._emitInterruptStateFromOps(record);
+  }
+
+  private _endInterruptOperationsByKind(record: SessionRecord, kind: SessionInterruptKind): void {
+    const ops = record._interruptOps;
+    if (!ops) return;
+    let changed = false;
+    for (const [id, op] of ops) {
+      if (op.kind === kind) {
+        ops.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) this._emitInterruptStateFromOps(record);
+  }
+
+  private _activeInterruptKinds(record: SessionRecord): Set<SessionInterruptKind> {
+    const kinds = new Set<SessionInterruptKind>();
+    for (const op of record._interruptOps?.values() ?? []) kinds.add(op.kind);
+    return kinds;
+  }
+
+  private _clearInterruptOperations(record: SessionRecord): void {
+    if (record._interruptOps) record._interruptOps.clear();
+    this._emitInterruptStateFromOps(record);
+  }
+
+  private _cancelPendingInterruptibleCommands(record: SessionRecord): number {
+    const pending = record._pendingSend;
+    if (!pending?.length) return 0;
+    const remaining: typeof pending = [];
+    let cancelled = 0;
+    for (const item of pending) {
+      if (this._isInterruptibleCommand(item.command)) {
+        cancelled++;
+        item.resolve({
+          type: "response",
+          command: item.command.type,
+          success: false,
+          error: "Interrupted before session was ready",
+        });
+      } else {
+        remaining.push(item);
+      }
+    }
+    record._pendingSend = remaining.length > 0 ? remaining : undefined;
+    return cancelled;
+  }
+
+  private _isInterruptibleCommand(command: PiRpcCommand): boolean {
+    return (
+      command.type === "prompt" ||
+      command.type === "steer" ||
+      command.type === "follow_up" ||
+      command.type === "bash" ||
+      command.type === "compact"
+    );
+  }
+
   /**
    * Send a command to the session's pi process. If the process is live, send
    * immediately. If activation is mid-flight (status "starting", proc not yet
@@ -539,7 +662,28 @@ export class SessionRegistry {
     // "Not initialized" until init completes. _procReady flips true exactly
     // when the proc can accept commands. See P1-i.
     if (!rec._restartInProgress && rec.proc && rec._procReady) {
-      return rec.proc.sendCommand(command, options);
+      const proc = rec.proc;
+      const fallbackInterruptKind: SessionInterruptKind | null =
+        !isSessionHost(proc) && command.type === "prompt"
+          ? "agent"
+          : !isSessionHost(proc) && command.type === "bash"
+            ? "bash"
+            : !isSessionHost(proc) && command.type === "compact"
+              ? "compact"
+              : null;
+      const opId = fallbackInterruptKind
+        ? this._beginInterruptOperation(rec, fallbackInterruptKind, "command")
+        : null;
+      try {
+        const res = await proc.sendCommand(command, options);
+        if (opId !== null) {
+          this._endInterruptOperation(rec, opId);
+        }
+        return res;
+      } catch (err) {
+        if (opId !== null) this._endInterruptOperation(rec, opId);
+        throw err;
+      }
     }
     if (rec.status === "starting" || rec._restartInProgress) {
       return new Promise<PiRpcResponse>((resolve, reject) => {
@@ -550,19 +694,41 @@ export class SessionRegistry {
     throw new Error(`No active process for session ${sessionId}`);
   }
 
+  /** Interrupt the active runtime operation. Safe no-op when idle. */
+  async interruptSession(sessionId: SessionId): Promise<void> {
+    const rec = this.sessions.get(sessionId);
+    if (!rec) return;
+    this._cancelPendingInterruptibleCommands(rec);
+    if (!rec.proc || !rec._procReady) return;
+    if (isSessionHost(rec.proc)) {
+      rec.proc.sendInterrupt();
+      return;
+    }
+    const kinds = this._activeInterruptKinds(rec);
+    if (kinds.size === 0) return;
+    const commands: PiRpcCommand[] = [];
+    if (kinds.has("agent") || kinds.has("compact")) commands.push({ type: "abort" });
+    if (kinds.has("bash")) commands.push({ type: "abort_bash" });
+    for (const command of commands) {
+      try {
+        await rec.proc.sendCommand(command);
+      } catch {
+        // Rejection-safe: ESC should never surface an unhandled rejection.
+      }
+    }
+  }
+
   /** Flush queued commands now that the proc is live (activation succeeded). */
   private _flushPending(sessionId: SessionId): void {
     const rec = this.sessions.get(sessionId);
     if (!rec?._pendingSend?.length) return;
     const pending = rec._pendingSend;
     rec._pendingSend = undefined;
-    const proc = rec.proc;
     for (const item of pending) {
-      if (!proc) {
-        item.reject(new Error(`No active process for session ${sessionId}`));
-        continue;
-      }
-      proc.sendCommand(item.command, { uiSurface: item.uiSurface }).then(item.resolve, item.reject);
+      this.sendCommand(sessionId, item.command, { uiSurface: item.uiSurface }).then(
+        item.resolve,
+        item.reject,
+      );
     }
   }
 
@@ -891,6 +1057,7 @@ export class SessionRegistry {
     rec.error = undefined;
     rec.busy = false;
     rec.retryPending = false;
+    this._clearInterruptOperations(rec);
     this.onStatusChanged(sessionId, "cold");
   }
 
@@ -932,6 +1099,7 @@ export class SessionRegistry {
       rec._procReady = false;
       rec.busy = false;
       rec.retryPending = false;
+      this._clearInterruptOperations(rec);
       proc?.stop();
       this._releaseLockIfHeld(rec.sessionId);
     }

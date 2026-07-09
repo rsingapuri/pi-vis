@@ -20,6 +20,7 @@
  *   { type: "init", piPath, cwd, sessionFile? }
  *   { type: "command", id, command }
  *   { type: "dialog_response", response }
+ *   { type: "interrupt" }
  *   { type: "panel_input", panelId, data }
  *   { type: "panel_resize", panelId, cols, rows }
  *   { type: "panel_close_request", panelId }

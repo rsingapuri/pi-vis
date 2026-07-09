@@ -487,6 +487,10 @@ export function initIpc(win: BrowserWindow): void {
     },
   );
 
+  ipcMain.handle("session.interrupt", async (_evt, args: { sessionId: SessionId }) => {
+    await registry?.interruptSession(args.sessionId);
+  });
+
   ipcMain.handle(
     "session.respondToUiRequest",
     async (_evt, args: { sessionId: SessionId; response: ExtensionUiResponse }) => {

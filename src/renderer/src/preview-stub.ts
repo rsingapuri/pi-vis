@@ -29,19 +29,28 @@ const listeners = new Map<string, Set<Listener>>();
 // real pi. They are attached to window.__pivisPreview and are a no-op for
 // real Electron builds (preview-stub only loads in dev:renderer).
 const previewHooks = {
-  /** Count of `abort` commands dispatched to the stub. */
+  /** Count of session interrupt requests dispatched to the stub. */
   abortCalls: 0,
   /** Log of every panel input string sent to `session.panelInput`. */
   panelInputLog: [] as string[],
   /** Begin a fake turn (agent_start) on the active session. */
   startStreaming(): void {
     const activeId = useSessionsStore.getState().activeSessionId ?? DEMO_SESSION_ID;
-    emit("session.events", { sessionId: activeId, events: [{ type: "agent_start" }] });
+    emit("session.events", {
+      sessionId: activeId,
+      events: [
+        { type: "interrupt_state", interruptible: true, operation: "agent" },
+        { type: "agent_start" },
+      ],
+    });
   },
   /** End a fake turn (final agent_end) on the active session. */
   stopStreaming(): void {
     const activeId = useSessionsStore.getState().activeSessionId ?? DEMO_SESSION_ID;
-    emit("session.events", { sessionId: activeId, events: [{ type: "agent_end" }] });
+    emit("session.events", {
+      sessionId: activeId,
+      events: [{ type: "agent_end" }, { type: "interrupt_state", interruptible: false }],
+    });
   },
 };
 // Attach to window for render-test access (guarded for type safety).
@@ -285,15 +294,26 @@ function chunk(text: string, size: number): string[] {
   return out;
 }
 
+let streamGeneration = 0;
+
+function cancelPreviewStream(): void {
+  streamGeneration++;
+}
+
 async function streamPromptResponse(message: string): Promise<void> {
+  const generation = ++streamGeneration;
+  const cancelled = () => generation !== streamGeneration;
+  emitEvent({ type: "interrupt_state", interruptible: true, operation: "agent" });
   // Simulate the latency before pi's agent_start arrives
   await sleep(600);
+  if (cancelled()) return;
   emitEvent({ type: "agent_start" });
   emitEvent({ type: "turn_start" });
   emitEvent({ type: "message_start", message: { role: "assistant" } });
 
   const thinking = `The user said "${message}". I'll think about that for a moment before answering, long enough that the italic thinking style is visible while streaming.`;
   for (const delta of chunk(thinking, 18)) {
+    if (cancelled()) return;
     emitEvent({
       type: "message_update",
       message: { role: "assistant" },
@@ -301,9 +321,11 @@ async function streamPromptResponse(message: string): Promise<void> {
     });
     await sleep(40);
   }
+  if (cancelled()) return;
 
   const text = `You said: **${message}**\n\nThis is a streamed preview response with enough text to scroll the transcript and demonstrate that the view stays pinned to the bottom while content flows in — unless you scroll up, in which case it stays put.\n\nHere is a list to take up vertical space:\n\n${Array.from({ length: 8 }, (_, i) => `- streamed list item ${i + 1}`).join("\n")}`;
   for (const delta of chunk(text, 14)) {
+    if (cancelled()) return;
     emitEvent({
       type: "message_update",
       message: { role: "assistant" },
@@ -311,9 +333,11 @@ async function streamPromptResponse(message: string): Promise<void> {
     });
     await sleep(30);
   }
+  if (cancelled()) return;
   emitEvent({ type: "message_end", message: { role: "assistant" } });
 
   // A tool call so the running spinner + live tail are visible
+  if (cancelled()) return;
   emitEvent({
     type: "tool_execution_start",
     toolCallId: "live-1",
@@ -321,6 +345,7 @@ async function streamPromptResponse(message: string): Promise<void> {
     args: { command: "npm run build" },
   });
   for (let i = 1; i <= 8; i++) {
+    if (cancelled()) return;
     emitEvent({
       type: "tool_execution_update",
       toolCallId: "live-1",
@@ -330,6 +355,7 @@ async function streamPromptResponse(message: string): Promise<void> {
     });
     await sleep(150);
   }
+  if (cancelled()) return;
   emitEvent({
     type: "tool_execution_end",
     toolCallId: "live-1",
@@ -338,8 +364,10 @@ async function streamPromptResponse(message: string): Promise<void> {
     isError: false,
   });
 
+  if (cancelled()) return;
   emitEvent({ type: "message_start", message: { role: "assistant" } });
   for (const delta of chunk("Done — that was the whole demo turn.", 12)) {
+    if (cancelled()) return;
     emitEvent({
       type: "message_update",
       message: { role: "assistant" },
@@ -347,9 +375,11 @@ async function streamPromptResponse(message: string): Promise<void> {
     });
     await sleep(40);
   }
+  if (cancelled()) return;
   emitEvent({ type: "message_end", message: { role: "assistant" } });
   emitEvent({ type: "turn_end" });
   emitEvent({ type: "agent_end" });
+  emitEvent({ type: "interrupt_state", interruptible: false });
 }
 
 // ── Command handling ─────────────────────────────────────────────────────
@@ -381,7 +411,9 @@ async function handleSendCommand(req: unknown): Promise<unknown> {
     }
     case "abort":
       previewHooks.abortCalls++;
+      cancelPreviewStream();
       emitEvent({ type: "agent_end" });
+      emitEvent({ type: "interrupt_state", interruptible: false });
       return response("abort");
     case "get_commands":
       return response("get_commands", {
@@ -704,6 +736,12 @@ const stub = {
         return "/Users/me/code/my-repo-worktrees/swift-otter";
       case "session.sendCommand":
         return handleSendCommand(req);
+      case "session.interrupt":
+        previewHooks.abortCalls++;
+        cancelPreviewStream();
+        emitEvent({ type: "agent_end" });
+        emitEvent({ type: "interrupt_state", interruptible: false });
+        return undefined;
       // Unified-TUI panel I/O (UnifiedTuiHost calls these). No-op in the stub —
       // the panel is driven by emitted panel_events, not round-tripped.
       case "session.panelInput":

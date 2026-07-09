@@ -38,6 +38,8 @@ function setStats(stats: SessionStats): void {
     transcript: createTranscriptState(),
     isStreaming: false,
     promptsInFlight: 0,
+    bashInFlight: 0,
+    interruptible: false,
     retryPending: false,
     streamingEpoch: 0,
     queueEpoch: 0,

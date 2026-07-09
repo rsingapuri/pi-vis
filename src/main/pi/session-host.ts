@@ -641,6 +641,7 @@ export class SessionHost extends EventEmitter {
           mimeType?: string | undefined;
         }
       | { type: "dialog_response"; response: unknown }
+      | { type: "interrupt" }
       | { type: "panel_input"; panelId: number; data: string }
       | { type: "panel_resize"; panelId: number; cols: number; rows: number; force?: true }
       | { type: "panel_close_request"; panelId: number },
@@ -707,6 +708,10 @@ export class SessionHost extends EventEmitter {
       this.dialogTimer = null;
     }
     this.armStartupTimer();
+  }
+
+  sendInterrupt(): void {
+    this.sendToHost({ type: "interrupt" });
   }
 
   sendPanelInput(panelId: number, data: string): void {

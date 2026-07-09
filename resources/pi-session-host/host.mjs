@@ -9,6 +9,7 @@
  *   { type: "init", piPath, cwd, sessionFile? }
  *   { type: "command", id, command: PiRpcCommand }
  *   { type: "dialog_response", id, response: ExtensionUiResponse }
+ *   { type: "interrupt" }
  *   { type: "panel_input", panelId, data }
  *   { type: "panel_resize", panelId, cols, rows, force? }
  *   { type: "panel_close_request", panelId }
@@ -48,6 +49,7 @@ import { createDialogResolver, createUIContext } from "./ui-context.mjs";
 let runtime = null;
 let session = null;
 let handleCommand = null;
+let interruptActiveOperation = null;
 let dialogResolver = null;
 // Unified-TUI controller { dispose, resolveSubmit, resolveClipboardImage } —
 // assigned in handleInit (createUIContext returns it as the `unified` bundle)
@@ -376,7 +378,11 @@ async function handleInit(msg) {
 
     // Step 6: Setup command bridge (rebind + command handler + shared
     // bindExtensions used by both the initial bind and every rebind)
-    const { handleCommand: handle, bindExtensions: bindExt } = setupCommandBridge({
+    const {
+      handleCommand: handle,
+      bindExtensions: bindExt,
+      interruptActiveOperation: interrupt,
+    } = setupCommandBridge({
       runtime,
       session,
       uiContext,
@@ -394,6 +400,7 @@ async function handleInit(msg) {
 
     // Step 8: Signal ready (include version so renderer can display it)
     handleCommand = handle;
+    interruptActiveOperation = interrupt;
     send({ type: "ready", piVersion: pi.VERSION });
     console.error(`[pi-session-host] Ready (pi ${pi.VERSION}, cwd: ${cwd})`);
   } catch (err) {
@@ -422,6 +429,10 @@ process.on("message", async (msg) => {
 
       case "dialog_response":
         dialogResolver?.resolve(msg.response);
+        break;
+
+      case "interrupt":
+        await interruptActiveOperation?.();
         break;
 
       case "panel_input":

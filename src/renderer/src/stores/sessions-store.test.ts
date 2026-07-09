@@ -3149,16 +3149,14 @@ describe("sessions store - isStreaming turn-end truth (S1, S2) + abortSession (S
     expect(runningSince()).toBe(before);
   });
 
-  it("abortSession: streaming -> invoke called with {type:'abort'}", () => {
+  it("abortSession: streaming -> invokes session.interrupt", () => {
     useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
     invokeMock.mockClear();
     useSessionsStore.getState().abortSession(SESSION_A);
     expect(invokeMock).toHaveBeenCalledTimes(1);
-    const [, payload] = invokeMock.mock.calls[0] as [
-      string,
-      { sessionId: SessionId; command: { type: string } },
-    ];
-    expect(payload).toEqual({ sessionId: SESSION_A, command: { type: "abort" } });
+    const [channel, payload] = invokeMock.mock.calls[0] as [string, { sessionId: SessionId }];
+    expect(channel).toBe("session.interrupt");
+    expect(payload).toEqual({ sessionId: SESSION_A });
   });
 
   it("abortSession: prompt in flight before agent_start is abortable", () => {
@@ -3166,11 +3164,9 @@ describe("sessions store - isStreaming turn-end truth (S1, S2) + abortSession (S
     invokeMock.mockClear();
     useSessionsStore.getState().abortSession(SESSION_A);
     expect(invokeMock).toHaveBeenCalledTimes(1);
-    const [, payload] = invokeMock.mock.calls[0] as [
-      string,
-      { sessionId: SessionId; command: { type: string } },
-    ];
-    expect(payload).toEqual({ sessionId: SESSION_A, command: { type: "abort" } });
+    const [channel, payload] = invokeMock.mock.calls[0] as [string, { sessionId: SessionId }];
+    expect(channel).toBe("session.interrupt");
+    expect(payload).toEqual({ sessionId: SESSION_A });
   });
 
   it("abortSession: idle -> invoke NOT called (no-op, S3)", () => {
