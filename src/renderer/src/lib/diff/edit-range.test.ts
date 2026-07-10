@@ -28,15 +28,25 @@ describe("resolveEditRange", () => {
   // model.lines: ctx(a) del(b) del(c) add(B) add(C) ctx(d) ctx(e)
   const m = model("a\nb\nc\nd\ne\n", "a\nB\nC\nd\ne\n");
 
-  it("splits a del+add selection into del blocks and one edit block", () => {
+  it("trims leading/trailing removed lines from a del+add selection", () => {
     const r = resolveEditRange(m, allVisible(m), 1, 4, new Set());
     expect(r).not.toBeNull();
+    expect(r!.startLineIdx).toBe(3);
+    expect(r!.endLineIdx).toBe(4);
     expect(r!.startNewNo).toBe(2);
     expect(r!.endNewNo).toBe(3);
     expect(r!.blocks).toEqual([
-      { kind: "del", lineIdx: 1 },
-      { kind: "del", lineIdx: 2 },
       { kind: "edit", lineIdxs: [3, 4], newNos: [2, 3], initialText: "B\nC" },
+    ]);
+  });
+
+  it("skips interior removed lines and keeps one contiguous editable block", () => {
+    const r = resolveEditRange(m, allVisible(m), 0, 5, new Set());
+    expect(r).not.toBeNull();
+    expect(r!.startLineIdx).toBe(0);
+    expect(r!.endLineIdx).toBe(5);
+    expect(r!.blocks).toEqual([
+      { kind: "edit", lineIdxs: [0, 3, 4, 5], newNos: [1, 2, 3, 4], initialText: "a\nB\nC\nd" },
     ]);
   });
 
@@ -51,9 +61,9 @@ describe("resolveEditRange", () => {
     expect(r!.blocks).toEqual([{ kind: "edit", lineIdxs: [3], newNos: [2], initialText: "B" }]);
   });
 
-  it("normalizes a reversed selection", () => {
+  it("normalizes a reversed selection and trims removed edges", () => {
     const r = resolveEditRange(m, allVisible(m), 4, 1, new Set());
-    expect(r!.startLineIdx).toBe(1);
+    expect(r!.startLineIdx).toBe(3);
     expect(r!.endLineIdx).toBe(4);
   });
 
@@ -61,10 +71,7 @@ describe("resolveEditRange", () => {
     // Select the whole model; line d (newNo 4) is commented.
     const r = resolveEditRange(m, allVisible(m), 0, 6, new Set([4]));
     expect(r!.blocks).toEqual([
-      { kind: "edit", lineIdxs: [0], newNos: [1], initialText: "a" },
-      { kind: "del", lineIdx: 1 },
-      { kind: "del", lineIdx: 2 },
-      { kind: "edit", lineIdxs: [3, 4, 5], newNos: [2, 3, 4], initialText: "B\nC\nd" },
+      { kind: "edit", lineIdxs: [0, 3, 4, 5], newNos: [1, 2, 3, 4], initialText: "a\nB\nC\nd" },
       { kind: "comment", newNo: 4 },
       { kind: "edit", lineIdxs: [6], newNos: [5], initialText: "e" },
     ]);

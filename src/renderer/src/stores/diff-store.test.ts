@@ -22,16 +22,26 @@ let disk = "";
 let invoke: ReturnType<typeof vi.fn>;
 
 function resetStore(diskText: string): void {
-  disk = diskText;
-  // A ready FileState seeded from the disk text (an added file → oldText "").
-  const model = buildDiffModel("", disk);
+  resetStoreWithTexts("", diskText, "A");
+}
+
+function resetStoreWithTexts(oldText: string, newText: string, status: "A" | "M" = "M"): void {
+  disk = newText;
+  const model = buildDiffModel(oldText, disk);
   useDiffStore.setState({
     open: true,
     sessionId: "s1" as never,
     root: "/repo",
     phase: "ready",
     files: [
-      { path: FILE, status: "A", untracked: true, insertions: 0, deletions: 0, binary: false },
+      {
+        path: FILE,
+        status,
+        untracked: status === "A",
+        insertions: 0,
+        deletions: 0,
+        binary: false,
+      },
     ],
     selectedPath: FILE,
     editSession: null,
@@ -44,7 +54,7 @@ function resetStore(diskText: string): void {
           gapState: model.kind === "ok" ? model.gaps.map(() => ({ top: 0, bottom: 0 })) : [],
           oldTokens: null,
           newTokens: null,
-          oldText: "",
+          oldText,
           newText: disk,
           collapsed: false,
         },
@@ -120,6 +130,16 @@ describe("diff-store render caps", () => {
 
     useDiffStore.getState().bumpRenderCap("big.ts", 6_000);
     expect(useDiffStore.getState().fileState.get("big.ts")?.renderCap).toBe(7_500);
+  });
+
+  it("clamps render-cap bumps at the diff row safety ceiling", () => {
+    useDiffStore.setState({
+      fileState: new Map([["huge.ts", { status: "ready" as const, collapsed: false }]]),
+    });
+
+    useDiffStore.getState().bumpRenderCap("huge.ts", 1_000_000);
+
+    expect(useDiffStore.getState().fileState.get("huge.ts")?.renderCap).toBe(10_000);
   });
 });
 
@@ -284,6 +304,25 @@ describe("diff-store edit session", () => {
     expect(useDiffStore.getState().editSession).toBeNull();
     expect(useDiffStore.getState().fileState.get(FILE)?.newText).toBe("a\nX\nY\nd\n");
     expect(useDiffStore.getState().fileState.get(FILE)?.model?.kind).toBe("ok");
+  });
+
+  it("can delete all editable lines across an interior removal without leaving a blank line", async () => {
+    resetStoreWithTexts("top\nremove\nmiddle\nbottom\n", "top\nmiddle\nbottom\n");
+    const fs = useDiffStore.getState().fileState.get(FILE)!;
+    if (!fs.model || fs.model.kind !== "ok") throw new Error("no model");
+    const topIdx = fs.model.lines.findIndex((ln) => ln.type === "context" && ln.text === "top");
+    const middleIdx = fs.model.lines.findIndex(
+      (ln) => ln.type === "context" && ln.text === "middle",
+    );
+    openOver(topIdx, middleIdx); // selection includes the removed "remove" row in between
+    expect(useDiffStore.getState().editSession?.blocks).toEqual([
+      { kind: "edit", lineIdxs: [topIdx, middleIdx], newNos: [1, 2], initialText: "top\nmiddle" },
+    ]);
+
+    await useDiffStore.getState().saveEditSession([""]);
+    await flush();
+
+    expect(disk).toBe("bottom\n");
   });
 
   it("sends the CAS expectedHash derived from the base newText", async () => {

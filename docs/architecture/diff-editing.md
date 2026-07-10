@@ -13,17 +13,25 @@ Read it before editing `components/diff/DiffEdit*`, `lib/diff/{splice,
 auto-indent,edit-range,edit-anchor}.ts`, the diff-store edit-session state, or
 the `git.writeWorkingFile` IPC.
 
+## Diff rendering scalability
+
+`DiffFileSection` renders browsing rows in bounded chunks (`DIFF_ROW_RENDER_CHUNK`) with a hard normal-browsing DOM ceiling (`DIFF_ROW_RENDER_MAX`) so pathological diffs cannot mount tens of thousands of row nodes. **Search discovery is never render-capped.** It covers every add/del row and hunk-context row, plus unchanged gap context the user explicitly revealed; only the still-collapsed middle of an unchanged gap is outside the logical diff projection. A match after the DOM ceiling is shown as a small targeted row island with an omitted-range notice, never by mounting every preceding row or growing `renderCap`.
+
+Search uses the complete descriptor-only `GitChangesResult.searchFiles` manifest, even when the browsable rail/section list is capped at 500 files. File contents remain lazy: `useDiffSearch` fetches at most two files concurrently and sends model construction/scanning to a Vite module worker. Normal/active file loading also builds its model through `diff-model.worker.ts`, so jumping to an uncached distant result does not run jsdiff on the renderer interaction task. Results return as per-file transferable `Int32Array` data, coalesced to at most one React update per animation frame, so React stores only compact batches and decodes the active occurrence on demand instead of flattening every match into objects on each render. Query, case, projection, base, refresh, viewer-close, and session changes dispose the old worker generation; unavoidable late IPC results are ignored. Partial counts use `N+ · X/Y files`, do not wrap navigation until complete, and explicitly report binary/too-large/failed files as unavailable instead of silently claiming complete coverage. See [ADR 0001](../decisions/0001-worker-backed-diff-search.md).
+
 ## Segment model
 
 A selection covers a contiguous range of model line indices. It is projected
 into an **ordered block sequence** (`lib/diff/edit-range.ts`):
 
 - `{kind:"edit", lineIdxs, newNos, initialText}` — a run of editable
-  context/add lines. Each segment owns one textarea; dels and comments break
-  segments. `initialText` is the model lines joined by `\"\n\"`.
-- `{kind:\"del\", lineIdx}` — an inert, dimmed, read-only removed line. Still
-  selectable/copyable (that is the \"restore a deleted line\" affordance) but
-  never editable, and never re-enters the file on save.
+  context/add lines. Each segment owns one textarea; comments break segments,
+  but removed lines do not. `initialText` is the editable model lines joined by
+  `\"\n\"`.
+- `{kind:\"del\", lineIdx}` — a legacy inert removed-line block. Newly resolved
+  ranges do not emit these: removed lines inside a selection are hidden while
+  editing, and removed lines at the top/bottom edge are trimmed out of the edit
+  range entirely.
 - `{kind:\"comment\", newNo}` — an inert comment thread row that stays in place
   while editing. A commented context/add line ENDS its editable segment so the
   thread row can sit exactly where it was (this is why a comment on the *last*
@@ -32,9 +40,9 @@ into an **ordered block sequence** (`lib/diff/edit-range.ts`):
 `resolveEditRange` returns `null` for a hidden (collapsed-gap) line inside the
 range, or a range with zero context/add (editable) lines (del-only selection).
 
-The editable text is therefore a **sequence of segments** around the inert
-rows — not one textarea. On save the replacement lines are the concat of the
-edit-segment buffers (empty buffer → zero lines).
+Selections that include removed lines usually still become one contiguous
+editable block: the removed rows are suppressed, and the replacement lines are
+exactly the concat of the edit-segment buffers (empty buffer → zero lines).
 
 ## Freeze semantics
 

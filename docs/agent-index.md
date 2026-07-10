@@ -44,6 +44,7 @@ Read `docs/architecture/diff-editing.md` when touching:
 
 - inline line editing in the diff viewer (`DiffEditBubble`, `DiffEditCard`, the edit session in `diff-store.ts`)
 - `src/renderer/src/lib/diff/splice.ts` / `auto-indent.ts` / `edit-range.ts` / `edit-anchor.ts`
+- diff search, `useDiffSearch`, `diff-search.worker.ts`, render limits, or targeted result windows
 - the `git.writeWorkingFile` IPC channel / CAS save protocol / comment re-anchor
 
 Read `docs/ui-conventions.md` when touching:

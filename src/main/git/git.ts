@@ -473,6 +473,10 @@ export async function getChanges(root: string, base?: string): Promise<GitChange
     kind: "ok",
     repoRoot,
     files: capped,
+    // Search is logically independent from the 500-section browsing cap. The
+    // complete manifest is descriptors-only; file contents remain lazy and
+    // bounded by the search controller's concurrency.
+    searchFiles: all,
     truncated,
     fingerprint: fpHash.digest("hex"),
   };

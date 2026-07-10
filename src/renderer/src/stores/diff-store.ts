@@ -20,6 +20,7 @@ import type { SessionId } from "@shared/ids.js";
 import type { ThemedToken } from "shiki";
 import { create } from "zustand";
 import { detectIndentUnit } from "../lib/diff/auto-indent.js";
+import { buildDiffModelAsync } from "../lib/diff/diff-model-worker-client.js";
 import type { AnyDiffModel, DiffModel, GapState } from "../lib/diff/diff-model.js";
 import {
   buildDiffModel,
@@ -31,6 +32,7 @@ import { findUniqueBlock } from "../lib/diff/edit-anchor.js";
 import type { EditBlockKind, EditRange } from "../lib/diff/edit-range.js";
 import { tokenizeLines, tokenizeLinesSync } from "../lib/diff/highlight.js";
 import { langForPath } from "../lib/diff/highlight.js";
+import { clampDiffRenderCap } from "../lib/diff/render-limits.js";
 import type { SearchMatch } from "../lib/diff/search.js";
 import { spliceNewLines } from "../lib/diff/splice.js";
 import { getLoadedHighlighter } from "../lib/shiki.js";
@@ -111,12 +113,19 @@ export interface DiffStore {
   phase: DiffPhase;
   errorMessage: string | null;
   repoRoot: string | null;
+  /** Browsable file sections (capped by main for DOM/sidebar scalability). */
   files: GitChangedFile[];
+  /** Complete descriptor-only manifest used by uncapped diff search. */
+  searchFiles: GitChangedFile[];
   truncated: boolean;
   selectedPath: string | null;
   filter: string;
   viewMode: "unified" | "split";
   fileState: Map<string, FileState>;
+  /** Bumped when local diff content/projection changes without replacing the
+   *  changed-file manifest (gap reveal or inline save). Search uses this
+   *  primitive instead of scanning FileState on tokenization/lazy-load updates. */
+  searchRevision: number;
 
   /** At most one inline edit session is open at a time (one editor at a time).
    *  While non-null, that file is frozen against refreshes. */
@@ -279,6 +288,7 @@ export const useDiffStore = create<DiffStore>((set, get) => {
     errorMessage: null,
     repoRoot: null,
     files: [],
+    searchFiles: [],
     truncated: false,
     selectedPath: null,
     filter: "",
@@ -286,6 +296,7 @@ export const useDiffStore = create<DiffStore>((set, get) => {
     railWidth: 280,
     railVisible: true,
     fileState: new Map(),
+    searchRevision: 0,
     editSession: null,
     editCancelNonce: 0,
 
@@ -317,6 +328,7 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         errorMessage: null,
         repoRoot: null,
         files: [],
+        searchFiles: [],
         truncated: false,
         selectedPath: null,
         filter: "",
@@ -326,6 +338,7 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         railWidth: settings.diffRailWidth,
         railVisible: settings.diffRailVisible,
         fileState: new Map(),
+        searchRevision: 0,
         editSession: null,
         editCancelNonce: 0,
         // Restore the branch selected for this session during the current app run.
@@ -350,10 +363,12 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         errorMessage: null,
         repoRoot: null,
         files: [],
+        searchFiles: [],
         truncated: false,
         selectedPath: null,
         filter: "",
         fileState: new Map(),
+        searchRevision: 0,
         editSession: null,
         editCancelNonce: 0,
         refreshing: false,
@@ -412,7 +427,9 @@ export const useDiffStore = create<DiffStore>((set, get) => {
     ensureFileLoaded: async (path) => {
       // Freeze: while an edit session is open for this file, never reload it.
       if (get().editSession?.path === path) return;
-      const file = get().files.find((f) => f.path === path);
+      const file =
+        get().searchFiles.find((candidate) => candidate.path === path) ??
+        get().files.find((candidate) => candidate.path === path);
       const state = get().fileState.get(path);
       if (!file) return;
       if (state && state.status !== "idle") return;
@@ -494,7 +511,8 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         set({ fileState: m2 });
         return;
       }
-      const model = buildDiffModel(res.oldText, res.newText);
+      const model = await buildDiffModelAsync(res.oldText, res.newText);
+      if (myGen !== fileGenerations.get(path)) return;
       const gapState: GapState[] =
         model.kind === "ok" ? model.gaps.map(() => ({ top: 0, bottom: 0 })) : [];
       // Tokenize in the SAME commit whenever the highlighter is warm (it is,
@@ -542,7 +560,7 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       });
       const m = new Map(get().fileState);
       m.set(path, { ...state, gapState: nextGapState });
-      set({ fileState: m });
+      set({ fileState: m, searchRevision: get().searchRevision + 1 });
     },
 
     retokenize: () => {
@@ -691,8 +709,9 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       const m = new Map(get().fileState);
       const cur = m.get(path);
       if (!cur) return;
-      if ((cur.renderCap ?? 0) >= cap) return;
-      m.set(path, { ...cur, renderCap: cap });
+      const nextCap = clampDiffRenderCap(cap);
+      if ((cur.renderCap ?? 0) >= nextCap) return;
+      m.set(path, { ...cur, renderCap: nextCap });
       set({ fileState: m });
     },
 
@@ -856,7 +875,11 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       gapState: newGapState,
     });
     justSavedPaths.add(path);
-    set({ fileState: m, editSession: null });
+    set({
+      fileState: m,
+      editSession: null,
+      searchRevision: get().searchRevision + 1,
+    });
     // Re-baseline the fingerprint so the stale dot stays dark (invariant 10).
     void get().refresh();
   }
@@ -1078,7 +1101,14 @@ function handleChangesResult(
   isFirst: boolean,
 ): void {
   if (res.kind === "not-a-repo" || res.kind === "git-missing") {
-    set({ phase: res.kind, errorMessage: null, files: [], repoRoot: null, truncated: false });
+    set({
+      phase: res.kind,
+      errorMessage: null,
+      files: [],
+      searchFiles: [],
+      repoRoot: null,
+      truncated: false,
+    });
     return;
   }
   if (res.kind === "error") {
@@ -1142,8 +1172,14 @@ function handleChangesResult(
   // and ensureFileLoaded immediately returns because the file is frozen, leaving
   // the editor replaced by a permanent Loading… notice.
   let filesOut = res.files;
+  let searchFilesOut = res.searchFiles ?? res.files;
   if (frozenPath && frozenPrevFile && !res.files.some((f) => f.path === frozenPath)) {
     filesOut = [...res.files, frozenPrevFile];
+    if (!searchFilesOut.some((f) => f.path === frozenPath)) {
+      searchFilesOut = [...searchFilesOut, frozenPrevFile].sort((a, b) =>
+        a.path.localeCompare(b.path),
+      );
+    }
     const prevFrozenState = prevFileState.get(frozenPath);
     if (prevFrozenState) fileState.set(frozenPath, prevFrozenState);
     queuedRefresh = true;
@@ -1160,6 +1196,7 @@ function handleChangesResult(
     errorMessage: null,
     repoRoot: res.repoRoot,
     files: filesOut,
+    searchFiles: searchFilesOut,
     truncated: res.truncated,
     fileState,
     selectedPath: isFirst && res.files.length > 0 ? res.files[0]!.path : get().selectedPath,

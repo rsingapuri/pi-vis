@@ -190,6 +190,20 @@ describe("getChanges", () => {
     if (res.kind !== "ok") return;
     expect(res.files.some((f) => f.path === "with space.ts")).toBe(true);
   });
+
+  it("keeps an uncapped descriptor manifest for search", async () => {
+    makeRepo();
+    for (let index = 0; index < 501; index++) {
+      write(path.join(workDir, `generated-${String(index).padStart(3, "0")}.ts`), "needle\n");
+    }
+    const res = await getChanges(workDir);
+    expect(res.kind).toBe("ok");
+    if (res.kind !== "ok") return;
+    expect(res.truncated).toBe(true);
+    expect(res.files).toHaveLength(500);
+    expect(res.searchFiles).toHaveLength(501);
+    expect(res.searchFiles?.at(-1)?.path).toBe("generated-500.ts");
+  });
 });
 
 describe("getFileDiff", () => {

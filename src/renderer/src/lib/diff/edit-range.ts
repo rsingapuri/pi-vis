@@ -5,17 +5,18 @@
 //
 //   - {kind:"edit", lineIdxs, newNos, initialText}  — a run of editable
 //     context/add lines (the new-side text the user can change). Each segment
-//     owns one textarea; dels and comments BREAK segments.
-//   - {kind:"del", lineIdx}                          — an inert, dimmed,
-//     read-only removed line (still selectable/copyable — that's the
-//     "restore a deleted line" affordance). Never editable.
+//     owns one textarea; comments BREAK segments.
+//   - {kind:"del", lineIdx}                          — legacy inert removed
+//     line block. New ranges do not emit these; removed lines inside a selection
+//     are hidden while editing and omitted from the editable text.
 //   - {kind:"comment", newNo}                        — an inert comment
 //     thread row that stays in place while editing.
 //
 // A commented context/add line ENDS its edit segment (so the thread row can
 // sit exactly where it was). Removed (del) lines are never editable and never
-// silently re-enter the file: the save output is the editable-segment buffers
-// only.
+// silently re-enter the file: leading/trailing removed lines are trimmed out of
+// the edit range, and interior removed lines are skipped so the save output is
+// exactly the editable-segment buffers.
 //
 // `resolveEditRange` returns null for:
 //   - a hidden (collapsed-gap) line inside the range, and
@@ -90,7 +91,14 @@ export function resolveEditRange(
   }
   if (lo < 0 || hi >= lines.length) return null;
 
-  // Disqualify: any line in the range is hidden (collapsed-gap).
+  // Removed lines at the selection edges are not part of the editable new-side
+  // range. Treat them as if they were never selected so the card replaces the
+  // first selected context/add row in place (no top ghost row, no movement).
+  while (lo <= hi && lines[lo]?.type === "del") lo++;
+  while (hi >= lo && lines[hi]?.type === "del") hi--;
+  if (lo > hi) return null;
+
+  // Disqualify: any line in the trimmed range is hidden (collapsed-gap).
   for (let i = lo; i <= hi; i++) {
     if (!visibleIdxs.has(i)) return null;
   }
@@ -115,11 +123,7 @@ export function resolveEditRange(
   for (let i = lo; i <= hi; i++) {
     const ln = lines[i];
     if (!ln) continue;
-    if (ln.type === "del") {
-      flush();
-      blocks.push({ kind: "del", lineIdx: i });
-      continue;
-    }
+    if (ln.type === "del") continue;
     // context or add — editable.
     const newNo = ln.newNo;
     if (newNo === null) continue;

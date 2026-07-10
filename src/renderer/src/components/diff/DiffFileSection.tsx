@@ -23,11 +23,14 @@ import {
   type DiffModel,
   type GapState,
   type SplitRow,
-  buildSplitRows,
   visibleRows,
+  visibleRowsSlice,
+  visibleSplitRows,
+  visibleSplitRowsSlice,
 } from "../../lib/diff/diff-model.js";
 import { segmentLine } from "../../lib/diff/highlight.js";
 import type { IntralineRanges } from "../../lib/diff/intraline.js";
+import { DIFF_ROW_RENDER_CHUNK, DIFF_ROW_RENDER_MAX } from "../../lib/diff/render-limits.js";
 import { findOccurrences } from "../../lib/diff/search.js";
 import type { MatchSide } from "../../lib/diff/search.js";
 import type { FileState } from "../../stores/diff-store.js";
@@ -45,7 +48,7 @@ import {
 import { DiffEditCard } from "./DiffEditCard.js";
 import "./DiffFileSection.css";
 
-const ROW_RENDER_CAP = 5_000;
+const SEARCH_RESULT_CONTEXT_ROWS = 12;
 
 /**
  * In-diff find context for one file. `query` is "" when search is closed or
@@ -56,7 +59,7 @@ const ROW_RENDER_CAP = 5_000;
 export interface SearchHighlight {
   query: string;
   caseSensitive: boolean;
-  active: { lineIdx: number; side: MatchSide; occ: number } | null;
+  active: { lineIdx: number; side: MatchSide; occ: number; rowIndex: number } | null;
 }
 
 /** Per-code-cell search info handed to renderTokens. `null` = nothing to do. */
@@ -102,7 +105,6 @@ export function DiffFileSection({
   sectionRef,
 }: DiffFileSectionProps): React.ReactElement {
   const toggleCollapsed = useDiffStore((s) => s.toggleCollapsed);
-  const ensureFileLoaded = useDiffStore((s) => s.ensureFileLoaded);
   const expandGap = useDiffStore((s) => s.expandGap);
 
   // In-diff find: rendered highlight for this file. Reads only the slices it
@@ -119,19 +121,14 @@ export function DiffFileSection({
     query: searchOpen ? searchQuery : "",
     caseSensitive: searchCaseSensitive,
     active: activeMatch
-      ? { lineIdx: activeMatch.lineIdx, side: activeMatch.side, occ: activeMatch.occ }
+      ? {
+          lineIdx: activeMatch.lineIdx,
+          side: activeMatch.side,
+          occ: activeMatch.occ,
+          rowIndex: activeMatch.rowIndex,
+        }
       : null,
   };
-
-  // Auto-load: the host attaches IntersectionObserver to each section
-  // and calls ensureFileLoaded(path) when the section is in view. We
-  // still kick off on mount for the first N files (handled in the host).
-  // Collapsed sections don't load.
-  useEffect(() => {
-    if (state.status === "idle" && !state.collapsed) {
-      void ensureFileLoaded(file.path);
-    }
-  }, [state.status, state.collapsed, file.path, ensureFileLoaded]);
 
   const open = !state.collapsed;
   const sectionElRef = useRef<HTMLElement | null>(null);
@@ -299,7 +296,7 @@ function FileBody({
       newTokens={state.newTokens}
       viewMode={useSplit ? "split" : "unified"}
       search={search}
-      renderCap={state.renderCap ?? ROW_RENDER_CAP}
+      renderCap={state.renderCap ?? DIFF_ROW_RENDER_CHUNK}
       filePath={file.path}
       onExpandGap={onExpandGap}
     />
@@ -339,16 +336,57 @@ function RowsView({
     return `calc(${digits}ch + 1.143rem)`;
   }, [model.oldCount, model.newCount]);
 
-  const rows = useMemo(() => visibleRows(model, gapState), [model, gapState]);
+  const rowsWithOverflow = useMemo(
+    () => (viewMode === "split" ? [] : visibleRows(model, gapState, DIFF_ROW_RENDER_MAX + 1)),
+    [model, gapState, viewMode],
+  );
+  const splitRowsWithOverflow = useMemo(
+    () =>
+      viewMode === "split" ? visibleSplitRows(model, gapState, DIFF_ROW_RENDER_MAX + 1) : null,
+    [model, gapState, viewMode],
+  );
+  const rowStreamExceeded =
+    viewMode === "split" && splitRowsWithOverflow
+      ? splitRowsWithOverflow.length > DIFF_ROW_RENDER_MAX
+      : rowsWithOverflow.length > DIFF_ROW_RENDER_MAX;
+  const rows = useMemo(
+    () => (rowStreamExceeded ? rowsWithOverflow.slice(0, DIFF_ROW_RENDER_MAX) : rowsWithOverflow),
+    [rowStreamExceeded, rowsWithOverflow],
+  );
   const splitRows = useMemo(
-    () => (viewMode === "split" ? buildSplitRows(rows) : null),
-    [rows, viewMode],
+    () => (splitRowsWithOverflow ? splitRowsWithOverflow.slice(0, DIFF_ROW_RENDER_MAX) : null),
+    [splitRowsWithOverflow],
   );
   const effectiveRows = viewMode === "split" && splitRows ? splitRows : rows;
-  const shownCount = Math.min(renderCap, effectiveRows.length);
+  const cappedRenderCap = Math.min(renderCap, DIFF_ROW_RENDER_MAX);
+  const shownCount = Math.min(cappedRenderCap, effectiveRows.length);
+  const activeSearchRowIndex = search.active?.rowIndex ?? null;
+  const searchWindowStart =
+    activeSearchRowIndex !== null && activeSearchRowIndex >= shownCount
+      ? Math.max(shownCount, activeSearchRowIndex - SEARCH_RESULT_CONTEXT_ROWS)
+      : null;
+  const searchWindowCount =
+    searchWindowStart !== null && activeSearchRowIndex !== null
+      ? activeSearchRowIndex - searchWindowStart + SEARCH_RESULT_CONTEXT_ROWS + 1
+      : 0;
+  const searchWindowRows = useMemo(
+    () =>
+      searchWindowStart === null
+        ? []
+        : viewMode === "split"
+          ? visibleSplitRowsSlice(model, gapState, searchWindowStart, searchWindowCount)
+          : visibleRowsSlice(model, gapState, searchWindowStart, searchWindowCount),
+    [model, gapState, viewMode, searchWindowStart, searchWindowCount],
+  );
+  const searchWindowGap = searchWindowStart !== null && searchWindowStart > shownCount;
   const remainingRows = Math.max(0, effectiveRows.length - shownCount);
+  const remainingRowsLabel = rowStreamExceeded
+    ? `${remainingRows.toLocaleString()} remaining before the safety limit`
+    : `${remainingRows.toLocaleString()} remaining`;
+  const canShowMoreRows = remainingRows > 0 && shownCount < DIFF_ROW_RENDER_MAX;
+  const hiddenBySafetyCap = rowStreamExceeded && shownCount >= effectiveRows.length;
   const bumpRenderCap = useDiffStore((s) => s.bumpRenderCap);
-  const showNextRows = () => bumpRenderCap(filePath, shownCount + ROW_RENDER_CAP);
+  const showNextRows = () => bumpRenderCap(filePath, shownCount + DIFF_ROW_RENDER_CHUNK);
   const [editingLine, setEditingLine] = useState<number | null>(null);
   const commentsForSession = useSessionsStore((s) => s.diffComments.get(sessionId));
   const reconcileDiffCommentsForFile = useSessionsStore((s) => s.reconcileDiffCommentsForFile);
@@ -365,23 +403,50 @@ function RowsView({
     if (editingThisFile) setEditingLine(null);
   }, [editingThisFile]);
 
-  // Split view: precompute which split-row indices fall inside the edit range
-  // (a split row covers one or two model line indices), and the first one where
-  // the card renders. Unified view keys directly off row.lineIdx instead.
+  const splitDisplayItems = useMemo(() => {
+    if (!splitRows) return [];
+    return [
+      ...splitRows.slice(0, shownCount).map((row, idx) => ({ kind: "row" as const, row, idx })),
+      ...(searchWindowGap ? [{ kind: "notice" as const, key: "search-window-notice" }] : []),
+      ...(searchWindowRows as SplitRow[]).map((row, offset) => ({
+        kind: "row" as const,
+        row,
+        idx: (searchWindowStart ?? 0) + offset,
+      })),
+    ];
+  }, [splitRows, shownCount, searchWindowGap, searchWindowRows, searchWindowStart]);
+
+  const unifiedDisplayItems = useMemo(
+    () => [
+      ...rows.slice(0, shownCount).map((row, idx) => ({ kind: "row" as const, row, idx })),
+      ...(searchWindowGap ? [{ kind: "notice" as const, key: "search-window-notice" }] : []),
+      ...(searchWindowRows as typeof rows).map((row, offset) => ({
+        kind: "row" as const,
+        row,
+        idx: (searchWindowStart ?? 0) + offset,
+      })),
+    ],
+    [rows, shownCount, searchWindowGap, searchWindowRows, searchWindowStart],
+  );
+
+  // Split view: precompute which rendered split-row indices fall inside the
+  // edit range (including targeted search-window rows beyond the safety cap),
+  // and the first one where the card renders. Unified view keys directly off
+  // row.lineIdx instead.
   const splitEditMap = useMemo(() => {
-    if (!editingThisFile || !editSession || !splitRows) return null;
+    if (!editingThisFile || !editSession) return null;
     const inRange = new Set<number>();
     let first = -1;
-    for (let i = 0; i < splitRows.length; i++) {
-      const r = splitRows[i]!;
-      const idxs = splitRowIndices(r);
+    for (const item of splitDisplayItems) {
+      if (item.kind !== "row") continue;
+      const idxs = splitRowIndices(item.row);
       if (idxs.some((x) => x >= editSession.startLineIdx && x <= editSession.endLineIdx)) {
-        inRange.add(i);
-        if (first === -1) first = i;
+        inRange.add(item.idx);
+        if (first === -1) first = item.idx;
       }
     }
     return { inRange, first };
-  }, [editingThisFile, editSession, splitRows]);
+  }, [editingThisFile, editSession, splitDisplayItems]);
 
   // Build old/new line index → token-line map for split view. Each
   // entry is the (1-based) line number. We index by line number into
@@ -401,7 +466,9 @@ function RowsView({
         className={`diff-file__body diff-file__body--open${editingThisFile ? " diff-file__body--editing" : ""}`}
         style={{ ["--gutter-w" as string]: gutterW }}
       >
-        {splitRows.slice(0, shownCount).map((row, idx) => {
+        {splitDisplayItems.map((item) => {
+          if (item.kind === "notice") return <SearchWindowNotice key={item.key} />;
+          const { row, idx } = item;
           // Inline edit card: replace the in-range slice; suppress in-range rows.
           if (splitEditMap?.inRange.has(idx)) {
             if (idx === splitEditMap.first && editSession) {
@@ -438,7 +505,6 @@ function RowsView({
             }
             return (
               <GapRow
-                // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
                 key={idx}
                 gapIndex={row.gapIndex}
                 hiddenCount={row.hiddenCount}
@@ -451,10 +517,7 @@ function RowsView({
           if (row.type === "split-context") {
             const comment = commentForLine(commentsForSession, filePath, row.rightNo);
             return (
-              <Fragment
-                // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
-                key={idx}
-              >
+              <Fragment key={idx}>
                 <div className="diff-row diff-row--split">
                   <CommentCell
                     filePath={filePath}
@@ -512,10 +575,7 @@ function RowsView({
           }
           const comment = commentForLine(commentsForSession, filePath, row.rightNo);
           return (
-            <Fragment
-              // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
-              key={idx}
-            >
+            <Fragment key={idx}>
               <div className="diff-row diff-row--split">
                 <CommentCell
                   filePath={filePath}
@@ -581,12 +641,13 @@ function RowsView({
             </Fragment>
           );
         })}
-        {remainingRows > 0 && (
+        {canShowMoreRows && (
           <button type="button" className="diff-row diff-row--reveal" onClick={showNextRows}>
-            Show next {Math.min(ROW_RENDER_CAP, remainingRows).toLocaleString()} rows (
-            {remainingRows.toLocaleString()} remaining)
+            Show next {Math.min(DIFF_ROW_RENDER_CHUNK, remainingRows).toLocaleString()} rows (
+            {remainingRowsLabel})
           </button>
         )}
+        {hiddenBySafetyCap && <LargeDiffCapNotice />}
       </div>
     );
   }
@@ -597,7 +658,9 @@ function RowsView({
       className={`diff-file__body diff-file__body--open${editingThisFile ? " diff-file__body--editing" : ""}`}
       style={{ ["--gutter-w" as string]: gutterW }}
     >
-      {rows.slice(0, shownCount).map((row, idx) => {
+      {unifiedDisplayItems.map((item) => {
+        if (item.kind === "notice") return <SearchWindowNotice key={item.key} />;
+        const { row, idx } = item;
         // Inline edit card: replace the selected slice; suppress in-range rows.
         if (editingThisFile && editSession && row.type !== "gap") {
           if (row.lineIdx === editSession.startLineIdx) {
@@ -636,7 +699,6 @@ function RowsView({
           }
           return (
             <GapRow
-              // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
               key={idx}
               gapIndex={row.gapIndex}
               hiddenCount={row.hiddenCount}
@@ -649,10 +711,7 @@ function RowsView({
         if (row.type === "context") {
           const comment = commentForLine(commentsForSession, filePath, row.line.newNo);
           return (
-            <Fragment
-              // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
-              key={idx}
-            >
+            <Fragment key={idx}>
               <div className="diff-row" data-line-idx={row.lineIdx}>
                 <CommentCell
                   filePath={filePath}
@@ -690,12 +749,7 @@ function RowsView({
         }
         if (row.type === "del") {
           return (
-            <div
-              className="diff-row diff-row--del"
-              data-line-idx={row.lineIdx}
-              // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
-              key={idx}
-            >
+            <div className="diff-row diff-row--del" data-line-idx={row.lineIdx} key={idx}>
               <CommentCell
                 filePath={filePath}
                 lineNumber={null}
@@ -720,10 +774,7 @@ function RowsView({
         }
         const comment = commentForLine(commentsForSession, filePath, row.line.newNo);
         return (
-          <Fragment
-            // biome-ignore lint/suspicious/noArrayIndexKey: row stream is rebuilt wholesale; no per-row state
-            key={idx}
-          >
+          <Fragment key={idx}>
             <div className="diff-row diff-row--add" data-line-idx={row.lineIdx}>
               <CommentCell
                 filePath={filePath}
@@ -759,17 +810,34 @@ function RowsView({
           </Fragment>
         );
       })}
-      {remainingRows > 0 && (
+      {canShowMoreRows && (
         <button type="button" className="diff-row diff-row--reveal" onClick={showNextRows}>
-          Show next {Math.min(ROW_RENDER_CAP, remainingRows).toLocaleString()} rows (
-          {remainingRows.toLocaleString()} remaining)
+          Show next {Math.min(DIFF_ROW_RENDER_CHUNK, remainingRows).toLocaleString()} rows (
+          {remainingRowsLabel})
         </button>
       )}
+      {hiddenBySafetyCap && <LargeDiffCapNotice />}
     </div>
   );
 }
 
 // ── Line comments ─────────────────────────────────────────────────────
+
+function LargeDiffCapNotice(): React.ReactElement {
+  return (
+    <div className="diff-row diff-row--cap-notice" role="note">
+      Additional rows are hidden by the safety limit to keep the viewer responsive.
+    </div>
+  );
+}
+
+function SearchWindowNotice(): React.ReactElement {
+  return (
+    <div className="diff-row diff-row--cap-notice" role="note">
+      Skipping hidden rows to show the current search result.
+    </div>
+  );
+}
 
 /** Model line indices a split row covers (one for context, up to two for a
  *  change pair). Used to map an edit range onto split rows. */

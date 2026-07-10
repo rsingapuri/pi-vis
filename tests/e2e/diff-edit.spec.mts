@@ -76,16 +76,28 @@ function rmrf(p: string): void {
   }
 }
 
-/** A repo with a tracked file containing both a block of 8 added lines (to
- *  drag-select) and 2 deleted lines (a del-only selection target). The diff
- *  therefore shows a contiguous add run AND a separate del run. */
-function setupRepoForEdit(workspaceDir: string): string {
+function initRepo(workspaceDir: string): void {
   execFileSync("git", ["-c", "init.defaultBranch=main", "init"], { cwd: workspaceDir });
   try {
     execFileSync("git", ["config", "core.hooksPath", "/dev/null"], { cwd: workspaceDir });
   } catch {
     /* best effort */
   }
+}
+
+function commitFile(workspaceDir: string, path: string, lines: string[]): void {
+  fs.writeFileSync(join(workspaceDir, path), `${lines.join("\n")}\n`);
+  execFileSync("git", ["add", path], { cwd: workspaceDir });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"], {
+    cwd: workspaceDir,
+  });
+}
+
+/** A repo with a tracked file containing both a block of 8 added lines (to
+ *  drag-select) and 2 deleted lines (a del-only selection target). The diff
+ *  therefore shows a contiguous add run AND a separate del run. */
+function setupRepoForEdit(workspaceDir: string): string {
+  initRepo(workspaceDir);
   const committed = [
     "// header line one",
     "// header line two",
@@ -93,11 +105,7 @@ function setupRepoForEdit(workspaceDir: string): string {
     "export const DELETABLE_2 = 2;",
     "export const tail = 0;",
   ];
-  fs.writeFileSync(join(workspaceDir, "edit.ts"), `${committed.join("\n")}\n`);
-  execFileSync("git", ["add", "edit.ts"], { cwd: workspaceDir });
-  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"], {
-    cwd: workspaceDir,
-  });
+  commitFile(workspaceDir, "edit.ts", committed);
   const added: string[] = [];
   for (let i = 1; i <= 8; i++) added.push(`export const EDIT_${i} = ${i};`);
   // Insert the add block after the headers and REMOVE the DELETABLE lines.
@@ -107,7 +115,7 @@ function setupRepoForEdit(workspaceDir: string): string {
 }
 
 /** Open the diff viewer and wait for the edit.ts section to render rows. */
-async function openViewer(window: Page): Promise<void> {
+async function openViewer(window: Page, waitForAdd = true): Promise<void> {
   await window.getByRole("button", { name: "New session" }).click();
   await expect(window.locator(".session-header__model-btn")).toContainText("Fake Model [fake]", {
     timeout: 15_000,
@@ -120,8 +128,11 @@ async function openViewer(window: Page): Promise<void> {
   await expect(window.locator('[data-testid="diff-section-edit.ts"]')).toBeVisible({
     timeout: 10_000,
   });
-  // Wait for at least one add row to paint.
-  await expect(window.locator(".diff-row--add").first()).toBeVisible({ timeout: 10_000 });
+  // Wait for diff rows to paint; most tests use add rows, but removal-only
+  // fixtures may only have context/del rows.
+  await expect(
+    window.locator(waitForAdd ? ".diff-row--add" : ".diff-row[data-line-idx]").first(),
+  ).toBeVisible({ timeout: 10_000 });
 }
 
 /** Drag-select from the center of the `fromIdx` code cell to the `toIdx` cell. */
@@ -158,10 +169,22 @@ async function selectTextInCell(
   start: number,
   end: number,
 ): Promise<void> {
+  await selectTextAcrossCells(window, selector, start, selector, end);
+}
+
+async function selectTextAcrossCells(
+  window: Page,
+  startSelector: string,
+  start: number,
+  endSelector: string,
+  end: number,
+): Promise<void> {
   await window.evaluate(
-    ({ selector, start, end }: { selector: string; start: number; end: number }) => {
-      const cell = document.querySelector<HTMLElement>(selector);
-      if (!cell) throw new Error(`cell not found: ${selector}`);
+    ({ startSelector, start, endSelector, end }) => {
+      const startCell = document.querySelector<HTMLElement>(startSelector);
+      const endCell = document.querySelector<HTMLElement>(endSelector);
+      if (!startCell) throw new Error(`cell not found: ${startSelector}`);
+      if (!endCell) throw new Error(`cell not found: ${endSelector}`);
       const pointAt = (root: HTMLElement, offset: number): { node: Text; offset: number } => {
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         let remaining = offset;
@@ -174,8 +197,8 @@ async function selectTextInCell(
         }
         throw new Error("offset outside cell text");
       };
-      const a = pointAt(cell, start);
-      const b = pointAt(cell, end);
+      const a = pointAt(startCell, start);
+      const b = pointAt(endCell, end);
       const range = document.createRange();
       range.setStart(a.node, a.offset);
       range.setEnd(b.node, b.offset);
@@ -184,7 +207,7 @@ async function selectTextInCell(
       sel?.addRange(range);
       document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     },
-    { selector, start, end },
+    { startSelector, start, endSelector, end },
   );
 }
 

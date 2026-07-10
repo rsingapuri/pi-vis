@@ -123,7 +123,11 @@ function resolveSelection(): Resolved | null {
   if (!editRange) return rejected("no editable (context/add) line in range", { path, lo, hi });
 
   const cursor = resolveCursorPosition(domRange, file, model, editRange);
-  const anchor = selectionAnchor(domRange, rows, sel);
+  const anchorRows = rows.filter((el) => {
+    const idx = Number(el.getAttribute("data-line-idx"));
+    return Number.isInteger(idx) && idx >= editRange.startLineIdx && idx <= editRange.endLineIdx;
+  });
+  const anchor = selectionAnchor(domRange, anchorRows.length > 0 ? anchorRows : rows, sel);
   console.log(`[diff-edit] bubble eligible: ${path} rows ${lo}–${hi}`);
   return { path, range: editRange, cursor, anchor };
 }

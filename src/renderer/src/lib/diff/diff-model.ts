@@ -193,14 +193,15 @@ export function buildDiffModel(oldText: string, newText: string): AnyDiffModel {
     let addEnd = addStart;
     while (addEnd + 1 < lines.length && lines[addEnd + 1]?.type === "add") addEnd++;
     const pairCount = Math.min(delEnd - i + 1, addEnd - addStart + 1);
-    if (pairCount <= 200) {
-      for (let k = 0; k < pairCount; k++) {
-        const delIdx = i + k;
-        const addIdx = addStart + k;
-        const delLine = lines[delIdx] as DelLine;
-        const addLine = lines[addIdx] as AddLine;
-        delLine.pair = addIdx;
-        addLine.pair = delIdx;
+    const computeEmphasis = pairCount <= 200;
+    for (let k = 0; k < pairCount; k++) {
+      const delIdx = i + k;
+      const addIdx = addStart + k;
+      const delLine = lines[delIdx] as DelLine;
+      const addLine = lines[addIdx] as AddLine;
+      delLine.pair = addIdx;
+      addLine.pair = delIdx;
+      if (computeEmphasis) {
         const em = intralineRanges(delLine.text, addLine.text, pairCount);
         if (em) {
           delLine.emphasis = em;
@@ -339,9 +340,22 @@ export type Row =
  * The row's `lineIdx` is the index into `model.lines` for non-gap rows.
  * For gap rows it's the gap's index.
  */
-export function visibleRows(model: AnyDiffModel, gapState: GapState[]): Row[] {
-  if (model.kind !== "ok") return [];
+export function visibleRows(model: AnyDiffModel, gapState: GapState[], limit?: number): Row[] {
   const out: Row[] = [];
+  visitVisibleRows(model, gapState, (row) => {
+    if (limit !== undefined && out.length >= limit) return false;
+    out.push(row);
+    return true;
+  });
+  return out;
+}
+
+export function visitVisibleRows(
+  model: AnyDiffModel,
+  gapState: GapState[],
+  visit: (row: Row) => boolean,
+): void {
+  if (model.kind !== "ok") return;
   const lines = model.lines;
   const gaps = model.gaps;
 
@@ -354,7 +368,7 @@ export function visibleRows(model: AnyDiffModel, gapState: GapState[]): Row[] {
     for (let i = cursor; i < gap.startIdx; i++) {
       const ln = lines[i];
       if (!ln) continue;
-      out.push(rowFor(ln, i));
+      if (!visit(rowFor(ln, i))) return;
     }
     const state = gapState[gap.index] ?? { top: 0, bottom: 0 };
     const revealed = state.top + state.bottom;
@@ -363,7 +377,7 @@ export function visibleRows(model: AnyDiffModel, gapState: GapState[]): Row[] {
       for (let i = gap.startIdx; i <= gap.endIdx; i++) {
         const ln = lines[i];
         if (!ln) continue;
-        out.push(rowFor(ln, i));
+        if (!visit(rowFor(ln, i))) return;
       }
       cursor = gap.endIdx + 1;
       continue;
@@ -373,22 +387,26 @@ export function visibleRows(model: AnyDiffModel, gapState: GapState[]): Row[] {
     for (let i = gap.startIdx; i <= topEnd; i++) {
       const ln = lines[i];
       if (!ln) continue;
-      out.push(rowFor(ln, i));
+      if (!visit(rowFor(ln, i))) return;
     }
     // Emit the gap row itself.
-    out.push({
-      type: "gap",
-      gapIndex: gap.index,
-      hiddenCount: gap.size - revealed,
-      isFileStart: gap.isFileStart,
-      isFileEnd: gap.isFileEnd,
-    });
+    if (
+      !visit({
+        type: "gap",
+        gapIndex: gap.index,
+        hiddenCount: gap.size - revealed,
+        isFileStart: gap.isFileStart,
+        isFileEnd: gap.isFileEnd,
+      })
+    ) {
+      return;
+    }
     // Emit the `bottom` revealed lines from the end of the gap.
     const bottomStart = gap.endIdx - state.bottom + 1;
     for (let i = bottomStart; i <= gap.endIdx; i++) {
       const ln = lines[i];
       if (!ln) continue;
-      out.push(rowFor(ln, i));
+      if (!visit(rowFor(ln, i))) return;
     }
     cursor = gap.endIdx + 1;
   }
@@ -396,8 +414,24 @@ export function visibleRows(model: AnyDiffModel, gapState: GapState[]): Row[] {
   for (let i = cursor; i < lines.length; i++) {
     const ln = lines[i];
     if (!ln) continue;
-    out.push(rowFor(ln, i));
+    if (!visit(rowFor(ln, i))) return;
   }
+}
+
+export function visibleRowsSlice(
+  model: AnyDiffModel,
+  gapState: GapState[],
+  start: number,
+  count: number,
+): Row[] {
+  if (count <= 0) return [];
+  const out: Row[] = [];
+  let rowIndex = 0;
+  visitVisibleRows(model, gapState, (row) => {
+    if (rowIndex >= start) out.push(row);
+    rowIndex++;
+    return out.length < count;
+  });
   return out;
 }
 
@@ -415,7 +449,7 @@ function rowFor(ln: DiffLine, idx: number): Row {
  * with empty cells for the unpaired side.
  *
  * Input rows are expected to come from visibleRows; gap rows span both
- * columns.
+ * columns. The optional limit applies to projected split rows after pairing.
  */
 export type SplitRow =
   | {
@@ -447,29 +481,42 @@ export type SplitRow =
       lineIdx: number;
     };
 
-export function buildSplitRows(rows: Row[]): SplitRow[] {
+export function buildSplitRows(rows: Row[], limit?: number): SplitRow[] {
   const out: SplitRow[] = [];
+  const pushRow = (row: SplitRow): boolean => {
+    if (limit !== undefined && out.length >= limit) return false;
+    out.push(row);
+    return true;
+  };
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     if (!r) continue;
     if (r.type === "gap") {
-      out.push({
-        type: "split-gap",
-        gapIndex: r.gapIndex,
-        hiddenCount: r.hiddenCount,
-        isFileStart: r.isFileStart,
-        isFileEnd: r.isFileEnd,
-      });
+      if (
+        !pushRow({
+          type: "split-gap",
+          gapIndex: r.gapIndex,
+          hiddenCount: r.hiddenCount,
+          isFileStart: r.isFileStart,
+          isFileEnd: r.isFileEnd,
+        })
+      ) {
+        return out;
+      }
       continue;
     }
     if (r.type === "context") {
-      out.push({
-        type: "split-context",
-        leftNo: r.line.oldNo ?? 0,
-        rightNo: r.line.newNo ?? 0,
-        text: r.line.text,
-        lineIdx: r.lineIdx,
-      });
+      if (
+        !pushRow({
+          type: "split-context",
+          leftNo: r.line.oldNo ?? 0,
+          rightNo: r.line.newNo ?? 0,
+          text: r.line.text,
+          lineIdx: r.lineIdx,
+        })
+      ) {
+        return out;
+      }
       continue;
     }
     // Change block: collect consecutive del+add rows.
@@ -490,20 +537,134 @@ export function buildSplitRows(rows: Row[]): SplitRow[] {
     for (let k = 0; k < rows2; k++) {
       const d = dels[k];
       const a = adds[k];
-      out.push({
-        type: "split-pair",
-        leftNo: d?.line.oldNo ?? null,
-        leftText: d?.line.text ?? "",
-        leftEmphasis: d?.line.emphasis,
-        leftIdx: d?.lineIdx ?? null,
-        rightNo: a?.line.newNo ?? null,
-        rightText: a?.line.text ?? "",
-        rightEmphasis: a?.line.emphasis,
-        rightIdx: a?.lineIdx ?? null,
-      });
+      if (
+        !pushRow({
+          type: "split-pair",
+          leftNo: d?.line.oldNo ?? null,
+          leftText: d?.line.text ?? "",
+          leftEmphasis: d?.line.emphasis,
+          leftIdx: d?.lineIdx ?? null,
+          rightNo: a?.line.newNo ?? null,
+          rightText: a?.line.text ?? "",
+          rightEmphasis: a?.line.emphasis,
+          rightIdx: a?.lineIdx ?? null,
+        })
+      ) {
+        return out;
+      }
     }
   }
   return out;
+}
+
+/**
+ * Project a model directly into split-view rows. The optional limit applies
+ * after split pairing, not to the unified input stream, so large replacement
+ * blocks still pair old/new sides before the DOM safety cap is enforced.
+ */
+export function visibleSplitRows(
+  model: AnyDiffModel,
+  gapState: GapState[],
+  limit?: number,
+): SplitRow[] {
+  const out: SplitRow[] = [];
+  const pushRow = (row: SplitRow): boolean => {
+    if (limit !== undefined && out.length >= limit) return false;
+    out.push(row);
+    return true;
+  };
+
+  type DelRow = Extract<Row, { type: "del" }>;
+  type AddRow = Extract<Row, { type: "add" }>;
+  let dels: DelRow[] = [];
+  let adds: AddRow[] = [];
+  let delCount = 0;
+  let addCount = 0;
+
+  const resetBlock = (): void => {
+    dels = [];
+    adds = [];
+    delCount = 0;
+    addCount = 0;
+  };
+  const remainingLimit = (): number =>
+    limit === undefined ? Number.POSITIVE_INFINITY : Math.max(0, limit - out.length);
+  const flushBlock = (): boolean => {
+    const rows2 = Math.max(delCount, addCount);
+    if (rows2 === 0) return limit === undefined || out.length < limit;
+    const toEmit = limit === undefined ? rows2 : Math.min(rows2, limit - out.length);
+    for (let k = 0; k < toEmit; k++) {
+      const d = dels[k];
+      const a = adds[k];
+      if (
+        !pushRow({
+          type: "split-pair",
+          leftNo: d?.line.oldNo ?? null,
+          leftText: d?.line.text ?? "",
+          leftEmphasis: d?.line.emphasis,
+          leftIdx: d?.lineIdx ?? null,
+          rightNo: a?.line.newNo ?? null,
+          rightText: a?.line.text ?? "",
+          rightEmphasis: a?.line.emphasis,
+          rightIdx: a?.lineIdx ?? null,
+        })
+      ) {
+        resetBlock();
+        return false;
+      }
+    }
+    resetBlock();
+    return limit === undefined || out.length < limit;
+  };
+  const collectChangeRow = (row: DelRow | AddRow): boolean => {
+    const keep = remainingLimit();
+    if (row.type === "del") {
+      delCount++;
+      if (dels.length < keep) dels.push(row);
+    } else {
+      addCount++;
+      if (adds.length < keep) adds.push(row);
+    }
+    // Once both sides have enough rows to fill the remaining output, later
+    // rows in this change block cannot affect the capped prefix.
+    if (limit !== undefined && dels.length >= keep && adds.length >= keep) {
+      return flushBlock();
+    }
+    return true;
+  };
+
+  visitVisibleRows(model, gapState, (row) => {
+    if (row.type === "del" || row.type === "add") return collectChangeRow(row);
+    if (!flushBlock()) return false;
+    if (row.type === "gap") {
+      return pushRow({
+        type: "split-gap",
+        gapIndex: row.gapIndex,
+        hiddenCount: row.hiddenCount,
+        isFileStart: row.isFileStart,
+        isFileEnd: row.isFileEnd,
+      });
+    }
+    return pushRow({
+      type: "split-context",
+      leftNo: row.line.oldNo ?? 0,
+      rightNo: row.line.newNo ?? 0,
+      text: row.line.text,
+      lineIdx: row.lineIdx,
+    });
+  });
+  flushBlock();
+  return out;
+}
+
+export function visibleSplitRowsSlice(
+  model: AnyDiffModel,
+  gapState: GapState[],
+  start: number,
+  count: number,
+): SplitRow[] {
+  if (count <= 0) return [];
+  return visibleSplitRows(model, gapState, start + count).slice(start);
 }
 
 // ── line helpers ───────────────────────────────────────────────────────

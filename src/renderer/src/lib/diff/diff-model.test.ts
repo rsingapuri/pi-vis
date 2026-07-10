@@ -18,6 +18,7 @@ import {
   buildDiffModel,
   buildSplitRows,
   visibleRows,
+  visibleSplitRows,
 } from "./diff-model.js";
 import { langForPath, segmentLine } from "./highlight.js";
 import { intralineRanges } from "./intraline.js";
@@ -131,6 +132,20 @@ describe("buildDiffModel — pairing & hunks", () => {
     const add = model.lines.find((l) => l.type === "add");
     expect(del && del.type === "del" ? del.emphasis : undefined).toBeTruthy();
     expect(add && add.type === "add" ? add.emphasis : undefined).toBeTruthy();
+  });
+
+  it("pairs large replacement blocks while skipping expensive intraline emphasis", () => {
+    const oldText = `${Array.from({ length: 250 }, (_, i) => `old ${i}`).join("\n")}\n`;
+    const newText = `${Array.from({ length: 250 }, (_, i) => `new ${i}`).join("\n")}\n`;
+    const m = ok(buildDiffModel(oldText, newText));
+    const firstDelIdx = m.lines.findIndex((l) => l.type === "del");
+    const firstAddIdx = m.lines.findIndex((l) => l.type === "add");
+    const firstDel = m.lines[firstDelIdx];
+    const firstAdd = m.lines[firstAddIdx];
+    expect(firstDel?.type === "del" ? firstDel.pair : undefined).toBe(firstAddIdx);
+    expect(firstAdd?.type === "add" ? firstAdd.pair : undefined).toBe(firstDelIdx);
+    expect(firstDel?.type === "del" ? firstDel.emphasis : undefined).toBeUndefined();
+    expect(firstAdd?.type === "add" ? firstAdd.emphasis : undefined).toBeUndefined();
   });
 });
 
@@ -246,6 +261,11 @@ describe("visibleRows — expansion math", () => {
     expect(gap).toBeDefined();
     if (gap?.type === "gap") expect(gap.hiddenCount).toBe(22);
   });
+
+  it("can stop projection at a row limit", () => {
+    const rows = visibleRows(model, collapsedState, 3);
+    expect(rows).toHaveLength(3);
+  });
 });
 
 describe("buildSplitRows — alignment", () => {
@@ -272,6 +292,21 @@ describe("buildSplitRows — alignment", () => {
     const rows = visibleRows(m, []);
     const split = buildSplitRows(rows);
     expect(split.every((r) => r.type === "split-context" || r.type === "split-gap")).toBe(true);
+  });
+
+  it("applies split limits after pairing complete replacement blocks", () => {
+    const oldText = `${Array.from({ length: 20 }, (_, i) => `old ${i}`).join("\n")}\n`;
+    const newText = `${Array.from({ length: 20 }, (_, i) => `new ${i}`).join("\n")}\n`;
+    const m = ok(buildDiffModel(oldText, newText));
+    const split = visibleSplitRows(
+      m,
+      m.gaps.map(() => ({ top: 0, bottom: 0 })),
+      10,
+    );
+    expect(split).toHaveLength(10);
+    expect(split.every((r) => r.type === "split-pair" && r.leftText && r.rightText)).toBe(true);
+    expect(split[0]?.type === "split-pair" && split[0].leftText).toBe("old 0");
+    expect(split[0]?.type === "split-pair" && split[0].rightText).toBe("new 0");
   });
 });
 

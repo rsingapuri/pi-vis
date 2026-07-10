@@ -25,7 +25,12 @@ export type GitChangesResult =
       kind: "ok";
       repoRoot: string;
       files: GitChangedFile[];
-      /** True when the file list was capped (see WP1b: 500-file limit). */
+      /** Complete, deterministically ordered changed-file manifest used by
+       *  worker-backed search. Unlike `files`, this is never capped; it carries
+       *  descriptors only, never file contents. Optional for compatibility
+       *  with older preview/test fixtures. */
+      searchFiles?: GitChangedFile[] | undefined;
+      /** True when the browsable file list was capped (see WP1b: 500-file limit). */
       truncated: boolean;
       /** Content hash of the working tree vs HEAD (base-independent), plus
        *  untracked file contents (the first 200 by name; beyond that, only

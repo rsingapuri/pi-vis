@@ -116,6 +116,22 @@ function setupRepoWithChanges(workspaceDir: string): void {
   fs.writeFileSync(join(workspaceDir, "b.ts"), "export const b = 1;\n");
 }
 
+function setupRepoWithHugeDiff(workspaceDir: string): void {
+  execFileSync("git", ["-c", "init.defaultBranch=main", "init"], { cwd: workspaceDir });
+  execFileSync("git", ["config", "core.hooksPath", "/dev/null"], { cwd: workspaceDir });
+  fs.writeFileSync(join(workspaceDir, "README.md"), "base\n");
+  execFileSync("git", ["add", "README.md"], { cwd: workspaceDir });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"], {
+    cwd: workspaceDir,
+  });
+  const lines = Array.from({ length: 10_050 }, (_, index) =>
+    index === 10_025
+      ? "const productionIncidentNeedle = true;"
+      : `const generated_${index} = ${index};`,
+  );
+  fs.writeFileSync(join(workspaceDir, "huge.ts"), `${lines.join("\n")}\n`);
+}
+
 test.describe("Diff viewer", () => {
   test.beforeAll(() => {
     fs.chmodSync(FAKE_PI, 0o755);
@@ -459,6 +475,43 @@ test.describe("Diff viewer", () => {
     const aItem = viewer.locator('.diff-tree__row--file[data-path="a.ts"]');
     await aItem.click();
     await expect(aItem).toHaveClass(/diff-tree__row--active/, { timeout: 5_000 });
+
+    await app.close();
+    rmrf(folders.settingsDir);
+    rmrf(folders.workspaceDir);
+    rmrf(folders.piSessionsDir);
+  });
+
+  test("find reaches a changed occurrence beyond the DOM ceiling without mounting its prefix", async () => {
+    test.setTimeout(90_000);
+    const folders = await makeFolders();
+    setupRepoWithHugeDiff(folders.workspaceDir);
+    const { app, window } = await launchApp(folders);
+
+    await window.getByRole("button", { name: "New session" }).click();
+    await expect(window.locator(".session-header__model-btn")).toContainText("Fake Model [fake]", {
+      timeout: 15_000,
+    });
+    await window.locator('[data-testid="changes-button"]').click();
+    const viewer = window.locator(".diff-viewer");
+    await expect(viewer).toBeVisible({ timeout: 10_000 });
+    await expect(viewer.locator(".diff-row--add").first()).toBeVisible({ timeout: 15_000 });
+
+    await window.keyboard.press(process.platform === "darwin" ? "Meta+f" : "Control+f");
+    const find = viewer.locator(".diff-search__input");
+    await expect(find).toBeVisible();
+    await find.fill("productionIncidentNeedle");
+
+    await expect(viewer.locator(".diff-search__count")).toContainText("1 of 1", {
+      timeout: 30_000,
+    });
+    await expect(viewer.locator(".diff-search-mark--current")).toContainText(
+      "productionIncidentNeedle",
+      { timeout: 15_000 },
+    );
+    await expect(viewer.locator(".diff-row--cap-notice")).toContainText("Skipping hidden rows");
+    const mountedRows = await viewer.locator(".diff-row").count();
+    expect(mountedRows).toBeLessThan(1_100);
 
     await app.close();
     rmrf(folders.settingsDir);

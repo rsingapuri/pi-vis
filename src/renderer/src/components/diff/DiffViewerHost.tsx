@@ -9,9 +9,8 @@ import type { GitChangedFile } from "@shared/git.js";
 import type { SessionId } from "@shared/ids.js";
 import type React from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useDiffSearch } from "../../hooks/useDiffSearch.js";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
-import type { SearchMatch, SearchableFile } from "../../lib/diff/search.js";
-import { computeMatches } from "../../lib/diff/search.js";
 import { useDiffStore } from "../../stores/diff-store.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
@@ -68,14 +67,18 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
   const requestCancelEdit = useDiffStore((s) => s.requestCancelEdit);
   const phase = useDiffStore((s) => s.phase);
   const files = useDiffStore((s) => s.files);
+  const searchFiles = useDiffStore((s) => s.searchFiles);
   const truncated = useDiffStore((s) => s.truncated);
   const errorMessage = useDiffStore((s) => s.errorMessage);
   const fileState = useDiffStore((s) => s.fileState);
+  const searchRevision = useDiffStore((s) => s.searchRevision);
   const root = useDiffStore((s) => s.root);
   const filter = useDiffStore((s) => s.filter);
   const setFilter = useDiffStore((s) => s.setFilter);
   const viewMode = useDiffStore((s) => s.viewMode);
   const setViewMode = useDiffStore((s) => s.setViewMode);
+  const selectedBase = useDiffStore((s) => s.selectedBase);
+  const [narrow, setNarrow] = useState(false);
   const select = useDiffStore((s) => s.select);
   const railWidth = useDiffStore((s) => s.railWidth);
   const setRailWidth = useDiffStore((s) => s.setRailWidth);
@@ -100,48 +103,52 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
   const setSearchQuery = useDiffStore((s) => s.setSearchQuery);
   const toggleSearchCaseSensitive = useDiffStore((s) => s.toggleSearchCaseSensitive);
   const setActiveMatch = useDiffStore((s) => s.setActiveMatch);
-  const bumpRenderCap = useDiffStore((s) => s.bumpRenderCap);
 
-  // The full ordered match list, derived from every loaded file's visible
-  // rows. Recomputed when the query, case-sensitivity, file list, or any
-  // file's diff model / gap state changes.
-  const matches = useMemo<SearchMatch[]>(() => {
-    if (!searchOpen || searchQuery === "") return [];
-    const loaded: SearchableFile[] = [];
-    for (const f of files) {
-      const st = fileState.get(f.path);
-      if (st?.status === "ready" && st.model && st.model.kind === "ok") {
-        loaded.push({
-          path: f.path,
-          model: st.model,
-          gapState: st.gapState ?? st.model.gaps.map(() => ({ top: 0, bottom: 0 })),
-        });
-      }
-    }
-    return computeMatches(loaded, searchQuery, searchCaseSensitive);
-  }, [searchOpen, searchQuery, searchCaseSensitive, files, fileState]);
+  // Only render when the viewer is open *for this session*. A session switch
+  // while open closes the viewer and hard-cancels its worker search.
+  const visible = open && storeSessionId === sessionId;
+  const effectiveSearchViewMode = viewMode === "split" && !narrow ? "split" : "unified";
 
-  const activeIndex = activeMatch ? matches.findIndex((m) => m.id === activeMatch.id) : -1;
+  // Gap reveals and inline saves change local search scope/content without
+  // replacing the manifest. This primitive revision tracks only those events,
+  // so lazy loads, collapse state, and tokenization cannot restart search.
+  const searchProjectionKey = String(searchRevision);
+
+  const searchIndex = useDiffSearch({
+    enabled: visible && phase === "ready" && searchOpen,
+    query: searchQuery,
+    caseSensitive: searchCaseSensitive,
+    viewMode: effectiveSearchViewMode,
+    root,
+    base: selectedBase,
+    files: searchFiles,
+    projectionKey: searchProjectionKey,
+  });
+  const activeIndex = searchIndex.indexOfMatch(activeMatch);
 
   const goToMatch = useCallback(
     (delta: number) => {
-      if (matches.length === 0) return;
-      const cur = activeMatch ? matches.findIndex((m) => m.id === activeMatch.id) : -1;
+      if (searchIndex.count === 0) return;
+      const cur = searchIndex.indexOfMatch(activeMatch);
       let next = cur + delta;
-      if (next < 0) next = matches.length - 1;
-      if (next >= matches.length) next = 0;
-      const target = matches[next];
+      // Partial results never wrap: doing so would falsely imply the current
+      // index is complete and can make navigation jump backwards as files land.
+      if (next < 0) {
+        if (searchIndex.searching) return;
+        next = searchIndex.count - 1;
+      }
+      if (next >= searchIndex.count) {
+        if (searchIndex.searching) return;
+        next = 0;
+      }
+      const target = searchIndex.getMatchAt(next);
       if (target) setActiveMatch(target);
     },
-    [matches, activeMatch, setActiveMatch],
+    [searchIndex, activeMatch, setActiveMatch],
   );
 
   // Branch selection lives in BaseBranchDropdown, which subscribes to the
   // store directly — the host only needs to mount it.
-
-  // Only render when the viewer is open *for this session*. A session
-  // switch while open closes the viewer.
-  const visible = open && storeSessionId === sessionId;
 
   const closeOrCancelEdit = useCallback(() => {
     if (editSession) {
@@ -245,37 +252,39 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
 
   // ── ResizeObserver → split-view auto-fallback ─────────────────────
   const contentRef = useRef<HTMLDivElement | null>(null);
-  const [narrow, setNarrow] = useState(false);
 
   // ── Scroll-spy: highlight rail row for the section at scrollTop ──
   const sectionRefs = useRef<Map<string, HTMLElement | null>>(new Map());
   const suppressSpyUntilRef = useRef<number>(0);
 
-  // ── Find: load every file so matches are complete ────────────────
-  // The diff lazy-loads files (first N eager + on-scroll). A search must find
-  // every occurrence, so once a query is active we pull in any still-idle
-  // file. Collapsed files load too (their model feeds the count) without being
-  // expanded — expansion only happens for the file holding the active match.
+  // ── Find: seed/sync the active logical match ─────────────────────
+  // Results arrive progressively from the worker. Preserve a selected match by
+  // identity as earlier files complete, but refresh its projection row when the
+  // view mode or revealed-gap scope changes.
   useEffect(() => {
-    if (!visible || phase !== "ready") return;
-    if (!searchOpen || searchQuery === "") return;
-    for (const f of files) {
-      if (f.binary) continue;
-      const st = useDiffStore.getState().fileState.get(f.path);
-      if (!st || st.status === "idle") void ensureFileLoaded(f.path);
-    }
-  }, [visible, phase, searchOpen, searchQuery, files, ensureFileLoaded]);
-
-  // ── Find: seed the active match to the first hit ─────────────────
-  // setSearchQuery / case toggle clear activeMatch; once matches (re)compute
-  // we focus the first one. Only fires while there's no active match, so user
-  // navigation and late-loading files don't yank the selection around.
-  useEffect(() => {
-    if (!searchOpen || searchQuery === "") return;
-    if (activeMatch !== null) return;
-    const first = matches[0];
+    if (!searchOpen || searchQuery === "" || activeMatch !== null) return;
+    const first = searchIndex.getMatchAt(0);
     if (first) setActiveMatch(first);
-  }, [searchOpen, searchQuery, activeMatch, matches, setActiveMatch]);
+  }, [searchOpen, searchQuery, activeMatch, searchIndex, setActiveMatch]);
+
+  useEffect(() => {
+    if (!searchOpen || searchQuery === "" || activeMatch === null) return;
+    const index = searchIndex.indexOfMatch(activeMatch);
+    if (index < 0) {
+      if (!searchIndex.searching) setActiveMatch(null);
+      return;
+    }
+    const current = searchIndex.getMatchAt(index);
+    if (
+      current &&
+      (current.rowIndex !== activeMatch.rowIndex ||
+        current.side !== activeMatch.side ||
+        current.start !== activeMatch.start ||
+        current.end !== activeMatch.end)
+    ) {
+      setActiveMatch(current);
+    }
+  }, [searchOpen, searchQuery, activeMatch, searchIndex, setActiveMatch]);
 
   // ── Find: reveal + scroll the active match into view ─────────────
   // Re-runs on fileState changes so that after the target file loads/expands
@@ -291,18 +300,26 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
     select(activeMatch.path);
     const st = useDiffStore.getState().fileState.get(activeMatch.path);
     if (st?.collapsed) toggleCollapsed(activeMatch.path);
-    if (activeMatch.lineIdx + 1 > (st?.renderCap ?? 5_000)) {
-      bumpRenderCap(activeMatch.path, activeMatch.lineIdx + 1);
-    }
+    // Search discovery is uncapped. Never grow the normal browsing prefix to
+    // reach a result; DiffFileSection mounts a small targeted row island.
     void ensureFileLoaded(activeMatch.path);
-    if (scrolledIdRef.current === activeMatch.id) return;
+    const scrollKey = `${activeMatch.id}\0${activeMatch.rowIndex}\0${activeMatch.side}\0${effectiveSearchViewMode}`;
+    if (scrolledIdRef.current === scrollKey) return;
     suppressSpyUntilRef.current = performance.now() + SCROLL_SPY_SUPPRESS_MS;
     const el = contentRef.current?.querySelector<HTMLElement>(".diff-search-mark--current");
     if (el) {
       el.scrollIntoView({ block: "center", behavior: "auto" });
-      scrolledIdRef.current = activeMatch.id;
+      scrolledIdRef.current = scrollKey;
     }
-  }, [visible, activeMatch, fileState, select, toggleCollapsed, ensureFileLoaded, bumpRenderCap]);
+  }, [
+    visible,
+    activeMatch,
+    effectiveSearchViewMode,
+    fileState,
+    select,
+    toggleCollapsed,
+    ensureFileLoaded,
+  ]);
 
   const jumpTo = useCallback(
     (path: string) => {
@@ -590,8 +607,13 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
             <DiffSearchBar
               query={searchQuery}
               caseSensitive={searchCaseSensitive}
-              count={matches.length}
+              count={searchIndex.count}
               activeIndex={activeIndex}
+              searching={searchIndex.searching}
+              completedFiles={searchIndex.completedFiles}
+              totalFiles={searchIndex.totalFiles}
+              failedFiles={searchIndex.failedFiles}
+              skippedFiles={searchIndex.skippedFiles}
               onQueryChange={setSearchQuery}
               onToggleCase={toggleSearchCaseSensitive}
               onPrev={() => goToMatch(-1)}
@@ -634,6 +656,8 @@ export function DiffViewerHost({ sessionId }: DiffViewerHostProps): React.ReactE
               <FileSections
                 sessionId={sessionId}
                 files={files}
+                searchFiles={searchFiles}
+                activeSearchPath={activeMatch?.path ?? null}
                 fileState={fileState}
                 viewMode={viewMode}
                 narrow={narrow}
@@ -794,6 +818,11 @@ function DiffSearchBar({
   caseSensitive,
   count,
   activeIndex,
+  searching,
+  completedFiles,
+  totalFiles,
+  failedFiles,
+  skippedFiles,
   onQueryChange,
   onToggleCase,
   onPrev,
@@ -804,6 +833,11 @@ function DiffSearchBar({
   caseSensitive: boolean;
   count: number;
   activeIndex: number;
+  searching: boolean;
+  completedFiles: number;
+  totalFiles: number;
+  failedFiles: number;
+  skippedFiles: number;
   onQueryChange: (q: string) => void;
   onToggleCase: () => void;
   onPrev: () => void;
@@ -818,8 +852,17 @@ function DiffSearchBar({
   }, []);
 
   const hasQuery = query.length > 0;
-  const noMatches = hasQuery && count === 0;
+  const noMatches = hasQuery && count === 0 && !searching;
   const hasMatches = count > 0;
+  const unavailableFiles = failedFiles + skippedFiles;
+  const issueLabel = unavailableFiles > 0 ? ` · ${unavailableFiles} unavailable` : "";
+  const countLabel = !hasQuery
+    ? ""
+    : searching
+      ? `${count > 0 ? `${count}+ results` : "Searching…"} · ${completedFiles}/${totalFiles} files`
+      : hasMatches
+        ? `${activeIndex >= 0 ? activeIndex + 1 : "–"} of ${count}${issueLabel}`
+        : `No results${issueLabel}`;
 
   return (
     <div className="diff-search" role="search">
@@ -842,8 +885,13 @@ function DiffSearchBar({
       <span
         className={`diff-search__count${noMatches ? " diff-search__count--empty" : ""}`}
         aria-live="polite"
+        title={
+          unavailableFiles > 0
+            ? `${skippedFiles} binary or too-large; ${failedFiles} failed to search`
+            : undefined
+        }
       >
-        {hasQuery ? (hasMatches ? `${activeIndex + 1} of ${count}` : "No results") : ""}
+        {countLabel}
       </span>
       <div className="diff-search__divider" aria-hidden />
       <button
@@ -1332,6 +1380,8 @@ function basename(p: string): string {
 function FileSections({
   sessionId,
   files,
+  searchFiles,
+  activeSearchPath,
   fileState,
   viewMode,
   narrow,
@@ -1339,14 +1389,24 @@ function FileSections({
 }: {
   sessionId: SessionId;
   files: GitChangedFile[];
+  searchFiles: GitChangedFile[];
+  activeSearchPath: string | null;
   fileState: Map<string, import("../../stores/diff-store.js").FileState>;
   viewMode: "unified" | "split";
   narrow: boolean;
   registerSection: (path: string, el: HTMLElement | null) => void;
 }): React.ReactElement {
+  // The normal section list stays capped, but search covers the complete
+  // manifest. Mount exactly one extra section when navigation targets a file
+  // beyond the browsing cap.
+  const activeSearchFile =
+    activeSearchPath !== null && !files.some((file) => file.path === activeSearchPath)
+      ? searchFiles.find((file) => file.path === activeSearchPath)
+      : undefined;
+  const renderedFiles = activeSearchFile ? [...files, activeSearchFile] : files;
   return (
     <>
-      {files.map((f) => {
+      {renderedFiles.map((f) => {
         const st = fileState.get(f.path) ?? { status: "idle", collapsed: false };
         return (
           <DiffFileSection
