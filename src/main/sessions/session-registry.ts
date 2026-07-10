@@ -80,6 +80,9 @@ export interface SessionRecord {
    *  (without it, /reload and worktree-per-session silently reverted to
    *  --mode rpc and lost panel support). */
   _useHost?: boolean;
+  /** Timestamp of the last automatic runtime-host restart. A second crash
+   *  inside the cooldown is left failed instead of creating a restart loop. */
+  _lastHostRecoveryAt?: number;
   /**
    * True once the proc is fully established and able to accept commands — i.e.
    * AFTER the host handshake (waitForReady) for host mode, or immediately for
@@ -103,6 +106,7 @@ export interface SessionRecord {
 }
 
 const MAX_IDLE_PROCESSES = 10;
+const HOST_RECOVERY_COOLDOWN_MS = 30_000;
 
 type SessionEventCallback = (sessionId: SessionId, event: PiEvent) => void;
 type UiRequestCallback = (sessionId: SessionId, req: ExtensionUiRequest) => void;
@@ -198,6 +202,7 @@ export class SessionRegistry {
     piPath: string,
     env?: Record<string, string>,
     useHost = false,
+    options: { allowRpcFallback?: boolean } = {},
   ): Promise<void> {
     const record = this.sessions.get(sessionId);
     if (!record) {
@@ -223,11 +228,14 @@ export class SessionRegistry {
     record._activationDone = new Promise((resolve) => {
       record._resolveActivationDone = resolve;
     });
-    // P2-b: remember what the caller REQUESTED (sticky across fallbacks) so
-    // /reload can re-try the host after a prior fallback (user may have
-    // upgraded pi). _useHost tracks the actual running mode; _hostRequested
-    // tracks intent. Both are passed through activateSession.
-    record._hostRequested = useHost;
+    // P2-b: remember whether the caller has EVER requested host mode. This is
+    // sticky across both startup fallback and runtime failover so /reload can
+    // re-try the host after a pi upgrade or transient crash. _useHost tracks
+    // the actual running mode; _hostRequested tracks intent. A later internal
+    // compatibility-mode activation (useHost=false) must not erase that intent.
+    if (record._hostRequested === undefined || useHost) {
+      record._hostRequested = useHost;
+    }
     record.error = undefined;
     // Not ready until the proc is fully established (post-handshake in host
     // mode). Reset here so a re-activation (reload/respawn) re-queues until the
@@ -386,12 +394,23 @@ export class SessionRegistry {
             record._activating = false;
             return;
           }
-          // Host failed — detach the dead host and fall back to pi --mode rpc.
           record.proc = undefined;
           hostProc.removeAllListeners();
           hostProc.stop();
-          record._useHost = false;
           const reason = hostErr instanceof Error ? hostErr.message : String(hostErr);
+          if (options.allowRpcFallback === false) {
+            // Runtime recovery is SDK-host-only. If the replacement host cannot
+            // initialize, leave the session failed instead of silently changing
+            // execution modes; the user can retry after fixing the cause.
+            this.onPanelEvent(sessionId, {
+              type: "session_warning",
+              message: `SDK host restart failed: ${reason}`,
+            });
+            throw hostErr;
+          }
+          // Initial activation keeps the existing progressive-enhancement
+          // behavior until the legacy RPC fallback is removed project-wide.
+          record._useHost = false;
           const isVersionTooLow = hostErr instanceof HostVersionTooLowError;
           console.warn(
             `[session-registry] SessionHost failed, falling back to pi --mode rpc: ${reason}`,
@@ -479,6 +498,47 @@ export class SessionRegistry {
       // uiRequest is attached per-proc above (pre-readiness for the host) so
       // the init-time trust dialog isn't dropped — not re-attached here.
 
+      /**
+       * A host that dies after readiness used to strand the session until the
+       * user switched away or reopened the app. Restart the SDK host in place,
+       * preserving the session file and advisory lock. Recovery explicitly
+       * disables RPC fallback: failure leaves the session failed rather than
+       * silently changing execution modes. A cooldown prevents a crashing
+       * extension from creating an unbounded host-restart loop.
+       */
+      const restartAfterRuntimeHostFailure = (reason: string): boolean => {
+        if (!isSessionHost(proc) || record._dead || record._restartInProgress) return false;
+        const now = Date.now();
+        if (now - (record._lastHostRecoveryAt ?? 0) < HOST_RECOVERY_COOLDOWN_MS) {
+          this.onPanelEvent(sessionId, {
+            type: "session_warning",
+            message: `SDK host failed again shortly after restarting: ${reason}`,
+          });
+          return false;
+        }
+        record._lastHostRecoveryAt = now;
+        record._useHost = true;
+        this.onPanelEvent(sessionId, {
+          type: "session_warning",
+          message: `SDK host stopped unexpectedly; restarting it now. ${reason}`,
+        });
+        queueMicrotask(() => {
+          // A close, manual activation, or explicit restart that won the race
+          // takes precedence over this best-effort automatic restart.
+          if (
+            this.sessions.get(sessionId) !== record ||
+            record._dead ||
+            record.proc ||
+            record._activating ||
+            record._restartInProgress
+          ) {
+            return;
+          }
+          void this.activateSession(sessionId, piPath, env, true, { allowRpcFallback: false });
+        });
+        return true;
+      };
+
       proc.on("exit", (code) => {
         // The timer must never leak. Clear before the generation guard.
         clearTimeout(readyTimer);
@@ -498,14 +558,17 @@ export class SessionRegistry {
         } else {
           record.error = undefined;
         }
-        // P1-f: the proc is gone (exited) — release the advisory lock now if
-        // we hold it, so the lockfile + recurring update timer don't leak on
-        // a session whose process died (the sync catch can't see this; the
-        // failure is async). closeSession would also release it, but a
-        // dead-and-abandoned session otherwise leaks until then.
-        this._releaseLockIfHeld(sessionId);
-        // Emit unified_panel_reset so the renderer drops stale unified-panel state
-        // (the dying host can't emit a reliable panel_close for the unified panel).
+        const didScheduleRestart = restartAfterRuntimeHostFailure(
+          record.error ?? "The host stopped unexpectedly",
+        );
+        // P1-f: retain the advisory lock across an in-place host restart;
+        // otherwise release it now so a dead-and-abandoned session does not
+        // leak its lockfile or proper-lockfile update timer.
+        if (!didScheduleRestart) this._releaseLockIfHeld(sessionId);
+        // A dying host cannot reliably emit panel_close. Clear both transient
+        // custom panels and the persistent unified panel before compatibility
+        // mode restores the native Composer.
+        this.onPanelEvent(sessionId, { type: "panel_clear_all" });
         this.onPanelEvent(sessionId, { type: "unified_panel_reset" });
         this.onStatusChanged(sessionId, "exited", record.error);
       });
@@ -520,8 +583,13 @@ export class SessionRegistry {
         record.retryPending = false;
         this._clearInterruptOperations(record);
         record.error = err.message;
-        // P1-f: same as exit — async failure must release the lock.
-        this._releaseLockIfHeld(sessionId);
+        // Detach first so the exit caused by stop() is rejected by the
+        // generation guard rather than producing a second terminal transition.
+        proc.stop();
+        const didScheduleRestart = restartAfterRuntimeHostFailure(err.message);
+        if (!didScheduleRestart) this._releaseLockIfHeld(sessionId);
+        this.onPanelEvent(sessionId, { type: "panel_clear_all" });
+        this.onPanelEvent(sessionId, { type: "unified_panel_reset" });
         this.onStatusChanged(sessionId, "failed", err.message);
       });
 
