@@ -48,6 +48,8 @@ function setSession(): void {
     bashInFlight: 0,
     interruptible: false,
     retryPending: false,
+    agentGeneration: 0,
+    lastEndedAgentGeneration: 0,
     streamingEpoch: 0,
     queueEpoch: 0,
     identityEpoch: 0,

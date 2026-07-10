@@ -68,6 +68,10 @@ export interface SessionViewState {
   interruptible: boolean;
   interruptKind?: "agent" | "bash" | "compact" | undefined;
   retryPending: boolean;
+  /** Monotonic agent_start generation used to reject a stale agent_settled. */
+  agentGeneration: number;
+  /** Generation most recently closed by agent_end. */
+  lastEndedAgentGeneration: number;
   streamingEpoch: number;
   queueEpoch: number;
   identityEpoch: number;
@@ -78,7 +82,7 @@ export interface SessionViewState {
   runningSince?: number | undefined;
   /**
    * Unread turn-result marker for the sidebar status dot. Set to "done" or
-   * "error" when a turn finishes (see applyEvent's agent_end handling). It
+   * "error" when a turn finishes (agent_end fallback / agent_settled). It
    * acts as a notification for background sessions: it persists until the
    * user views the session and moves on (setActiveSession clears the
    * previously-active session) or starts a new turn there (agent_start).
@@ -86,8 +90,8 @@ export interface SessionViewState {
   unreadStatus?: "done" | "error" | undefined;
   /** Transient: did the current agent attempt produce a provider/model error?
    *  Reset on agent_start and on a willRetry agent_end (each auto-retry attempt
-   *  starts clean), set on an erroring assistant message_end, consumed at the
-   *  final (non-retrying) agent_end to decide unreadStatus. */
+   *  starts clean), set on an erroring assistant message_end, and consumed at
+   *  the applicable terminal boundary to decide unreadStatus. */
   turnErrored: boolean;
   pendingDialogs: ExtensionUiRequest[];
   statusSegments: Map<string, string>; // statusKey → statusText
@@ -465,6 +469,8 @@ function resetRuntimeState(
     interruptible: false,
     interruptKind: undefined,
     retryPending: false,
+    agentGeneration: 0,
+    lastEndedAgentGeneration: 0,
     runningSince: undefined,
     queuedMessages: undefined,
     streamingEpoch: session.streamingEpoch + 1,
@@ -918,6 +924,8 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         interruptible: false,
         interruptKind: undefined,
         retryPending: false,
+        agentGeneration: 0,
+        lastEndedAgentGeneration: 0,
         streamingEpoch: 0,
         queueEpoch: 0,
         identityEpoch: 0,
@@ -1092,13 +1100,21 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
       for (const event of events) {
         let unreadStatus = current.unreadStatus;
         let turnErrored = current.turnErrored;
+        let agentGeneration = current.agentGeneration;
+        let lastEndedAgentGeneration = current.lastEndedAgentGeneration;
+        if (event.type === "agent_start") agentGeneration += 1;
+        if (event.type === "agent_end") lastEndedAgentGeneration = agentGeneration;
+        const settlementApplies =
+          event.type === "agent_settled" && lastEndedAgentGeneration === agentGeneration;
         let livenessPatch: Partial<Pick<SessionViewState, "isStreaming" | "retryPending">> = {};
         let queuePatch: Pick<SessionViewState, "queuedMessages" | "queueEpoch"> | null = null;
         const sessionName =
           event.type === "session_info_changed" ? event.name : current.sessionName;
 
         if (event.type === "agent_start") {
-          livenessPatch = { retryPending: false, isStreaming: true };
+          // Runtime liveness comes only from the authoritative streaming_state
+          // adapter; raw lifecycle events update transcript/result metadata.
+          livenessPatch = { retryPending: false };
           turnErrored = false;
           unreadStatus = undefined;
         }
@@ -1107,29 +1123,36 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         }
         if (event.type === "agent_end") {
           if (event.willRetry) {
-            livenessPatch = { retryPending: true, isStreaming: true };
+            livenessPatch = { retryPending: true };
             turnErrored = false;
           } else {
-            livenessPatch = { retryPending: false, isStreaming: false };
-            unreadStatus = turnErrored ? "error" : "done";
-            turnErrored = false;
+            livenessPatch = { retryPending: false };
           }
         }
-        if (event.type === "auto_retry_start") {
-          livenessPatch = { retryPending: true, isStreaming: true };
+        if (settlementApplies) {
+          // Pi publishes agent_settled after running extension settlement
+          // handlers. If one started a new run, agent_start has already
+          // advanced the generation and this old settlement must be ignored.
+          livenessPatch = { retryPending: false };
         }
-        if (event.type === "auto_retry_end" && event.success === false && current.isStreaming) {
-          livenessPatch = { retryPending: false, isStreaming: false };
-          unreadStatus = "error";
-          turnErrored = false;
+        if (event.type === "auto_retry_start") {
+          livenessPatch = { retryPending: true };
+        }
+        if (event.type === "auto_retry_end" && event.success === false) {
+          livenessPatch = { retryPending: false };
+          turnErrored = true;
         }
         let interruptPatch: Pick<SessionViewState, "interruptible" | "interruptKind"> | null = null;
         if (event.type === "streaming_state") {
-          livenessPatch = event.isStreaming
-            ? { isStreaming: true }
-            : current.retryPending
-              ? {}
-              : { isStreaming: false };
+          const wasLogicallyStreaming = current.isStreaming || current.retryPending;
+          livenessPatch = {
+            isStreaming: event.isStreaming,
+            ...(event.isStreaming ? {} : { retryPending: false }),
+          };
+          if (!event.isStreaming && wasLogicallyStreaming) {
+            unreadStatus = turnErrored || unreadStatus === "error" ? "error" : "done";
+            turnErrored = false;
+          }
         }
         if (event.type === "interrupt_state") {
           interruptPatch = {
@@ -1167,6 +1190,8 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
           transcript,
           unreadStatus,
           turnErrored,
+          agentGeneration,
+          lastEndedAgentGeneration,
           sessionName,
           thinkingLevel,
           ...(interruptPatch ?? {}),

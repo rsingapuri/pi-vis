@@ -132,6 +132,8 @@ export function setupCommandBridge({
   let _session = session;
   let _unsubscribe = null;
   let retryPending = false;
+  let agentGeneration = 0;
+  let lastEndedAgentGeneration = 0;
   let lastStreamingState;
   const activeInterrupts = new Map();
   let nextInterruptId = 1;
@@ -166,6 +168,7 @@ export function setupCommandBridge({
 
   function trackInterruptibleOperation(kind, interrupt, run) {
     const id = nextInterruptId++;
+    const agentGenerationAtStart = agentGeneration;
     activeInterrupts.set(id, { kind, interrupt });
     emitInterruptStateIfChanged();
     let promise;
@@ -176,7 +179,16 @@ export function setupCommandBridge({
       throw err;
     }
     return Promise.resolve(promise).finally(() => {
-      if (activeInterrupts.delete(id)) emitInterruptStateIfChanged();
+      // An agent_settled extension handler can start a fresh run before the
+      // originating prompt promise resolves. Keep this abort hook until that
+      // newer run settles; it calls the live session's abort() and remains
+      // valid for the continuation. Prompts queued into an already-active run
+      // do not advance the generation, so their completed hooks are removed.
+      const handedOffToNewAgentRun =
+        kind === "agent" && agentGeneration > agentGenerationAtStart && logicalStreamingState();
+      if (!handedOffToNewAgentRun && activeInterrupts.delete(id)) {
+        emitInterruptStateIfChanged();
+      }
     });
   }
 
@@ -194,10 +206,30 @@ export function setupCommandBridge({
     }
   }
 
+  function endInterruptibleOperationsByKind(kind) {
+    let changed = false;
+    for (const [id, op] of activeInterrupts) {
+      if (op.kind !== kind) continue;
+      activeInterrupts.delete(id);
+      changed = true;
+    }
+    if (changed) emitInterruptStateIfChanged();
+  }
+
+  function settlementAppliesToLatestAgent() {
+    return lastEndedAgentGeneration === agentGeneration;
+  }
+
   function updateRetryPending(event) {
-    if (event?.type === "agent_start") retryPending = false;
-    else if (event?.type === "agent_end") retryPending = !!event.willRetry;
-    else if (event?.type === "auto_retry_start") retryPending = true;
+    if (event?.type === "agent_start") {
+      agentGeneration += 1;
+      retryPending = false;
+    } else if (event?.type === "agent_end") {
+      lastEndedAgentGeneration = agentGeneration;
+      retryPending = !!event.willRetry;
+    } else if (event?.type === "agent_settled" && settlementAppliesToLatestAgent()) {
+      retryPending = false;
+    } else if (event?.type === "auto_retry_start") retryPending = true;
     else if (event?.type === "auto_retry_end" && event.success === false) retryPending = false;
   }
 
@@ -213,6 +245,8 @@ export function setupCommandBridge({
   function subscribeSession(s) {
     _unsubscribe?.();
     retryPending = false;
+    agentGeneration = 0;
+    lastEndedAgentGeneration = 0;
     lastStreamingState = undefined;
     lastInterruptStateKey = undefined;
     _unsubscribe = s.subscribe((event) => {
@@ -220,6 +254,13 @@ export function setupCommandBridge({
       // AgentSessionEvent is a plain serializable object.
       send({ type: "event", event });
       updateRetryPending(event);
+      // Pi invokes extension agent_settled handlers before publishing the
+      // session event. A handler can start another run first, yielding
+      // agent_start(new) → agent_settled(old). Only clear the operation when
+      // no newer agent generation has started since the last agent_end.
+      if (event?.type === "agent_settled" && settlementAppliesToLatestAgent()) {
+        endInterruptibleOperationsByKind("agent");
+      }
       emitStreamingIfChanged();
       if (event?.type === "agent_end" || event?.type === "auto_retry_end") {
         const bound = s;

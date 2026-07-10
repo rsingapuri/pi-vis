@@ -171,6 +171,82 @@ describe("setupCommandBridge — wiring", () => {
     expect(res.data.isStreaming).toBe(true);
   });
 
+  it("clears a stale retry latch at pi 0.80.4's agent_settled boundary", () => {
+    const { session, send, run } = setup();
+    const subscriber = session.subscribe.mock.calls[0][0];
+    session.isStreaming = true;
+    subscriber({ type: "agent_start" });
+    subscriber({ type: "agent_end", willRetry: true });
+    session.isStreaming = false;
+    send.mockClear();
+
+    subscriber({ type: "agent_settled" });
+
+    expect(send).toHaveBeenCalledWith({ type: "event", event: { type: "agent_settled" } });
+    expect(send).toHaveBeenCalledWith({
+      type: "event",
+      event: { type: "streaming_state", isStreaming: false },
+    });
+    return expect(run({ type: "get_state" })).resolves.toMatchObject({
+      data: { isStreaming: false },
+    });
+  });
+
+  it("does not let an old agent_settled clear a run started by its extension handlers", async () => {
+    let resolvePrompt;
+    const promptPromise = new Promise((resolve) => {
+      resolvePrompt = resolve;
+    });
+    const { session, send, run, interruptActiveOperation } = setup({
+      prompt: vi.fn((_message, options) => {
+        options.preflightResult(true);
+        return promptPromise;
+      }),
+    });
+    await run({ type: "prompt", message: "first run" });
+    const subscriber = session.subscribe.mock.calls[0][0];
+    session.isStreaming = true;
+    subscriber({ type: "agent_start" });
+    subscriber({ type: "agent_end", willRetry: false });
+    subscriber({ type: "agent_start" });
+    send.mockClear();
+
+    subscriber({ type: "agent_settled" });
+
+    expect(send).toHaveBeenCalledWith({ type: "event", event: { type: "agent_settled" } });
+    expect(send).not.toHaveBeenCalledWith({
+      type: "event",
+      event: { type: "streaming_state", isStreaming: false },
+    });
+    expect(send).not.toHaveBeenCalledWith({
+      type: "event",
+      event: { type: "interrupt_state", interruptible: false },
+    });
+    await expect(run({ type: "get_state" })).resolves.toMatchObject({
+      data: { isStreaming: true },
+    });
+
+    // The old prompt resolves immediately after its stale settlement event,
+    // while the extension-triggered run remains active. Its abort hook must be
+    // handed off to that run instead of disappearing in the promise's finally.
+    resolvePrompt();
+    await Promise.resolve();
+    await interruptActiveOperation();
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalledWith({
+      type: "event",
+      event: { type: "interrupt_state", interruptible: false },
+    });
+
+    subscriber({ type: "agent_end", willRetry: false });
+    session.isStreaming = false;
+    subscriber({ type: "agent_settled" });
+    expect(send).toHaveBeenCalledWith({
+      type: "event",
+      event: { type: "interrupt_state", interruptible: false },
+    });
+  });
+
   it("tracks prompt operations as interruptible until the prompt promise settles", async () => {
     let resolvePrompt;
     const promptPromise = new Promise((resolve) => {

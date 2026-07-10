@@ -420,13 +420,95 @@ describe("sessions store - batched session events", () => {
   it("keeps streaming across an agent_end willRetry inside a batch", () => {
     useSessionsStore
       .getState()
-      .applyEvents(SESSION_A, [{ type: "agent_start" }, { type: "agent_end", willRetry: true }]);
+      .applyEvents(SESSION_A, [
+        { type: "agent_start" },
+        { type: "streaming_state", isStreaming: true },
+        { type: "agent_end", willRetry: true },
+      ]);
 
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(session?.isStreaming).toBe(true);
     expect(session?.runningSince).toBeDefined();
     expect(session?.unreadStatus).toBeUndefined();
     expect(session?.turnErrored).toBe(false);
+  });
+
+  it("uses agent_settled as the definitive idle and abort boundary", () => {
+    useSessionsStore
+      .getState()
+      .applyEvents(SESSION_A, [
+        { type: "agent_start" },
+        { type: "streaming_state", isStreaming: true },
+        { type: "interrupt_state", interruptible: true, operation: "agent" },
+        { type: "agent_end", willRetry: true },
+        { type: "agent_settled" },
+        { type: "interrupt_state", interruptible: false },
+        { type: "streaming_state", isStreaming: false },
+      ]);
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.isStreaming).toBe(false);
+    expect(session?.retryPending).toBe(false);
+    expect(session?.interruptible).toBe(false);
+    expect(session?.runningSince).toBeUndefined();
+    expect(session?.unreadStatus).toBe("done");
+    expect(isSessionAbortable(session)).toBe(false);
+  });
+
+  it("preserves a non-retryable error status when agent_settled follows agent_end", () => {
+    useSessionsStore.getState().applyEvents(SESSION_A, [
+      { type: "agent_start" },
+      { type: "streaming_state", isStreaming: true },
+      {
+        type: "message_end",
+        message: { role: "assistant", stopReason: "error", errorMessage: "provider failed" },
+      },
+      { type: "agent_end", willRetry: false },
+      { type: "agent_settled" },
+      { type: "streaming_state", isStreaming: false },
+    ]);
+
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("error");
+  });
+
+  it("ignores an old agent_settled after an extension handler starts a new run", () => {
+    useSessionsStore
+      .getState()
+      .applyEvents(SESSION_A, [
+        { type: "agent_start" },
+        { type: "streaming_state", isStreaming: true },
+        { type: "agent_end", willRetry: false },
+        { type: "agent_start" },
+        { type: "interrupt_state", interruptible: true, operation: "agent" },
+        { type: "agent_settled" },
+      ]);
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.isStreaming).toBe(true);
+    expect(session?.retryPending).toBe(false);
+    expect(session?.interruptible).toBe(true);
+    expect(session?.runningSince).toBeDefined();
+    expect(session?.unreadStatus).toBeUndefined();
+    expect(isSessionAbortable(session)).toBe(true);
+  });
+
+  it("old agent settlement preserves a newer bash interrupt", () => {
+    useSessionsStore
+      .getState()
+      .applyEvents(SESSION_A, [
+        { type: "agent_start" },
+        { type: "streaming_state", isStreaming: true },
+        { type: "agent_end", willRetry: false },
+        { type: "interrupt_state", interruptible: true, operation: "bash" },
+        { type: "agent_settled" },
+        { type: "streaming_state", isStreaming: false },
+      ]);
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.isStreaming).toBe(false);
+    expect(session?.interruptible).toBe(true);
+    expect(session?.interruptKind).toBe("bash");
+    expect(isSessionAbortable(session)).toBe(true);
   });
 
   it("promotes a pending new session when a user echo arrives in a batch", () => {
@@ -473,7 +555,7 @@ describe("sessions store - batched session events", () => {
     ).toEqual(["dup", "dup"]);
   });
 
-  it("tracks prompt in-flight as working and gates streaming false during retry", () => {
+  it("trusts authoritative streaming false while prompt in-flight keeps the race window working", () => {
     const store = useSessionsStore.getState();
     store.beginPromptInFlight(SESSION_A);
     const runningSince = useSessionsStore.getState().sessions.get(SESSION_A)?.runningSince;
@@ -484,11 +566,10 @@ describe("sessions store - batched session events", () => {
       { type: "agent_end", willRetry: true },
       { type: "streaming_state", isStreaming: false },
     ]);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.isStreaming).toBe(true);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.isStreaming).toBe(false);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.runningSince).toBe(runningSince);
 
     store.endPromptInFlight(SESSION_A);
-    store.applyEvent(SESSION_A, { type: "auto_retry_end", success: false });
     expect(isSessionWorking(useSessionsStore.getState().sessions.get(SESSION_A))).toBe(false);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.runningSince).toBeUndefined();
   });
@@ -533,8 +614,11 @@ describe("sessions store - batched session events", () => {
 
   it("does not let get_state raw isStreaming false break logical retry liveness", () => {
     const store = useSessionsStore.getState();
-    store.applyEvent(SESSION_A, { type: "agent_start" });
-    store.applyEvent(SESSION_A, { type: "agent_end", willRetry: true });
+    store.applyEvents(SESSION_A, [
+      { type: "agent_start" },
+      { type: "streaming_state", isStreaming: true },
+      { type: "agent_end", willRetry: true },
+    ]);
     const retrying = useSessionsStore.getState().sessions.get(SESSION_A)!;
     const captured = {
       identityEpoch: retrying.identityEpoch,
@@ -829,14 +913,20 @@ describe("sessions store - unread turn-result status dot", () => {
 
   const finishTurn = (sessionId: SessionId, opts: { error?: boolean } = {}) => {
     const store = useSessionsStore.getState();
-    store.applyEvent(sessionId, { type: "agent_start" });
+    store.applyEvents(sessionId, [
+      { type: "agent_start" },
+      { type: "streaming_state", isStreaming: true },
+    ]);
     store.applyEvent(sessionId, {
       type: "message_end",
       message: opts.error
         ? { role: "assistant", stopReason: "error", errorMessage: "provider down" }
         : { role: "assistant", stopReason: "end_turn" },
     });
-    store.applyEvent(sessionId, { type: "agent_end" });
+    store.applyEvents(sessionId, [
+      { type: "agent_end" },
+      { type: "streaming_state", isStreaming: false },
+    ]);
   };
 
   it("marks a finished turn 'done' and an erroring turn 'error'", () => {
@@ -920,10 +1010,19 @@ describe("sessions store - unread turn-result status dot", () => {
 
   const errorMsg = { role: "assistant" as const, stopReason: "error", errorMessage: "503" };
   const okMsg = { role: "assistant" as const, stopReason: "end_turn" };
+  const startStreamingTurn = (store: ReturnType<typeof useSessionsStore.getState>) => {
+    store.applyEvents(SESSION_A, [
+      { type: "agent_start" },
+      { type: "streaming_state", isStreaming: true },
+    ]);
+  };
+  const finishStreamingTurn = (store: ReturnType<typeof useSessionsStore.getState>) => {
+    store.applyEvent(SESSION_A, { type: "streaming_state", isStreaming: false });
+  };
 
   it("does not surface a dot on a willRetry agent_end (stays streaming)", () => {
     const store = useSessionsStore.getState();
-    store.applyEvent(SESSION_A, { type: "agent_start" });
+    startStreamingTurn(store);
     store.applyEvent(SESSION_A, { type: "message_end", message: errorMsg });
     store.applyEvent(SESSION_A, { type: "agent_end", willRetry: true });
     const s = useSessionsStore.getState().sessions.get(SESSION_A);
@@ -933,12 +1032,13 @@ describe("sessions store - unread turn-result status dot", () => {
 
   it("a retry that succeeds ends 'done', not 'error' (no agent_start between attempts)", () => {
     const store = useSessionsStore.getState();
-    store.applyEvent(SESSION_A, { type: "agent_start" });
+    startStreamingTurn(store);
     store.applyEvent(SESSION_A, { type: "message_end", message: errorMsg }); // attempt 1 fails
     store.applyEvent(SESSION_A, { type: "agent_end", willRetry: true });
     // Retry attempt arrives WITHOUT a fresh agent_start, just new messages.
     store.applyEvent(SESSION_A, { type: "message_end", message: okMsg }); // attempt 2 ok
     store.applyEvent(SESSION_A, { type: "agent_end" });
+    finishStreamingTurn(store);
     const s = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(s?.unreadStatus).toBe("done");
     expect(s?.isStreaming).toBe(false);
@@ -946,11 +1046,12 @@ describe("sessions store - unread turn-result status dot", () => {
 
   it("a late failed auto_retry_end does not overwrite a completed final agent_end", () => {
     const store = useSessionsStore.getState();
-    store.applyEvent(SESSION_A, { type: "agent_start" });
+    startStreamingTurn(store);
     store.applyEvent(SESSION_A, { type: "message_end", message: errorMsg });
     store.applyEvent(SESSION_A, { type: "agent_end", willRetry: true });
     store.applyEvent(SESSION_A, { type: "message_end", message: okMsg });
     store.applyEvent(SESSION_A, { type: "agent_end" });
+    finishStreamingTurn(store);
     store.applyEvent(SESSION_A, { type: "auto_retry_end", success: false });
     const s = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(s?.unreadStatus).toBe("done");
@@ -959,11 +1060,12 @@ describe("sessions store - unread turn-result status dot", () => {
 
   it("a retry that also fails ends 'error'", () => {
     const store = useSessionsStore.getState();
-    store.applyEvent(SESSION_A, { type: "agent_start" });
+    startStreamingTurn(store);
     store.applyEvent(SESSION_A, { type: "message_end", message: errorMsg });
     store.applyEvent(SESSION_A, { type: "agent_end", willRetry: true });
     store.applyEvent(SESSION_A, { type: "message_end", message: errorMsg });
     store.applyEvent(SESSION_A, { type: "agent_end" });
+    finishStreamingTurn(store);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("error");
   });
 
@@ -975,7 +1077,7 @@ describe("sessions store - unread turn-result status dot", () => {
   // timer stick on forever after the abort.
   it("a failed auto_retry_end clears streaming when no final agent_end follows (abort during backoff)", () => {
     const store = useSessionsStore.getState();
-    store.applyEvent(SESSION_A, { type: "agent_start" });
+    startStreamingTurn(store);
     const before = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(before?.isStreaming).toBe(true);
     expect(before?.runningSince).toBeDefined();
@@ -988,6 +1090,7 @@ describe("sessions store - unread turn-result status dot", () => {
       success: false,
       finalError: "Retry cancelled",
     });
+    finishStreamingTurn(store);
     const s = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(s?.isStreaming).toBe(false);
     expect(s?.runningSince).toBeUndefined();
@@ -996,7 +1099,7 @@ describe("sessions store - unread turn-result status dot", () => {
 
   it("a successful auto_retry_end does not clear streaming (turn continues)", () => {
     const store = useSessionsStore.getState();
-    store.applyEvent(SESSION_A, { type: "agent_start" });
+    startStreamingTurn(store);
     store.applyEvent(SESSION_A, { type: "message_end", message: errorMsg });
     store.applyEvent(SESSION_A, { type: "agent_end", willRetry: true });
     store.applyEvent(SESSION_A, { type: "auto_retry_end", success: true, attempt: 1 });
@@ -3055,16 +3158,30 @@ describe("sessions store - isStreaming turn-end truth (S1, S2) + abortSession (S
     useSessionsStore.getState().sessions.get(SESSION_A)?.isStreaming ?? false;
   const runningSince = () => useSessionsStore.getState().sessions.get(SESSION_A)?.runningSince;
 
-  it("final agent_end (willRetry:false) clears isStreaming", () => {
-    useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
+  it("agent_end stays streaming until authoritative streaming_state false", () => {
+    useSessionsStore
+      .getState()
+      .applyEvents(SESSION_A, [
+        { type: "agent_start" },
+        { type: "streaming_state", isStreaming: true },
+      ]);
     expect(isStreaming()).toBe(true);
     useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_end", willRetry: false });
+    expect(isStreaming()).toBe(true);
+    useSessionsStore
+      .getState()
+      .applyEvent(SESSION_A, { type: "streaming_state", isStreaming: false });
     expect(isStreaming()).toBe(false);
     expect(runningSince()).toBeUndefined();
   });
 
-  it("willRetry agent_end keeps streaming; a following agent_start keeps it true", () => {
-    useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
+  it("willRetry agent_end keeps authoritative streaming; a following agent_start does not clear it", () => {
+    useSessionsStore
+      .getState()
+      .applyEvents(SESSION_A, [
+        { type: "agent_start" },
+        { type: "streaming_state", isStreaming: true },
+      ]);
     useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_end", willRetry: true });
     expect(isStreaming()).toBe(true);
     useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
@@ -3094,7 +3211,7 @@ describe("sessions store - isStreaming turn-end truth (S1, S2) + abortSession (S
 
   it("setSessionStatus -> 'exited' from 'ready' clears isStreaming and active transcript work (S1)", () => {
     useSessionsStore.getState().setSessionStatus(SESSION_A, "ready");
-    useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
+    useSessionsStore.getState().setStreaming(SESSION_A, true);
     useSessionsStore.getState().applyEvent(SESSION_A, {
       type: "message_start",
       message: { role: "assistant" },
@@ -3122,14 +3239,14 @@ describe("sessions store - isStreaming turn-end truth (S1, S2) + abortSession (S
 
   it("setSessionStatus -> 'failed' from 'ready' clears isStreaming (S1)", () => {
     useSessionsStore.getState().setSessionStatus(SESSION_A, "ready");
-    useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
+    useSessionsStore.getState().setStreaming(SESSION_A, true);
     useSessionsStore.getState().setSessionStatus(SESSION_A, "failed", "boom");
     expect(isStreaming()).toBe(false);
   });
 
   it("setSessionStatus -> 'ready' from 'ready' (benign re-emit) does NOT clear streaming", () => {
     useSessionsStore.getState().setSessionStatus(SESSION_A, "ready");
-    useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
+    useSessionsStore.getState().setStreaming(SESSION_A, true);
     const before = runningSince();
     expect(before).toBeDefined();
     useSessionsStore.getState().setSessionStatus(SESSION_A, "ready");
@@ -3141,7 +3258,7 @@ describe("sessions store - isStreaming turn-end truth (S1, S2) + abortSession (S
     useSessionsStore.getState().setSessionStatus(SESSION_A, "exited");
     // Now start a (hypothetical) fresh turn on an exited session and
     // confirm a duplicate exited re-emit is a no-op.
-    useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
+    useSessionsStore.getState().setStreaming(SESSION_A, true);
     const before = runningSince();
     useSessionsStore.getState().setSessionStatus(SESSION_A, "exited");
     // becomingTerminal is false (already terminal), so streaming is preserved.
@@ -3150,7 +3267,7 @@ describe("sessions store - isStreaming turn-end truth (S1, S2) + abortSession (S
   });
 
   it("abortSession: streaming -> invokes session.interrupt", () => {
-    useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
+    useSessionsStore.getState().setStreaming(SESSION_A, true);
     invokeMock.mockClear();
     useSessionsStore.getState().abortSession(SESSION_A);
     expect(invokeMock).toHaveBeenCalledTimes(1);
@@ -3176,7 +3293,7 @@ describe("sessions store - isStreaming turn-end truth (S1, S2) + abortSession (S
   });
 
   it("abortSession: rejecting invoke -> no unhandled rejection (S3)", async () => {
-    useSessionsStore.getState().applyEvent(SESSION_A, { type: "agent_start" });
+    useSessionsStore.getState().setStreaming(SESSION_A, true);
     invokeMock.mockRejectedValueOnce(new Error("host fallback"));
     // Should not throw.
     useSessionsStore.getState().abortSession(SESSION_A);

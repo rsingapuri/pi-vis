@@ -753,6 +753,99 @@ describe("SessionRegistry concurrency & lock lifecycle", () => {
     await activating;
   }, 15_000);
 
+  it("clears host busy, retry, and interrupt state on agent_settled", async () => {
+    const id = registry.openSession(workspaceDir);
+    const activating = registry.activateSession(id, FAKE_PI, {}, true);
+    await new Promise((r) => setTimeout(r, 30));
+    fakeHost.emitReady("0.80.6");
+    await activating;
+
+    fakeHost.emitMessage({ type: "event", event: { type: "agent_start" } });
+    fakeHost.emitMessage({
+      type: "event",
+      event: { type: "interrupt_state", interruptible: true, operation: "agent" },
+    });
+    fakeHost.emitMessage({
+      type: "event",
+      event: { type: "agent_end", willRetry: true },
+    });
+    expect(registry.getSession(id)).toMatchObject({
+      busy: true,
+      retryPending: true,
+      interruptible: true,
+    });
+
+    fakeHost.emitMessage({ type: "event", event: { type: "agent_settled" } });
+    fakeHost.emitMessage({
+      type: "event",
+      event: { type: "interrupt_state", interruptible: false },
+    });
+    fakeHost.emitMessage({
+      type: "event",
+      event: { type: "streaming_state", isStreaming: false },
+    });
+    expect(registry.getSession(id)).toMatchObject({
+      busy: false,
+      retryPending: false,
+      interruptible: false,
+    });
+  });
+
+  it("ignores an old agent_settled after an extension handler starts a new run", async () => {
+    const id = registry.openSession(workspaceDir);
+    const activating = registry.activateSession(id, FAKE_PI, {}, true);
+    await new Promise((r) => setTimeout(r, 30));
+    fakeHost.emitReady("0.80.6");
+    await activating;
+
+    fakeHost.emitMessage({ type: "event", event: { type: "agent_start" } });
+    fakeHost.emitMessage({ type: "event", event: { type: "agent_end", willRetry: false } });
+    fakeHost.emitMessage({ type: "event", event: { type: "agent_start" } });
+    fakeHost.emitMessage({
+      type: "event",
+      event: { type: "interrupt_state", interruptible: true, operation: "agent" },
+    });
+    fakeHost.emitMessage({ type: "event", event: { type: "agent_settled" } });
+
+    expect(registry.getSession(id)).toMatchObject({
+      busy: true,
+      retryPending: false,
+      interruptible: true,
+    });
+  });
+
+  it("keeps host busy after agent_end and preserves a newer bash interrupt at settlement", async () => {
+    const id = registry.openSession(workspaceDir);
+    const activating = registry.activateSession(id, FAKE_PI, {}, true);
+    await new Promise((r) => setTimeout(r, 30));
+    fakeHost.emitReady("0.80.6");
+    await activating;
+
+    fakeHost.emitMessage({ type: "event", event: { type: "agent_start" } });
+    fakeHost.emitMessage({
+      type: "event",
+      event: { type: "streaming_state", isStreaming: true },
+    });
+    fakeHost.emitMessage({ type: "event", event: { type: "agent_end", willRetry: false } });
+    expect(registry.getSession(id)?.busy).toBe(true);
+
+    fakeHost.emitMessage({
+      type: "event",
+      event: { type: "interrupt_state", interruptible: true, operation: "bash" },
+    });
+    fakeHost.emitMessage({ type: "event", event: { type: "agent_settled" } });
+    fakeHost.emitMessage({
+      type: "event",
+      event: { type: "streaming_state", isStreaming: false },
+    });
+
+    expect(registry.getSession(id)).toMatchObject({
+      busy: true,
+      interruptible: true,
+      interruptKind: "bash",
+    });
+  });
+
   it("P1-i: commands during the host handshake are queued, not bounced with 'Not initialized'", async () => {
     // Host mode assigns record.proc = hostProc BEFORE waitForReady (so the
     // trust dialog can round-trip). The renderer fires its init commands

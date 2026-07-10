@@ -83,6 +83,16 @@ describe("JsonlStream", () => {
     expect(lines).toHaveLength(2);
   });
 
+  it("recognizes pi 0.80.4 agent_settled as a known event", () => {
+    const lines: Array<{ kind: string; data?: { type?: string; __unknown?: boolean } }> = [];
+    const stream = new JsonlStream(
+      (p) => lines.push(p as (typeof lines)[number]),
+      () => {},
+    );
+    stream.feed(Buffer.from('{"type":"agent_settled"}\n'));
+    expect(lines).toEqual([{ kind: "event", data: { type: "agent_settled" } }]);
+  });
+
   it("classifies response messages", () => {
     const lines: Array<{ kind: string }> = [];
     const stream = new JsonlStream(

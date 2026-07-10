@@ -30,9 +30,17 @@ export interface SessionRecord {
   proc?: PiProcess | SessionHost | undefined;
   /** Timestamp of last activity (open, command, or agent event). Used for LRU eviction. */
   lastActiveAt: number;
-  /** True while the agent is actively processing a command (busy = ineligible for idle kill). */
+  /** True while any runtime operation is active (busy = ineligible for idle kill). */
   busy: boolean;
+  /** Authoritative normalized agent liveness (separate from bash/compact interrupts). */
+  _agentStreaming: boolean;
+  /** Latest fallback get_state request; older responses are ignored. */
+  _runtimeSnapshotRequest: number;
   retryPending: boolean;
+  /** Monotonic agent_start generation used to reject a stale agent_settled. */
+  _agentGeneration: number;
+  /** Generation most recently closed by agent_end. */
+  _lastEndedAgentGeneration: number;
   interruptible: boolean;
   interruptKind?: SessionInterruptKind | undefined;
   _interruptOps?: Map<number, SessionInterruptOperation> | undefined;
@@ -164,7 +172,11 @@ export class SessionRegistry {
       status: "cold",
       lastActiveAt: Date.now(),
       busy: false,
+      _agentStreaming: false,
+      _runtimeSnapshotRequest: 0,
       retryPending: false,
+      _agentGeneration: 0,
+      _lastEndedAgentGeneration: 0,
       interruptible: false,
     };
     this.sessions.set(sessionId, record);
@@ -221,6 +233,10 @@ export class SessionRegistry {
     // mode). Reset here so a re-activation (reload/respawn) re-queues until the
     // fresh proc is up rather than firing at a half-spawned host. See P1-i.
     record._procReady = false;
+    record._agentStreaming = false;
+    record._runtimeSnapshotRequest += 1;
+    record._agentGeneration = 0;
+    record._lastEndedAgentGeneration = 0;
     record.status = "starting";
     this.onStatusChanged(sessionId, "starting");
 
@@ -414,45 +430,50 @@ export class SessionRegistry {
       proc.on("event", (event) => {
         if (record.proc !== proc) return;
         record.lastActiveAt = Date.now();
+        const host = isSessionHost(proc);
+        let refreshFallbackState = false;
         if ("__unknown" in event) {
           // no-op
         } else if (event.type === "agent_start") {
-          record.busy = true;
+          record._agentGeneration += 1;
           record.retryPending = false;
-          if (!isSessionHost(proc)) this._beginInterruptOperation(record, "agent");
+          if (!host) this._beginInterruptOperation(record, "agent");
+          refreshFallbackState = !host;
         } else if (event.type === "agent_end") {
+          record._lastEndedAgentGeneration = record._agentGeneration;
           record.retryPending = !!event.willRetry;
-          record.busy = !!event.willRetry;
-          if (!isSessionHost(proc) && !event.willRetry) {
-            this._endInterruptOperationsByKind(record, "agent");
-          }
+          refreshFallbackState = !host;
+        } else if (
+          event.type === "agent_settled" &&
+          record._lastEndedAgentGeneration === record._agentGeneration
+        ) {
+          // Pi publishes agent_settled after running extension settlement
+          // handlers. If one started a new run, its agent_start has already
+          // advanced the generation and this old settlement must be ignored.
+          record.retryPending = false;
+          refreshFallbackState = !host;
         } else if (event.type === "auto_retry_start") {
           record.retryPending = true;
-          record.busy = true;
-          if (!isSessionHost(proc)) this._beginInterruptOperation(record, "agent");
-        } else if (event.type === "auto_retry_end" && event.success === false) {
-          record.retryPending = false;
-          record.busy = false;
-          if (!isSessionHost(proc)) this._endInterruptOperationsByKind(record, "agent");
+          refreshFallbackState = !host;
+        } else if (event.type === "auto_retry_end") {
+          if (!event.success) record.retryPending = false;
+          refreshFallbackState = !host;
         } else if (event.type === "streaming_state") {
-          if (event.isStreaming) {
-            record.busy = true;
-            if (!isSessionHost(proc)) this._beginInterruptOperation(record, "agent");
-          } else if (!record.retryPending) {
-            record.busy = false;
-            if (!isSessionHost(proc)) this._endInterruptOperationsByKind(record, "agent");
-          }
+          record._agentStreaming = event.isStreaming;
+          if (!event.isStreaming) record.retryPending = false;
         } else if (event.type === "interrupt_state") {
           record.interruptible = event.interruptible;
           record.interruptKind = event.interruptible ? event.operation : undefined;
-          if (event.interruptible) record.busy = true;
-          else if (!record.retryPending) record.busy = false;
         }
+        record.busy = record._agentStreaming || record.retryPending || record.interruptible;
         if (record.status === "starting") {
           record.status = "ready";
-          this.onStatusChanged(sessionId, "ready");
+          this.onStatusChanged(sessionId, "ready", undefined, hostPiVersion);
         }
         this.onEvent(sessionId, event);
+        if (refreshFallbackState && proc instanceof PiProcess) {
+          this._refreshFallbackRuntimeState(record, proc);
+        }
       });
 
       // uiRequest is attached per-proc above (pre-readiness for the host) so
@@ -466,6 +487,7 @@ export class SessionRegistry {
         record.proc = undefined;
         record._procReady = false;
         record.busy = false;
+        record._agentStreaming = false;
         record.retryPending = false;
         this._clearInterruptOperations(record);
         if (code !== 0 && code !== null) {
@@ -494,6 +516,7 @@ export class SessionRegistry {
         record.proc = undefined;
         record._procReady = false;
         record.busy = false;
+        record._agentStreaming = false;
         record.retryPending = false;
         this._clearInterruptOperations(record);
         record.error = err.message;
@@ -539,6 +562,31 @@ export class SessionRegistry {
     this.enforceIdleLimit(sessionId);
   }
 
+  private _refreshFallbackRuntimeState(record: SessionRecord, proc: PiProcess): void {
+    const request = ++record._runtimeSnapshotRequest;
+    void proc
+      .sendCommand({ type: "get_state" })
+      .then((response) => {
+        if (record.proc !== proc || request !== record._runtimeSnapshotRequest) return;
+        const rawStreaming = (response.data as { isStreaming?: unknown } | undefined)?.isStreaming;
+        if (!response.success || typeof rawStreaming !== "boolean") return;
+        // Older pi versions report raw false during retry backoff. retryPending
+        // is the adapter's compatibility latch; otherwise the snapshot wins.
+        const isStreaming = rawStreaming || record.retryPending;
+        record._agentStreaming = isStreaming;
+        if (!isStreaming) {
+          record.retryPending = false;
+          this._endInterruptOperationsByKind(record, "agent");
+        }
+        record.busy = record._agentStreaming || record.retryPending || record.interruptible;
+        this.onEvent(record.sessionId, { type: "streaming_state", isStreaming });
+      })
+      .catch(() => {
+        // Process exit/error paths reset runtime state; a failed advisory
+        // snapshot must not invent a state transition.
+      });
+  }
+
   private _currentInterruptKind(record: SessionRecord): SessionInterruptKind | undefined {
     const ops = record._interruptOps;
     if (!ops || ops.size === 0) return undefined;
@@ -553,8 +601,7 @@ export class SessionRegistry {
     if (record.interruptible === interruptible && record.interruptKind === kind) return;
     record.interruptible = interruptible;
     record.interruptKind = kind;
-    if (interruptible) record.busy = true;
-    else if (!record.retryPending) record.busy = false;
+    record.busy = record._agentStreaming || record.retryPending || interruptible;
     this.onEvent(record.sessionId, {
       type: "interrupt_state",
       interruptible,
@@ -1056,6 +1103,7 @@ export class SessionRegistry {
     rec.status = "cold";
     rec.error = undefined;
     rec.busy = false;
+    rec._agentStreaming = false;
     rec.retryPending = false;
     this._clearInterruptOperations(rec);
     this.onStatusChanged(sessionId, "cold");
@@ -1098,6 +1146,7 @@ export class SessionRegistry {
       rec.proc = undefined;
       rec._procReady = false;
       rec.busy = false;
+      rec._agentStreaming = false;
       rec.retryPending = false;
       this._clearInterruptOperations(rec);
       proc?.stop();

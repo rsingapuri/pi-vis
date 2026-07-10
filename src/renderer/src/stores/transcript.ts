@@ -553,6 +553,7 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
     }
     case "agent_start":
       return { ...state, pendingRetryErrorBlockId: null };
+    case "agent_settled":
     case "turn_start":
     case "turn_end":
     case "queue_update":

@@ -220,7 +220,11 @@ function ensureFile() {
   }
 }
 
+let runtimeStreaming = false;
+
 function send(obj) {
+  if (obj?.type === "agent_start") runtimeStreaming = true;
+  if (obj?.type === "agent_end") runtimeStreaming = false;
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 }
 
@@ -694,7 +698,7 @@ rl.on("line", async (line) => {
         data: {
           model: currentModel(),
           thinkingLevel: currentThinkingLevel,
-          isStreaming: false,
+          isStreaming: runtimeStreaming,
           isCompacting: false,
           sessionFile,
           sessionId,

@@ -86,6 +86,13 @@ export const AgentEndEventSchema = z.object({
   willRetry: z.boolean().optional(),
 });
 
+// Pi >= 0.80.4 emits this after the full session-level run has settled and no
+// automatic retry, compaction, or queued continuation remains. Older supported
+// versions stop at agent_end, so consumers retain agent_end as a fallback.
+export const AgentSettledEventSchema = z.object({
+  type: z.literal("agent_settled"),
+});
+
 export const TurnStartEventSchema = z.object({
   type: z.literal("turn_start"),
 });
@@ -216,6 +223,7 @@ export const SessionInfoChangedEventSchema = z.object({
 const KnownPiEventSchema = z.discriminatedUnion("type", [
   AgentStartEventSchema,
   AgentEndEventSchema,
+  AgentSettledEventSchema,
   TurnStartEventSchema,
   TurnEndEventSchema,
   MessageStartEventSchema,
@@ -251,6 +259,7 @@ export type PiEvent = z.infer<typeof PiEventSchema>;
 
 export type AgentStartEvent = z.infer<typeof AgentStartEventSchema>;
 export type AgentEndEvent = z.infer<typeof AgentEndEventSchema>;
+export type AgentSettledEvent = z.infer<typeof AgentSettledEventSchema>;
 export type TurnStartEvent = z.infer<typeof TurnStartEventSchema>;
 export type TurnEndEvent = z.infer<typeof TurnEndEventSchema>;
 export type MessageStartEvent = z.infer<typeof MessageStartEventSchema>;
