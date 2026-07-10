@@ -45,6 +45,11 @@ const PI_BIN = locatePiBin();
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme");
 
+// Current pi versions synthesize the optional thinkingMax role from
+// thinkingXhigh inside Theme's constructor, so even this focused fixture must
+// provide the fallback source role.
+const TEST_FG_COLORS = { text: 42, error: 43, thinkingXhigh: 44 };
+
 // Run/serialize helper: vitest's describe.skip is evaluated at collection time,
 // so gate the whole suite on the resolved PI_BIN.
 const suite = PI_BIN ? describe : describe.skip;
@@ -61,8 +66,7 @@ suite("applyPiVisTheme (real pi)", () => {
     // Populate the global with a valid base theme first (as host.mjs does).
     initHostTheme(pi, "dark");
 
-    const fg = { text: 42, error: 43 };
-    const installed = applyPiVisTheme(pi, fg, {});
+    const installed = applyPiVisTheme(pi, TEST_FG_COLORS, {});
     expect(installed).toBe(globalThis[THEME_KEY]);
     expect(globalThis[THEME_KEY_OLD]).toBe(installed);
   });
@@ -74,7 +78,7 @@ suite("applyPiVisTheme (real pi)", () => {
     // `\x1b[38;5;N m`, independent of color mode — the byte stream carries
     // role identity, never RGB. This is what makes the renderer's palette swap
     // recolor buffered cells live.
-    applyPiVisTheme(pi, { text: 42, error: 43 }, {});
+    applyPiVisTheme(pi, TEST_FG_COLORS, {});
 
     const theme = globalThis[THEME_KEY];
     expect(theme.fg("text", "X")).toContain("\x1b[38;5;42m");
