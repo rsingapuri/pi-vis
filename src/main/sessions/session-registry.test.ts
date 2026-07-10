@@ -1092,6 +1092,134 @@ describe("SessionRegistry concurrency & lock lifecycle", () => {
     expect(registry.getSession(id)?._hasLock).not.toBe(true);
   }, 15_000);
 
+  it.each(["error", "exit"] as const)(
+    "restarts SDK host mode when a ready host emits %s, without RPC failover",
+    async (failure) => {
+      const recoveryHost = new FakeHostProcess();
+      let forkCount = 0;
+      __forkOverride.fn = () => {
+        const host = forkCount++ === 0 ? fakeHost : recoveryHost;
+        return host as unknown as ReturnType<typeof import("node:child_process").fork>;
+      };
+
+      const id = registry.openSession(workspaceDir);
+      const activating = registry.activateSession(id, FAKE_PI, {}, true);
+      await new Promise((r) => setTimeout(r, 30));
+      fakeHost.emitReady("0.81.0");
+      await activating;
+
+      fakeHost.emitMessage({ type: "panel_open", panelId: 1, overlay: true });
+      fakeHost.emitMessage({ type: "panel_open", panelId: 2, overlay: false, unified: true });
+      if (failure === "error") {
+        fakeHost.emitError("host IPC failed");
+      } else {
+        fakeHost.emitExit(7);
+      }
+
+      await waitFor(
+        () => recoveryHost.sent.some((message) => message.type === "init"),
+        5000,
+        "replacement SDK host spawn",
+      );
+      recoveryHost.emitReady("0.81.0");
+      await waitFor(
+        () => {
+          const rec = registry.getSession(id);
+          return rec?.proc instanceof SessionHost && rec._procReady === true;
+        },
+        5000,
+        "replacement SDK host readiness",
+      );
+
+      const rec = registry.getSession(id);
+      expect(rec?._useHost).toBe(true);
+      expect(rec?._hostRequested).toBe(true);
+      expect(forkCount).toBe(2);
+      expect(
+        statusChanges.some(
+          (s) => s.sessionId === id && s.status === (failure === "error" ? "failed" : "exited"),
+        ),
+      ).toBe(true);
+      expect(
+        panelEvents.some(
+          (p) =>
+            p.event.type === "session_warning" && p.event.message.includes("restarting it now"),
+        ),
+      ).toBe(true);
+      expect(panelEvents.some((p) => p.event.type === "panel_clear_all")).toBe(true);
+      expect(panelEvents.some((p) => p.event.type === "unified_panel_reset")).toBe(true);
+      expect(panelEvents.some((p) => p.event.type === "host_fallback")).toBe(false);
+
+      // The replacement SDK host accepts commands in the same live session.
+      const responsePromise = registry.sendCommand(id, { type: "get_state" });
+      await waitFor(
+        () => recoveryHost.sent.some((message) => message.type === "command"),
+        5000,
+        "command sent to replacement host",
+      );
+      const command = recoveryHost.sent.find((message) => message.type === "command");
+      if (!command) throw new Error("expected command sent to replacement host");
+      recoveryHost.emitMessage({ type: "response", id: command.id, success: true, data: {} });
+      await expect(responsePromise).resolves.toMatchObject({ success: true });
+
+      // A second immediate crash is not restarted forever and still never
+      // falls through to RPC mode.
+      recoveryHost.emitExit(8);
+      await waitFor(
+        () => registry.getSession(id)?.status === "exited" && !registry.getSession(id)?.proc,
+        5000,
+        "restart-loop circuit breaker",
+      );
+      expect(forkCount).toBe(2);
+      expect(panelEvents.some((p) => p.event.type === "host_fallback")).toBe(false);
+      expect(
+        panelEvents.some(
+          (p) =>
+            p.event.type === "session_warning" && p.event.message.includes("failed again shortly"),
+        ),
+      ).toBe(true);
+    },
+    15_000,
+  );
+
+  it("does not fall back to RPC when the automatic SDK host restart cannot initialize", async () => {
+    const recoveryHost = new FakeHostProcess();
+    let forkCount = 0;
+    __forkOverride.fn = () => {
+      const host = forkCount++ === 0 ? fakeHost : recoveryHost;
+      return host as unknown as ReturnType<typeof import("node:child_process").fork>;
+    };
+
+    const id = registry.openSession(workspaceDir);
+    const activating = registry.activateSession(id, FAKE_PI, {}, true);
+    await new Promise((r) => setTimeout(r, 30));
+    fakeHost.emitReady("0.81.0");
+    await activating;
+
+    fakeHost.emitExit(7);
+    await waitFor(
+      () => recoveryHost.sent.some((message) => message.type === "init"),
+      5000,
+      "replacement SDK host spawn",
+    );
+    recoveryHost.emitExit(1);
+    await waitFor(
+      () => registry.getSession(id)?.status === "failed",
+      5000,
+      "failed SDK-only recovery",
+    );
+
+    expect(registry.getSession(id)?.proc).toBeUndefined();
+    expect(registry.getSession(id)?._useHost).toBe(true);
+    expect(forkCount).toBe(2);
+    expect(panelEvents.some((p) => p.event.type === "host_fallback")).toBe(false);
+    expect(
+      panelEvents.some(
+        (p) => p.event.type === "session_warning" && p.event.message.includes("restart failed"),
+      ),
+    ).toBe(true);
+  }, 15_000);
+
   it("P2-b: reloadSession re-tries the host after a prior fallback (user upgraded pi)", async () => {
     // First activation: host fails (exit 42, version too low) → fallback to
     // pi --mode rpc, _useHost reset to false. Then the user upgrades pi and
