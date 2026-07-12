@@ -1141,6 +1141,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
               registerEcho?: boolean;
               clearDraft?: boolean;
               afterUserMessageSequence?: number;
+              intentId?: string;
             },
           ) => addUserMessage(sid, message, images, { ...opts, clearDraft: false }),
           clearPendingUserEcho: useSessionsStore.getState().clearPendingUserEcho,

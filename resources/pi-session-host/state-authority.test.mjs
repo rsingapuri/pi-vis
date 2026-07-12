@@ -205,6 +205,130 @@ describe("state authority", () => {
     );
   });
 
+  it("registers queue identity synchronously before re-entrant delivery after preflight", async () => {
+    const promptDone = deferred();
+    let steering = [];
+    const { authority, sendRecord } = setup({
+      isStreaming: true,
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((_text, options) => {
+        steering = ["transformed queued"];
+        options.preflightResult(true);
+        steering = [];
+        authority.observeEvent({
+          type: "message_start",
+          message: { role: "user", content: "transformed delivery" },
+        });
+        return promptDone.promise;
+      }),
+    });
+
+    await authority.submit(
+      makeRequest("intent-reentrant", { text: "original", requestedMode: "steer" }),
+    );
+    expect(sendRecord).toHaveBeenCalledWith({
+      type: "event",
+      event: {
+        type: "message_start",
+        message: { role: "user", content: "transformed delivery" },
+        queueIntentId: "intent-reentrant",
+      },
+    });
+    promptDone.resolve();
+  });
+
+  it("synchronizes external queue additions before capturing the admission baseline", async () => {
+    const promptDone = deferred();
+    let steering = [];
+    const { authority } = setup({
+      isStreaming: true,
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((_text, options) => {
+        steering.push("GUI transformed");
+        options.preflightResult(true);
+        return promptDone.promise;
+      }),
+    });
+    steering = ["external before admission"];
+
+    await authority.submit(
+      makeRequest("intent-after-external", { text: "original", requestedMode: "steer" }),
+    );
+    expect(authority.snapshot().steeringIntentIds).toEqual([null, "intent-after-external"]);
+    promptDone.resolve();
+  });
+
+  it("does not assign a GUI intent when preflight adds multiple ambiguous slots", async () => {
+    const promptDone = deferred();
+    let steering = [];
+    const { authority, sendRecord } = setup({
+      isStreaming: true,
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((_text, options) => {
+        steering = ["GUI transformed", "extension addition"];
+        options.preflightResult(true);
+        return promptDone.promise;
+      }),
+    });
+
+    await authority.submit(
+      makeRequest("intent-ambiguous-add", { text: "original", requestedMode: "steer" }),
+    );
+    expect(authority.snapshot().steeringIntentIds).toEqual([null, null]);
+    steering = ["extension addition"];
+    authority.observeEvent({
+      type: "message_start",
+      message: { role: "user", content: "GUI transformed delivery" },
+    });
+    expect(sendRecord).toHaveBeenLastCalledWith({
+      type: "event",
+      event: {
+        type: "message_start",
+        message: { role: "user", content: "GUI transformed delivery" },
+      },
+    });
+    promptDone.resolve();
+  });
+
+  it("tracks transformed queue slots and decorates their transformed delivery by intent", async () => {
+    const promptDone = deferred();
+    let steering = [];
+    const { authority, sendRecord } = setup({
+      isStreaming: true,
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((_text, options) => {
+        steering = ["extension prefix original"];
+        options.preflightResult(true);
+        return promptDone.promise;
+      }),
+    });
+
+    await expect(
+      authority.submit(
+        makeRequest("intent-transformed", { text: "original", requestedMode: "steer" }),
+      ),
+    ).resolves.toMatchObject({ disposition: "consumed", queued: true });
+    expect(authority.snapshot()).toMatchObject({
+      steering: ["extension prefix original"],
+      steeringIntentIds: ["intent-transformed"],
+    });
+
+    steering = [];
+    authority.observeEvent({
+      type: "message_start",
+      message: { role: "user", content: "fully rewritten delivery" },
+    });
+    expect(sendRecord).toHaveBeenCalledWith({
+      type: "event",
+      event: {
+        type: "message_start",
+        message: { role: "user", content: "fully rewritten delivery" },
+        queueIntentId: "intent-transformed",
+      },
+    });
+    promptDone.resolve();
+  });
+
   it("does not consume idle input when streaming appears before delayed preflight rejection", async () => {
     vi.useFakeTimers();
     const promptDone = deferred();
@@ -512,6 +636,111 @@ describe("state authority", () => {
         ],
       }),
     );
+  });
+
+  it("retires identities when an external queue shrink is observed before delivery", async () => {
+    const promptDone = deferred();
+    let steering = [];
+    const { authority, sendRecord } = setup({
+      isStreaming: true,
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((_text, options) => {
+        steering = ["queued"];
+        options.preflightResult(true);
+        return promptDone.promise;
+      }),
+    });
+    await authority.submit(
+      makeRequest("externally-removed", { text: "original", requestedMode: "steer" }),
+    );
+
+    steering = [];
+    authority.snapshot();
+    authority.observeEvent({
+      type: "message_start",
+      message: { role: "user", content: "independent" },
+    });
+    expect(sendRecord).toHaveBeenLastCalledWith({
+      type: "event",
+      event: { type: "message_start", message: { role: "user", content: "independent" } },
+    });
+    promptDone.resolve();
+  });
+
+  it("invalidates identities on an equal-length external queue replacement", async () => {
+    const promptDone = deferred();
+    let steering = [];
+    const { authority, sendRecord } = setup({
+      isStreaming: true,
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((_text, options) => {
+        steering = ["queued"];
+        options.preflightResult(true);
+        return promptDone.promise;
+      }),
+    });
+    await authority.submit(
+      makeRequest("externally-replaced", { text: "original", requestedMode: "steer" }),
+    );
+
+    steering = ["replacement"];
+    authority.snapshot();
+    steering = [];
+    authority.observeEvent({
+      type: "message_start",
+      message: { role: "user", content: "replacement delivery" },
+    });
+    expect(sendRecord).toHaveBeenLastCalledWith({
+      type: "event",
+      event: {
+        type: "message_start",
+        message: { role: "user", content: "replacement delivery" },
+      },
+    });
+    promptDone.resolve();
+  });
+
+  it("does not decorate a future user event with an intent removed by clearQueue", async () => {
+    const promptDone = deferred();
+    let steering = [];
+    const { authority, sendRecord } = setup({
+      isStreaming: true,
+      getSteeringMessages: vi.fn(() => steering),
+      clearQueue: vi.fn(() => {
+        const cleared = [...steering];
+        steering = [];
+        return { steering: cleared, followUp: [] };
+      }),
+      prompt: vi.fn((_text, options) => {
+        steering = ["transformed queued"];
+        options.preflightResult(true);
+        return promptDone.promise;
+      }),
+    });
+    await authority.submit(
+      makeRequest("cleared-intent", { text: "original", requestedMode: "steer" }),
+    );
+
+    await authority.requestEscape("escape-clear");
+    expect(sendRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "queue_restoration",
+        clearedIntentIds: ["cleared-intent"],
+      }),
+    );
+    authority.observeEvent({
+      type: "message_start",
+      message: { role: "user", content: "independent later input" },
+    });
+
+    expect(sendRecord).toHaveBeenLastCalledWith({
+      type: "event",
+      event: {
+        type: "message_start",
+        message: { role: "user", content: "independent later input" },
+      },
+    });
+    promptDone.resolve();
   });
 
   it("prunes attachments once their authoritative queued message is consumed", async () => {

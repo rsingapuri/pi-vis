@@ -1,4 +1,5 @@
 import type { SessionId } from "@shared/ids.js";
+import type { TranscriptStyle } from "@shared/settings.js";
 import type React from "react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnsiText } from "../../lib/ansi.js";
@@ -24,6 +25,9 @@ import {
   type TypedTranscriptBlock,
   type UserBlockData,
   hasAssistantContent,
+  lastTranscriptBlock,
+  transcriptBlockCount,
+  transcriptTailBlocks,
 } from "../../stores/transcript.js";
 import { FadeText } from "../common/FadeText.js";
 import { Spinner } from "../common/Spinner.js";
@@ -1319,6 +1323,60 @@ const CompactTranscriptGroup = memo(function CompactTranscriptGroup({
   );
 });
 
+interface ArchivedTranscriptProps {
+  chunks: TypedTranscriptBlock[][];
+  style: TranscriptStyle;
+  sessionId: SessionId;
+  preserveScroll: (mutate: () => void) => void;
+}
+
+// This memo boundary is the archive's streaming-performance invariant. The
+// chunks reference changes only for history/compaction, so live-tail tokens do
+// not reconcile, flatten, or map historical render items.
+const ArchivedTranscript = memo(function ArchivedTranscript({
+  chunks,
+  style,
+  sessionId,
+  preserveScroll,
+}: ArchivedTranscriptProps): React.ReactElement {
+  const blocks = useMemo(() => chunks.flat(), [chunks]);
+  const compactItems = useMemo(() => buildCompactRenderItems(blocks, false), [blocks]);
+  return (
+    <>
+      {style === "compact"
+        ? compactItems.map((item) =>
+            item.kind === "item" ? (
+              <TranscriptItemView
+                key={renderItemKey(item.item)}
+                sessionId={sessionId}
+                item={item.item}
+                preserveScroll={preserveScroll}
+              />
+            ) : (
+              <CompactTranscriptGroup
+                key={item.key}
+                sessionId={sessionId}
+                items={item.items}
+                summary={item.summary}
+                streaming={item.streaming}
+                preserveScroll={preserveScroll}
+              />
+            ),
+          )
+        : blocks.map((block) => (
+            <TranscriptItemView
+              key={block.id}
+              sessionId={sessionId}
+              item={{ kind: "block", block }}
+              preserveScroll={preserveScroll}
+            />
+          ))}
+    </>
+  );
+});
+
+const EMPTY_ARCHIVE_CHUNKS: TypedTranscriptBlock[][] = [];
+
 // ── Main view ────────────────────────────────────────────────────────────
 
 interface TranscriptViewProps {
@@ -1406,7 +1464,16 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     });
   }, []);
 
-  const allBlocks: TypedTranscriptBlock[] = session?.transcript.blocks ?? [];
+  const transcript = session?.transcript;
+  const archivedChunks = transcript?.archivedBlockChunks ?? EMPTY_ARCHIVE_CHUNKS;
+  const totalBlockCount = transcript ? transcriptBlockCount(transcript) : 0;
+  // Expanded history and the live tail stay separate. Streaming changes only
+  // `transcript.blocks`, so the memoized archive is never flattened/copied per
+  // token even while "Show earlier messages" is active.
+  const visibleBlocks = useMemo<TypedTranscriptBlock[]>(() => {
+    if (!transcript) return [];
+    return showAll ? transcript.blocks : transcriptTailBlocks(transcript, MAX_VISIBLE_BLOCKS);
+  }, [showAll, transcript]);
   const queuedMessages = session?.queuedMessages;
   const queueRestorations = session?.queueRestorations ?? [];
   // Show the "Running for …" indicator for real agent work. Prompt-backed
@@ -1414,10 +1481,6 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   // store helper applies the UI-vs-tool-work distinction.
   const showWorking = shouldShowWorkingIndicator(session);
 
-  const visibleBlocks =
-    showAll || allBlocks.length <= MAX_VISIBLE_BLOCKS
-      ? allBlocks
-      : allBlocks.slice(allBlocks.length - MAX_VISIBLE_BLOCKS);
   const compactRenderItems = useMemo(
     () => buildCompactRenderItems(visibleBlocks, showWorking),
     [showWorking, visibleBlocks],
@@ -1574,8 +1637,8 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   // (custom/unified panels resizing the Composer slot) cannot silently break
   // the bottom-follow invariant. `pinnedRef` is kept in sync so the
   // ResizeObserver backstop agrees.
-  const lastBlockType = allBlocks[allBlocks.length - 1]?.type;
-  const blockCount = allBlocks.length;
+  const lastBlockType = transcript ? lastTranscriptBlock(transcript)?.type : undefined;
+  const blockCount = totalBlockCount;
   const prevBlockCountRef = useRef(blockCount);
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -1675,7 +1738,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
       onCopy={handleClipboard}
     >
       <div className="transcript-blocks" ref={contentRef}>
-        {(earlierUnloaded > 0 || (!showAll && allBlocks.length > MAX_VISIBLE_BLOCKS)) && (
+        {(earlierUnloaded > 0 || (!showAll && totalBlockCount > MAX_VISIBLE_BLOCKS)) && (
           <button
             type="button"
             className="show-earlier-btn"
@@ -1685,9 +1748,17 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
             {session?.historyLoadingEarlier
               ? "Loading earlier messages…"
               : `Show ${
-                  earlierUnloaded > 0 ? earlierUnloaded : allBlocks.length - MAX_VISIBLE_BLOCKS
+                  earlierUnloaded > 0 ? earlierUnloaded : totalBlockCount - MAX_VISIBLE_BLOCKS
                 } earlier messages`}
           </button>
+        )}
+        {showAll && (
+          <ArchivedTranscript
+            chunks={archivedChunks}
+            style={transcriptStyle}
+            sessionId={sessionId}
+            preserveScroll={preserveScroll}
+          />
         )}
         {transcriptStyle === "compact"
           ? compactRenderItems.map((item) =>

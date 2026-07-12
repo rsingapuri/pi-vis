@@ -88,6 +88,7 @@ export interface ExecuteDeps {
       registerEcho?: boolean;
       clearDraft?: boolean;
       afterUserMessageSequence?: number;
+      intentId?: string;
     },
   ) => void;
   /** Clear an optimistic echo registration when the send failed before pi could echo it. */
@@ -348,6 +349,7 @@ async function executeSendPrompt(
         {
           registerEcho: true,
           afterUserMessageSequence: context.userMessageSequence,
+          intentId: result.intentId,
         },
       );
     }

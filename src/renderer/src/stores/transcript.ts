@@ -115,19 +115,13 @@ function formatCompactTokens(tokens: number): string {
   return Math.round(tokens).toLocaleString();
 }
 
-/**
- * Recent-context window retained in the live in-memory transcript across a
- * compaction. pi compacts by summarising everything *before* the compaction
- * point, so blocks prior to the most recent compaction marker are already
- * represented by that marker's summary and are dropped to bound memory
- * (reload from the session file restores the full history). On the *first*
- * compaction there is no prior marker to anchor a trim, so we keep this many
- * of the most recent pre-compaction blocks as a scroll-back window — large
- * enough to cover the renderer's MAX_VISIBLE_BLOCKS (150) plus headroom.
- */
-const MAX_PRE_COMPACTION_KEEP = 200;
-
 export interface TranscriptState {
+  /** Immutable historical chunks. Successful compaction and history loading
+   * move blocks here so streaming only copies the small mutable live tail. */
+  archivedBlockChunks: TypedTranscriptBlock[][];
+  /** Cached aggregate keeps hot count/viewport selectors O(1). */
+  archivedBlockCount: number;
+  /** Blocks created since the latest archive boundary. */
   blocks: TypedTranscriptBlock[];
   // active ids for streaming
   activeAssistantId: string | null;
@@ -138,21 +132,16 @@ export interface TranscriptState {
    * retryable marking to the current turn and prevents relabeling older final
    * errors when a retry event arrives without a fresh message_end error. */
   pendingRetryErrorBlockId: string | null;
-  /**
-   * FIFO of accepted queued user-prompt texts the Composer added via
-   * `addUserBlock(registerEcho: true)` while Pi was in an active turn. When a `message_start` with
-   * `role: "user"` arrives, we match its normalized text against this
-   * queue and consume only the corresponding token. A non-matching event is
-   * authoritative independent input and must render without stealing a queued
-   * prompt's future echo.
-   */
-  pendingEchoes: string[];
+  /** Accepted queued prompts whose optimistic bubble owns the eventual echo.
+   * Host-decorated intent identity, never text, transfers that ownership. */
+  pendingEchoes: Array<{ intentId: string; blockId: string; content: string }>;
   /** Monotonic count plus a bounded ledger of authoritative user echoes.
    * Submission custody can cross renderer IPC after its message_start; the
    * ledger lets a queued acknowledgement reconcile that legal ordering. */
   userMessageSequence: number;
   authoritativeUserEchoes: Array<{
     sequence: number;
+    intentId?: string | undefined;
     content: string;
     images: string[] | undefined;
   }>;
@@ -160,6 +149,8 @@ export interface TranscriptState {
 
 export function createTranscriptState(): TranscriptState {
   return {
+    archivedBlockChunks: [],
+    archivedBlockCount: 0,
     blocks: [],
     activeAssistantId: null,
     activeToolCallIds: new Map(),
@@ -169,6 +160,89 @@ export function createTranscriptState(): TranscriptState {
     userMessageSequence: 0,
     authoritativeUserEchoes: [],
   };
+}
+
+export function transcriptBlockCount(state: TranscriptState): number {
+  return state.archivedBlockCount + state.blocks.length;
+}
+
+export function transcriptHasBlocks(state: TranscriptState): boolean {
+  return transcriptBlockCount(state) > 0;
+}
+
+export function lastTranscriptBlock(state: TranscriptState): TypedTranscriptBlock | undefined {
+  const live = state.blocks.at(-1);
+  if (live) return live;
+  for (let index = state.archivedBlockChunks.length - 1; index >= 0; index -= 1) {
+    const block = state.archivedBlockChunks[index]?.at(-1);
+    if (block) return block;
+  }
+  return undefined;
+}
+
+/** Flatten only for explicit full-history consumers. Hot streaming views should
+ * use `transcriptTailBlocks`, which copies at most their visible window. */
+export function allTranscriptBlocks(state: TranscriptState): TypedTranscriptBlock[] {
+  return [...state.archivedBlockChunks.flat(), ...state.blocks];
+}
+
+export function transcriptTailBlocks(
+  state: TranscriptState,
+  limit: number,
+): TypedTranscriptBlock[] {
+  if (limit <= 0) return [];
+  const selected: TypedTranscriptBlock[][] = [];
+  let remaining = limit;
+  if (state.blocks.length > 0) {
+    const start = Math.max(0, state.blocks.length - remaining);
+    selected.push(state.blocks.slice(start));
+    remaining -= state.blocks.length - start;
+  }
+  for (let index = state.archivedBlockChunks.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const chunk = state.archivedBlockChunks[index];
+    if (!chunk || chunk.length === 0) continue;
+    const start = Math.max(0, chunk.length - remaining);
+    selected.push(chunk.slice(start));
+    remaining -= chunk.length - start;
+  }
+  selected.reverse();
+  return selected.flat();
+}
+
+function replaceUserBlockById(
+  state: TranscriptState,
+  id: string,
+  content: string,
+  images: string[] | undefined,
+): Pick<TranscriptState, "archivedBlockChunks" | "blocks"> {
+  const liveIndex = state.blocks.findIndex((block) => block.id === id);
+  if (liveIndex >= 0) {
+    const block = state.blocks[liveIndex];
+    if (block?.type !== "user") return state;
+    const blocks = state.blocks.slice();
+    blocks[liveIndex] = { ...block, data: { role: "user", content, images } };
+    return { archivedBlockChunks: state.archivedBlockChunks, blocks };
+  }
+  for (let chunkIndex = state.archivedBlockChunks.length - 1; chunkIndex >= 0; chunkIndex -= 1) {
+    const chunk = state.archivedBlockChunks[chunkIndex];
+    const blockIndex = chunk?.findIndex((block) => block.id === id) ?? -1;
+    if (!chunk || blockIndex < 0) continue;
+    const block = chunk[blockIndex];
+    if (block?.type !== "user") return state;
+    const nextChunk = chunk.slice();
+    nextChunk[blockIndex] = { ...block, data: { role: "user", content, images } };
+    const archivedBlockChunks = state.archivedBlockChunks.slice();
+    archivedBlockChunks[chunkIndex] = nextChunk;
+    return { archivedBlockChunks, blocks: state.blocks };
+  }
+  return state;
+}
+
+function transcriptHasBlockId(state: TranscriptState, id: string): boolean {
+  return (
+    state.blocks.some((block) => block.id === id) ||
+    state.archivedBlockChunks.some((chunk) => chunk.some((block) => block.id === id))
+  );
 }
 
 export function finalizeActiveBlocks(state: TranscriptState): TranscriptState {
@@ -333,17 +407,28 @@ export function seedFromHistory(
   state: TranscriptState,
   history: TranscriptBlock[],
 ): TranscriptState {
-  return { ...state, blocks: mapHistoryBlocks(history), pendingRetryErrorBlockId: null };
+  const blocks = mapHistoryBlocks(history);
+  return {
+    ...state,
+    archivedBlockChunks: blocks.length > 0 ? [blocks] : [],
+    archivedBlockCount: blocks.length,
+    blocks: [],
+    pendingRetryErrorBlockId: null,
+  };
 }
 
 export function prependHistory(
   state: TranscriptState,
   history: TranscriptBlock[],
 ): TranscriptState {
-  const existingIds = new Set(state.blocks.map((block) => block.id));
+  const existingIds = new Set(allTranscriptBlocks(state).map((block) => block.id));
   const blocks = mapHistoryBlocks(history).filter((block) => !existingIds.has(block.id));
   if (blocks.length === 0) return state;
-  return { ...state, blocks: [...blocks, ...state.blocks] };
+  return {
+    ...state,
+    archivedBlockChunks: [blocks, ...state.archivedBlockChunks],
+    archivedBlockCount: state.archivedBlockCount + blocks.length,
+  };
 }
 
 // tool_execution_end carries the final output in result.content[].text on the
@@ -542,9 +627,8 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
   //
   // Why not `updateBlock` (i.e. `.map`)? `.map` runs the callback once per
   // element, which made streaming O(n²) over a long session (the freeze).
-  // `blocks.slice()` is a single bulk copy of the spine — far cheaper — and
-  // the array is bounded to a few hundred blocks by the compaction trim, so
-  // the per-token cost is negligible.
+  // `blocks.slice()` is a single bulk copy of the spine — far cheaper than
+  // invoking a mapping callback for every element.
   //
   // We scan from the tail because the active assistant / tool-call block is
   // always among the most recently appended, so the match is found in O(1)
@@ -601,7 +685,7 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
       return state;
 
     case "cache_miss_notice": {
-      if (blocks.some((block) => block.id === event.noticeId)) return state;
+      if (transcriptHasBlockId(state, event.noticeId)) return state;
       let label = "Cache miss";
       if (event.modelChanged) label = "Cache miss after model switch";
       else if (event.idleMs >= 5 * 60_000) {
@@ -616,27 +700,54 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
       };
       if (!event.afterEntryId) return { ...state, blocks: [...blocks, block] };
 
-      let anchorIndex = -1;
       const toolPrefix = `${event.afterEntryId}-tool-`;
+      const matchesAnchor = (candidate: TypedTranscriptBlock) =>
+        candidate.id === event.afterEntryId || candidate.id.startsWith(toolPrefix);
+      let anchorIndex = -1;
       for (let index = 0; index < blocks.length; index += 1) {
-        const candidateId = blocks[index]?.id;
-        if (candidateId === event.afterEntryId || candidateId?.startsWith(toolPrefix)) {
-          anchorIndex = index;
+        const candidate = blocks[index];
+        if (candidate && matchesAnchor(candidate)) anchorIndex = index;
+      }
+      if (anchorIndex >= 0) {
+        return {
+          ...state,
+          blocks: [...blocks.slice(0, anchorIndex + 1), block, ...blocks.slice(anchorIndex + 1)],
+        };
+      }
+      for (
+        let chunkIndex = state.archivedBlockChunks.length - 1;
+        chunkIndex >= 0;
+        chunkIndex -= 1
+      ) {
+        const chunk = state.archivedBlockChunks[chunkIndex];
+        if (!chunk) continue;
+        let archivedAnchorIndex = -1;
+        for (let index = 0; index < chunk.length; index += 1) {
+          const candidate = chunk[index];
+          if (candidate && matchesAnchor(candidate)) archivedAnchorIndex = index;
         }
+        if (archivedAnchorIndex < 0) continue;
+        const chunks = state.archivedBlockChunks.slice();
+        chunks[chunkIndex] = [
+          ...chunk.slice(0, archivedAnchorIndex + 1),
+          block,
+          ...chunk.slice(archivedAnchorIndex + 1),
+        ];
+        return {
+          ...state,
+          archivedBlockChunks: chunks,
+          archivedBlockCount: state.archivedBlockCount + 1,
+        };
       }
       // The notice belongs to a history page that is not loaded yet. A replay
       // after the next prepend will place it once its assistant entry appears.
-      if (anchorIndex < 0) return state;
-      return {
-        ...state,
-        blocks: [...blocks.slice(0, anchorIndex + 1), block, ...blocks.slice(anchorIndex + 1)],
-      };
+      return state;
     }
 
     case "entry_appended": {
       const entry = event.entry;
       if (entry.type !== "custom" || typeof entry.customType !== "string") return state;
-      if (blocks.some((block) => block.id === entry.id)) return state;
+      if (transcriptHasBlockId(state, entry.id)) return state;
       const block: TypedTranscriptBlock = {
         id: entry.id,
         type: "custom_entry",
@@ -682,16 +793,31 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
           userMessageSequence: sequence,
           authoritativeUserEchoes: [
             ...state.authoritativeUserEchoes,
-            { sequence, content: echoed.content, images: echoed.images },
+            {
+              sequence,
+              intentId: event.queueIntentId,
+              content: echoed.content,
+              images: echoed.images,
+            },
           ].slice(-256),
         };
-        const normalizedEcho = echoed.content.trimEnd();
-        const pendingIndex = pendingEchoes.findIndex(
-          (pending) => pending.trimEnd() === normalizedEcho,
-        );
+        const pendingIndex = event.queueIntentId
+          ? pendingEchoes.findIndex((pending) => pending.intentId === event.queueIntentId)
+          : -1;
         if (pendingIndex !== -1) {
+          const pending = pendingEchoes[pendingIndex]!;
+          const replaced = replaceUserBlockById(
+            state,
+            pending.blockId,
+            echoed.content,
+            echoed.images,
+          );
           return {
             ...authoritativeState,
+            ...replaced,
+            // The existing optimistic bubble consumed this echo. Do not leave
+            // it claimable by a later submission acknowledgement.
+            authoritativeUserEchoes: state.authoritativeUserEchoes,
             pendingEchoes: [
               ...pendingEchoes.slice(0, pendingIndex),
               ...pendingEchoes.slice(pendingIndex + 1),
@@ -1019,26 +1145,19 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
           errorMessage: event.errorMessage,
         },
       };
-      // Bound the in-memory transcript at the compaction boundary. Find the
-      // most recent existing compaction marker; everything before it has
-      // already been summarised by that compaction and is dropped — the live
-      // session no longer needs it (pi has the summary, and reload from the
-      // session file restores the full history). On the first compaction
-      // (no prior marker) keep a recent window (MAX_PRE_COMPACTION_KEEP) so
-      // the user can still scroll back through the just-compacted context.
-      let lastCompactionIdx = -1;
-      for (let i = blocks.length - 1; i >= 0; i--) {
-        const b = blocks[i];
-        if (b?.type === "compaction") {
-          lastCompactionIdx = i;
-          break;
-        }
-      }
-      const kept =
-        lastCompactionIdx >= 0
-          ? blocks.slice(lastCompactionIdx)
-          : blocks.slice(Math.max(0, blocks.length - MAX_PRE_COMPACTION_KEEP));
-      return { ...state, blocks: [...kept, newCompactionBlock] };
+      // A successful compaction is an immutable archive boundary: preserve
+      // the old live array by reference and start a small mutable tail at the
+      // marker. Failed/retrying attempts are activity only and stay in-tail.
+      const succeeded =
+        event.aborted !== true && event.willRetry !== true && event.errorMessage === undefined;
+      if (!succeeded) return { ...state, blocks: [...blocks, newCompactionBlock] };
+      return {
+        ...state,
+        archivedBlockChunks:
+          blocks.length > 0 ? [...state.archivedBlockChunks, blocks] : state.archivedBlockChunks,
+        archivedBlockCount: state.archivedBlockCount + blocks.length,
+        blocks: [newCompactionBlock],
+      };
     }
 
     case "thinking_level_changed":
@@ -1062,8 +1181,9 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
 //
 // `registerEcho` is true for Composer text accepted into Pi's active-turn
 // queue. The optimistic block is the user's own text and pi will echo it via
-// `message_start` with `role: "user"`. We register the text in
-// `pendingEchoes` so the reducer can suppress the duplicate echo.
+// `message_start` with `role: "user"`. We register its intent and block ID so
+// delivery replaces that one bubble with authoritative (possibly transformed)
+// content instead of adding a duplicate.
 //
 // `registerEcho` is false for extension-originated prompts (slash
 // commands dispatched via `prompt` with `commandSource: "extension"`),
@@ -1074,6 +1194,7 @@ export function addUserBlock(
   content: string,
   images?: string[],
   registerEcho = false,
+  echoIntentId?: string,
 ): TranscriptState {
   const blockId = newBlockId();
   return {
@@ -1082,12 +1203,43 @@ export function addUserBlock(
       ...state.blocks,
       { id: blockId, type: "user", data: { role: "user", content, images } },
     ],
-    pendingEchoes: registerEcho ? [...state.pendingEchoes, content] : state.pendingEchoes,
+    pendingEchoes:
+      registerEcho && echoIntentId
+        ? [...state.pendingEchoes, { intentId: echoIntentId, blockId, content }]
+        : state.pendingEchoes,
+  };
+}
+
+export function retirePendingUserEchoesByIntent(
+  state: TranscriptState,
+  intentIds: readonly string[],
+): TranscriptState {
+  if (intentIds.length === 0 || state.pendingEchoes.length === 0) return state;
+  const intents = new Set(intentIds);
+  const retired = state.pendingEchoes.filter((pending) => intents.has(pending.intentId));
+  if (retired.length === 0) return state;
+  const blockIds = new Set(retired.map((pending) => pending.blockId));
+  let archivedRemoved = 0;
+  let archiveChanged = false;
+  const archivedBlockChunks = state.archivedBlockChunks.map((chunk) => {
+    const filtered = chunk.filter((block) => !blockIds.has(block.id));
+    if (filtered.length === chunk.length) return chunk;
+    archiveChanged = true;
+    archivedRemoved += chunk.length - filtered.length;
+    return filtered;
+  });
+  const blocks = state.blocks.filter((block) => !blockIds.has(block.id));
+  return {
+    ...state,
+    archivedBlockChunks: archiveChanged ? archivedBlockChunks : state.archivedBlockChunks,
+    archivedBlockCount: state.archivedBlockCount - archivedRemoved,
+    blocks,
+    pendingEchoes: state.pendingEchoes.filter((pending) => !intents.has(pending.intentId)),
   };
 }
 
 export function clearPendingUserEcho(state: TranscriptState, content: string): TranscriptState {
-  const index = state.pendingEchoes.indexOf(content);
+  const index = state.pendingEchoes.findIndex((pending) => pending.content === content);
   let pendingEchoes = state.pendingEchoes;
   if (index !== -1) {
     pendingEchoes = [
@@ -1103,15 +1255,32 @@ export function clearPendingUserEcho(state: TranscriptState, content: string): T
   const blockIndex = [...state.blocks]
     .reverse()
     .findIndex((block) => block.type === "user" && block.data.content === content);
-  if (blockIndex === -1) {
-    return pendingEchoes === state.pendingEchoes ? state : { ...state, pendingEchoes };
+  if (blockIndex !== -1) {
+    const removeIndex = state.blocks.length - 1 - blockIndex;
+    return {
+      ...state,
+      pendingEchoes,
+      blocks: [...state.blocks.slice(0, removeIndex), ...state.blocks.slice(removeIndex + 1)],
+    };
   }
-  const removeIndex = state.blocks.length - 1 - blockIndex;
-  return {
-    ...state,
-    pendingEchoes,
-    blocks: [...state.blocks.slice(0, removeIndex), ...state.blocks.slice(removeIndex + 1)],
-  };
+  for (let chunkIndex = state.archivedBlockChunks.length - 1; chunkIndex >= 0; chunkIndex -= 1) {
+    const chunk = state.archivedBlockChunks[chunkIndex];
+    if (!chunk) continue;
+    const reverseIndex = [...chunk]
+      .reverse()
+      .findIndex((block) => block.type === "user" && block.data.content === content);
+    if (reverseIndex < 0) continue;
+    const removeIndex = chunk.length - 1 - reverseIndex;
+    const chunks = state.archivedBlockChunks.slice();
+    chunks[chunkIndex] = [...chunk.slice(0, removeIndex), ...chunk.slice(removeIndex + 1)];
+    return {
+      ...state,
+      pendingEchoes,
+      archivedBlockChunks: chunks,
+      archivedBlockCount: state.archivedBlockCount - 1,
+    };
+  }
+  return pendingEchoes === state.pendingEchoes ? state : { ...state, pendingEchoes };
 }
 
 // User sends a bash command
