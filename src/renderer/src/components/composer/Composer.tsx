@@ -1129,6 +1129,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
               hostInstanceId: runtime.hostInstanceId,
               sessionEpoch: runtime.sessionEpoch,
               editorRevision: editorRevisionRef.current,
+              userMessageSequence: runtime.transcript.userMessageSequence,
             };
           },
           addToast,
@@ -1136,7 +1137,11 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
             sid: SessionId,
             message: string,
             images?: string[],
-            opts?: { registerEcho?: boolean; clearDraft?: boolean },
+            opts?: {
+              registerEcho?: boolean;
+              clearDraft?: boolean;
+              afterUserMessageSequence?: number;
+            },
           ) => addUserMessage(sid, message, images, { ...opts, clearDraft: false }),
           clearPendingUserEcho: useSessionsStore.getState().clearPendingUserEcho,
           addBashCommand,

@@ -31,9 +31,9 @@ export type RowKind = "user" | "assistant" | "tool" | "bash" | "summary" | "comp
  * Re-nest a flat (parentId-keyed) node list back into the recursive
  * SessionTreeNode[] the flattener consumes. The wire format is flat (see
  * FlatTreeNode) to dodge the contextBridge's 1000-level nesting limit; the
- * renderer's own world has no such limit, so this reconstruction is safe even
- * for very deep chains. Iterative (no recursion) so a multi-thousand-message
- * linear session can't stack-overflow here either. Preserves the flat array's
+ * renderer can safely rebuild the presentation. Iterative (no recursion) so a
+ * multi-thousand-message linear session can't stack-overflow here either.
+ * Preserves the flat array's
  * sibling order within each parent group.
  */
 export function buildNestedTree(flat: FlatTreeNode[]): SessionTreeNode[] {
@@ -116,45 +116,26 @@ export function flattenVisible(roots: SessionTreeNode[], opts: FlattenOpts): Vis
   const toolCallMap = new Map<string, { name: string; args: unknown }>();
   for (const root of roots) indexNode(root, undefined, byId, toolCallMap);
 
-  // ── Which subtrees contain the active leaf (so the current branch sorts
-  //    first among siblings, exactly like pi). ───────────────────────────
-  const containsActive = new Map<string, boolean>();
-  const computeContains = (n: SessionTreeNode): boolean => {
-    let has = opts.leafId != null && n.entry.id === opts.leafId;
-    for (const c of n.children ?? []) {
-      if (computeContains(c)) has = true;
-    }
-    containsActive.set(n.entry.id, has);
-    return has;
-  };
-  for (const r of roots) computeContains(r);
-
-  // ── Active path (root → current leaf) ─────────────────────────────────
+  // ── Active path and the subtrees containing it. Walking parent links is
+  //    iterative: conversation depth is controlled by session data and must
+  //    never become JavaScript call-stack depth. ──────────────────────────
   const activePath = new Set<string>();
+  const containsActive = new Map<string, boolean>();
   if (opts.leafId) {
     let cur: string | undefined = opts.leafId;
-    while (cur) {
+    while (cur && !activePath.has(cur)) {
       activePath.add(cur);
+      if (byId.has(cur)) containsActive.set(cur, true);
       cur = byId.get(cur)?.parentId;
     }
   }
 
   const tokens = opts.search.toLowerCase().split(/\s+/).filter(Boolean);
 
-  // ── Folded: hide descendants of any folded node ───────────────────────
-  const hiddenByFold = (id: string): boolean => {
-    let cur = byId.get(id)?.parentId;
-    while (cur) {
-      if (opts.foldedIds.has(cur)) return true;
-      cur = byId.get(cur)?.parentId;
-    }
-    return false;
-  };
-
   // ── Per-node visibility (filter + search), no subtree pruning ──────────
-  const isVisible = (n: SessionTreeNode): boolean => {
+  const isVisible = (n: SessionTreeNode, hiddenByFold: boolean): boolean => {
     if (!passesFilter(n, opts.filterMode, opts.leafId)) return false;
-    if (hiddenByFold(n.entry.id)) return false;
+    if (hiddenByFold) return false;
     if (tokens.length > 0) {
       const hay = searchableText(n, toolCallMap).toLowerCase();
       if (!tokens.every((t) => hay.includes(t))) return false;
@@ -162,32 +143,42 @@ export function flattenVisible(roots: SessionTreeNode[], opts: FlattenOpts): Vis
     return true;
   };
 
-  // ── Pre-order DFS in active-first order, collecting visible nodes ──────
+  // ── Iterative pre-order DFS in active-first order. The frame carries fold
+  //    state and the nearest visible ancestor, avoiding both recursion and
+  //    repeated rootward scans on very deep sessions. ─────────────────────
   const visibleOrder: SessionTreeNode[] = [];
-  const visit = (n: SessionTreeNode): void => {
-    if (isVisible(n)) visibleOrder.push(n);
-    const children = orderChildren(n.children ?? [], containsActive);
-    for (const c of children) visit(c);
-  };
-  for (const r of orderChildren(roots, containsActive)) visit(r);
-
-  // ── Visible tree structure (nearest visible ancestor + children) ──────
-  const visibleSet = new Set(visibleOrder.map((n) => n.entry.id));
-  const nearestVisibleAncestor = (id: string): string | undefined => {
-    let cur = byId.get(id)?.parentId;
-    while (cur) {
-      if (visibleSet.has(cur)) return cur;
-      cur = byId.get(cur)?.parentId;
-    }
-    return undefined;
-  };
   // parentId (undefined = visible root) → visible children, in flattened order.
   const visibleChildren = new Map<string | undefined, string[]>();
-  for (const n of visibleOrder) {
-    const anc = nearestVisibleAncestor(n.entry.id);
-    const list = visibleChildren.get(anc);
-    if (list) list.push(n.entry.id);
-    else visibleChildren.set(anc, [n.entry.id]);
+  interface VisitFrame {
+    node: SessionTreeNode;
+    hiddenByFold: boolean;
+    visibleAncestor: string | undefined;
+  }
+  const visitStack: VisitFrame[] = [];
+  const orderedRoots = orderChildren(roots, containsActive);
+  for (let i = orderedRoots.length - 1; i >= 0; i--) {
+    visitStack.push({ node: orderedRoots[i]!, hiddenByFold: false, visibleAncestor: undefined });
+  }
+  while (visitStack.length > 0) {
+    const { node, hiddenByFold, visibleAncestor } = visitStack.pop()!;
+    const visible = isVisible(node, hiddenByFold);
+    if (visible) {
+      visibleOrder.push(node);
+      const siblings = visibleChildren.get(visibleAncestor);
+      if (siblings) siblings.push(node.entry.id);
+      else visibleChildren.set(visibleAncestor, [node.entry.id]);
+    }
+
+    const childHiddenByFold = hiddenByFold || opts.foldedIds.has(node.entry.id);
+    const childVisibleAncestor = visible ? node.entry.id : visibleAncestor;
+    const children = orderChildren(node.children ?? [], containsActive);
+    for (let i = children.length - 1; i >= 0; i--) {
+      visitStack.push({
+        node: children[i]!,
+        hiddenByFold: childHiddenByFold,
+        visibleAncestor: childVisibleAncestor,
+      });
+    }
   }
 
   // ── Branch-only depth, ported from pi's TUI ───────────────────────────
@@ -253,26 +244,33 @@ function indexNode(
   byId: Map<string, InternalNode>,
   toolCallMap: Map<string, { name: string; args: unknown }>,
 ): void {
-  byId.set(node.entry.id, { node, parentId });
-  // Harvest tool calls from assistant content so toolResult rows can name them.
-  const entry = node.entry;
-  if (entry.type === "message") {
-    const content = (entry.message as { content?: unknown } | undefined)?.content;
-    if (Array.isArray(content)) {
-      for (const part of content) {
-        if (typeof part === "object" && part !== null) {
-          const p = part as Record<string, unknown>;
-          if (p["type"] === "toolCall" && typeof p["id"] === "string") {
-            toolCallMap.set(p["id"], {
-              name: typeof p["name"] === "string" ? p["name"] : "tool",
-              args: p["arguments"],
-            });
+  const stack: InternalNode[] = [{ node, parentId }];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    byId.set(current.node.entry.id, current);
+    // Harvest tool calls from assistant content so toolResult rows can name them.
+    const entry = current.node.entry;
+    if (entry.type === "message") {
+      const content = (entry.message as { content?: unknown } | undefined)?.content;
+      if (Array.isArray(content)) {
+        for (const part of content) {
+          if (typeof part === "object" && part !== null) {
+            const p = part as Record<string, unknown>;
+            if (p["type"] === "toolCall" && typeof p["id"] === "string") {
+              toolCallMap.set(p["id"], {
+                name: typeof p["name"] === "string" ? p["name"] : "tool",
+                args: p["arguments"],
+              });
+            }
           }
         }
       }
     }
+    const children = current.node.children ?? [];
+    for (let i = children.length - 1; i >= 0; i--) {
+      stack.push({ node: children[i]!, parentId: entry.id });
+    }
   }
-  for (const child of node.children ?? []) indexNode(child, node.entry.id, byId, toolCallMap);
 }
 
 /** Order children so the branch containing the active leaf comes first. */

@@ -4,7 +4,7 @@
 
 ## Wire format
 
-`getTree()` is recursive and can exceed Electron contextBridge's nesting limit. The host therefore sends flat `{ entry, parentId, label?, labelTimestamp? }` nodes. The renderer reconstructs the nested presentation iteratively (`tree-flatten.ts`), so only shallow data crosses preload.
+`getTree()` is recursive and can exceed Electron contextBridge's nesting limit. The host therefore sends flat `{ entry, parentId, label?, labelTimestamp? }` nodes, so only shallow data crosses preload. The renderer reconstructs and traverses the nested presentation with explicit iterative stacks (`tree-flatten.ts`); session-controlled conversation depth must never become JavaScript call-stack depth.
 
 After navigation, the returned in-memory root→leaf branch is converted by `entriesToTranscript`; Pi-Vis does not reread the session file because recently appended entries may not yet be persisted. Tree navigation is refused whenever the authoritative runtime snapshot is unavailable or non-idle. A successful navigation is an epoch transition: transition records and its terminal snapshot establish the new live state before the renderer resumes interaction.
 

@@ -2273,6 +2273,64 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     expect(useSessionsStore.getState().newSessionDrafts.has(WORKSPACE)).toBe(false);
   });
 
+  it("renders attachment metadata from an authoritative user echo", () => {
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
+
+    store.applyEvent(SESSION_A, {
+      type: "message_start",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "describe this" },
+          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+        ],
+      },
+    });
+    // A queued=true custody response may cross IPC after this echo. Its
+    // post-ack reconciliation must preserve the authoritative block rather
+    // than append an optimistic duplicate.
+    store.addUserMessage(SESSION_A, "describe this", ["data:image/png;base64,aW1hZ2U="], {
+      registerEcho: true,
+      afterUserMessageSequence: 0,
+    });
+
+    const blocks = useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.blocks;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]).toMatchObject({
+      type: "user",
+      data: {
+        content: "describe this",
+        images: ["data:image/png;base64,aW1hZ2U="],
+      },
+    });
+  });
+
+  it("preserves the count of concurrent identical queued prompts across crossed acknowledgements", () => {
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
+
+    store.applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "user", content: "repeat" },
+    });
+    store.addUserMessage(SESSION_A, "repeat", undefined, {
+      registerEcho: true,
+      afterUserMessageSequence: 0,
+    });
+    store.addUserMessage(SESSION_A, "repeat", undefined, {
+      registerEcho: true,
+      afterUserMessageSequence: 0,
+    });
+    store.applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "user", content: "repeat" },
+    });
+
+    const blocks = useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.blocks;
+    expect(blocks?.filter((block) => block.type === "user")).toHaveLength(2);
+  });
+
   it("clearPendingUserEcho removes a failed optimistic first prompt and restores the workspace draft", () => {
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE);

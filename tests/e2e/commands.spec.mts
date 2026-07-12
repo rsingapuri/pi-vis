@@ -157,6 +157,44 @@ test.describe("Slash commands", () => {
     rmrf(folders.piSessionsDir);
   });
 
+  test("a first prompt renders once in either host-echo/custody ordering", async () => {
+    test.setTimeout(60_000);
+    const folders = await makeFolders();
+    const { app, window } = await launchApp(folders);
+
+    await window.getByRole("button", { name: "New session" }).click();
+    await expect(window.locator(".session-header__model-btn")).toContainText("Fake Model [fake]", {
+      timeout: 15_000,
+    });
+
+    const text = "first message [test:echo-before-custody]";
+    const textarea = window.locator(".composer__textarea");
+    await textarea.fill(text);
+    await textarea.press("Enter");
+
+    await expect(window.locator(".transcript-block--user")).toHaveCount(1);
+    await expect(window.locator(".transcript-block--user")).toContainText(text);
+    await expect(window.getByText(`Echo: ${text}`, { exact: true })).toBeVisible();
+
+    // The fixture's normal path sends custody before message_start. A fresh
+    // session verifies the inverse legal ordering in the same real IPC test.
+    await window.getByRole("button", { name: "New session" }).click();
+    await expect(window.locator(".session-header__model-btn")).toContainText("Fake Model [fake]", {
+      timeout: 15_000,
+    });
+    const secondText = "first message with custody before echo";
+    const secondTextarea = window.locator(".composer__textarea");
+    await secondTextarea.fill(secondText);
+    await secondTextarea.press("Enter");
+    await expect(window.locator(".transcript-block--user")).toHaveCount(1);
+    await expect(window.locator(".transcript-block--user")).toContainText(secondText);
+
+    await app.close();
+    rmrf(folders.settingsDir);
+    rmrf(folders.workspaceDir);
+    rmrf(folders.piSessionsDir);
+  });
+
   test("/compact clears only after the host persists a successful compaction", async () => {
     test.setTimeout(60_000);
     const folders = await makeFolders();

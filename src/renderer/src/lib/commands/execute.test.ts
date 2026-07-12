@@ -31,7 +31,12 @@ function makeDeps(overrides: Partial<ExecuteDeps> = {}): {
       editorRevision: 2,
       disposition: "consumed" as const,
     })) as NonNullable<ExecuteDeps["submit"]>,
-    getSubmissionContext: () => ({ hostInstanceId: "host-1", sessionEpoch: 1, editorRevision: 2 }),
+    getSubmissionContext: () => ({
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+      editorRevision: 2,
+      userMessageSequence: 0,
+    }),
     addToast: make("addToast") as ExecuteDeps["addToast"],
     addUserMessage: make("addUserMessage") as ExecuteDeps["addUserMessage"],
     clearPendingUserEcho: make("clearPendingUserEcho") as ExecuteDeps["clearPendingUserEcho"],
@@ -279,7 +284,7 @@ describe("executeAction — bash", () => {
 });
 
 describe("executeAction — session submission", () => {
-  it("submits the host-custody contract and adds an echo only after consumption", async () => {
+  it("submits the host-custody contract and leaves immediate prompts event-derived", async () => {
     const { deps, calls } = makeDeps();
     await executeAction(SID, { kind: "send-prompt", text: "hello" }, deps);
     expect(deps.submit).toHaveBeenCalledWith(
@@ -293,7 +298,55 @@ describe("executeAction — session submission", () => {
         surface: "composer",
       }),
     );
-    expect(calls["addUserMessage"]).toEqual([[SID, "hello", undefined, { registerEcho: true }]]);
+    expect(calls["addUserMessage"]).toBeUndefined();
+  });
+
+  it("adds an optimistic echo for an accepted prompt waiting in Pi's queue", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.submit as ReturnType<typeof vi.fn>).mockResolvedValue({
+      intentId: "intent-1",
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+      editorRevision: 2,
+      disposition: "consumed",
+      queued: true,
+    });
+
+    await executeAction(SID, { kind: "send-prompt", text: "queued" }, deps);
+
+    expect(calls["addUserMessage"]).toEqual([
+      [SID, "queued", undefined, { registerEcho: true, afterUserMessageSequence: 0 }],
+    ]);
+  });
+
+  it("does not add a queued echo after the runtime identity changes", async () => {
+    const { deps, calls } = makeDeps();
+    (deps.submit as ReturnType<typeof vi.fn>).mockResolvedValue({
+      intentId: "intent-1",
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+      editorRevision: 2,
+      disposition: "consumed",
+      queued: true,
+    });
+    deps.getSubmissionContext = vi
+      .fn()
+      .mockReturnValueOnce({
+        hostInstanceId: "host-1",
+        sessionEpoch: 1,
+        editorRevision: 2,
+        userMessageSequence: 0,
+      })
+      .mockReturnValue({
+        hostInstanceId: "host-2",
+        sessionEpoch: 2,
+        editorRevision: 0,
+        userMessageSequence: 0,
+      });
+
+    await executeAction(SID, { kind: "send-prompt", text: "predecessor" }, deps);
+
+    expect(calls["addUserMessage"]).toBeUndefined();
   });
 
   it("does not clear local input or add an echo for a rejected disposition", async () => {

@@ -397,24 +397,24 @@ describe("transcript reducer — role-based message_start", () => {
     expect(state.pendingEchoes).toEqual([]);
   });
 
-  it("user message_start with non-matching text still consumes the pending echo (regression)", () => {
-    // Under the old exact-string-equals dedupe, a normalized or
-    // template-expanded echo (trailing newline, whitespace, prompt
-    // template) would fall through to addUserBlock and append a second
-    // user bubble. The new rule is positional: an optimistic
-    // addUserBlock always expects exactly one echo, so the head of
-    // pendingEchoes is consumed regardless of text content — and the
-    // user's originally-typed optimistic text stands.
+  it("a non-matching authoritative user event does not steal a queued echo", () => {
     let state = createTranscriptState();
-    state = addUserBlock(state, "what I typed", undefined, true);
+    state = addUserBlock(state, "queued prompt", undefined, true);
     state = applyPiEvent(
       state,
-      e({ type: "message_start", message: { role: "user", content: "expanded prompt" } }),
+      e({ type: "message_start", message: { role: "user", content: "independent prompt" } }),
     );
-    expect(state.blocks).toHaveLength(1);
-    if (state.blocks[0]?.type === "user") {
-      expect(state.blocks[0].data.content).toBe("what I typed");
-    }
+
+    expect(
+      state.blocks.map((block) => (block.type === "user" ? block.data.content : undefined)),
+    ).toEqual(["queued prompt", "independent prompt"]);
+    expect(state.pendingEchoes).toEqual(["queued prompt"]);
+
+    state = applyPiEvent(
+      state,
+      e({ type: "message_start", message: { role: "user", content: "queued prompt" } }),
+    );
+    expect(state.blocks).toHaveLength(2);
     expect(state.pendingEchoes).toEqual([]);
   });
 
@@ -485,6 +485,18 @@ describe("transcript reducer — role-based message_start", () => {
       expect(state.blocks[0].data.content).toBe("from extension");
     }
     expect(state.pendingEchoes).toEqual([]);
+  });
+
+  it("keeps repeated identical authoritative prompts as distinct messages", () => {
+    let state = createTranscriptState();
+    const event = e({ type: "message_start", message: { role: "user", content: "repeat" } });
+    state = applyPiEvent(state, event);
+    state = applyPiEvent(state, event);
+
+    expect(state.blocks).toHaveLength(2);
+    expect(
+      state.blocks.map((block) => (block.type === "user" ? block.data.content : undefined)),
+    ).toEqual(["repeat", "repeat"]);
   });
 
   it("optimistic user block is deduped against a trailing-newline echo", () => {

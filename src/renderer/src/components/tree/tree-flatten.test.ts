@@ -284,12 +284,12 @@ describe("buildNestedTree — flat→nested round-trip (contextBridge depth fix)
     expect(nested[0]!.children[0]!.children.map((n) => n.entry.id)).toEqual(["a1"]);
   });
 
-  it("survives a 2000-deep linear chain without stack overflow (the reported bug)", () => {
+  it("survives a 20,000-deep linear chain without stack overflow (the reported bug)", () => {
     // A linear conversation of N messages is a flat list where each node's
     // parentId is the previous one. Nested, that's depth N — the shape that
-    // exceeded the contextBridge's 1000 limit. buildNestedTree is iterative,
-    // so 2000 must not overflow, and the result must re-nest to depth 2000.
-    const N = 2000;
+    // exceeded both contextBridge's nesting limit and the renderer's call
+    // stack. Reconstruction and every flattening traversal must be iterative.
+    const N = 20_000;
     const flat: FlatTreeNode[] = [];
     for (let i = 0; i < N; i++) {
       flat.push({

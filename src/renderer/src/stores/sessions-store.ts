@@ -828,7 +828,11 @@ interface SessionsStore {
     sessionId: SessionId,
     content: string,
     images?: string[],
-    opts?: { registerEcho?: boolean; clearDraft?: boolean },
+    opts?: {
+      registerEcho?: boolean;
+      clearDraft?: boolean;
+      afterUserMessageSequence?: number;
+    },
   ) => void;
   clearPendingUserEcho: (sessionId: SessionId, content: string) => void;
   addBashCommand: (sessionId: SessionId, command: string) => void;
@@ -1515,7 +1519,19 @@ const buildSessionsStore = (
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
       if (!s) return {};
-      const transcript = addUserBlock(s.transcript, content, images, opts?.registerEcho ?? true);
+      const echoAlreadyArrived =
+        opts?.registerEcho === true &&
+        opts.afterUserMessageSequence !== undefined &&
+        s.transcript.authoritativeUserEchoes.some(
+          (echo) =>
+            echo.sequence > (opts.afterUserMessageSequence ?? Number.MAX_SAFE_INTEGER) &&
+            echo.content.trimEnd() === content.trimEnd() &&
+            (echo.images?.length ?? 0) === (images?.length ?? 0) &&
+            (echo.images ?? []).every((image, index) => image === images?.[index]),
+        );
+      const transcript = echoAlreadyArrived
+        ? s.transcript
+        : addUserBlock(s.transcript, content, images, opts?.registerEcho ?? true);
       // Self-label a brand-new session from its first prompt so the tab and
       // header have a meaningful identity before pi or the user renames it.
       // Do not overwrite a name set by pi (session_info_changed → sessionName)
@@ -2308,7 +2324,12 @@ const buildSessionsStore = (
         const current = get().sessions.get(sid);
         const origin = { hostInstanceId, sessionEpoch };
         if (!sessionMatchesRuntime(current, origin)) return undefined;
-        return { ...origin, editorRevision, intentId: submissionIntentId };
+        return {
+          ...origin,
+          editorRevision,
+          userMessageSequence: current.transcript.userMessageSequence,
+          intentId: submissionIntentId,
+        };
       },
       addToast: guarded(get().addToast),
       addUserMessage: guarded(get().addUserMessage),

@@ -139,15 +139,23 @@ export interface TranscriptState {
    * errors when a retry event arrives without a fresh message_end error. */
   pendingRetryErrorBlockId: string | null;
   /**
-   * FIFO of optimistic user-prompt texts the Composer added via
-   * `addUserBlock(registerEcho: true)`. When a `message_start` with
-   * `role: "user"` arrives, we extract the text and compare against the
-   * head; if it matches, we consume the head (pi's authoritative echo
-   * is the same text, so we don't add a duplicate). If it does not match
-   * (e.g. a prompt template expanded to a different text, or a steered
-   * message in a different order), we append a fresh user block.
+   * FIFO of accepted queued user-prompt texts the Composer added via
+   * `addUserBlock(registerEcho: true)` while Pi was in an active turn. When a `message_start` with
+   * `role: "user"` arrives, we match its normalized text against this
+   * queue and consume only the corresponding token. A non-matching event is
+   * authoritative independent input and must render without stealing a queued
+   * prompt's future echo.
    */
   pendingEchoes: string[];
+  /** Monotonic count plus a bounded ledger of authoritative user echoes.
+   * Submission custody can cross renderer IPC after its message_start; the
+   * ledger lets a queued acknowledgement reconcile that legal ordering. */
+  userMessageSequence: number;
+  authoritativeUserEchoes: Array<{
+    sequence: number;
+    content: string;
+    images: string[] | undefined;
+  }>;
 }
 
 export function createTranscriptState(): TranscriptState {
@@ -158,6 +166,8 @@ export function createTranscriptState(): TranscriptState {
     activeBashId: null,
     pendingRetryErrorBlockId: null,
     pendingEchoes: [],
+    userMessageSequence: 0,
+    authoritativeUserEchoes: [],
   };
 }
 
@@ -355,29 +365,39 @@ function extractResultText(result: unknown): string {
   return "";
 }
 
-/**
- * Extract the user-prompt text from a `message: { role: "user", content }`
- * snapshot. The content is either a plain string (legacy/simple) or an
- * array of `{ type: "text" | "image", text: string }` blocks. We collapse
- * the text blocks (concatenated) and ignore images; the result is what
- * the Composer would show in a user bubble.
- */
-function extractUserText(message: unknown): string | null {
+/** Extract text and attachment data from Pi's authoritative user message. */
+function extractUserMessage(
+  message: unknown,
+): { content: string; images: string[] | undefined } | null {
   if (!message || typeof message !== "object") return null;
-  const m = message as { content?: unknown };
-  const content = m.content;
-  if (typeof content === "string") return content;
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") return { content, images: undefined };
   if (!Array.isArray(content)) return null;
-  const parts: string[] = [];
+  const textParts: string[] = [];
+  const images: string[] = [];
   for (const block of content) {
-    if (block && typeof block === "object") {
-      const b = block as { type?: unknown; text?: unknown };
-      if (b.type === "text" && typeof b.text === "string") {
-        parts.push(b.text);
-      }
+    if (!block || typeof block !== "object") continue;
+    const part = block as {
+      type?: unknown;
+      text?: unknown;
+      data?: unknown;
+      mimeType?: unknown;
+    };
+    if (part.type === "text" && typeof part.text === "string") {
+      textParts.push(part.text);
+    } else if (
+      part.type === "image" &&
+      typeof part.data === "string" &&
+      typeof part.mimeType === "string"
+    ) {
+      images.push(`data:${part.mimeType};base64,${part.data}`);
     }
   }
-  return parts.length > 0 ? parts.join("") : null;
+  if (textParts.length === 0 && images.length === 0) return null;
+  return {
+    content: textParts.join(""),
+    images: images.length > 0 ? images : undefined,
+  };
 }
 
 function extractResultDiff(result: unknown): string | undefined {
@@ -650,23 +670,34 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
         };
       }
       if (role === "user") {
-        // pi echoes the delivered prompt. We dedupe by *position*, not by
-        // exact string equality: an optimistic `addUserBlock` always
-        // expects exactly one echo, so we consume the head of
-        // `pendingEchoes` whenever one is pending — regardless of whether
-        // pi normalized the text (trailing newline, whitespace) or
-        // expanded a template/skill. The user's originally-typed
-        // optimistic text stands; we never replace it.
-        //
-        // If there is no pending echo, the message must be
-        // server-/extension-originated (slash command dispatched via
-        // `prompt` with `commandSource: "extension"`); render the echoed
-        // text as a fresh user block.
-        if (pendingEchoes.length > 0) {
-          return { ...state, pendingEchoes: pendingEchoes.slice(1) };
+        // Pi echoes a queued prompt only when it is delivered. Match that
+        // event to its optimistic token without allowing an unrelated
+        // server-/extension-originated user event to consume the token.
+        const echoed = extractUserMessage(event.message);
+        if (echoed === null) return state;
+        const sequence = state.userMessageSequence + 1;
+        const authoritativeState: TranscriptState = {
+          ...state,
+          userMessageSequence: sequence,
+          authoritativeUserEchoes: [
+            ...state.authoritativeUserEchoes,
+            { sequence, content: echoed.content, images: echoed.images },
+          ].slice(-256),
+        };
+        const normalizedEcho = echoed.content.trimEnd();
+        const pendingIndex = pendingEchoes.findIndex(
+          (pending) => pending.trimEnd() === normalizedEcho,
+        );
+        if (pendingIndex !== -1) {
+          return {
+            ...authoritativeState,
+            pendingEchoes: [
+              ...pendingEchoes.slice(0, pendingIndex),
+              ...pendingEchoes.slice(pendingIndex + 1),
+            ],
+          };
         }
-        const echoed = extractUserText(event.message);
-        return echoed !== null ? addUserBlock(state, echoed, undefined, false) : state;
+        return addUserBlock(authoritativeState, echoed.content, echoed.images, false);
       }
       if (role === "custom") {
         // Match pi's TUI (interactive-mode.js `addMessageToChat` →
@@ -1026,10 +1057,10 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
   }
 }
 
-// User sends a prompt — add user block immediately.
+// Add an accepted prompt before its authoritative echo.
 //
-// `registerEcho` is true for plain Composer text submissions, where the
-// optimistic block is the user's own text and pi will echo it back via
+// `registerEcho` is true for Composer text accepted into Pi's active-turn
+// queue. The optimistic block is the user's own text and pi will echo it via
 // `message_start` with `role: "user"`. We register the text in
 // `pendingEchoes` so the reducer can suppress the duplicate echo.
 //

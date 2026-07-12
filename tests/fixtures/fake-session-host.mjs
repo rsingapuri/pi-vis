@@ -914,17 +914,28 @@ async function handleMessage(message) {
         publishSnapshot();
         break;
       }
-      reply(message.id, true, submissionResult(submission, "consumed", { queued: false }));
-      void runSubmission(submission).catch((error) => {
-        send({
-          type: "submission_disposition",
-          result: submissionResult(submission, "extension_error", {
-            message: error instanceof Error ? error.message : String(error),
-          }),
+      const executeSubmission = () =>
+        runSubmission(submission).catch((error) => {
+          send({
+            type: "submission_disposition",
+            result: submissionResult(submission, "extension_error", {
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          });
+          runtimeStreaming = false;
+          publishSnapshot();
         });
-        runtimeStreaming = false;
-        publishSnapshot();
-      });
+      if (String(submission.text).includes("[test:echo-before-custody]")) {
+        // Real Pi can publish message_start while session.prompt() is still
+        // running, before the submit response returns through child IPC.
+        // Keep a deterministic seam for that legal ordering.
+        const execution = executeSubmission();
+        reply(message.id, true, submissionResult(submission, "consumed", { queued: false }));
+        void execution;
+      } else {
+        reply(message.id, true, submissionResult(submission, "consumed", { queued: false }));
+        void executeSubmission();
+      }
       break;
     }
     case "state_request": {

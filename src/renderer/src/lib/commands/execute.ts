@@ -69,6 +69,7 @@ export interface ExecuteDeps {
         hostInstanceId: string;
         sessionEpoch: number;
         editorRevision: number;
+        userMessageSequence: number;
         intentId?: string | undefined;
       }
     | undefined;
@@ -83,7 +84,11 @@ export interface ExecuteDeps {
     sessionId: SessionId,
     content: string,
     images?: string[],
-    opts?: { registerEcho?: boolean; clearDraft?: boolean },
+    opts?: {
+      registerEcho?: boolean;
+      clearDraft?: boolean;
+      afterUserMessageSequence?: number;
+    },
   ) => void;
   /** Clear an optimistic echo registration when the send failed before pi could echo it. */
   clearPendingUserEcho: (sessionId: SessionId, content: string) => void;
@@ -320,21 +325,32 @@ async function executeSendPrompt(
     );
     throw new InputNotConsumedError(message);
   }
-  // Canonical transcript state remains event-derived. An optimistic echo is
-  // created only after the host has acknowledged custody/consumption.
+  // Canonical immediate-prompt transcript state remains event-derived because
+  // message_start may arrive before this response. Only prompts accepted into
+  // Pi's active-turn queue need an optimistic block while they await delivery.
   if (
-    result.disposition !== "in_custody" &&
+    result.queued === true &&
     action.commandSource === undefined &&
     !action.text.startsWith("/")
   ) {
-    deps.addUserMessage(
-      sessionId,
-      action.text,
-      action.images?.map((image) => image.dataUrl),
-      {
-        registerEcho: true,
-      },
-    );
+    const currentContext = deps.getSubmissionContext?.(sessionId);
+    if (
+      currentContext?.hostInstanceId === context.hostInstanceId &&
+      currentContext.sessionEpoch === context.sessionEpoch
+    ) {
+      // Queued prompts do not receive their authoritative message_start until
+      // Pi delivers them after the active turn. Immediate prompts remain
+      // entirely event-derived: their echo may legally precede this response.
+      deps.addUserMessage(
+        sessionId,
+        action.text,
+        action.images?.map((image) => image.dataUrl),
+        {
+          registerEcho: true,
+          afterUserMessageSequence: context.userMessageSequence,
+        },
+      );
+    }
   }
   if (result.disposition === "extension_error") {
     deps.addToast(sessionId, result.message ?? "Extension command failed.", "error");
