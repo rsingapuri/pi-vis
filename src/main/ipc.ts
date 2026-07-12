@@ -251,14 +251,38 @@ export function initIpc(win: BrowserWindow): void {
     },
   );
 
-  ipcMain.handle("session.activate", async (_evt, args: { sessionId: SessionId }) => {
-    const settings = getSettings();
-    const piInfo = await locatePi(settings.piBinaryPath);
-    if (!piInfo)
-      throw new Error("pi binary not found. Please install pi or set the path in settings.");
-    const loginShellEnv = await getHostEnv();
-    await registry?.activateSession(args.sessionId, piInfo.path, loginShellEnv);
-  });
+  ipcMain.handle(
+    "session.activate",
+    async (_evt, args: { sessionId: SessionId; activationVisitId?: string | undefined }) => {
+      const settings = getSettings();
+      const piInfo = await locatePi(settings.piBinaryPath);
+      if (!piInfo)
+        throw new Error("pi binary not found. Please install pi or set the path in settings.");
+      const loginShellEnv = await getHostEnv();
+      await registry?.activateSession(
+        args.sessionId,
+        piInfo.path,
+        loginShellEnv,
+        args.activationVisitId,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    "session.releaseActivationVisit",
+    async (_evt, args: { sessionId: SessionId; activationVisitId: string }) => {
+      if (!registry) return { released: false };
+      return registry.releaseActivationVisit(args.sessionId, args.activationVisitId);
+    },
+  );
+
+  ipcMain.handle(
+    "session.cancelActivationVisitRelease",
+    async (_evt, args: { sessionId: SessionId; activationVisitId: string }) => ({
+      cancelled:
+        registry?.cancelActivationVisitRelease(args.sessionId, args.activationVisitId) ?? false,
+    }),
+  );
 
   // ── Worktree ───────────────────────────────────────────────────────
 

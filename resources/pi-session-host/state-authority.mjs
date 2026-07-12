@@ -428,7 +428,8 @@ export function createStateAuthority({
     }
     const wasStreaming = session.isStreaming;
     const queueMode = request.requestedMode === "steer" ? "steer" : "followUp";
-    const commandName = request.text.startsWith("/") ? request.text.slice(1).split(/\s/, 1)[0] : "";
+    const isSlashCommand = request.text.startsWith("/");
+    const commandName = isSlashCommand ? request.text.slice(1).split(/\s/, 1)[0] : "";
     const isExtension = !!commandName && !!session.extensionRunner.getCommand(commandName);
     submitting++;
     activeIntents.set(request.intentId, "admitting");
@@ -448,7 +449,7 @@ export function createStateAuthority({
         request.surface,
         () =>
           session.prompt(request.text, {
-            ...(request.images?.length ? { images: request.images } : {}),
+            ...(!isSlashCommand && request.images?.length ? { images: request.images } : {}),
             source: "interactive",
             streamingBehavior: request.requestedMode,
             preflightResult: (success) => {
@@ -598,7 +599,11 @@ export function createStateAuthority({
   }
 
   function submit(request) {
-    return schedule("ingress", () => admit(request));
+    // Defense in depth: renderer classification already omits images for slash
+    // commands, but the host must never forward an attachment payload if a
+    // stale or malformed caller supplies one.
+    const normalized = request.text.startsWith("/") ? { ...request, images: [] } : request;
+    return schedule("ingress", () => admit(normalized));
   }
 
   async function drainCustody() {

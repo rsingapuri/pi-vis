@@ -1308,6 +1308,53 @@ describe("sessions store - workspace expand / reorder model", () => {
     store.setActiveSession(null);
     expect(useSessionsStore.getState().activeWorkspacePath).toBeNull();
   });
+
+  it("releases a view-only cold-session activation and cancels release on a quick return", async () => {
+    let resolveRelease!: (value: { released: boolean }) => void;
+    const release = new Promise<{ released: boolean }>((resolve) => {
+      resolveRelease = resolve;
+    });
+    const invoke = vi.fn((channel: string) => {
+      if (channel === "session.releaseActivationVisit") return release;
+      if (channel === "session.cancelActivationVisitRelease") {
+        return Promise.resolve({ cancelled: true });
+      }
+      return Promise.resolve(undefined);
+    });
+    vi.stubGlobal("window", { pivis: { invoke } });
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WS_A, "/f/a.jsonl", undefined, undefined, "cold");
+    store.createSession(SESSION_B, WS_B, "/f/b.jsonl", undefined, undefined, "ready");
+    store.setActiveSession(SESSION_A);
+    const visitId = useSessionsStore.getState().sessions.get(SESSION_A)?.activationVisitId;
+    expect(visitId).toEqual(expect.any(String));
+    expect(invoke).toHaveBeenCalledWith("session.activate", {
+      sessionId: SESSION_A,
+      activationVisitId: visitId,
+    });
+
+    store.setActiveSession(SESSION_B);
+    expect(invoke).toHaveBeenCalledWith("session.releaseActivationVisit", {
+      sessionId: SESSION_A,
+      activationVisitId: visitId,
+    });
+    store.setActiveSession(SESSION_A);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("session.cancelActivationVisitRelease", {
+        sessionId: SESSION_A,
+        activationVisitId: visitId,
+      }),
+    );
+    expect(invoke.mock.calls.filter(([channel]) => channel === "session.activate")).toHaveLength(1);
+
+    resolveRelease({ released: false });
+    await vi.waitFor(() =>
+      expect(
+        useSessionsStore.getState().sessions.get(SESSION_A)?.activationVisitId,
+      ).toBeUndefined(),
+    );
+    vi.unstubAllGlobals();
+  });
 });
 
 // ── Custom-panel reducer (handlePanelEvent) ────────────────────────────────
@@ -3717,7 +3764,15 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     );
   const sentSubmission = () =>
     invokeMock.mock.calls.find((c) => c[0] === "session.submit")?.[1] as
-      | { submission: { intentId: string; editorRevision: number; text: string; surface: string } }
+      | {
+          submission: {
+            intentId: string;
+            editorRevision: number;
+            text: string;
+            surface: string;
+            images: Array<{ type: "image"; data: string; mimeType: string }>;
+          };
+        }
       | undefined;
 
   it("does not replay a unified action when main reports an existing execution claim", async () => {
@@ -3776,6 +3831,102 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     expect(sentSubmission()?.submission.text).toContain("File: src/a.ts");
     expect(sentSubmission()?.submission.text).toContain("Line: 42");
     expect(lastUnifiedResponse()).toMatchObject({ id: "id-comments", ok: true });
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toEqual([]);
+  });
+
+  it("does not prepend or clear staged comments for slash-command submissions", async () => {
+    useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, {
+        ...sessions.get(SESSION_A)!,
+        commands: [{ name: "widget-on", description: "Open widget", source: "extension" }],
+        editorAttachments: [
+          { kind: "file", name: "notes.txt", path: "/tmp/notes.txt" },
+          {
+            kind: "image",
+            name: "diagram.png",
+            path: "/tmp/diagram.png",
+            dataUrl: "data:image/png;base64,eA==",
+          },
+        ],
+      });
+      return { sessions };
+    });
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/a.ts",
+      lineNumber: 42,
+      lineText: "if (flag) return a;",
+      text: "Please simplify this branch.",
+    });
+
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "id-slash-comments",
+        "/widget-on",
+        0,
+        "intent-slash-comments",
+        "host-1",
+        1,
+      );
+
+    expect(sentSubmission()?.submission).toMatchObject({
+      text: "/widget-on",
+      surface: "unified",
+    });
+    expect(sentSubmission()?.submission.text).not.toContain("User comments");
+    expect(sentSubmission()?.submission.images).toEqual([]);
+    expect(lastUnifiedResponse()).toMatchObject({ id: "id-slash-comments", ok: true });
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toHaveLength(1);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toHaveLength(2);
+  });
+
+  it("sends staged attachments and comments with a leading-whitespace ordinary prompt", async () => {
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, {
+        ...sessions.get(SESSION_A)!,
+        currentModel: "vision",
+        availableModels: [{ id: "vision", name: "Vision", input: ["text", "image"] }],
+        editorAttachments: [
+          { kind: "file", name: "notes.txt", path: "/tmp/notes.txt" },
+          {
+            kind: "image",
+            name: "diagram.png",
+            path: "/tmp/diagram.png",
+            dataUrl: "data:image/png;base64,eA==",
+          },
+        ],
+      });
+      return { sessions };
+    });
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/a.ts",
+      lineNumber: 42,
+      lineText: "if (flag) return a;",
+      text: "Please simplify this branch.",
+    });
+
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "id-leading-space",
+        "  /tmp/file is relevant",
+        0,
+        "intent-leading-space",
+        "host-1",
+        1,
+      );
+
+    const submission = sentSubmission()?.submission;
+    expect(submission?.text).toContain("  /tmp/file is relevant");
+    expect(submission?.text).toContain("/tmp/notes.txt");
+    expect(submission?.text).toContain("### User comments on the code");
+    expect(submission?.images).toEqual([{ type: "image", data: "eA==", mimeType: "image/png" }]);
+    expect(lastUnifiedResponse()).toMatchObject({ id: "id-leading-space", ok: true });
     expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toEqual([]);
   });
 

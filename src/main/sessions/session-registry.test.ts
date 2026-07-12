@@ -103,20 +103,147 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("counts activation reservations against the process cap before spawning", async () => {
+  it("cancels an activation visit released before Pi discovery reaches the registry", async () => {
     const h = harness();
-    for (let index = 0; index < 10; index++) {
-      const reservedId = h.registry.openSession(`/tmp/reserved-${index}`);
-      h.registry.getSession(reservedId)!._activating = true;
-    }
-    const excessId = h.registry.openSession("/tmp/excess");
+    const id = h.registry.openSession("/tmp/project");
 
-    await expect(h.registry.activateSession(excessId, "/tmp/pi", {})).rejects.toThrow(
-      "Session process limit",
-    );
+    await expect(h.registry.releaseActivationVisit(id, "visit-early")).resolves.toEqual({
+      released: false,
+    });
+    await h.registry.activateSession(id, "/tmp/pi", {}, "visit-early");
 
     expect(h.fakes).toHaveLength(0);
+    expect(h.registry.getSession(id)?.status).toBe("cold");
     h.registry.stopAll();
+  });
+
+  it("expires a release that never reaches activation and does not cancel a delayed arrival", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      const id = h.registry.openSession("/tmp/project");
+      await h.registry.releaseActivationVisit(id, "visit-expired");
+      expect(h.registry.getSession(id)?._releasedActivationVisits.size).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(h.registry.getSession(id)?._releasedActivationVisits.size).toBe(0);
+      const activation = h.registry.activateSession(id, "/tmp/pi", {}, "visit-expired");
+      await vi.runAllTicks();
+      await activation;
+
+      expect(h.fakes).toHaveLength(1);
+      expect(h.registry.getSession(id)?.status).toBe("ready");
+      h.registry.stopAll();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases only the untouched cold-session activation visit", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {}, "visit-unused");
+    const fake = h.fakes[0]!;
+
+    await expect(h.registry.releaseActivationVisit(id, "visit-unused")).resolves.toEqual({
+      released: true,
+    });
+
+    expect(fake.killed).toBe(true);
+    expect(h.registry.getSession(id)).toMatchObject({ status: "cold", proc: undefined });
+    expect(h.panelEvents).toContainEqual([id, { type: "unified_panel_reset" }]);
+    h.registry.stopAll();
+  });
+
+  it("cancels an in-flight activation release when the user returns", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {}, "visit-returned");
+    const fake = h.fakes[0]!;
+    fake.autoRespondToStateRequests = false;
+
+    const releasing = h.registry.releaseActivationVisit(id, "visit-returned");
+    await vi.waitFor(() =>
+      expect(fake.sent.some((message) => message.type === "state_request")).toBe(true),
+    );
+    expect(h.registry.cancelActivationVisitRelease(id, "visit-returned")).toBe(true);
+    const request = [...fake.sent].reverse().find((message) => message.type === "state_request")!;
+    fake.emitWire({ type: "response", id: request.id, success: true, data: fake.snapshot() });
+
+    await expect(releasing).resolves.toEqual({ released: false });
+    expect(h.registry.getSession(id)?.proc).toBeDefined();
+    expect(fake.killed).toBe(false);
+    h.registry.stopAll();
+  });
+
+  it("never releases a host that predated the activation visit", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    await h.registry.activateSession(id, "/tmp/pi", {}, "stale-visit");
+
+    await expect(h.registry.releaseActivationVisit(id, "stale-visit")).resolves.toEqual({
+      released: false,
+    });
+    expect(h.registry.getSession(id)?.proc).toBeDefined();
+    expect(h.fakes[0]!.killed).toBe(false);
+    h.registry.stopAll();
+  });
+
+  it("keeps a visit host after the immediate startup window or extension UI appears", async () => {
+    const late = harness();
+    const lateId = late.registry.openSession("/tmp/late");
+    await late.registry.activateSession(lateId, "/tmp/pi", {}, "visit-late");
+    late.registry.getSession(lateId)!._activationVisitStartedAt = Date.now() - 10_000;
+    await expect(late.registry.releaseActivationVisit(lateId, "visit-late")).resolves.toEqual({
+      released: false,
+    });
+    expect(late.registry.getSession(lateId)?.proc).toBeDefined();
+    late.registry.stopAll();
+
+    const panel = harness();
+    const panelId = panel.registry.openSession("/tmp/panel");
+    await panel.registry.activateSession(panelId, "/tmp/pi", {}, "visit-panel");
+    panel.fakes[0]!.emitWire({
+      type: "panel_open",
+      panelId: 9,
+      overlay: false,
+      unified: true,
+    });
+    await expect(panel.registry.releaseActivationVisit(panelId, "visit-panel")).resolves.toEqual({
+      released: false,
+    });
+    expect(panel.registry.getSession(panelId)?.proc).toBeDefined();
+    panel.registry.stopAll();
+  });
+
+  it("keeps a visit host after editor interaction or fresh non-idle state", async () => {
+    const edited = harness();
+    const editedId = edited.registry.openSession("/tmp/edited");
+    await edited.registry.activateSession(editedId, "/tmp/pi", {}, "visit-edited");
+    const editedRecord = edited.registry.getSession(editedId)!;
+    await edited.registry.applyEditorPatch(editedId, ...runtimeIdentity(editedRecord), {
+      baseRevision: 0,
+      revision: 1,
+      text: "draft",
+      attachments: [],
+    });
+    await expect(edited.registry.releaseActivationVisit(editedId, "visit-edited")).resolves.toEqual(
+      { released: false },
+    );
+    expect(editedRecord.proc).toBeDefined();
+    edited.registry.stopAll();
+
+    const busy = harness();
+    const busyId = busy.registry.openSession("/tmp/busy");
+    await busy.registry.activateSession(busyId, "/tmp/pi", {}, "visit-busy");
+    busy.fakes[0]!.runtime.isIdle = false;
+    busy.fakes[0]!.runtime.isStreaming = true;
+    await expect(busy.registry.releaseActivationVisit(busyId, "visit-busy")).resolves.toEqual({
+      released: false,
+    });
+    expect(busy.registry.getSession(busyId)?.proc).toBeDefined();
+    busy.registry.stopAll();
   });
 
   it("suspends the registry snapshot lease for acknowledged provisional lifecycle UI", async () => {
@@ -1585,14 +1712,12 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("refuses the process cap instead of evicting an idle victim", async () => {
+  it("allows more than ten explicitly active session processes", async () => {
     const h = harness();
     const ids = Array.from({ length: 11 }, () => h.registry.openSession("/tmp/project"));
-    for (const id of ids.slice(0, 10)) await h.registry.activateSession(id, "/tmp/pi", {});
-    await expect(h.registry.activateSession(ids[10]!, "/tmp/pi", {})).rejects.toThrow(
-      "process limit",
-    );
-    expect(h.registry.getAll().filter((record) => record.proc)).toHaveLength(10);
+    for (const id of ids) await h.registry.activateSession(id, "/tmp/pi", {});
+    expect(h.registry.getAll().filter((record) => record.proc)).toHaveLength(11);
+    expectDirectHostSpawns(h.spawnArgs, 11);
     h.registry.stopAll();
   });
 

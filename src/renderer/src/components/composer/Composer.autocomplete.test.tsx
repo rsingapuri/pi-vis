@@ -896,6 +896,7 @@ describe("Composer file attachments", () => {
       activeSessionId: SESSION_A,
       workspaces: new Map(),
       activeWorkspacePath: WORKSPACE,
+      diffComments: new Map(),
     });
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
     const s = useSessionsStore.getState().sessions.get(SESSION_A)!;
@@ -941,6 +942,104 @@ describe("Composer file attachments", () => {
     expect(button.title).toBe("Attach files");
     expect(clickSpy).toHaveBeenCalledTimes(1);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.toasts).toEqual([]);
+    unmount();
+  });
+
+  it("keeps comments and attachments staged across extension slash commands", async () => {
+    const session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    setField(session, {
+      availableModels: [{ id: "text-model", name: "Image Model", input: ["text", "image"] }],
+      commands: [{ name: "widget-on", description: "Open widget", source: "extension" }],
+      editorAttachments: [
+        { kind: "file", name: "notes.txt", path: "/tmp/notes.txt" },
+        {
+          kind: "image",
+          name: "diagram.png",
+          path: "/tmp/diagram.png",
+          dataUrl: "data:image/png;base64,eA==",
+        },
+      ],
+    });
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/a.ts",
+      lineNumber: 7,
+      lineText: "return value;",
+      text: "Explain this return.",
+    });
+    const { container, textarea, unmount } = mountComposer();
+    await vi.waitFor(() =>
+      expect(container.querySelectorAll(".composer__attachment-item")).toHaveLength(3),
+    );
+
+    setValueAndDispatch(textarea(), "/widget-on");
+    keyDown(textarea(), "Enter");
+
+    await vi.waitFor(() => expect(submittedTexts(invokeSpy)).toEqual(["/widget-on"]));
+    const slashSubmission = invokeSpy.mock.calls.find(
+      ([channel]) => channel === "session.submit",
+    )?.[1] as { submission: { text: string; images: unknown[] } };
+    expect(slashSubmission.submission.images).toEqual([]);
+    await vi.waitFor(() => expect(textarea().value).toBe(""));
+    expect(container.querySelectorAll(".composer__attachment-item")).toHaveLength(3);
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toHaveLength(1);
+    expect(
+      invokeSpy.mock.calls.some(
+        ([channel, payload]) =>
+          channel === "session.editorPatch" &&
+          (payload as { text?: string }).text === "" &&
+          (payload as { attachments?: unknown[] }).attachments?.length === 0,
+      ),
+    ).toBe(false);
+
+    setValueAndDispatch(textarea(), "  /tmp/notes.txt is context, not a command");
+    keyDown(textarea(), "Enter");
+    await vi.waitFor(() => expect(submittedTexts(invokeSpy)).toHaveLength(2));
+    const promptSubmission = invokeSpy.mock.calls.filter(
+      ([channel]) => channel === "session.submit",
+    )[1]?.[1] as { submission: { text: string; images: unknown[] } };
+    expect(promptSubmission.submission.text).toContain("/tmp/notes.txt");
+    expect(promptSubmission.submission.text).toContain("### User comments on the code");
+    expect(promptSubmission.submission.text).toContain(
+      "  /tmp/notes.txt is context, not a command",
+    );
+    expect(promptSubmission.submission.images).toHaveLength(1);
+    await vi.waitFor(() =>
+      expect(container.querySelectorAll(".composer__attachment-item")).toHaveLength(0),
+    );
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toEqual([]);
+    unmount();
+  });
+
+  it("submits and consumes an image-only ordinary prompt", async () => {
+    const session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    setField(session, {
+      availableModels: [{ id: "text-model", name: "Image Model", input: ["text", "image"] }],
+      editorAttachments: [
+        {
+          kind: "image",
+          name: "diagram.png",
+          path: "/tmp/diagram.png",
+          dataUrl: "data:image/png;base64,eA==",
+        },
+      ],
+    });
+    const { container, textarea, unmount } = mountComposer();
+    await vi.waitFor(() =>
+      expect(container.querySelectorAll(".composer__attachment-item")).toHaveLength(1),
+    );
+
+    keyDown(textarea(), "Enter");
+
+    await vi.waitFor(() => expect(submittedTexts(invokeSpy)).toEqual([""]));
+    const submission = invokeSpy.mock.calls.find(
+      ([channel]) => channel === "session.submit",
+    )?.[1] as { submission: { images: Array<{ data: string; mimeType: string }> } } | undefined;
+    expect(submission?.submission.images).toEqual([
+      { type: "image", data: "eA==", mimeType: "image/png" },
+    ]);
+    await vi.waitFor(() =>
+      expect(container.querySelectorAll(".composer__attachment-item")).toHaveLength(0),
+    );
     unmount();
   });
 

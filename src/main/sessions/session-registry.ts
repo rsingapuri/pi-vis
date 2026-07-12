@@ -83,6 +83,13 @@ export interface SessionRecord {
   _activating?: boolean | undefined;
   _activationDone?: Promise<void> | undefined;
   _resolveActivationDone?: (() => void) | undefined;
+  /** Renderer visit that caused this otherwise-cold host to be activated. */
+  _activationVisitId?: string | undefined;
+  _activationVisitStartedAt?: number | undefined;
+  _activationVisitInteracted?: boolean | undefined;
+  _activationVisitReleaseCancelled?: boolean | undefined;
+  /** Release can beat session.activate while main is still locating Pi. */
+  _releasedActivationVisits: Map<string, number>;
   _restartChain?: Promise<void> | undefined;
   _dead?: boolean | undefined;
   _procReady?: boolean | undefined;
@@ -132,8 +139,9 @@ export interface SessionRecord {
     | undefined;
 }
 
-const MAX_SESSION_PROCESSES = 10;
 const RAPID_FAILURE_WINDOW_MS = 30_000;
+/** A visit release is startup cancellation, never a later idle-host policy. */
+const ACTIVATION_VISIT_RELEASE_WINDOW_MS = 2_000;
 const DEFAULT_UNIFIED_CLAIM_TIMEOUT_MS = 60_000;
 
 type SessionEventCallback = (sessionId: SessionId, event: PiEvent) => void;
@@ -207,6 +215,7 @@ export class SessionRegistry {
       lastActiveAt: Date.now(),
       availability: "unavailable",
       _rapidFailureCount: 0,
+      _releasedActivationVisits: new Map(),
       _retainedIntents: new Map(),
       _pendingSubmissionPromises: new Map(),
       _expiredUnifiedIntents: new Set(),
@@ -235,26 +244,30 @@ export class SessionRegistry {
     sessionId: SessionId,
     piPath: string,
     env?: Record<string, string>,
-    _legacyUseHost = true,
-    _legacyOptions: unknown = undefined,
+    activationVisitId?: string,
   ): Promise<void> {
     const record = this.sessions.get(sessionId);
     if (!record) throw new Error(`Unknown session: ${sessionId}`);
+    // A rapid switch-away can reach main while session.activate is still
+    // locating Pi/getting the login environment. Honour that cancellation
+    // before reserving or spawning a process.
+    if (activationVisitId) {
+      const releasedAt = record._releasedActivationVisits.get(activationVisitId);
+      record._releasedActivationVisits.delete(activationVisitId);
+      if (
+        releasedAt !== undefined &&
+        Date.now() - releasedAt <= ACTIVATION_VISIT_RELEASE_WINDOW_MS
+      ) {
+        return;
+      }
+    }
     if (record._activating) return record._activationDone;
     if (record.proc && (record.status === "starting" || record.status === "ready")) return;
 
-    const liveCount = [...this.sessions.values()].filter(
-      (item) => item.proc || item._activating,
-    ).length;
-    if (liveCount >= MAX_SESSION_PROCESSES) {
-      const message = `Session process limit (${MAX_SESSION_PROCESSES}) reached. Close a session explicitly or raise the cap.`;
-      record.status = "failed";
-      record.error = message;
-      this.onStatusChanged(sessionId, "failed", message);
-      this.publishUnavailable(record, message);
-      throw new Error(message);
-    }
-
+    record._activationVisitId = activationVisitId;
+    record._activationVisitStartedAt = activationVisitId ? Date.now() : undefined;
+    record._activationVisitInteracted = false;
+    record._activationVisitReleaseCancelled = false;
     record._activating = true;
     record._activationDone = new Promise((resolve) => {
       record._resolveActivationDone = resolve;
@@ -307,6 +320,12 @@ export class SessionRegistry {
       record._procReady = false;
       record.status = "failed";
       record.error = message;
+      if (!activationVisitId || record._activationVisitId === activationVisitId) {
+        record._activationVisitId = undefined;
+        record._activationVisitStartedAt = undefined;
+        record._activationVisitInteracted = undefined;
+        record._activationVisitReleaseCancelled = undefined;
+      }
       this.releaseLock(record);
       this.onStatusChanged(sessionId, "failed", message);
       this.publishUnavailable(record, message);
@@ -317,6 +336,10 @@ export class SessionRegistry {
       record._resolveActivationDone = undefined;
       record._activationDone = undefined;
     }
+  }
+
+  private markActivationVisitInteracted(record: SessionRecord | undefined): void {
+    if (record?._activationVisitId) record._activationVisitInteracted = true;
   }
 
   private attachHost(record: SessionRecord, proc: SessionHost): void {
@@ -1076,6 +1099,7 @@ export class SessionRegistry {
     const record = this.sessions.get(sessionId);
     const parsed = SessionSubmissionSchema.safeParse(submissionInput);
     if (!parsed.success) throw new Error(`Invalid submission: ${parsed.error.message}`);
+    this.markActivationVisitInteracted(record);
     const submission = parsed.data;
     const rejectBeforeDispatch = (message: string): SubmissionResult => {
       const result: SubmissionResult = {
@@ -1291,6 +1315,7 @@ export class SessionRegistry {
     expected: { hostInstanceId: string; sessionEpoch: number },
   ): Promise<EscapeResult> {
     const record = this.sessions.get(sessionId);
+    this.markActivationVisitInteracted(record);
     const base = {
       requestId,
       hostInstanceId: expected.hostInstanceId,
@@ -1545,6 +1570,7 @@ export class SessionRegistry {
   acknowledgeRestoration(sessionId: SessionId, restorationId: string): boolean {
     const record = this.sessions.get(sessionId);
     if (!record) return false;
+    this.markActivationVisitInteracted(record);
     const acknowledged = record._restorations.delete(restorationId);
     if (acknowledged) {
       const ambiguousIntentPrefix = "ambiguous-submission:";
@@ -1580,6 +1606,7 @@ export class SessionRegistry {
     expected: { hostInstanceId: string; sessionEpoch: number },
   ): { claimed: false } | { claimed: true; claimId: string; expiresAt: number } {
     const record = this.sessions.get(sessionId);
+    this.markActivationVisitInteracted(record);
     const pending = record?._pendingUnifiedSubmits.get(id);
     if (
       !record ||
@@ -1702,6 +1729,7 @@ export class SessionRegistry {
   ): Promise<boolean> {
     const record = this.sessions.get(sessionId);
     if (record?._closing) throw new Error("Session close preparation is in progress");
+    this.markActivationVisitInteracted(record);
     if (
       !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
       rendererGeneration !== record._rendererGeneration
@@ -1734,6 +1762,7 @@ export class SessionRegistry {
   ): Promise<boolean> {
     const record = this.sessions.get(sessionId);
     if (record?._closing) throw new Error("Session close preparation is in progress");
+    this.markActivationVisitInteracted(record);
     if (!this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch))
       return false;
     const proc = record.proc;
@@ -1768,6 +1797,7 @@ export class SessionRegistry {
   }> {
     const record = this.sessions.get(sessionId);
     if (record?._closing) throw new Error("Session close preparation is in progress");
+    this.markActivationVisitInteracted(record);
     if (
       !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
       !record._procReady ||
@@ -1811,6 +1841,7 @@ export class SessionRegistry {
   ): Promise<{ acknowledgedThrough: number; gap?: { expected: number; received: number } }> {
     const record = this.sessions.get(sessionId);
     if (record?._closing) throw new Error("Session close preparation is in progress");
+    this.markActivationVisitInteracted(record);
     if (!this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch))
       return { acknowledgedThrough: 0 };
     const prior =
@@ -1931,6 +1962,9 @@ export class SessionRegistry {
     const request = parsed.data;
     const policy = commandPolicy(request.command);
     const record = this.sessions.get(sessionId);
+    // Automatic read probes do not turn a view-only visit into an
+    // interaction. Every state-changing command does.
+    if (policy.class !== "read_only") this.markActivationVisitInteracted(record);
     const base = {
       requestId: request.requestId,
       ...(request.intentId ? { intentId: request.intentId } : {}),
@@ -2094,6 +2128,7 @@ export class SessionRegistry {
     sessionId: SessionId,
     requestInput: ReloadRequest,
   ): Promise<ReloadSettlement> {
+    this.markActivationVisitInteracted(this.sessions.get(sessionId));
     const parsed = ReloadRequestSchema.safeParse(requestInput);
     if (!parsed.success) throw new Error(`Invalid reload request: ${parsed.error.message}`);
     const request = parsed.data;
@@ -2288,6 +2323,7 @@ export class SessionRegistry {
   ): Promise<void> {
     const record = this.sessions.get(sessionId);
     if (!record) throw new Error(`Unknown session: ${sessionId}`);
+    this.markActivationVisitInteracted(record);
     this.assertWorktreeRespawnEligible(record);
     await this.runRestart(record, async () => {
       this.assertWorktreeRespawnEligible(record);
@@ -2513,6 +2549,171 @@ export class SessionRegistry {
     if (record.sessionFile && this.byFile.get(path.resolve(record.sessionFile)) === sessionId) {
       this.byFile.delete(path.resolve(record.sessionFile));
     }
+  }
+
+  /**
+   * Reap only the host created by one renderer activation visit, and only when
+   * that visit never crossed a user-interaction boundary. This is deliberately
+   * not a general idle/LRU reaper: an older idle host may own extension
+   * background work that public idle state cannot prove safe to terminate.
+   */
+  async releaseActivationVisit(
+    sessionId: SessionId,
+    activationVisitId: string,
+  ): Promise<{ released: boolean }> {
+    const record = this.sessions.get(sessionId);
+    if (!record) return { released: false };
+    if (record._activationVisitId !== activationVisitId) {
+      // session.activate performs Pi discovery before entering the registry,
+      // so remember a release for a still-cold record and let activation
+      // consume it without spawning.
+      if (!record.proc && !record._activating && record.status === "cold") {
+        const releasedAt = Date.now();
+        record._releasedActivationVisits.set(activationVisitId, releasedAt);
+        const expiry = setTimeout(() => {
+          if (record._releasedActivationVisits.get(activationVisitId) === releasedAt) {
+            record._releasedActivationVisits.delete(activationVisitId);
+          }
+        }, ACTIVATION_VISIT_RELEASE_WINDOW_MS);
+        expiry.unref?.();
+      }
+      return { released: false };
+    }
+
+    const releaseRequestedAt = Date.now();
+    const abandonVisit = (): { released: false } => {
+      if (record._activationVisitId === activationVisitId) {
+        record._activationVisitId = undefined;
+        record._activationVisitStartedAt = undefined;
+        record._activationVisitInteracted = undefined;
+        record._activationVisitReleaseCancelled = undefined;
+      }
+      record._releasedActivationVisits.delete(activationVisitId);
+      return { released: false };
+    };
+    const visitStartedAt = record._activationVisitStartedAt;
+    if (
+      visitStartedAt === undefined ||
+      releaseRequestedAt - visitStartedAt > ACTIVATION_VISIT_RELEASE_WINDOW_MS
+    ) {
+      return abandonVisit();
+    }
+
+    const activationDone = record._activationDone;
+    if (activationDone) await activationDone;
+
+    const proc = record.proc;
+    if (
+      this.sessions.get(sessionId) !== record ||
+      record._activationVisitId !== activationVisitId ||
+      record._activationVisitReleaseCancelled ||
+      record._activationVisitInteracted ||
+      !proc ||
+      !record._procReady ||
+      record.status !== "ready" ||
+      record.availability !== "available"
+    ) {
+      return abandonVisit();
+    }
+
+    let freshSnapshot: AgentSessionSnapshot;
+    try {
+      freshSnapshot = await proc.requestSnapshot();
+    } catch {
+      return abandonVisit();
+    }
+    if (
+      this.sessions.get(sessionId) !== record ||
+      record.proc !== proc ||
+      record._activationVisitId !== activationVisitId ||
+      record._activationVisitReleaseCancelled ||
+      record._activationVisitInteracted
+    ) {
+      return abandonVisit();
+    }
+    this.installSnapshot(record, freshSnapshot, false);
+    const snapshot = record.snapshot;
+    const editor = snapshot?.editor;
+    const hasOpenPanel = [...record._openPanels.values()].some(
+      (event) => event.type === "panel_open",
+    );
+    const safe =
+      snapshot !== undefined &&
+      editor !== undefined &&
+      snapshot.hostInstanceId === proc.hostInstanceId &&
+      snapshot.sessionEpoch === proc.sessionEpoch &&
+      snapshot.isIdle &&
+      !snapshot.isStreaming &&
+      !snapshot.isCompacting &&
+      !snapshot.isRetrying &&
+      !snapshot.isBashRunning &&
+      snapshot.pendingMessageCount === 0 &&
+      snapshot.steering.length === 0 &&
+      snapshot.followUp.length === 0 &&
+      !snapshot.hostFacts.submitting &&
+      !snapshot.hostFacts.actualCompaction &&
+      !snapshot.hostFacts.navigation &&
+      snapshot.hostFacts.pendingDialogs === 0 &&
+      snapshot.hostFacts.custodyCount === 0 &&
+      snapshot.catalog.notifications.length === 0 &&
+      Object.keys(snapshot.catalog.statuses).length === 0 &&
+      Object.keys(snapshot.catalog.widgets).length === 0 &&
+      !snapshot.catalog.workingVisible &&
+      snapshot.catalog.workingMessage === undefined &&
+      editor.text === "" &&
+      editor.attachments.length === 0 &&
+      editor.conflictText === undefined &&
+      editor.alternateConflictText === undefined &&
+      (editor.additionalConflictCandidates?.length ?? 0) === 0 &&
+      !record._closing &&
+      !record._dead &&
+      !record._hostTransition &&
+      !record._restartChain &&
+      !record._lifecycleUiLease &&
+      !record._pendingRendererCancellation &&
+      record._retainedIntents.size === 0 &&
+      record._pendingSubmissionPromises.size === 0 &&
+      record._retainedCommandIntents.size === 0 &&
+      record._restorations.size === 0 &&
+      record._pendingUnifiedSubmits.size === 0 &&
+      record._expiredUnifiedIntents.size === 0 &&
+      record._acknowledgedUnifiedIntents.size === 0 &&
+      record._unifiedRestorationIntents.size === 0 &&
+      record._pendingUiRequests.size === 0 &&
+      record._pendingUiAcks.size === 0 &&
+      record._panelInputChains.size === 0 &&
+      !hasOpenPanel;
+    if (!safe || record._activationVisitReleaseCancelled || record._activationVisitInteracted) {
+      return abandonVisit();
+    }
+
+    // Detach before stop so the expected exit cannot enter failure/restart.
+    record._activationVisitId = undefined;
+    record._activationVisitStartedAt = undefined;
+    record._activationVisitInteracted = undefined;
+    record._activationVisitReleaseCancelled = undefined;
+    record._releasedActivationVisits.delete(activationVisitId);
+    record.proc = undefined;
+    record._procReady = false;
+    this.retireHostUi(record);
+    record.leaseExpiresAt = undefined;
+    this.onPanelEvent(sessionId, { type: "panel_clear_all" });
+    this.onPanelEvent(sessionId, { type: "unified_panel_reset" });
+    record._mutationSequence++;
+    proc.stop();
+    this.releaseLock(record);
+    record.status = "cold";
+    record.error = undefined;
+    this.publishUnavailable(record, "Unused activation visit released");
+    this.onStatusChanged(sessionId, "cold");
+    return { released: true };
+  }
+
+  cancelActivationVisitRelease(sessionId: SessionId, activationVisitId: string): boolean {
+    const record = this.sessions.get(sessionId);
+    if (!record || record._activationVisitId !== activationVisitId) return false;
+    record._activationVisitReleaseCancelled = true;
+    return true;
   }
 
   deactivateSession(sessionId: SessionId): void {

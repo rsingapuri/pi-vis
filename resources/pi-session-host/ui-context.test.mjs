@@ -544,6 +544,31 @@ describe("unified TUI: authoritative submit draft", () => {
     });
   });
 
+  it("clears slash command text while preserving authoritative attachments", () => {
+    const h = makeHarness();
+    const attachments = [{ kind: "file", name: "notes.txt", path: "/tmp/notes.txt" }];
+    expect(
+      h.bundle.state.applyEditorPatch({
+        baseRevision: 0,
+        revision: 1,
+        text: "/widget-on",
+        attachments,
+      }),
+    ).toMatchObject({ accepted: true });
+
+    expect(
+      h.bundle.state.acceptEditorSubmission({
+        editorRevision: 1,
+        text: "/widget-on",
+      }),
+    ).toBe(true);
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({
+      revision: 2,
+      text: "",
+      attachments,
+    });
+  });
+
   it("clears the authoritative pending draft only after custody", () => {
     const h = makeHarness();
     h.context.setWidget("k", makeFactory());

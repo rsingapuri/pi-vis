@@ -25,6 +25,12 @@ import type { PickerRequest } from "../lib/commands/execute.js";
 import { InputNotConsumedError, executeAction } from "../lib/commands/execute.js";
 import { parseComposerInput } from "../lib/commands/parse.js";
 import {
+  parseReplicatedAttachments,
+  runtimeImagesFromAttachments,
+  textWithAppendedFilePaths,
+  textWithPrependedFilePaths,
+} from "../lib/composer-attachments.js";
+import {
   type CodeComment,
   codeCommentKey,
   createCodeCommentId,
@@ -34,6 +40,7 @@ import {
 } from "../lib/diff-comments.js";
 import type { DiffModel } from "../lib/diff/diff-model.js";
 import { reanchorCommentsForEdit } from "../lib/diff/edit-anchor.js";
+import { findCurrentModel } from "../lib/model-utils.js";
 import { forgetPanelInputSequence } from "../lib/panel-input-sequence.js";
 import { RENDERER_GENERATION } from "../lib/renderer-generation.js";
 import { invokeSessionCommand } from "../lib/session-command.js";
@@ -85,6 +92,8 @@ export interface SessionViewState {
   editorAttachments: unknown[];
   editorAttachmentReads: number;
   editorPatchPending: number;
+  /** Cold→live activation owned by the current view-only visit, if any. */
+  activationVisitId?: string | undefined;
   editorConflict?:
     | {
         authoritativeText: string;
@@ -2364,18 +2373,64 @@ const buildSessionsStore = (
     // no-op unless pending diff comments are the prompt body. Tell the host it
     // bailed so it can restore — though empty restore is a no-op, keeping the
     // contract uniform is simplest.
-    if (!trimmed && pendingDiffComments.length === 0) {
+    if (
+      !trimmed &&
+      pendingDiffComments.length === 0 &&
+      (session?.editorAttachments.length ?? 0) === 0
+    ) {
       void respond({ ok: false, bailed: true });
+      return;
+    }
+    if ((session?.editorAttachmentReads ?? 0) > 0) {
+      get().addToast(sessionId, "Wait for image attachments to finish loading", "warning");
+      void respond({ ok: false, bailed: true, error: "Attachment reads are still pending" });
       return;
     }
 
     const discovered = new Map((session?.commands ?? []).map((c) => [c.name, c]));
-    const parsedAction = parseComposerInput(trimmed, { discovered });
+    const parsedAction = parseComposerInput(text, { discovered });
+    const isRealPrompt = parsedAction.kind === "send-prompt" && !text.startsWith("/");
+    const replicated = parseReplicatedAttachments(session?.editorAttachments ?? []);
+    let promptText = parsedAction.kind === "send-prompt" ? parsedAction.text : text;
+    let promptImages = isRealPrompt ? replicated.images : [];
+    if (isRealPrompt && replicated.files.length > 0) {
+      promptText = textWithPrependedFilePaths(
+        promptText,
+        replicated.files.map((attachment) => attachment.path),
+      );
+    }
+    if (isRealPrompt && pendingDiffComments.length > 0) {
+      promptText = prependCodeCommentsToPrompt(promptText, pendingDiffComments);
+    }
+    const currentModelInfo = findCurrentModel(
+      session?.availableModels ?? [],
+      session?.currentModel,
+      session?.currentProvider,
+    );
+    const modelSupportsImages = currentModelInfo?.input
+      ? currentModelInfo.input.includes("image")
+      : true;
+    if (isRealPrompt && promptImages.length > 0 && !modelSupportsImages) {
+      const modelLabel = currentModelInfo?.name ?? session?.currentModel ?? "This model";
+      get().addToast(
+        sessionId,
+        `${modelLabel} doesn't support image input — sending image file paths instead`,
+        "warning",
+      );
+      promptText = textWithAppendedFilePaths(
+        promptText,
+        promptImages.map((attachment) => attachment.path),
+      );
+      promptImages = [];
+    }
     const action =
-      parsedAction.kind === "send-prompt" && pendingDiffComments.length > 0
+      parsedAction.kind === "send-prompt"
         ? {
             ...parsedAction,
-            text: prependCodeCommentsToPrompt(parsedAction.text, pendingDiffComments),
+            text: promptText,
+            ...(promptImages.length > 0
+              ? { images: runtimeImagesFromAttachments(promptImages) }
+              : {}),
           }
         : parsedAction;
 
@@ -2552,7 +2607,7 @@ const buildSessionsStore = (
         return result;
       },
       onPromptAccepted: () => {
-        if (claimCurrent() && action.kind === "send-prompt" && pendingDiffComments.length > 0) {
+        if (claimCurrent() && isRealPrompt && pendingDiffComments.length > 0) {
           get().clearSubmittedDiffComments(sessionId, pendingDiffComments);
         }
       },
@@ -2576,7 +2631,7 @@ const buildSessionsStore = (
         });
         return;
       }
-      if (action.kind === "send-prompt" && pendingDiffComments.length > 0) {
+      if (isRealPrompt && pendingDiffComments.length > 0) {
         get().clearSubmittedDiffComments(sessionId, pendingDiffComments);
       }
       void respond({ ok: true });
@@ -3770,6 +3825,9 @@ const buildSessionsStore = (
 
   setActiveSession: (sessionId) => {
     const previousActiveId = get().activeSessionId;
+    const returningVisitId = sessionId
+      ? get().sessions.get(sessionId)?.activationVisitId
+      : undefined;
     set((state) => {
       if (sessionId === null) {
         return { activeSessionId: null, activeWorkspacePath: null };
@@ -3796,26 +3854,83 @@ const buildSessionsStore = (
       return { activeSessionId: sessionId, activeWorkspacePath: nextWs };
     });
 
-    if (
-      previousActiveId &&
-      previousActiveId !== sessionId &&
-      typeof window !== "undefined" &&
-      window.pivis &&
-      shouldReapPendingNewSession(get().sessions.get(previousActiveId))
-    ) {
-      void get().closeSessionTab(previousActiveId, { preservePendingDraft: true });
+    if (typeof window === "undefined" || !window.pivis) return;
+
+    const activateForVisit = (targetId: SessionId): void => {
+      const activationVisitId = crypto.randomUUID();
+      set((state) => {
+        const target = state.sessions.get(targetId);
+        if (!target) return {};
+        const sessions = new Map(state.sessions);
+        sessions.set(targetId, { ...target, activationVisitId });
+        return { sessions };
+      });
+      void window.pivis
+        .invoke("session.activate", { sessionId: targetId, activationVisitId })
+        .catch((err) => {
+          set((state) => {
+            const target = state.sessions.get(targetId);
+            if (!target || target.activationVisitId !== activationVisitId) return {};
+            const sessions = new Map(state.sessions);
+            sessions.set(targetId, { ...target, activationVisitId: undefined });
+            return { sessions };
+          });
+          get().setSessionStatus(targetId, "failed", String(err));
+        });
+    };
+
+    if (previousActiveId && previousActiveId !== sessionId) {
+      const previous = get().sessions.get(previousActiveId);
+      if (shouldReapPendingNewSession(previous)) {
+        void get().closeSessionTab(previousActiveId, { preservePendingDraft: true });
+      } else if (previous?.activationVisitId) {
+        const activationVisitId = previous.activationVisitId;
+        void window.pivis
+          .invoke("session.releaseActivationVisit", {
+            sessionId: previousActiveId,
+            activationVisitId,
+          })
+          .catch(() => ({ released: false }))
+          .finally(() => {
+            set((state) => {
+              const current = state.sessions.get(previousActiveId);
+              if (!current || current.activationVisitId !== activationVisitId) return {};
+              const sessions = new Map(state.sessions);
+              sessions.set(previousActiveId, { ...current, activationVisitId: undefined });
+              return { sessions };
+            });
+          });
+      }
     }
 
-    if (sessionId && typeof window !== "undefined" && window.pivis) {
-      const s = get().sessions.get(sessionId);
-      if (s && (s.status === "cold" || s.status === "exited" || s.status === "failed")) {
-        // Activation triggers a session.activate; the main process emits
-        // statusChanged("starting") which App.tsx applies. Re-invoking
-        // activate before that lands is no-op'd by main's idempotency.
-        window.pivis.invoke("session.activate", { sessionId }).catch((err) => {
-          get().setSessionStatus(sessionId, "failed", String(err));
+    if (!sessionId || sessionId === previousActiveId) return;
+    if (returningVisitId) {
+      // If the user comes back while the fresh-snapshot release check is in
+      // flight, cancel it. If main already completed the release, immediately
+      // start a new activation even if the renderer has not received the cold
+      // status event yet.
+      void window.pivis
+        .invoke("session.cancelActivationVisitRelease", {
+          sessionId,
+          activationVisitId: returningVisitId,
+        })
+        .then(({ cancelled }) => {
+          if (!cancelled && get().activeSessionId === sessionId) activateForVisit(sessionId);
+        })
+        .catch(() => {
+          if (get().activeSessionId === sessionId) activateForVisit(sessionId);
         });
-      }
+      return;
+    }
+    const target = get().sessions.get(sessionId);
+    if (
+      target &&
+      (target.status === "cold" || target.status === "exited" || target.status === "failed")
+    ) {
+      // Main binds the token only when this visit actually causes activation;
+      // an already-live process can therefore never be reaped by a stale UI
+      // status or duplicate invoke.
+      activateForVisit(sessionId);
     }
   },
 

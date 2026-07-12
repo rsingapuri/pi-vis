@@ -93,7 +93,20 @@ export interface IpcInvokeContract {
         }
       | { outcome: "missing" };
   };
-  "session.activate": { req: { sessionId: SessionId }; res: undefined };
+  "session.activate": {
+    req: { sessionId: SessionId; activationVisitId?: string | undefined };
+    res: undefined;
+  };
+  /** Release only a host whose cold→live activation belonged to this untouched visit. */
+  "session.releaseActivationVisit": {
+    req: { sessionId: SessionId; activationVisitId: string };
+    res: { released: boolean };
+  };
+  /** Cancel an in-flight release when the user returns before it settles. */
+  "session.cancelActivationVisitRelease": {
+    req: { sessionId: SessionId; activationVisitId: string };
+    res: { cancelled: boolean };
+  };
   "session.reload": {
     req: { sessionId: SessionId; request: ReloadRequest };
     res: ReloadSettlement;

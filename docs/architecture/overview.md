@@ -31,7 +31,7 @@ Runtime replacement (`new`, fork, switch, reload) is an epoch transition: affect
 ## Code structure
 
 - `resources/pi-session-host/` — SDK host, bridge, UI context, and state authority.
-- `src/main/sessions/session-registry.ts` — host lifecycle, snapshot lease validation, process cap, close checkpoint, and renderer/UI acknowledgement routing.
+- `src/main/sessions/session-registry.ts` — host lifecycle, snapshot lease validation, unused activation-visit retirement, close checkpoint, and renderer/UI acknowledgement routing.
 - `src/main/ipc.ts` / `src/shared/ipc-contract.ts` — typed renderer↔main API.
 - `src/shared/pi-protocol/runtime-state.ts` — snapshot, disposition, transition, and runtime-state schemas.
 - `src/renderer/src/stores/sessions-store.ts` — renderer projection of authoritative runtime state and UI state.

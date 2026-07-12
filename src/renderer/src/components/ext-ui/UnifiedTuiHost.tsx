@@ -139,6 +139,7 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
       theme: buildXtermTheme(getTheme(activeColorScheme)),
     });
     termRef.current = term;
+    const focusBeforeOpen = document.activeElement;
 
     const fitAddon = new FitAddon();
     fitAddonRef.current = fitAddon;
@@ -152,8 +153,16 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
     term.reset();
     term.clear();
 
-    // Focus on mount + refocus on click so the TUI's Editor receives keystrokes.
-    term.focus();
+    // A background factory widget may appear while the user is interacting
+    // with header chrome (notably while the rename button is becoming its
+    // input). Do not steal any meaningful focus merely because the panel
+    // mounted. When focus was on the document body we keep the convenient TUI
+    // autofocus; an explicit click in the panel always focuses it.
+    const focusOwnedElsewhere =
+      focusBeforeOpen instanceof HTMLElement &&
+      focusBeforeOpen !== document.body &&
+      !container.contains(focusBeforeOpen);
+    if (!focusOwnedElsewhere) term.focus();
     const refocus = () => term.focus();
     container.addEventListener("mousedown", refocus);
 

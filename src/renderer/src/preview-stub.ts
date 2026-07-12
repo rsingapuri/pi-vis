@@ -48,6 +48,22 @@ const previewHooks = {
     cols: number | undefined;
     rows: number | undefined;
   }>,
+  /** Open a unified panel on demand for focus-ownership regression tests. */
+  openUnifiedPanel(): void {
+    const activeId = useSessionsStore.getState().activeSessionId ?? DEMO_SESSION_ID;
+    emit("session.panelEvent", {
+      sessionId: activeId,
+      event: { type: "panel_open", panelId: 2, overlay: false, unified: true },
+    });
+    emit("session.panelEvent", {
+      sessionId: activeId,
+      event: {
+        type: "panel_data",
+        panelId: 2,
+        data: "\x1b[2J\x1b[H▸ Focus-safe panel\r\n  ready",
+      },
+    });
+  },
   /** Emit a differential update without replacing the current unified frame. */
   emitUnifiedPanelUpdate(): void {
     const rec = panelFrames.get(2);

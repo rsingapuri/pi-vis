@@ -1,6 +1,6 @@
 # Command system
 
-The composer parses `!text` as bash, `/command [args]` as a slash command, and other input as a user submission. Built-ins and discovered extension/prompt/skill commands are resolved by the SDK host. `execute.ts` routes non-text commands through `session.sendCommand`; text and images use the sole submission path, `session.submit`.
+The composer parses `!text` as bash, `/command [args]` as a slash command, and other input as a user submission. Slash matching is character-exact at the first position; leading-whitespace text such as `  /tmp/file` remains an ordinary prompt. Built-ins and discovered extension/prompt/skill commands are resolved by the SDK host. `execute.ts` routes non-text commands through `session.sendCommand`; text and images use the sole submission path, `session.submit`. Diff comments and file/image attachments are staged prompt context: every slash command receives only its command text, clears only that text after acknowledged execution, and leaves the staged context for a later ordinary prompt. This also applies to extension/template/skill and unknown slash commands that travel through `session.submit`; the host defensively strips slash-command images and preserves authoritative editor attachments.
 
 ## Submission contract
 

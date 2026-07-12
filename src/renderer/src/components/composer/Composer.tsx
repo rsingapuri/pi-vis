@@ -11,6 +11,16 @@ import {
   executeAction,
   parseComposerInput,
 } from "../../lib/commands/index.js";
+import {
+  type FileAttachment,
+  type ImageAttachment,
+  type ReplicatedComposerAttachment,
+  parseReplicatedAttachments,
+  runtimeImagesFromAttachments,
+  serializeComposerAttachments,
+  textWithAppendedFilePaths,
+  textWithPrependedFilePaths,
+} from "../../lib/composer-attachments.js";
 import { prependCodeCommentsToPrompt } from "../../lib/diff-comments.js";
 import { findCurrentModel } from "../../lib/model-utils.js";
 import { useChangelogStore } from "../../stores/changelog-store.js";
@@ -33,21 +43,6 @@ interface ComposerProps {
   sessionId: SessionId;
 }
 
-interface ImageAttachment {
-  name: string;
-  path: string;
-  dataUrl: string;
-}
-
-interface FileAttachment {
-  name: string;
-  path: string;
-}
-
-type ReplicatedComposerAttachment =
-  | { kind: "image"; name: string; path: string; dataUrl: string }
-  | { kind: "file"; name: string; path: string };
-
 type FileWithLegacyPath = File & { path?: string };
 
 const IMAGE_FILE_EXTENSION = /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|webp)$/i;
@@ -65,47 +60,6 @@ function pathForPickedFile(file: File): string {
     // as a defensive fallback if contextBridge cannot proxy the File object.
   }
   return (file as FileWithLegacyPath).path || file.name;
-}
-
-function serializeComposerAttachments(
-  images: ImageAttachment[],
-  files: FileAttachment[],
-): ReplicatedComposerAttachment[] {
-  return [
-    ...images.map((item) => ({ kind: "image" as const, ...item })),
-    ...files.map((item) => ({ kind: "file" as const, ...item })),
-  ];
-}
-
-function parseReplicatedAttachments(values: unknown[]): {
-  images: ImageAttachment[];
-  files: FileAttachment[];
-} {
-  const images: ImageAttachment[] = [];
-  const files: FileAttachment[] = [];
-  for (const value of values) {
-    if (!value || typeof value !== "object") continue;
-    const item = value as Partial<ReplicatedComposerAttachment>;
-    if (typeof item.name !== "string" || typeof item.path !== "string") continue;
-    if (item.kind === "image" && typeof item.dataUrl === "string") {
-      images.push({ name: item.name, path: item.path, dataUrl: item.dataUrl });
-    } else if (item.kind === "file") {
-      files.push({ name: item.name, path: item.path });
-    }
-  }
-  return { images, files };
-}
-
-function textWithPrependedFilePaths(current: string, paths: string[]): string {
-  if (paths.length === 0) return current;
-  const separator = current.length === 0 || /^\r?\n/.test(current) ? "" : "\n";
-  return `${paths.join("\n")}${separator}${current}`;
-}
-
-function textWithAppendedFilePaths(current: string, paths: string[]): string {
-  if (paths.length === 0) return current;
-  const separator = current.length === 0 || /\s$/.test(current) ? "" : "\n";
-  return `${current}${separator}${paths.join("\n")}`;
 }
 
 function nameFromPath(path: string): string {
@@ -819,27 +773,34 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         return;
       }
       const pendingDiffComments = store.getDiffCommentsForPrompt(sessionId);
-      if (!content.trim() && fileAttachments.length === 0 && pendingDiffComments.length === 0)
+      if (
+        !content.trim() &&
+        attachments.length === 0 &&
+        fileAttachments.length === 0 &&
+        pendingDiffComments.length === 0
+      )
         return;
       const parsedAction = parseComposerInput(content, { discovered });
-      let effectiveImages = attachments;
+      const isSlashCommand = content.startsWith("/");
+      const isRealPrompt = parsedAction.kind === "send-prompt" && !isSlashCommand;
+      // Comments and attachments are staged prompt context. Slash commands may
+      // use the prompt transport for extension/template dispatch, but they must
+      // receive only their command text and leave that context for a later
+      // ordinary prompt.
+      let effectiveImages = isRealPrompt ? attachments : [];
       const attachedFilePaths = fileAttachments.map((attachment) => attachment.path);
       let effectivePromptText = parsedAction.kind === "send-prompt" ? parsedAction.text : content;
-      if (parsedAction.kind !== "send-prompt" && attachedFilePaths.length > 0) {
+      if (parsedAction.kind !== "send-prompt" && !isSlashCommand && attachedFilePaths.length > 0) {
         addToast(sessionId, "File attachments can only be sent with prompts", "error");
         return;
       }
-      if (parsedAction.kind === "send-prompt" && attachedFilePaths.length > 0) {
+      if (isRealPrompt && attachedFilePaths.length > 0) {
         effectivePromptText = textWithPrependedFilePaths(parsedAction.text, attachedFilePaths);
       }
-      if (parsedAction.kind === "send-prompt" && pendingDiffComments.length > 0) {
+      if (isRealPrompt && pendingDiffComments.length > 0) {
         effectivePromptText = prependCodeCommentsToPrompt(effectivePromptText, pendingDiffComments);
       }
-      if (
-        parsedAction.kind === "send-prompt" &&
-        effectiveImages.length > 0 &&
-        !modelSupportsImages
-      ) {
+      if (isRealPrompt && effectiveImages.length > 0 && !modelSupportsImages) {
         addToast(
           sessionId,
           `${modelLabel} doesn't support image input — sending image file paths instead`,
@@ -858,16 +819,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
               text: effectivePromptText,
               ...(effectiveImages.length > 0
                 ? {
-                    images: effectiveImages.map((attachment) => {
-                      const comma = attachment.dataUrl.indexOf(",");
-                      const header = attachment.dataUrl.slice(0, comma);
-                      const mimeType = /^data:([^;]+)/.exec(header)?.[1] ?? "image/png";
-                      return {
-                        data: attachment.dataUrl.slice(comma + 1),
-                        mimeType,
-                        dataUrl: attachment.dataUrl,
-                      };
-                    }),
+                    images: runtimeImagesFromAttachments(effectiveImages),
                   }
                 : {}),
             }
@@ -1204,7 +1156,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           listSessions: (p: string) =>
             window.pivis.invoke("workspace.listSessions", { workspacePath: p }),
           onPromptAccepted: () => {
-            if (finalAction.kind === "send-prompt" && pendingDiffComments.length > 0) {
+            if (isRealPrompt && pendingDiffComments.length > 0) {
               clearSubmittedDiffComments(sessionId, pendingDiffComments);
             }
           },
@@ -1274,7 +1226,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           textRef.current === submittedLocalText &&
           currentAttachmentsKey === submittedAttachmentsKey;
         const hostAlreadyClearedPayload =
-          noNewLocalEdit && textRef.current === "" && currentAttachmentsKey === "[]";
+          noNewLocalEdit &&
+          textRef.current === "" &&
+          currentAttachmentsKey === (isRealPrompt ? "[]" : submittedAttachmentsKey);
         const acceptedPromptCanClear =
           finalAction.kind === "send-prompt" &&
           originatingComposerStillMounted &&
@@ -1295,19 +1249,21 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         // and runtime identity distinguish that acknowledgement from newer
         // typing without relying on the now-stale pre-submit revision.
         if (acceptedPromptCanClear || completedCommandCanClear) {
-          if (completedCommandCanClear) synchronizeEditorText("", []);
+          if (completedCommandCanClear) {
+            synchronizeEditorText("", replicatedAttachmentsRef.current);
+          }
           textRef.current = "";
           setText("");
-          setAttachments([]);
-          setFileAttachments([]);
-          replicatedAttachmentsRef.current = [];
+          // Only an ordinary prompt consumes staged context. Commands clear
+          // their own text while keeping images/files for the next prompt.
+          if (isRealPrompt) {
+            setAttachments([]);
+            setFileAttachments([]);
+            replicatedAttachmentsRef.current = [];
+          }
           setSlashIndex(0);
         }
-        if (
-          finalAction.kind === "send-prompt" &&
-          finalAction.commandSource !== "extension" &&
-          pendingDiffComments.length > 0
-        ) {
+        if (isRealPrompt && pendingDiffComments.length > 0) {
           clearSubmittedDiffComments(sessionId, pendingDiffComments);
         }
 

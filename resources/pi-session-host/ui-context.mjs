@@ -263,7 +263,9 @@ export function createUIContext({
     if (request.editorRevision !== editorRevision) return false;
     editorRevision++;
     editorText = "";
-    editorAttachments = [];
+    // Slash commands consume only their command text. Attachments are staged
+    // prompt context and remain authoritative for the next ordinary prompt.
+    if (!request.text.startsWith("/")) editorAttachments = [];
     editorConflictText = undefined;
     editorConflictAttachments = [];
     editorAlternateConflictText = undefined;

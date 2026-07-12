@@ -1,6 +1,7 @@
 import type { SessionId } from "@shared/ids.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSessionsStore } from "./sessions-store.js";
+import { allTranscriptBlocks } from "./transcript.js";
 import { useTreeStore } from "./tree-store.js";
 
 const SESSION_A = "session-tree-a" as SessionId;
@@ -326,8 +327,8 @@ describe("tree-store — navigateTo", () => {
 
     expect(sentNavigate).toBe(true);
     // seedHistory applied — has a user block.
-    const blocks = useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.blocks ?? [];
-    expect(blocks.some((b) => b.type === "user")).toBe(true);
+    const transcript = useSessionsStore.getState().sessions.get(SESSION_A)?.transcript;
+    expect(transcript && allTranscriptBlocks(transcript).some((b) => b.type === "user")).toBe(true);
 
     // editorText injected.
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection?.text).toBe(

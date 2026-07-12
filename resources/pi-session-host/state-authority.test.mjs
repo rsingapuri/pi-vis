@@ -123,6 +123,56 @@ describe("state authority", () => {
     expect(sendControl.mock.calls.at(-1)[0].snapshot.isStreaming).toBe(false);
   });
 
+  it("never forwards slash-command images and acknowledges only its editor text", async () => {
+    const acceptEditorSubmission = vi.fn(() => true);
+    const { authority, session } = setup(
+      {},
+      {
+        getEditor: () => ({
+          revision: 1,
+          text: "/widget-on",
+          attachments: [{ kind: "file", path: "/tmp/notes.txt" }],
+        }),
+        acceptEditorSubmission,
+      },
+    );
+
+    await expect(
+      authority.submit(
+        makeRequest("slash", {
+          text: "/widget-on",
+          images: [{ data: "image-bytes", mimeType: "image/png" }],
+        }),
+      ),
+    ).resolves.toMatchObject({ disposition: "consumed" });
+
+    expect(session.prompt).toHaveBeenCalledWith(
+      "/widget-on",
+      expect.not.objectContaining({ images: expect.anything() }),
+    );
+    expect(acceptEditorSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "/widget-on", images: [] }),
+    );
+  });
+
+  it("treats leading-whitespace slash text as an ordinary prompt", async () => {
+    const acceptEditorSubmission = vi.fn(() => true);
+    const { authority, session } = setup({}, { acceptEditorSubmission });
+    const images = [{ data: "image-bytes", mimeType: "image/png" }];
+
+    await expect(
+      authority.submit(makeRequest("ordinary", { text: "  /tmp/file is relevant", images })),
+    ).resolves.toMatchObject({ disposition: "consumed" });
+
+    expect(session.prompt).toHaveBeenCalledWith(
+      "  /tmp/file is relevant",
+      expect.objectContaining({ images }),
+    );
+    expect(acceptEditorSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "  /tmp/file is relevant", images }),
+    );
+  });
+
   it("returns explicit custody instead of holding IPC behind an unresolved idle prompt fence", async () => {
     const first = deferred();
     const second = deferred();

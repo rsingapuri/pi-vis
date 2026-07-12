@@ -28,6 +28,7 @@ interface PreviewHooks {
     rows: number | undefined;
   }>;
   emitUnifiedPanelUpdate: () => void;
+  openUnifiedPanel: () => void;
 }
 
 /**
@@ -60,6 +61,30 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
     // The roster is emitted by preview-stub's startUnifiedPanelPreview().
     await expect(panel.locator(".xterm-rows")).toContainText("Fleet", { timeout: 15_000 });
     await expect(panel.locator(".xterm-rows")).toContainText("swift-otter");
+  });
+
+  test("does not steal focus from an in-progress session rename when it appears", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.waitForLoadState("domcontentloaded");
+    // Sidebar boot asynchronously adopts the real preview session; wait for
+    // that keyed session subtree to settle before starting its local rename.
+    await expect(page.locator(".composer__textarea")).toBeEnabled();
+
+    await page.locator(".session-header__name-btn").click();
+    const nameInput = page.locator(".session-header__name-input");
+    await expect(nameInput).toBeFocused();
+    await nameInput.fill("Renaming");
+    await page.evaluate(() => {
+      const preview = (window as unknown as { __pivisPreview?: PreviewHooks }).__pivisPreview;
+      preview?.openUnifiedPanel();
+    });
+
+    await expect(page.locator(".unified-panel .xterm")).toBeVisible({ timeout: 20_000 });
+    await expect(nameInput).toBeFocused();
+    await page.keyboard.type(" safely");
+    await expect(nameInput).toHaveValue("Renaming safely");
   });
 
   test("a short roster: card hugs the content, no scroll (trailing blanks trimmed)", async ({
