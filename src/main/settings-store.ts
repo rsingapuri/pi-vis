@@ -117,7 +117,7 @@ export function getSettings(): AppSettings {
 }
 
 export function saveSettings(updates: Partial<AppSettings>): AppSettings {
-  current = sanitizeThemeSettings(AppSettingsSchema.parse({ ...current, ...updates }));
+  const next = sanitizeThemeSettings(AppSettingsSchema.parse({ ...current, ...updates }));
   const filePath = getSettingsPath();
   const dir = path.dirname(filePath);
 
@@ -125,10 +125,11 @@ export function saveSettings(updates: Partial<AppSettings>): AppSettings {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // Atomic write: write to temp file, then rename
+  // Commit to both disk and memory atomically from the caller's perspective:
+  // a failed write must not leave an unpersisted candidate staged in `current`.
   const tmpPath = `${filePath}.tmp.${process.pid}`;
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(current, null, 2), "utf8");
+    fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2), "utf8");
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     try {
@@ -139,5 +140,6 @@ export function saveSettings(updates: Partial<AppSettings>): AppSettings {
     throw err;
   }
 
+  current = next;
   return current;
 }

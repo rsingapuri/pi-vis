@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadSettings } from "./settings-store.js";
+import { getSettings, loadSettings, saveSettings } from "./settings-store.js";
 
 // settings-store resolves its file via PIVIS_SETTINGS_DIR when set, so these
 // tests never touch electron's app.getPath (mirrors session-discovery.test).
@@ -23,6 +23,21 @@ afterEach(() => {
   if (envBackup === undefined) delete process.env["PIVIS_SETTINGS_DIR"];
   else process.env["PIVIS_SETTINGS_DIR"] = envBackup;
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe("saveSettings", () => {
+  it("does not stage an unpersisted in-memory update when the atomic write fails", () => {
+    saveSettings({ workspaceOrder: ["/persisted"] });
+    const committed = getSettings();
+
+    const notADirectory = path.join(dir, "not-a-directory");
+    fs.writeFileSync(notADirectory, "blocking file", "utf8");
+    process.env["PIVIS_SETTINGS_DIR"] = notADirectory;
+
+    expect(() => saveSettings({ workspaceOrder: ["/unpersisted"] })).toThrow();
+    expect(getSettings()).toBe(committed);
+    expect(getSettings().workspaceOrder).toEqual(["/persisted"]);
+  });
 });
 
 describe("loadSettings — workspace migration & recovery", () => {

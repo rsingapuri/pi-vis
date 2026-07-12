@@ -86,7 +86,12 @@ timeout message). The base ref is pre-flight-validated (`rev-parse --verify
 verbose git error. The session's in-memory worktree association is committed
 only after the respawn succeeds; if the replacement pi process fails to start
 or exits immediately, the previous `worktreePath` is restored and any commands
-queued behind the restart are rejected rather than hanging. During creation the **composer is frozen** (`worktreeCreating`
+queued behind the restart are rejected rather than hanging. Persistence is also
+committed only after a successful respawn, and its synchronous read-modify-write
+merges against the latest `settings.worktrees` map at that commit point. This is
+load-bearing when two sessions create or attach worktrees concurrently: neither
+operation may replace the other's association with a stale pre-respawn snapshot,
+or the affected session would be filtered from the sidebar after relaunch. During creation the **composer is frozen** (`worktreeCreating`
 forces `live=false`, disabling the textarea) so the in-flight send reads as
 "sending", not stuck unsubmitted text. On failure the reason is shown **inline
 and durably** in the WorktreeBar (`session.worktreeError` → `.worktree-bar__error`,

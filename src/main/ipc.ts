@@ -65,6 +65,7 @@ import {
   pickWorktreeDirectory,
   removeWorkspace,
 } from "./workspaces.js";
+import { respawnAndPersistWorktree } from "./worktree-persistence.js";
 
 let registry: SessionRegistry | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -264,7 +265,9 @@ export function initIpc(win: BrowserWindow): void {
   ipcMain.handle(
     "session.createWorktree",
     async (_evt, args: { sessionId: SessionId; base: string }) => {
-      const rec = registry?.getSession(args.sessionId);
+      const activeRegistry = registry;
+      if (!activeRegistry) return { ok: false, error: "Session not found" };
+      const rec = activeRegistry.getSession(args.sessionId);
       if (!rec) return { ok: false, error: "Session not found" };
       const settings = getSettings();
       const piInfo = await locatePi(settings.piBinaryPath);
@@ -273,24 +276,24 @@ export function initIpc(win: BrowserWindow): void {
       try {
         const result = await createWorktree(rec.workspacePath, args.base);
         if (result.kind === "error") return { ok: false, error: result.message };
-        // Persist the worktree association so the session (and its chip)
-        // survive an app relaunch: discovery re-attaches worktree-cwd
-        // session files to this workspace, and session.open re-spawns
-        // pi in the worktree directory.
-        const worktrees = { ...getSettings().worktrees };
-        worktrees[result.worktreePath] = {
-          workspacePath: rec.workspacePath,
-          branch: result.branch,
-          name: result.name,
-          base: result.base,
-        };
-        await registry?.setWorktreeAndRespawn(
-          args.sessionId,
-          result.worktreePath,
-          piInfo.path,
-          loginShellEnv,
-        );
-        saveSettings({ worktrees });
+        // Persist only after the respawn succeeds, merging at the commit
+        // point so overlapping worktree operations cannot drop each other.
+        await respawnAndPersistWorktree({
+          worktreePath: result.worktreePath,
+          association: {
+            workspacePath: rec.workspacePath,
+            branch: result.branch,
+            name: result.name,
+            base: result.base,
+          },
+          respawn: () =>
+            activeRegistry.setWorktreeAndRespawn(
+              args.sessionId,
+              result.worktreePath,
+              piInfo.path,
+              loginShellEnv,
+            ),
+        });
         return {
           ok: true,
           worktreePath: result.worktreePath,
@@ -322,7 +325,9 @@ export function initIpc(win: BrowserWindow): void {
   ipcMain.handle(
     "session.attachWorktree",
     async (_evt, args: { sessionId: SessionId; path: string }) => {
-      const rec = registry?.getSession(args.sessionId);
+      const activeRegistry = registry;
+      if (!activeRegistry) return { ok: false, error: "Session not found" };
+      const rec = activeRegistry.getSession(args.sessionId);
       if (!rec) return { ok: false, error: "Session not found" };
       const settings = getSettings();
       const piInfo = await locatePi(settings.piBinaryPath);
@@ -332,21 +337,24 @@ export function initIpc(win: BrowserWindow): void {
         const result = await inspectWorktree(rec.workspacePath, args.path);
         if (result.kind === "error") return { ok: false, error: result.message };
         // Key by the canonical toplevel, not the raw input — see the
-        // `GitWorktreeInspect` doc and the `inspectWorktree` doc.
-        const worktrees = { ...getSettings().worktrees };
-        worktrees[result.path] = {
-          workspacePath: rec.workspacePath,
-          branch: result.branch,
-          name: result.name,
-          base: result.branch, // attached: no "cut from" relationship
-        };
-        await registry?.setWorktreeAndRespawn(
-          args.sessionId,
-          result.path,
-          piInfo.path,
-          loginShellEnv,
-        );
-        saveSettings({ worktrees });
+        // `GitWorktreeInspect` doc and the `inspectWorktree` doc. Merge only
+        // after respawn so concurrent operations retain both associations.
+        await respawnAndPersistWorktree({
+          worktreePath: result.path,
+          association: {
+            workspacePath: rec.workspacePath,
+            branch: result.branch,
+            name: result.name,
+            base: result.branch, // attached: no "cut from" relationship
+          },
+          respawn: () =>
+            activeRegistry.setWorktreeAndRespawn(
+              args.sessionId,
+              result.path,
+              piInfo.path,
+              loginShellEnv,
+            ),
+        });
         return {
           ok: true,
           worktreePath: result.path,
