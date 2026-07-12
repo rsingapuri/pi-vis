@@ -822,7 +822,8 @@ interface SessionsStore {
   applyEvent: (sessionId: SessionId, event: PiEvent) => void;
   applyEvents: (sessionId: SessionId, events: PiEvent[]) => void;
   seedHistory: (sessionId: SessionId, history: HistoryPage | TranscriptBlock[]) => void;
-  loadEarlierHistory: (sessionId: SessionId) => Promise<void>;
+  /** Returns true only when an older page was accepted and prepended. */
+  loadEarlierHistory: (sessionId: SessionId) => Promise<boolean>;
   refreshHistoricalCacheMissNotices: (sessionId: SessionId) => Promise<void>;
   addUserMessage: (
     sessionId: SessionId,
@@ -1409,6 +1410,7 @@ const buildSessionsStore = (
         transcript,
         historyCursor: { startIndex: page.startIndex, total: page.total },
         historyGeneration: s.historyGeneration + 1,
+        historyLoadingEarlier: undefined,
         hasTreeHistory: s.hasTreeHistory || page.total > 0,
       });
       return { sessions };
@@ -1421,11 +1423,12 @@ const buildSessionsStore = (
   loadEarlierHistory: async (sessionId) => {
     const s = get().sessions.get(sessionId);
     const cursor = s?.historyCursor;
-    if (!s?.sessionFile || !cursor || cursor.startIndex <= 0 || s.historyLoadingEarlier) return;
+    if (!s?.sessionFile || !cursor || cursor.startIndex <= 0 || s.historyLoadingEarlier)
+      return false;
     const requestedStartIndex = cursor.startIndex;
     const requestedFile = s.sessionFile;
     const historyCapture = captureHistoryRead(s);
-    if (!historyCapture) return;
+    if (!historyCapture) return false;
     set((state) => {
       const sessions = new Map(state.sessions);
       const cur = sessions.get(sessionId);
@@ -1433,6 +1436,7 @@ const buildSessionsStore = (
       sessions.set(sessionId, { ...cur, historyLoadingEarlier: true });
       return { sessions };
     });
+    let accepted = false;
     try {
       const page = await requestBoundHistoryPage(sessionId, historyCapture, {
         before: requestedStartIndex,
@@ -1452,14 +1456,24 @@ const buildSessionsStore = (
           sessions.set(sessionId, { ...cur, historyLoadingEarlier: undefined });
           return { sessions };
         }
+        // A page based on a concurrently shortened/rewritten file can carry a
+        // lower cursor but no older transcript blocks. Treat it as stale: if
+        // we advanced the cursor, the retry affordance would disappear even
+        // though nothing became visible.
+        const transcript = prependHistory(cur.transcript, page.blocks);
+        if (transcript === cur.transcript || page.startIndex >= requestedStartIndex) {
+          sessions.set(sessionId, { ...cur, historyLoadingEarlier: undefined });
+          return { sessions };
+        }
         sessions.set(sessionId, {
           ...cur,
-          transcript: prependHistory(cur.transcript, page.blocks),
+          transcript,
           historyCursor: { startIndex: page.startIndex, total: page.total },
           historyGeneration: cur.historyGeneration + 1,
           historyLoadingEarlier: undefined,
           hasTreeHistory: cur.hasTreeHistory || page.total > 0,
         });
+        accepted = true;
         return { sessions };
       });
     } catch (err) {
@@ -1477,9 +1491,10 @@ const buildSessionsStore = (
         return { sessions };
       });
       console.error("Failed to load earlier history:", err);
-      return;
+      return false;
     }
-    void get().refreshHistoricalCacheMissNotices(sessionId);
+    if (accepted) void get().refreshHistoricalCacheMissNotices(sessionId);
+    return accepted;
   },
 
   refreshHistoricalCacheMissNotices: async (sessionId) => {

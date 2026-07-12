@@ -2594,6 +2594,47 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     expect(session?.historyLoadingEarlier).toBeUndefined();
   });
 
+  it("does not report a stale pagination response as accepted after history is reseeded", async () => {
+    let resolvePage!: (page: ReturnType<typeof loadedHistory>) => void;
+    const invoke = vi.fn(
+      async () =>
+        new Promise<ReturnType<typeof loadedHistory>>((resolve) => {
+          resolvePage = resolve;
+        }),
+    );
+    vi.stubGlobal("window", { pivis: { invoke } });
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    store.seedHistory(SESSION_A, {
+      blocks: [{ id: "tail", type: "user", data: { content: "tail" } }],
+      startIndex: 1,
+      total: 2,
+    });
+
+    const pagination = store.loadEarlierHistory(SESSION_A);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    useSessionsStore.getState().seedHistory(SESSION_A, {
+      blocks: [{ id: "branch", type: "user", data: { content: "branch" } }],
+      startIndex: 0,
+      total: 1,
+    });
+    resolvePage({
+      status: "loaded",
+      historyGeneration: 1,
+      page: {
+        blocks: [{ id: "earlier", type: "user", data: { content: "stale" } }],
+        startIndex: 0,
+        total: 2,
+      },
+    });
+
+    await expect(pagination).resolves.toBe(false);
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.transcript.blocks.map((block) => block.id)).toEqual(["branch"]);
+    expect(session?.historyCursor).toEqual({ startIndex: 0, total: 1 });
+    expect(session?.historyLoadingEarlier).toBeUndefined();
+  });
+
   it("adoptSessionFile clears stale history pagination state", async () => {
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
@@ -2628,7 +2669,7 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
       total: 2,
     });
 
-    await store.loadEarlierHistory(SESSION_A);
+    await expect(store.loadEarlierHistory(SESSION_A)).resolves.toBe(true);
 
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(invoke).toHaveBeenCalledWith(
@@ -2642,6 +2683,31 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     );
     expect(session?.transcript.blocks.map((b) => b.id)).toEqual(["earlier", "tail"]);
     expect(session?.historyCursor).toEqual({ startIndex: 0, total: 2 });
+    expect(session?.historyLoadingEarlier).toBeUndefined();
+  });
+
+  it("keeps an earlier-history cursor retryable when a page contains no visible progress", async () => {
+    const invoke = vi.fn(async (_channel: string, payload?: unknown) =>
+      loadedHistory(payload, {
+        blocks: [{ id: "tail", type: "user", data: { content: "tail" } }],
+        startIndex: 0,
+        total: 2,
+      }),
+    );
+    vi.stubGlobal("window", { pivis: { invoke } });
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    store.seedHistory(SESSION_A, {
+      blocks: [{ id: "tail", type: "user", data: { content: "tail" } }],
+      startIndex: 1,
+      total: 2,
+    });
+
+    await expect(store.loadEarlierHistory(SESSION_A)).resolves.toBe(false);
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.transcript.blocks.map((block) => block.id)).toEqual(["tail"]);
+    expect(session?.historyCursor).toEqual({ startIndex: 1, total: 2 });
     expect(session?.historyLoadingEarlier).toBeUndefined();
   });
 

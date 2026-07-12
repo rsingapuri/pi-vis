@@ -17,10 +17,10 @@ type EntryMap = Map<string, Record<string, unknown>>;
  * can reuse it without re-reading the session file (which can be stale
  * for freshly-appended entries such as a synthesized `branch_summary`).
  *
- * `orderedEntries` must be in chronological order (oldest first) and must
- * have pre-compaction entries already stripped (i.e. the chain should start
- * at or after `firstKeptEntryId`). `SessionManager.getBranch()` does this
- * automatically; for file-derived chains use `trimPreCompaction()` first.
+ * `orderedEntries` must be in chronological order (oldest first). Tree
+ * navigation may supply Pi's compacted active-context branch, while persisted
+ * history supplies the complete on-disk branch so transcript scrollback can
+ * reach messages that predate a compaction.
  */
 export function entriesToTranscript(
   orderedEntries: Array<Record<string, unknown>>,
@@ -371,31 +371,11 @@ function walkActiveChain(entries: EntryMap): Array<Record<string, unknown>> {
   return chain.reverse();
 }
 
-// Strip entries that appear before a compaction's firstKeptEntryId so
-// loadHistory matches getBranch(): pre-compaction messages are summarized
-// and should not render. Pi appends compaction entries with parentId pointing
-// to the old leaf, so walkActiveChain includes the entire pre-compaction chain;
-// this function trims everything before firstKeptEntryId (inclusive from that
-// point — the firstKeptEntryId entry itself is kept).
-function trimPreCompaction(chain: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
-  let keepFrom = 0;
-  for (let i = 0; i < chain.length; i++) {
-    const e = chain[i] as Record<string, unknown>;
-    if (e["type"] !== "compaction") continue;
-    const firstKeptId = e["firstKeptEntryId"];
-    if (typeof firstKeptId !== "string") continue;
-    for (let j = 0; j < i; j++) {
-      const candidate = chain[j] as Record<string, unknown>;
-      if (candidate["id"] === firstKeptId) {
-        keepFrom = j;
-        break;
-      }
-    }
-  }
-  return keepFrom > 0 ? chain.slice(keepFrom) : chain;
-}
-
 const DEFAULT_HISTORY_LIMIT = 500;
+// Converted histories can be tens of megabytes. Keep only a small working set
+// so opening many long sessions cannot retain every complete JSONL branch in
+// the main process indefinitely.
+const MAX_CACHED_HISTORY_FILES = 3;
 const pageCache = new Map<
   string,
   {
@@ -410,8 +390,12 @@ async function loadAllHistoryBlocks(filePath: string): Promise<TranscriptBlock[]
   const mtimeMs = stat.mtimeMs;
   const cached = pageCache.get(filePath);
   if (cached && cached.mtimeMs === mtimeMs && cached.size === stat.size) {
+    // Refresh insertion order so Map acts as a tiny LRU.
+    pageCache.delete(filePath);
+    pageCache.set(filePath, cached);
     return cached.blocks;
   }
+  if (cached) pageCache.delete(filePath);
 
   const { header, entries } = await parseEntries(filePath);
   if (!header) return [];
@@ -420,8 +404,16 @@ async function loadAllHistoryBlocks(filePath: string): Promise<TranscriptBlock[]
   if (!headerResult.success) return [];
 
   const chain = walkActiveChain(entries);
-  const blocks = entriesToTranscript(trimPreCompaction(chain));
+  // Compaction bounds Pi's active model context; it must not erase GUI
+  // scrollback. Convert the complete persisted branch, including messages
+  // before compaction markers, and paginate the resulting transcript blocks.
+  const blocks = entriesToTranscript(chain);
   pageCache.set(filePath, { mtimeMs, size: stat.size, blocks });
+  while (pageCache.size > MAX_CACHED_HISTORY_FILES) {
+    const oldest = pageCache.keys().next().value;
+    if (oldest === undefined) break;
+    pageCache.delete(oldest);
+  }
   return blocks;
 }
 

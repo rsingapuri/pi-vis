@@ -303,6 +303,32 @@ describe("loadHistoryPage pagination", () => {
     expect(blockTexts((await loadHistoryPage(file, { limit: 1 })).blocks)).toEqual(["msg-1"]);
   });
 
+  it("evicts old complete histories from the bounded page cache", async () => {
+    const paths = Array.from({ length: 4 }, (_, index) => path.join(dir, `session-${index}.jsonl`));
+    const fixedTime = new Date("2024-02-02T00:00:00.000Z");
+    for (const candidate of paths) {
+      fs.writeFileSync(
+        candidate,
+        `${linearUserEntries(1)
+          .map((entry) => JSON.stringify(entry))
+          .join("\n")}\n`,
+      );
+      fs.utimesSync(candidate, fixedTime, fixedTime);
+      expect(blockTexts((await loadHistoryPage(candidate)).blocks)).toEqual(["msg-1"]);
+    }
+
+    const replacement = linearUserEntries(1) as Array<Record<string, unknown>>;
+    const message = replacement[1]?.["message"] as Record<string, unknown>;
+    message["content"] = [{ type: "text", text: "MSG-1" }];
+    fs.writeFileSync(
+      paths[0]!,
+      `${replacement.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+    );
+    fs.utimesSync(paths[0]!, fixedTime, fixedTime);
+
+    expect(blockTexts((await loadHistoryPage(paths[0]!)).blocks)).toEqual(["MSG-1"]);
+  });
+
   it("invalidates the page cache when mtime changes even if size is unchanged", async () => {
     writeEntries(linearUserEntries(1));
     const firstTime = new Date("2024-02-02T00:00:00.000Z");
@@ -333,7 +359,7 @@ describe("loadHistoryPage pagination", () => {
     expect(blockTexts((await loadHistoryPage(file, { limit: 1 })).blocks)).toEqual(["MSG-1"]);
   });
 
-  it("trims pre-compaction entries before slicing pages", async () => {
+  it("keeps pre-compaction entries available for persisted transcript scrollback", async () => {
     writeEntries([
       { type: "session", version: 3, id: "root", timestamp: "2024-01-01T00:00:00Z", cwd: "/ws" },
       {
@@ -369,8 +395,8 @@ describe("loadHistoryPage pagination", () => {
 
     const page = await loadHistoryPage(file, { limit: 10 });
 
-    expect(page.total).toBe(3);
-    expect(page.blocks.map((b) => b.id)).toEqual(["u2", "c1", "u3"]);
+    expect(page.total).toBe(4);
+    expect(page.blocks.map((b) => b.id)).toEqual(["u1", "u2", "c1", "u3"]);
   });
 });
 

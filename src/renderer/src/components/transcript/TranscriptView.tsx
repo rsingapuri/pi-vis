@@ -1346,7 +1346,9 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   const prevClientHeightRef = useRef(0);
   const prevScrollTopRef = useRef(0);
   const [scrollFades, setScrollFades] = useState({ top: false, bottom: false });
+  const paginationRequestIdRef = useRef(0);
   const prependedRef = useRef<{
+    requestId: number;
     sessionId: SessionId;
     beforeStartIndex: number;
     prevHeight: number;
@@ -1426,14 +1428,25 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     const el = scrollRef.current;
     if (earlierUnloaded > 0 && el) {
       const targetSessionId = sessionId;
+      const requestId = ++paginationRequestIdRef.current;
       prependedRef.current = {
+        requestId,
         sessionId: targetSessionId,
         beforeStartIndex: earlierUnloaded,
         prevHeight: el.scrollHeight,
         prevTop: el.scrollTop,
       };
-      void loadEarlierHistory(targetSessionId).finally(() => {
-        if (sessionIdRef.current === targetSessionId) setShowAll(true);
+      void loadEarlierHistory(targetSessionId).then((loaded) => {
+        if (
+          sessionIdRef.current !== targetSessionId ||
+          prependedRef.current?.requestId !== requestId
+        )
+          return;
+        if (loaded) {
+          setShowAll(true);
+        } else {
+          prependedRef.current = null;
+        }
       });
       return;
     }
@@ -1663,9 +1676,17 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     >
       <div className="transcript-blocks" ref={contentRef}>
         {(earlierUnloaded > 0 || (!showAll && allBlocks.length > MAX_VISIBLE_BLOCKS)) && (
-          <button type="button" className="show-earlier-btn" onClick={handleShowEarlier}>
-            Show {earlierUnloaded > 0 ? earlierUnloaded : allBlocks.length - MAX_VISIBLE_BLOCKS}{" "}
-            earlier messages
+          <button
+            type="button"
+            className="show-earlier-btn"
+            onClick={handleShowEarlier}
+            disabled={session?.historyLoadingEarlier}
+          >
+            {session?.historyLoadingEarlier
+              ? "Loading earlier messages…"
+              : `Show ${
+                  earlierUnloaded > 0 ? earlierUnloaded : allBlocks.length - MAX_VISIBLE_BLOCKS
+                } earlier messages`}
           </button>
         )}
         {transcriptStyle === "compact"

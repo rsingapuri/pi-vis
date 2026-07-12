@@ -340,7 +340,8 @@ export function prependHistory(
   state: TranscriptState,
   history: TranscriptBlock[],
 ): TranscriptState {
-  const blocks = mapHistoryBlocks(history);
+  const existingIds = new Set(state.blocks.map((block) => block.id));
+  const blocks = mapHistoryBlocks(history).filter((block) => !existingIds.has(block.id));
   if (blocks.length === 0) return state;
   return { ...state, blocks: [...blocks, ...state.blocks] };
 }
