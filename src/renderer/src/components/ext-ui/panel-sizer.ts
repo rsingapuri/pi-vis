@@ -9,18 +9,21 @@
  * the grid is not a fixed budget — it must TRACK the content height. The
  * invariant this engine maintains:
  *
- *   • grid `rows` = contentRows + 1  (a one-row blank "sentinel" so we can tell
- *     "content fits" from "content filled the grid and may be clipped"). Reported
- *     to the host so its TUI lays out into exactly this grid — every line stays
- *     in the viewport, top-anchored, nothing scrolls into scrollback.
+ *   • for ordinary content, grid `rows` = contentRows + 1 (a one-row blank
+ *     "sentinel" so we can tell "content fits" from "content filled the grid
+ *     and may be clipped"). Content
+ *     measurement includes xterm scrollback, so one oversized first frame can
+ *     recover its hidden top in one resize. Reported to the host so its TUI lays
+ *     out into exactly this grid — every line stays in the viewport, top-anchored.
  *   • mount height = grid height (rows × cell).
  *   • card height  = min(contentRows, maxDisplayRows) × cell — the box hugs the
  *     content, capped at a deterministic max derived from the transcript column
  *     (NOT from window-resize history). Trailing blanks (incl. the sentinel) are
  *     clipped.
- *   • card overflows (scrolls) ONLY when contentRows > maxDisplayRows — then the
- *     card scrolls through the content, top-anchored (the spec's "scrollbar only
- *     past the max").
+ *   • card overflows (scrolls) when ordinary intrinsic content is taller than
+ *     maxDisplayRows. Extremely tall intrinsic content keeps a small xterm grid
+ *     and uses xterm's virtualized scrollback instead, avoiding thousands of DOM
+ *     viewport rows while keeping the complete frame reachable.
  *
  * Determinism: the size is a pure function of the transcript-column height
  * (sessionEl) and the content. Growing the window re-derives a larger cap and
@@ -29,7 +32,8 @@
  *
  * Convergence: a height change makes pi-tui fullRender(true) (clears scrollback
  * + re-lays-out), so growing the grid brings a clipped top back and shrinking
- * removes trailing blanks. Settles in ≤2 resizes, then is stable.
+ * removes trailing blanks. Intrinsic content settles directly or switches to
+ * virtualized scrollback; coupling detection intentionally takes two probes.
  *
  * Two modes:
  *   • "content" (default): track the content as above.
@@ -38,9 +42,11 @@
  *     overlay would chase each other (the "wiggle"). Pin a FIXED grid (the
  *     display cap) instead and stop tracking.
  *
- * A resize-storm circuit breaker is the defense-in-depth for any grid-coupled
- * content that does NOT signal viewport mode: too many resizes in a short window
- * ⇒ pin to the tallest size seen for a cooldown, then re-evaluate.
+ * Some widgets do not signal viewport mode but render one screenful based on the
+ * `rows` they receive. After two matching growth probes, they are treated as an
+ * implicit viewport and pinned to the
+ * visible cap. A resize-storm circuit breaker remains defense-in-depth for other
+ * grid-coupled output.
  */
 
 import type { FitAddon } from "@xterm/addon-fit";
@@ -92,6 +98,16 @@ export interface PanelSizer {
  *  drag-resized preference (getHeightFraction); UnifiedTuiHost uses the default. */
 export const DEFAULT_HEIGHT_FRACTION = 0.5;
 
+/** Retained xterm history for virtualized intrinsic panels. xterm allocates this
+ * lazily; the large bound keeps extension frames reachable without creating one
+ * DOM viewport row per rendered line. */
+export const PANEL_SCROLLBACK_ROWS = 1_000_000;
+
+// Above this, intrinsic content switches from an outer-scrolled full xterm grid
+// to xterm's internally virtualized scrollback. This is a presentation threshold,
+// not a content ceiling: rows beyond it remain retained and reachable.
+const MAX_CONTENT_GRID_ROWS = 2048;
+
 // Resize-storm circuit breaker tuning.
 const RESIZE_WINDOW_MS = 400;
 const MAX_RESIZES_PER_WINDOW = 6;
@@ -120,24 +136,30 @@ export function createPanelSizer(opts: PanelSizerOptions): PanelSizer {
   const maxDisplayRows = (): number =>
     Math.max(1, Math.floor((sessionHeight() * heightFraction()) / cellHeight()));
 
-  // Safety ceiling on the grid so a runaway extension can't make a 1000-row
-  // terminal. Generous (the full column), well above any real content.
-  const hardMaxRows = (): number =>
-    Math.max(maxDisplayRows() * 2, Math.floor(sessionHeight() / cellHeight()), 24);
-
-  // Rows occupied by content (last non-blank + 1), and whether the content
-  // reached the bottom grid row (no trailing blank → it may be clipped into
-  // scrollback, so the grid needs to grow). Never reports below the caret row,
-  // so an editor's (possibly blank) input line is always kept.
+  // Rows occupied by the current frame (last non-blank + 1), and whether it
+  // reached the visible grid's bottom row. Scan the complete active buffer, not
+  // only `baseY..baseY+rows`: when an oversized frame scrolls on first paint its
+  // hidden top lives before baseY. Ignoring those rows was what stranded large
+  // widgets in scrollback and made the sizer stop at an arbitrary viewport-sized
+  // ceiling. Height-triggered pi-tui full renders clear scrollback, so after the
+  // probe this buffer represents the newly laid-out frame rather than history.
   const measureContent = (): { rows: number; filled: boolean } => {
     const buf = term.buffer.active;
     let lastNonBlank = -1;
-    for (let i = 0; i < term.rows; i++) {
-      const line = buf.getLine(buf.baseY + i);
-      if (line && line.translateToString(true).length > 0) lastNonBlank = i;
+    for (let i = buf.length - 1; i >= 0; i--) {
+      const line = buf.getLine(i);
+      if (line && line.translateToString(true).length > 0) {
+        lastNonBlank = i;
+        break;
+      }
     }
-    const rows = Math.max(lastNonBlank + 1, buf.cursorY + 1, 1);
-    return { rows, filled: lastNonBlank >= term.rows - 1 };
+    const cursorRow = buf.baseY + buf.cursorY;
+    const rows = Math.max(lastNonBlank + 1, cursorRow + 1, 1);
+    const viewportBottom = buf.baseY + term.rows - 1;
+    // A blank final row still occupies the grid when the caret/cursor reached it.
+    // Ignoring cursor occupancy lets `rows + k` widgets with trailing blanks grow
+    // forever without ever entering the coupling probes.
+    return { rows, filled: Math.max(lastNonBlank, cursorRow) >= viewportBottom };
   };
 
   // Vertical chrome (padding + border) of the card, so the JS heights produce
@@ -177,7 +199,7 @@ export function createPanelSizer(opts: PanelSizerOptions): PanelSizer {
   // the rows we give it, so a stable grid yields a stable render) and as the
   // resize-storm circuit breaker. cols still tracks the mount width.
   const applyFixedViewport = (rows: number, cols: number, cell: number): void => {
-    const gridRows = Math.max(1, Math.min(rows, hardMaxRows()));
+    const gridRows = Math.max(1, rows);
     if (cols !== term.cols || gridRows !== term.rows) term.resize(cols, gridRows);
     reportSize(cols, gridRows);
     const displayRows = Math.min(gridRows, maxDisplayRows());
@@ -187,10 +209,47 @@ export function createPanelSizer(opts: PanelSizerOptions): PanelSizer {
     notifyComposerSlotResize();
   };
 
+  // Extremely tall intrinsic content uses xterm's own scrollback viewport. The
+  // outer card remains fixed-size; xterm renders only visible rows and owns the
+  // scrollbar. `virtualTopPending` opens a newly entered/repainted frame at top.
+  let virtualizedIntrinsic = false;
+  let virtualTopPending = false;
+  const applyVirtualizedIntrinsic = (cols: number, cell: number): void => {
+    const gridRows = maxDisplayRows();
+    const gridChanged = cols !== term.cols || gridRows !== term.rows;
+    if (gridChanged) {
+      term.resize(cols, gridRows);
+      virtualTopPending = true;
+    }
+    reportSize(cols, gridRows);
+    container.style.height = `${gridRows * cell}px`;
+    panelEl.style.height = `${gridRows * cell + cardChrome()}px`;
+    panelEl.style.overflowY = "hidden";
+    if (virtualTopPending && !gridChanged) {
+      term.scrollToTop();
+      virtualTopPending = false;
+    }
+    notifyComposerSlotResize();
+  };
+
   // ── Resize-storm circuit breaker (damping) ──────────────────────────────
   let resizeTimes: number[] = [];
   let pinnedRows = 0; // > 0 while the breaker is engaged
   let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Detect output coupled to the reported grid by comparing TWO consecutive
+  // overflow probes. One equality is ambiguous at xterm's scrollback boundary;
+  // two matching deltas distinguish `rows + k` widgets from fixed intrinsic
+  // frames. This is separate from explicit panel_mode because third-party
+  // setWidget factories have no mode signal.
+  let overflowProbe: {
+    targetRows: number;
+    sourceRows: number;
+    sourceContentRows: number;
+    coupledPasses: number;
+  } | null = null;
+  let implicitViewport = false;
+  let implicitViewportExtraRows = 0;
 
   let syncQueued = false;
   const scheduleSync = (): void => {
@@ -202,9 +261,10 @@ export function createPanelSizer(opts: PanelSizerOptions): PanelSizer {
     });
   };
 
-  // Single sizing pass. In content mode resizes the grid toward `contentRows+1`
-  // and converges over ≤2 frames; in viewport mode (or while the breaker is
-  // engaged) pins a fixed grid instead. Re-runs are coalesced via scheduleSync.
+  // Single sizing pass. Content mode resizes ordinary grids toward
+  // `contentRows+1`, virtualizes extremely tall intrinsic frames, and probes
+  // grid-coupled content. Viewport mode (or the breaker) pins a fixed grid.
+  // Re-runs are coalesced via scheduleSync.
   const sync = (): void => {
     if (disposed) return;
     const cell = cellHeight();
@@ -221,8 +281,41 @@ export function createPanelSizer(opts: PanelSizerOptions): PanelSizer {
     // steady screen (the display cap) and never chase its height — that chase
     // is the wiggle. cols still tracks width.
     if (getMode() === "viewport") {
+      overflowProbe = null;
+      implicitViewport = false;
+      implicitViewportExtraRows = 0;
+      virtualizedIntrinsic = false;
+      virtualTopPending = false;
       applyFixedViewport(maxDisplayRows(), cols, cell);
       return;
+    }
+
+    const measured = measureContent();
+
+    // Extremely tall intrinsic content is retained in xterm scrollback and
+    // presented through xterm's virtualized viewport. If it later shrinks below
+    // the threshold, return to the normal grid-tracks-content path.
+    if (virtualizedIntrinsic) {
+      if (measured.rows + 1 > MAX_CONTENT_GRID_ROWS) {
+        applyVirtualizedIntrinsic(cols, cell);
+        return;
+      }
+      virtualizedIntrinsic = false;
+      virtualTopPending = false;
+      overflowProbe = null;
+    }
+
+    // A setWidget component can be viewport-coupled without an explicit mode
+    // signal. Keep it fixed while its height continues to track the grid; release
+    // it if later content becomes intrinsic overflow or shrinks.
+    if (implicitViewport) {
+      if (measured.filled && measured.rows <= term.rows + implicitViewportExtraRows) {
+        applyFixedViewport(maxDisplayRows(), cols, cell);
+        return;
+      }
+      implicitViewport = false;
+      implicitViewportExtraRows = 0;
+      overflowProbe = null;
     }
 
     // Breaker engaged: hold the pinned grid until the cooldown re-opens tracking.
@@ -231,11 +324,41 @@ export function createPanelSizer(opts: PanelSizerOptions): PanelSizer {
       return;
     }
 
-    const { rows: contentRows, filled } = measureContent();
-    const hardMax = hardMaxRows();
-    // If the content filled the grid it may be clipped → jump to the ceiling so
-    // the next render reveals the true height; otherwise hug content + sentinel.
-    const targetRows = filled && term.rows < hardMax ? hardMax : Math.min(contentRows + 1, hardMax);
+    const { rows: contentRows, filled } = measured;
+    let coupledPasses = 0;
+    if (filled && overflowProbe?.targetRows === term.rows) {
+      const gridGrowth = term.rows - overflowProbe.sourceRows;
+      const contentGrowth = contentRows - overflowProbe.sourceContentRows;
+      coupledPasses =
+        gridGrowth > 0 && contentGrowth === gridGrowth ? overflowProbe.coupledPasses + 1 : 0;
+      if (coupledPasses >= 2) {
+        overflowProbe = null;
+        implicitViewport = true;
+        implicitViewportExtraRows = Math.max(0, contentRows - term.rows);
+        applyFixedViewport(maxDisplayRows(), cols, cell);
+        return;
+      }
+    }
+
+    // Intrinsic overflow gets a sentinel. Once that full grid would exceed the
+    // DOM-row threshold, switch presentation to xterm's retained, virtualized
+    // scrollback instead of clipping or allocating an unbounded viewport.
+    const targetRows = contentRows + 1;
+    if (targetRows > MAX_CONTENT_GRID_ROWS) {
+      overflowProbe = null;
+      virtualizedIntrinsic = true;
+      virtualTopPending = true;
+      applyVirtualizedIntrinsic(cols, cell);
+      return;
+    }
+    overflowProbe = filled
+      ? {
+          targetRows,
+          sourceRows: term.rows,
+          sourceContentRows: contentRows,
+          coupledPasses,
+        }
+      : null;
 
     if (cols !== term.cols || targetRows !== term.rows) {
       // Trip the breaker if resizes are coming too fast to be a real settle.
@@ -243,7 +366,7 @@ export function createPanelSizer(opts: PanelSizerOptions): PanelSizer {
       resizeTimes.push(now);
       resizeTimes = resizeTimes.filter((t) => now - t < RESIZE_WINDOW_MS);
       if (resizeTimes.length > MAX_RESIZES_PER_WINDOW) {
-        pinnedRows = Math.min(hardMax, Math.max(term.rows, targetRows));
+        pinnedRows = Math.max(term.rows, targetRows);
         resizeTimes = [];
         if (cooldownTimer) clearTimeout(cooldownTimer);
         cooldownTimer = setTimeout(() => {
@@ -257,11 +380,9 @@ export function createPanelSizer(opts: PanelSizerOptions): PanelSizer {
 
       term.resize(cols, targetRows);
       reportSize(cols, targetRows);
-      // The grid changed: xterm reflows the existing buffer into the new
-      // dimensions (and the host re-renders a fresh frame too). Re-measure on
-      // the next frame to converge — don't depend on a host frame arriving,
-      // so this settles in the preview/host-less case as well.
-      scheduleSync();
+      // The host re-renders a fresh frame after every reported grid change.
+      // Re-measure from that panel_data callback; measuring xterm's local reflow
+      // here would mistake the old frame for the overflow probe's response.
       return;
     }
     reportSize(cols, targetRows);

@@ -42,6 +42,25 @@ const previewHooks = {
   abortCalls: 0,
   /** Log of every panel input string sent to `session.panelInput`. */
   panelInputLog: [] as string[],
+  /** Grid reports from panel sizing, used by overflow convergence tests. */
+  panelResizeLog: [] as Array<{
+    panelId: number | undefined;
+    cols: number | undefined;
+    rows: number | undefined;
+  }>,
+  /** Emit a differential update without replacing the current unified frame. */
+  emitUnifiedPanelUpdate(): void {
+    const rec = panelFrames.get(2);
+    if (!rec) return;
+    emit("session.panelEvent", {
+      sessionId: rec.sessionId,
+      event: {
+        type: "panel_data",
+        panelId: 2,
+        data: "\x1b[?2026h\x1b[s\x1b[H\x1b[2K▸ panel update\x1b[u\x1b[?2026l",
+      },
+    });
+  },
   /** Begin a fake turn on the active session. */
   startStreaming(): void {
     const activeId = useSessionsStore.getState().activeSessionId ?? DEMO_SESSION_ID;
@@ -92,8 +111,9 @@ function emit(channel: string, payload: unknown): void {
 // too. Without this the stub bottom-anchors a too-tall write into xterm
 // scrollback and never recovers — a stub-only artifact that cannot happen
 // against a real host (which clears scrollback every resize).
-const panelFrames = new Map<number, { sessionId: unknown; frame: string }>();
-function registerPanelFrame(sessionId: unknown, panelId: number, frame: string): void {
+type PanelFrame = string | ((rows: number) => string);
+const panelFrames = new Map<number, { sessionId: unknown; frame: PanelFrame }>();
+function registerPanelFrame(sessionId: unknown, panelId: number, frame: PanelFrame): void {
   panelFrames.set(panelId, { sessionId, frame });
 }
 
@@ -910,7 +930,12 @@ const stub = {
         // the content re-lays-out top-anchored into the new grid (see
         // registerPanelFrame). Async (next tick) to match the host's frame and
         // avoid re-entering the sizer mid-pass.
-        const { panelId, force } = req as { panelId?: number; force?: boolean };
+        const { panelId, force, rows } = req as {
+          panelId?: number;
+          force?: boolean;
+          rows?: number;
+        };
+        previewHooks.panelResizeLog.push({ panelId, cols: (req as { cols?: number }).cols, rows });
         const rec = panelId !== undefined ? panelFrames.get(panelId) : undefined;
         if (rec) {
           setTimeout(() => {
@@ -924,9 +949,11 @@ const stub = {
                 event: { type: "panel_data", panelId, data: KITTY_HANDSHAKE },
               });
             }
+            const frame =
+              typeof rec.frame === "function" ? rec.frame(Math.max(1, rows ?? 24)) : rec.frame;
             emit("session.panelEvent", {
               sessionId: rec.sessionId,
-              event: { type: "panel_data", panelId, data: rec.frame },
+              event: { type: "panel_data", panelId, data: frame },
             });
           }, 0);
         }
@@ -1164,36 +1191,93 @@ if (new URLSearchParams(window.location.search).get("customEntry") === "1") {
 // session.panelEvent subscription is mounted before the first emit.
 function startUnifiedPanelPreview(): void {
   const PANEL_ID = 2;
-  // `?unified=tall` emits a roster taller than the display cap so the overflow
-  // path (card scrolls, top stays reachable) can be exercised; `?unified=1`
-  // keeps the short roster the render tests assert on. Use \r\n so each line
-  // carriage-returns (xterm's default convertEol is off) — mirrors the real
-  // host's cursor-positioned ANSI rather than the bare-\n preview artifact.
+  // `?unified=tall` emits a roster taller than the display cap;
+  // `?unified=oversized` exceeds the old viewport-sized grid ceiling;
+  // `?unified=scrollback-alignment`, `?unified=boundary`, and
+  // `?unified=above-boundary` exercise 1,025, 2,048, and 2,050 intrinsic rows;
+  // `?unified=expanding` mimics a widget whose render height follows the rows
+  // reported by the terminal; `?unified=expanding-transition` then changes that
+  // widget to tall intrinsic content. `?unified=1` keeps the short roster. Use \r\n so
+  // each line carriage-returns (xterm's default convertEol is off) — mirrors the
+  // real host's cursor-positioned ANSI rather than the bare-\n preview artifact.
   const unifiedParam = new URLSearchParams(window.location.search).get("unified");
   const tall = unifiedParam === "tall";
+  const transitioning = unifiedParam === "expanding-transition";
+  const boundaryRows =
+    unifiedParam === "scrollback-alignment"
+      ? 1025
+      : unifiedParam === "boundary"
+        ? 2048
+        : unifiedParam === "above-boundary"
+          ? 2050
+          : null;
+  const oversized = unifiedParam === "oversized" || transitioning;
+  const expandingOffset =
+    unifiedParam === "expanding-offset" || unifiedParam === "expanding-offset-blank";
+  const expandingBlank =
+    unifiedParam === "expanding-blank" || unifiedParam === "expanding-offset-blank";
+  const expanding =
+    unifiedParam === "expanding" || expandingOffset || expandingBlank || transitioning;
   // `?unified=overlay` simulates an extension showing a pi-tui overlay (the
   // pi-subagents "inspect" box): after the panel opens, the host sends
   // panel_mode:viewport + a SMALL box frame. The renderer must pin a fixed grid
   // (the display cap), not hug the box — that pin is the wiggle fix.
   const overlay = unifiedParam === "overlay";
-  const lines = tall
+  const lines = boundaryRows
     ? [
-        "▸ Fleet (40 agents)       ↓/↑ navigate · Enter open",
+        `▸ Boundary roster (${boundaryRows} rows)`,
         ...Array.from(
-          { length: 40 },
-          (_, i) => `  ● agent-${String(i + 1).padStart(2, "0")}   running   ${i + 1} turns`,
+          { length: boundaryRows - 2 },
+          (_, i) => `  boundary row ${String(i + 2).padStart(4, "0")}`,
         ),
-        "",
-        "  (unified TUI · type a prompt + Enter)",
+        `  END OF ${boundaryRows}-ROW ROSTER`,
       ]
-    : [
-        "▸ Fleet (2 agents)        ↓/↑ navigate · Enter open",
-        "  ● swift-otter    running   3 turns",
-        "  ○ brave-falcon   queued    —",
-        "",
-        "  (unified TUI · type a prompt + Enter)",
-      ];
-  const roster = `\x1b[2J\x1b[H${lines.join("\r\n")}\r\n`;
+    : oversized
+      ? [
+          "▸ Fleet (160 agents)      ↓/↑ navigate · Enter open",
+          ...Array.from(
+            { length: 160 },
+            (_, i) => `  ● agent-${String(i + 1).padStart(3, "0")}   running   ${i + 1} turns`,
+          ),
+          "  END OF OVERSIZED ROSTER",
+        ]
+      : tall
+        ? [
+            "▸ Fleet (40 agents)       ↓/↑ navigate · Enter open",
+            ...Array.from(
+              { length: 40 },
+              (_, i) => `  ● agent-${String(i + 1).padStart(2, "0")}   running   ${i + 1} turns`,
+            ),
+            "",
+            "  (unified TUI · type a prompt + Enter)",
+          ]
+        : [
+            "▸ Fleet (2 agents)        ↓/↑ navigate · Enter open",
+            "  ● swift-otter    running   3 turns",
+            "  ○ brave-falcon   queued    —",
+            "",
+            "  (unified TUI · type a prompt + Enter)",
+          ];
+  const fullFrame = (frameLines: string[]): string =>
+    `\x1b[2J\x1b[H\x1b[3J${frameLines.join("\r\n")}`;
+  const roster = fullFrame(lines);
+  const expandingFrame = (rows: number, extraRows = 0, trailingBlank = false): string =>
+    fullFrame([
+      "▸ Adaptive viewport",
+      ...Array.from(
+        { length: Math.max(0, rows + extraRows - 2) },
+        (_, i) => `  viewport row ${String(i + 2).padStart(3, "0")}`,
+      ),
+      trailingBlank ? "" : "  END OF ADAPTIVE VIEWPORT",
+    ]);
+  const activeExpandingFrame = (rows: number): string =>
+    expandingFrame(rows, expandingOffset ? 1 : 0, expandingBlank);
+  const initialFrame = expanding ? activeExpandingFrame(24) : roster;
+  let transitionRepaints = 0;
+  const transitionFrame = (rows: number): string => {
+    transitionRepaints++;
+    return transitionRepaints === 1 ? activeExpandingFrame(rows) : roster;
+  };
   setTimeout(() => {
     // Target whichever session is actually active at emit time. The Sidebar's
     // one-shot boot effect opens a fresh session tab on load (displacing the
@@ -1217,12 +1301,16 @@ function startUnifiedPanelPreview(): void {
     });
     emit("session.panelEvent", {
       sessionId: activeId,
-      event: { type: "panel_data", panelId: PANEL_ID, data: roster },
+      event: { type: "panel_data", panelId: PANEL_ID, data: initialFrame },
     });
-    registerPanelFrame(activeId, PANEL_ID, roster);
+    registerPanelFrame(
+      activeId,
+      PANEL_ID,
+      transitioning ? transitionFrame : expanding ? activeExpandingFrame : roster,
+    );
     if (overlay) {
       // Show a pi-tui overlay: switch to viewport mode, then paint a small box.
-      const box = `\x1b[2J\x1b[H${["┌─ inspect ─┐", "│ agent-01  │", "└───────────┘"].join("\r\n")}\r\n`;
+      const box = fullFrame(["┌─ inspect ─┐", "│ agent-01  │", "└───────────┘"]);
       emit("session.panelEvent", {
         sessionId: activeId,
         event: { type: "panel_mode", panelId: PANEL_ID, mode: "viewport" },
@@ -1237,9 +1325,20 @@ function startUnifiedPanelPreview(): void {
 }
 
 if (
-  ["1", "tall", "overlay"].includes(
-    new URLSearchParams(window.location.search).get("unified") ?? "",
-  )
+  [
+    "1",
+    "tall",
+    "oversized",
+    "scrollback-alignment",
+    "boundary",
+    "above-boundary",
+    "expanding",
+    "expanding-offset",
+    "expanding-blank",
+    "expanding-offset-blank",
+    "expanding-transition",
+    "overlay",
+  ].includes(new URLSearchParams(window.location.search).get("unified") ?? "")
 ) {
   startUnifiedPanelPreview();
 }

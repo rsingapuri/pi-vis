@@ -35,7 +35,7 @@ import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { getTheme } from "../../theme/registry.js";
 import { basePanelTerminalOptions, buildXtermTheme } from "../../theme/xterm.js";
-import { createPanelSizer } from "./panel-sizer.js";
+import { PANEL_SCROLLBACK_ROWS, createPanelSizer } from "./panel-sizer.js";
 import "@xterm/xterm/css/xterm.css";
 import "./CustomPanelHost.css";
 
@@ -131,6 +131,7 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
     const { fonts } = settings;
     const term = new Terminal({
       ...basePanelTerminalOptions(),
+      scrollback: PANEL_SCROLLBACK_ROWS,
       cursorBlink: true,
       cursorStyle: "block",
       fontSize: fonts?.code?.sizePx ?? 14,
