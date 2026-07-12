@@ -18,6 +18,7 @@ import {
   useSessionsStore,
 } from "./sessions-store.js";
 import { useSettingsStore } from "./settings-store.js";
+import { allTranscriptBlocks } from "./transcript.js";
 
 const SESSION_A = "session-a" as SessionId;
 const SESSION_B = "session-b" as SessionId;
@@ -775,6 +776,179 @@ describe("sessions store - runtime snapshots", () => {
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.queuedMessages?.followUp).toEqual(
       [],
     );
+  });
+
+  it("gives a queued prompt exactly one visible owner across snapshot and echo ordering", () => {
+    const store = useSessionsStore.getState();
+    const queued = runtimeState(true);
+    if (!queued.snapshot) throw new Error("missing snapshot");
+    queued.snapshot.steering = ["prefix steer me"];
+    queued.snapshot.steeringIntentIds = ["intent-steer"];
+    store.applyRuntimeState(SESSION_A, queued);
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.queuedMessages?.steering,
+    ).toHaveLength(1);
+
+    store.addUserMessage(SESSION_A, "steer me", undefined, {
+      registerEcho: true,
+      afterUserMessageSequence: 0,
+      intentId: "intent-steer",
+    });
+    let session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toHaveLength(1);
+    expect(session.queuedMessages).toBeUndefined();
+
+    const stillQueued = runtimeState(true, 2);
+    if (!stillQueued.snapshot) throw new Error("missing snapshot");
+    stillQueued.snapshot.steering = ["prefix steer me"];
+    stillQueued.snapshot.steeringIntentIds = ["intent-steer"];
+    useSessionsStore.getState().applyRuntimeState(SESSION_A, stillQueued);
+    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toHaveLength(1);
+    expect(session.queuedMessages).toBeUndefined();
+
+    useSessionsStore.getState().applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "user", content: "rewritten steer me" },
+      queueIntentId: "intent-steer",
+    });
+    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toHaveLength(1);
+    expect(session.transcript.pendingEchoes).toEqual([]);
+    expect(session.queuedMessages).toBeUndefined();
+  });
+
+  it("transfers a queued projection when the authoritative echo beats the submit response", () => {
+    const store = useSessionsStore.getState();
+    const queued = runtimeState(true);
+    if (!queued.snapshot) throw new Error("missing snapshot");
+    queued.snapshot.steering = ["transformed fast echo"];
+    queued.snapshot.steeringIntentIds = ["intent-fast"];
+    store.applyRuntimeState(SESSION_A, queued);
+
+    store.applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "user", content: "delivered fast echo" },
+      queueIntentId: "intent-fast",
+    });
+    let session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toHaveLength(1);
+    expect(session.queuedMessages).toBeUndefined();
+
+    store.addUserMessage(SESSION_A, "fast echo", undefined, {
+      registerEcho: true,
+      afterUserMessageSequence: 0,
+      intentId: "intent-fast",
+    });
+    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toHaveLength(1);
+    expect(session.transcript.pendingEchoes).toEqual([]);
+    expect(session.queuedMessages).toBeUndefined();
+  });
+
+  it("reconciles repeated identical queued prompts one-for-one across delivery", () => {
+    const store = useSessionsStore.getState();
+    const queued = runtimeState(true);
+    if (!queued.snapshot) throw new Error("missing snapshot");
+    queued.snapshot.steering = ["transformed one", "transformed two"];
+    queued.snapshot.steeringIntentIds = ["intent-repeat-1", "intent-repeat-2"];
+    store.applyRuntimeState(SESSION_A, queued);
+
+    store.addUserMessage(SESSION_A, "repeat", undefined, {
+      registerEcho: true,
+      afterUserMessageSequence: 0,
+      intentId: "intent-repeat-1",
+    });
+    let session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toHaveLength(1);
+    expect(session.queuedMessages?.steering.map((message) => message.text)).toEqual([
+      "transformed two",
+    ]);
+
+    store.applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "user", content: "delivered transformed one" },
+      queueIntentId: "intent-repeat-1",
+    });
+    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toHaveLength(1);
+    expect(session.queuedMessages?.steering.map((message) => message.text)).toEqual([
+      "transformed two",
+    ]);
+
+    // A second response captured before the first echo must not reuse that
+    // already-consumed echo as its own projection.
+    store.addUserMessage(SESSION_A, "repeat", undefined, {
+      registerEcho: true,
+      afterUserMessageSequence: 0,
+      intentId: "intent-repeat-2",
+    });
+    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toHaveLength(2);
+    expect(session.queuedMessages).toBeUndefined();
+
+    store.applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "user", content: "delivered transformed two" },
+      queueIntentId: "intent-repeat-2",
+    });
+    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toHaveLength(2);
+    expect(session.transcript.pendingEchoes).toEqual([]);
+  });
+
+  it("lets only one concurrent identical response claim an echo that arrived first", () => {
+    const store = useSessionsStore.getState();
+    const queued = runtimeState(true);
+    if (!queued.snapshot) throw new Error("missing snapshot");
+    queued.snapshot.steering = ["external same one", "external same two"];
+    queued.snapshot.steeringIntentIds = ["intent-same-1", "intent-same-2"];
+    store.applyRuntimeState(SESSION_A, queued);
+    store.applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "user", content: "delivered first same" },
+      queueIntentId: "intent-same-1",
+    });
+
+    store.addUserMessage(SESSION_A, "same", undefined, {
+      registerEcho: true,
+      afterUserMessageSequence: 0,
+      intentId: "intent-same-1",
+    });
+    store.addUserMessage(SESSION_A, "same", undefined, {
+      registerEcho: true,
+      afterUserMessageSequence: 0,
+      intentId: "intent-same-2",
+    });
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toHaveLength(2);
+    expect(session.transcript.pendingEchoes).toEqual([
+      expect.objectContaining({ intentId: "intent-same-2", content: "same" }),
+    ]);
+    expect(session.queuedMessages).toBeUndefined();
+  });
+
+  it("preserves live transcript scrollback when compaction arrives through the store", () => {
+    const store = useSessionsStore.getState();
+    for (let index = 0; index < 250; index += 1) {
+      store.addUserMessage(SESSION_A, `message-${index}`, undefined, { registerEcho: false });
+    }
+    const before = useSessionsStore
+      .getState()
+      .sessions.get(SESSION_A)!
+      .transcript.blocks.map((block) => block.id);
+
+    store.applyEvent(SESSION_A, {
+      type: "compaction_end",
+      result: { summary: "summary" },
+    });
+
+    const transcript = useSessionsStore.getState().sessions.get(SESSION_A)!.transcript;
+    const after = allTranscriptBlocks(transcript);
+    expect(after.slice(0, -1).map((block) => block.id)).toEqual(before);
+    expect(after.at(-1)?.type).toBe("compaction");
+    expect(transcript.blocks).toHaveLength(1);
   });
 });
 
@@ -2286,6 +2460,7 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
           { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
         ],
       },
+      queueIntentId: "intent-image",
     });
     // A queued=true custody response may cross IPC after this echo. Its
     // post-ack reconciliation must preserve the authoritative block rather
@@ -2293,6 +2468,7 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     store.addUserMessage(SESSION_A, "describe this", ["data:image/png;base64,aW1hZ2U="], {
       registerEcho: true,
       afterUserMessageSequence: 0,
+      intentId: "intent-image",
     });
 
     const blocks = useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.blocks;
@@ -2312,19 +2488,23 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
 
     store.applyEvent(SESSION_A, {
       type: "message_start",
-      message: { role: "user", content: "repeat" },
+      message: { role: "user", content: "transformed first" },
+      queueIntentId: "intent-repeat-a",
     });
     store.addUserMessage(SESSION_A, "repeat", undefined, {
       registerEcho: true,
       afterUserMessageSequence: 0,
+      intentId: "intent-repeat-a",
     });
     store.addUserMessage(SESSION_A, "repeat", undefined, {
       registerEcho: true,
       afterUserMessageSequence: 0,
+      intentId: "intent-repeat-b",
     });
     store.applyEvent(SESSION_A, {
       type: "message_start",
-      message: { role: "user", content: "repeat" },
+      message: { role: "user", content: "transformed second" },
+      queueIntentId: "intent-repeat-b",
     });
 
     const blocks = useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.blocks;
@@ -2542,7 +2722,9 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     );
 
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.transcript.blocks.map((b) => b.id)).toEqual(["h1"]);
+    expect(session ? allTranscriptBlocks(session.transcript).map((b) => b.id) : undefined).toEqual([
+      "h1",
+    ]);
     expect(session?.historyCursor).toEqual({ startIndex: 0, total: 1 });
   });
 
@@ -2590,7 +2772,9 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     await successor;
 
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.transcript.blocks.map((block) => block.id)).toEqual(["successor", "tail"]);
+    expect(
+      session ? allTranscriptBlocks(session.transcript).map((block) => block.id) : undefined,
+    ).toEqual(["successor", "tail"]);
     expect(session?.historyLoadingEarlier).toBeUndefined();
   });
 
@@ -2630,7 +2814,9 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
 
     await expect(pagination).resolves.toBe(false);
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.transcript.blocks.map((block) => block.id)).toEqual(["branch"]);
+    expect(
+      session ? allTranscriptBlocks(session.transcript).map((block) => block.id) : undefined,
+    ).toEqual(["branch"]);
     expect(session?.historyCursor).toEqual({ startIndex: 0, total: 1 });
     expect(session?.historyLoadingEarlier).toBeUndefined();
   });
@@ -2681,7 +2867,10 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
         before: 1,
       }),
     );
-    expect(session?.transcript.blocks.map((b) => b.id)).toEqual(["earlier", "tail"]);
+    expect(session ? allTranscriptBlocks(session.transcript).map((b) => b.id) : undefined).toEqual([
+      "earlier",
+      "tail",
+    ]);
     expect(session?.historyCursor).toEqual({ startIndex: 0, total: 2 });
     expect(session?.historyLoadingEarlier).toBeUndefined();
   });
@@ -2706,7 +2895,9 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     await expect(store.loadEarlierHistory(SESSION_A)).resolves.toBe(false);
 
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.transcript.blocks.map((block) => block.id)).toEqual(["tail"]);
+    expect(
+      session ? allTranscriptBlocks(session.transcript).map((block) => block.id) : undefined,
+    ).toEqual(["tail"]);
     expect(session?.historyCursor).toEqual({ startIndex: 1, total: 2 });
     expect(session?.historyLoadingEarlier).toBeUndefined();
   });
@@ -3138,11 +3329,9 @@ describe("sessions store - historical cache notices", () => {
     useSessionsStore.getState().setSessionStatus(SESSION_A, "ready");
 
     await vi.waitFor(() => {
+      const session = useSessionsStore.getState().sessions.get(SESSION_A);
       expect(
-        useSessionsStore
-          .getState()
-          .sessions.get(SESSION_A)
-          ?.transcript.blocks.map((block) => block.id),
+        session ? allTranscriptBlocks(session.transcript).map((block) => block.id) : undefined,
       ).toEqual(["assistant-1", "cache-miss-history", "user-2"]);
     });
     expect(invokeMock).toHaveBeenCalledWith(
@@ -3202,11 +3391,9 @@ describe("sessions store - historical cache notices", () => {
     await useSessionsStore.getState().loadEarlierHistory(SESSION_A);
 
     await vi.waitFor(() => {
+      const session = useSessionsStore.getState().sessions.get(SESSION_A);
       expect(
-        useSessionsStore
-          .getState()
-          .sessions.get(SESSION_A)
-          ?.transcript.blocks.map((block) => block.id),
+        session ? allTranscriptBlocks(session.transcript).map((block) => block.id) : undefined,
       ).toEqual(["assistant-1", "cache-miss-history", "user-2"]);
     });
   });
@@ -3334,6 +3521,33 @@ describe("sessions store - queue restoration", () => {
     );
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.queueRestorations).toBeUndefined();
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.toasts).toEqual([]);
+  });
+
+  it("transfers cleared optimistic ownership to the restoration review", () => {
+    vi.stubGlobal("window", { pivis: { invoke: vi.fn(async () => ({})) } });
+    useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
+    store.addUserMessage(SESSION_A, "original", undefined, {
+      registerEcho: true,
+      afterUserMessageSequence: 0,
+      intentId: "cleared-intent",
+    });
+
+    store.applyQueueRestoration(SESSION_A, {
+      restorationId: "restore-cleared",
+      steering: ["transformed queued"],
+      followUp: [],
+      originalAttachments: [],
+      clearedIntentIds: ["cleared-intent"],
+    });
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.transcript.blocks).toEqual([]);
+    expect(session.transcript.pendingEchoes).toEqual([]);
+    expect(session.queueRestorations).toEqual([
+      expect.objectContaining({ restorationId: "restore-cleared" }),
+    ]);
   });
 
   it("retains an ambiguous command marker without auto-restoring executable text", () => {
@@ -3840,6 +4054,50 @@ describe("sessions store - adoptSessionFileAndHydrate", () => {
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(session?.availability).toBe("available");
     expect(session?.runtimeSnapshot).toEqual(runtime.snapshot);
+  });
+
+  it("rereads initial history when a transcript event arrives during hydration", async () => {
+    const historyRequests: Array<{
+      payload: unknown;
+      resolve: (history: ReturnType<typeof loadedHistory>) => void;
+    }> = [];
+    invokeMock.mockImplementation((channel: string, payload?: unknown) => {
+      if (channel === "session.loadHistory") {
+        return new Promise((resolve) => historyRequests.push({ payload, resolve }));
+      }
+      return Promise.resolve({ success: true });
+    });
+
+    const pending = useSessionsStore
+      .getState()
+      .adoptSessionFileAndHydrate(SESSION_A, "/new/session.jsonl", "Forked");
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(1));
+    useSessionsStore.getState().applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "user", content: "racing event" },
+    });
+    historyRequests[0]!.resolve(
+      loadedHistory(historyRequests[0]!.payload, {
+        blocks: [{ id: "persisted-race", type: "user", data: { content: "racing event" } }],
+        startIndex: 0,
+        total: 1,
+      }),
+    );
+
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(2));
+    historyRequests[1]!.resolve(
+      loadedHistory(historyRequests[1]!.payload, {
+        blocks: [{ id: "persisted-race", type: "user", data: { content: "racing event" } }],
+        startIndex: 0,
+        total: 1,
+      }),
+    );
+    await pending;
+
+    const transcript = useSessionsStore.getState().sessions.get(SESSION_A)!.transcript;
+    expect(allTranscriptBlocks(transcript)).toEqual([
+      expect.objectContaining({ id: "persisted-race", type: "user" }),
+    ]);
   });
 
   it("does not seed delayed predecessor history across a later runtime generation", async () => {

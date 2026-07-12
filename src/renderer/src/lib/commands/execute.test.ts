@@ -315,7 +315,12 @@ describe("executeAction — session submission", () => {
     await executeAction(SID, { kind: "send-prompt", text: "queued" }, deps);
 
     expect(calls["addUserMessage"]).toEqual([
-      [SID, "queued", undefined, { registerEcho: true, afterUserMessageSequence: 0 }],
+      [
+        SID,
+        "queued",
+        undefined,
+        { registerEcho: true, afterUserMessageSequence: 0, intentId: "intent-1" },
+      ],
     ]);
   });
 

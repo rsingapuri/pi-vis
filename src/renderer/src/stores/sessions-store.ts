@@ -51,7 +51,10 @@ import {
   finalizeActiveBlocks,
   finishBashBlock,
   prependHistory,
+  retirePendingUserEchoesByIntent,
   seedFromHistory,
+  transcriptBlockCount,
+  transcriptHasBlocks,
 } from "./transcript.js";
 
 let nextThinkingRequestId = 1;
@@ -62,6 +65,7 @@ const LOCAL_THEME_FALLBACK_DIAGNOSTIC =
 export interface QueuedMessage {
   id: string;
   text: string;
+  intentId?: string | undefined;
   source: "optimistic" | "authoritative";
 }
 
@@ -99,6 +103,7 @@ export interface SessionViewState {
         steering: string[];
         followUp: string[];
         originalAttachments: Array<{ intentId: string; images: unknown[] }>;
+        clearedIntentIds?: string[] | undefined;
         commandDescription?: string | undefined;
       }>
     | undefined;
@@ -298,7 +303,9 @@ interface PendingNewSessionSetup {
 export function sessionHasHistory(s: SessionViewState | undefined | null): boolean {
   return (
     !!s &&
-    (s.transcript.blocks.length > 0 || !!s.hasTreeHistory || (s.queueRestorations?.length ?? 0) > 0)
+    (transcriptHasBlocks(s.transcript) ||
+      !!s.hasTreeHistory ||
+      (s.queueRestorations?.length ?? 0) > 0)
   );
 }
 
@@ -548,6 +555,35 @@ async function waitForHistoryOwnershipChange(
   });
 }
 
+async function waitForHistoryHydrationIdle(
+  sessionId: SessionId,
+  capture: HistoryReadCapture,
+  timeoutMs = 120_000,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let unsubscribe = () => {};
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timer);
+      unsubscribe();
+      resolve(value);
+    };
+    const inspect = () => {
+      const session = useSessionsStore.getState().sessions.get(sessionId);
+      if (!historyCaptureMatches(session, capture)) {
+        finish(false);
+        return;
+      }
+      if (!isSessionWorking(session)) finish(true);
+    };
+    const timer = globalThis.setTimeout(() => finish(false), timeoutMs);
+    unsubscribe = useSessionsStore.subscribe(inspect);
+    inspect();
+  });
+}
+
 async function requestBoundHistoryPage(
   sessionId: SessionId,
   capture: HistoryReadCapture,
@@ -580,14 +616,20 @@ function hasActiveBash(session: SessionViewState | undefined): boolean {
   return session?.transcript.activeBashId != null;
 }
 
-const queuedMessageCounter = 0;
-
-function queuedFromSnapshot(kind: "steering" | "followUp", texts: string[]): QueuedMessage[] {
-  return texts.map((text, index) => ({
-    id: `auth-${kind}-${index}-${text}`,
-    text,
-    source: "authoritative" as const,
-  }));
+function queuedFromSnapshot(
+  kind: "steering" | "followUp",
+  texts: string[],
+  intentIds: Array<string | null> | undefined,
+): QueuedMessage[] {
+  return texts.map((text, index) => {
+    const intentId = intentIds?.[index] ?? undefined;
+    return {
+      id: intentId ? `intent-${intentId}` : `auth-${kind}-${index}-${text}`,
+      text,
+      ...(intentId ? { intentId } : {}),
+      source: "authoritative" as const,
+    };
+  });
 }
 
 function closeCheckpointPreview(
@@ -670,15 +712,60 @@ function editorConflictFromCandidates(
   };
 }
 
+function removeQueuedMessageByIntent(
+  queuedMessages: SessionViewState["queuedMessages"],
+  intentId: string,
+): SessionViewState["queuedMessages"] {
+  if (!queuedMessages) return undefined;
+  const steeringIndex = queuedMessages.steering.findIndex(
+    (message) => message.intentId === intentId,
+  );
+  const followUpIndex =
+    steeringIndex < 0
+      ? queuedMessages.followUp.findIndex((message) => message.intentId === intentId)
+      : -1;
+  if (steeringIndex < 0 && followUpIndex < 0) return queuedMessages;
+  const steering =
+    steeringIndex < 0
+      ? queuedMessages.steering
+      : [
+          ...queuedMessages.steering.slice(0, steeringIndex),
+          ...queuedMessages.steering.slice(steeringIndex + 1),
+        ];
+  const followUp =
+    followUpIndex < 0
+      ? queuedMessages.followUp
+      : [
+          ...queuedMessages.followUp.slice(0, followUpIndex),
+          ...queuedMessages.followUp.slice(followUpIndex + 1),
+        ];
+  return steering.length === 0 && followUp.length === 0 ? undefined : { steering, followUp };
+}
+
+/**
+ * Enforce one visible owner per queued prompt. A normal optimistic transcript
+ * bubble owns every pending echo, so the corresponding authoritative queue
+ * item must not also be projected as a queued bubble. Matching is FIFO and
+ * one-for-one so repeated identical prompts remain distinct.
+ */
 function queuedMessagesFromSnapshot(
   steering: string[],
   followUp: string[],
+  steeringIntentIds: Array<string | null> | undefined,
+  followUpIntentIds: Array<string | null> | undefined,
+  pendingEchoes: TranscriptState["pendingEchoes"],
 ): SessionViewState["queuedMessages"] {
-  if (steering.length === 0 && followUp.length === 0) return undefined;
-  return {
-    steering: queuedFromSnapshot("steering", steering),
-    followUp: queuedFromSnapshot("followUp", followUp),
-  };
+  let queuedMessages: SessionViewState["queuedMessages"] =
+    steering.length === 0 && followUp.length === 0
+      ? undefined
+      : {
+          steering: queuedFromSnapshot("steering", steering, steeringIntentIds),
+          followUp: queuedFromSnapshot("followUp", followUp, followUpIntentIds),
+        };
+  for (const pendingEcho of pendingEchoes) {
+    queuedMessages = removeQueuedMessageByIntent(queuedMessages, pendingEcho.intentId);
+  }
+  return queuedMessages;
 }
 
 function resetRuntimeState(session: SessionViewState): SessionViewState {
@@ -833,6 +920,7 @@ interface SessionsStore {
       registerEcho?: boolean;
       clearDraft?: boolean;
       afterUserMessageSequence?: number;
+      intentId?: string;
     },
   ) => void;
   clearPendingUserEcho: (sessionId: SessionId, content: string) => void;
@@ -852,6 +940,7 @@ interface SessionsStore {
       steering: string[];
       followUp: string[];
       originalAttachments: Array<{ intentId: string; images: unknown[] }>;
+      clearedIntentIds?: string[] | undefined;
       commandDescription?: string | undefined;
     },
   ) => void;
@@ -1351,6 +1440,20 @@ const buildSessionsStore = (
         }
         if (event.type === "auto_retry_end" && event.success === false) turnErrored = true;
         const transcript = applyPiEvent(current.transcript, event);
+        const authoritativeUserEcho =
+          transcript.userMessageSequence > current.transcript.userMessageSequence
+            ? transcript.authoritativeUserEchoes.at(-1)
+            : undefined;
+        const consumedPendingEcho =
+          transcript.pendingEchoes.length < current.transcript.pendingEchoes.length;
+        // Delivery transfers visible ownership atomically from the queued
+        // projection to the normal transcript bubble only when no optimistic
+        // bubble already owned this echo. Otherwise removing another matching
+        // item would collapse repeated identical queued submissions.
+        const queuedMessages =
+          authoritativeUserEcho?.intentId && !consumedPendingEcho
+            ? removeQueuedMessageByIntent(current.queuedMessages, authoritativeUserEcho.intentId)
+            : current.queuedMessages;
         // Raw Pi events remain authoritative for durable/session metadata and
         // transcript detail. They deliberately do not derive runtime liveness:
         // only direct host snapshots may change working/idle state.
@@ -1361,7 +1464,7 @@ const buildSessionsStore = (
         const userEchoed =
           event.type === "message_start" &&
           event.message?.role === "user" &&
-          transcript.blocks.length > current.transcript.blocks.length;
+          transcriptBlockCount(transcript) > transcriptBlockCount(current.transcript);
         const promoted = !!current.isNewPending && userEchoed;
         if (promoted) {
           const pendingDraft = newSessionDrafts.get(current.workspacePath);
@@ -1379,6 +1482,7 @@ const buildSessionsStore = (
         current = {
           ...current,
           transcript,
+          queuedMessages,
           thinkingLevel,
           sessionName,
           unreadStatus,
@@ -1534,19 +1638,38 @@ const buildSessionsStore = (
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
       if (!s) return {};
-      const echoAlreadyArrived =
+      const arrivedEchoIndex =
         opts?.registerEcho === true &&
         opts.afterUserMessageSequence !== undefined &&
-        s.transcript.authoritativeUserEchoes.some(
-          (echo) =>
-            echo.sequence > (opts.afterUserMessageSequence ?? Number.MAX_SAFE_INTEGER) &&
-            echo.content.trimEnd() === content.trimEnd() &&
-            (echo.images?.length ?? 0) === (images?.length ?? 0) &&
-            (echo.images ?? []).every((image, index) => image === images?.[index]),
-        );
+        opts.intentId !== undefined
+          ? s.transcript.authoritativeUserEchoes.findIndex(
+              (echo) =>
+                echo.sequence > (opts.afterUserMessageSequence ?? Number.MAX_SAFE_INTEGER) &&
+                echo.intentId === opts.intentId &&
+                (echo.images?.length ?? 0) === (images?.length ?? 0) &&
+                (echo.images ?? []).every((image, index) => image === images?.[index]),
+            )
+          : -1;
+      const echoAlreadyArrived = arrivedEchoIndex >= 0;
       const transcript = echoAlreadyArrived
-        ? s.transcript
-        : addUserBlock(s.transcript, content, images, opts?.registerEcho ?? true);
+        ? {
+            ...s.transcript,
+            // An authoritative echo may settle only one submission response.
+            // Consume it so concurrent identical submissions cannot both
+            // claim the same already-rendered bubble.
+            authoritativeUserEchoes: [
+              ...s.transcript.authoritativeUserEchoes.slice(0, arrivedEchoIndex),
+              ...s.transcript.authoritativeUserEchoes.slice(arrivedEchoIndex + 1),
+            ],
+          }
+        : addUserBlock(s.transcript, content, images, opts?.registerEcho ?? true, opts?.intentId);
+      // A queued snapshot can legally arrive before the submit response. Once
+      // the optimistic normal bubble owns this prompt, retire exactly one
+      // matching queued projection in the same Zustand commit.
+      const queuedMessages =
+        !echoAlreadyArrived && opts?.registerEcho !== false && opts?.intentId
+          ? removeQueuedMessageByIntent(s.queuedMessages, opts.intentId)
+          : s.queuedMessages;
       // Self-label a brand-new session from its first prompt so the tab and
       // header have a meaningful identity before pi or the user renames it.
       // Do not overwrite a name set by pi (session_info_changed → sessionName)
@@ -1563,6 +1686,7 @@ const buildSessionsStore = (
       sessions.set(sessionId, {
         ...s,
         transcript,
+        queuedMessages,
         sessionTitle,
         lastActivityAt: Date.now(),
         isNewPending: false,
@@ -1604,11 +1728,11 @@ const buildSessionsStore = (
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
       if (!s) return {};
-      const wasEmptyBeforeOptimisticSend = s.transcript.blocks.length <= 1;
+      const wasEmptyBeforeOptimisticSend = transcriptBlockCount(s.transcript) <= 1;
       const transcript = clearPendingUserEcho(s.transcript, content);
       if (transcript === s.transcript) return {};
       const restoredPending =
-        !s.resumed && wasEmptyBeforeOptimisticSend && transcript.blocks.length === 0;
+        !s.resumed && wasEmptyBeforeOptimisticSend && !transcriptHasBlocks(transcript);
       sessions.set(sessionId, {
         ...s,
         transcript,
@@ -1802,7 +1926,13 @@ const buildSessionsStore = (
               ? undefined
               : current.runningSince,
         queuedMessages: snapshot
-          ? queuedMessagesFromSnapshot(snapshot.steering, snapshot.followUp)
+          ? queuedMessagesFromSnapshot(
+              snapshot.steering,
+              snapshot.followUp,
+              snapshot.steeringIntentIds,
+              snapshot.followUpIntentIds,
+              current.transcript.pendingEchoes,
+            )
           : current.queuedMessages,
         currentModel: snapshot?.model?.id ?? current.currentModel,
         currentProvider: snapshot?.model?.provider ?? current.currentProvider,
@@ -1835,6 +1965,18 @@ const buildSessionsStore = (
   },
 
   applyQueueRestoration: (sessionId, restoration) => {
+    const clearedIntentIds = restoration.clearedIntentIds ?? [];
+    if (clearedIntentIds.length > 0) {
+      set((state) => {
+        const current = state.sessions.get(sessionId);
+        if (!current) return {};
+        const transcript = retirePendingUserEchoesByIntent(current.transcript, clearedIntentIds);
+        if (transcript === current.transcript) return {};
+        const sessions = new Map(state.sessions);
+        sessions.set(sessionId, { ...current, transcript });
+        return { sessions };
+      });
+    }
     const hasRecoverableText = [...restoration.steering, ...restoration.followUp].some(
       (value) => value.trim().length > 0,
     );
@@ -2641,7 +2783,7 @@ const buildSessionsStore = (
       if (
         !s ||
         s.hasTreeHistory ||
-        (s.isNewPending && !s.sessionFile && s.transcript.blocks.length === 0)
+        (s.isNewPending && !s.sessionFile && !transcriptHasBlocks(s.transcript))
       ) {
         return {};
       }
@@ -3170,15 +3312,32 @@ const buildSessionsStore = (
       }
     }
     if (!sessionFile) return;
-    const historyCapture = captureHistoryRead(get().sessions.get(sessionId), expectedRuntime);
-    if (!historyCapture) return;
-    const history = await requestBoundHistoryPage(sessionId, historyCapture);
-    if (!history || !continuationGuard()) return;
-    const current = get().sessions.get(sessionId);
-    if (!historyCaptureMatches(current, historyCapture)) return;
-    get().seedHistory(sessionId, history);
-    const workspacePath = current?.workspacePath;
-    if (workspacePath) void get().refreshWorkspaceSessions(workspacePath);
+    // Initial hydration is replacement, not pagination. If transcript events
+    // race the file read, never overwrite or merge them with an overlapping
+    // page: wait for the authoritative turn to become idle and reread until
+    // the transcript remains unchanged for the entire request.
+    while (continuationGuard()) {
+      const beforeRead = get().sessions.get(sessionId);
+      const historyCapture = captureHistoryRead(beforeRead, expectedRuntime);
+      if (!historyCapture) return;
+      if (isSessionWorking(beforeRead)) {
+        if (!(await waitForHistoryHydrationIdle(sessionId, historyCapture))) return;
+        continue;
+      }
+      const transcriptAtRequest = beforeRead?.transcript;
+      const history = await requestBoundHistoryPage(sessionId, historyCapture);
+      if (!history || !continuationGuard()) return;
+      const current = get().sessions.get(sessionId);
+      if (!historyCaptureMatches(current, historyCapture)) return;
+      if (current?.transcript !== transcriptAtRequest) {
+        if (!(await waitForHistoryHydrationIdle(sessionId, historyCapture))) return;
+        continue;
+      }
+      get().seedHistory(sessionId, history);
+      const workspacePath = current?.workspacePath;
+      if (workspacePath) void get().refreshWorkspaceSessions(workspacePath);
+      return;
+    }
   },
 
   /** Refresh the discovered command list (extension / prompt / skill). */

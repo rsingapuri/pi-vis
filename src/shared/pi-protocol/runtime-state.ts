@@ -213,6 +213,11 @@ export const AgentSessionSnapshotSchema = z.object({
   pendingMessageCount: z.number().int().nonnegative(),
   steering: z.array(z.string()),
   followUp: z.array(z.string()),
+  /** Positional GUI intent ownership aligned with the transformed text queues.
+   * Null slots are extension/external queue entries. Optional for persisted
+   * compatibility; current SDK hosts always publish them. */
+  steeringIntentIds: z.array(z.string().nullable()).optional(),
+  followUpIntentIds: z.array(z.string().nullable()).optional(),
   hostFacts: z.object({
     submitting: z.boolean(),
     actualCompaction: z.boolean(),
@@ -239,6 +244,8 @@ export const RuntimeRecordSchema = z.discriminatedUnion("type", [
     steering: z.array(z.string()),
     followUp: z.array(z.string()),
     originalAttachments: z.array(z.object({ intentId: z.string(), images: z.array(z.unknown()) })),
+    /** GUI queue intents destructively removed by clearQueue(). */
+    clearedIntentIds: z.array(z.string()).optional(),
     /** Present for an ambiguous effectful command that has no replayable queue payload. */
     commandDescription: z.string().optional(),
     requiresReview: z.literal(true),

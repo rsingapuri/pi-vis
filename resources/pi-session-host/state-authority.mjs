@@ -38,6 +38,12 @@ export function createStateAuthority({
   const activeIntents = new Map();
   const restorations = new Map();
   const attachmentLedger = new Map();
+  // Positional identities parallel Pi's public transformed-text queues. Text is
+  // presentation only: GUI ownership survives extension rewrites by following
+  // FIFO queue slots and decorating the corresponding delivery event.
+  let queueIdentity = { steer: [], followUp: [] };
+  let queueLengths = { steer: 0, followUp: 0 };
+  let queueValues = { steer: [], followUp: [] };
 
   // One scheduler owns BOTH ordinary GUI ingress and custody draining. Deferred
   // custody belongs to earlier GUI intent, so it drains FIFO before later normal
@@ -81,6 +87,71 @@ export function createStateAuthority({
     }
   }
 
+  function reconcileQueueIdentity(steering, followUp, deliveryExpected = false) {
+    const deliveredQueueIntentIds = [];
+    for (const [mode, queue] of [
+      ["steer", steering],
+      ["followUp", followUp],
+    ]) {
+      const priorLength = queueLengths[mode];
+      const priorValues = queueValues[mode];
+      const identities = queueIdentity[mode];
+      if (queue.length < priorLength) {
+        const removedCount = priorLength - queue.length;
+        const retainedSuffixUnchanged = queue.every(
+          (value, index) => value === priorValues[index + removedCount],
+        );
+        const removed = identities.splice(0, removedCount);
+        // Only a shrink first observed while handling a delivered user event
+        // is delivery evidence. Snapshot-observed removals are destructive or
+        // ambiguous and their identities are retired, never held for a future
+        // unrelated event.
+        if (deliveryExpected && retainedSuffixUnchanged && removedCount === 1) {
+          const intentId = removed[0];
+          if (intentId) deliveredQueueIntentIds.push(intentId);
+        }
+        if (!retainedSuffixUnchanged) identities.fill(null);
+      } else if (queue.length > priorLength) {
+        const priorPrefixUnchanged = priorValues.every((value, index) => value === queue[index]);
+        if (!priorPrefixUnchanged) identities.fill(null);
+        identities.push(...Array(queue.length - priorLength).fill(null));
+      } else if (queue.some((value, index) => value !== priorValues[index])) {
+        // Equal-length replacement has no public provenance. Invalidate all
+        // mappings rather than letting a replacement inherit a GUI identity.
+        identities.fill(null);
+      }
+      queueLengths[mode] = queue.length;
+      queueValues[mode] = [...queue];
+    }
+    return deliveredQueueIntentIds;
+  }
+
+  function readQueues(deliveryExpected = false) {
+    const steering = [...session.getSteeringMessages()];
+    const followUp = [...session.getFollowUpMessages()];
+    const deliveredQueueIntentIds = reconcileQueueIdentity(steering, followUp, deliveryExpected);
+    return { steering, followUp, deliveredQueueIntentIds };
+  }
+
+  function registerQueuedIntent(request, priorLength) {
+    const { steering, followUp } = readQueues();
+    const mode = request.requestedMode === "steer" ? "steer" : "followUp";
+    const queue = mode === "steer" ? steering : followUp;
+    const identities = queueIdentity[mode];
+    if (identities.includes(request.intentId)) return;
+    // Successful admission may claim only the single slot appended relative
+    // to its pre-prompt baseline. Extra/replaced slots are extension-owned or
+    // ambiguous and must never inherit this GUI intent.
+    if (queue.length !== priorLength + 1 || identities[priorLength] !== null) return;
+    identities[priorLength] = request.intentId;
+  }
+
+  function resetQueueIdentity() {
+    queueIdentity = { steer: [], followUp: [] };
+    queueLengths = { steer: 0, followUp: 0 };
+    queueValues = { steer: [], followUp: [] };
+  }
+
   function reconcileAttachmentLedger(steering, followUp) {
     // Public Pi state exposes transformed queue text but no intent/image
     // correlation. Aggregate counts cannot identify which of two queued items
@@ -98,8 +169,7 @@ export function createStateAuthority({
 
   function snapshot() {
     const s = session;
-    const steering = [...s.getSteeringMessages()];
-    const followUp = [...s.getFollowUpMessages()];
+    const { steering, followUp } = readQueues();
     reconcileAttachmentLedger(steering, followUp);
     return {
       hostInstanceId,
@@ -120,6 +190,8 @@ export function createStateAuthority({
       pendingMessageCount: s.pendingMessageCount,
       steering,
       followUp,
+      steeringIntentIds: [...queueIdentity.steer],
+      followUpIntentIds: [...queueIdentity.followUp],
       hostFacts: {
         submitting: submitting > 0 || unresolvedAdmissions > 0,
         actualCompaction,
@@ -223,6 +295,7 @@ export function createStateAuthority({
         originalAttachments: Array.isArray(message.originalAttachments)
           ? message.originalAttachments
           : [],
+        clearedIntentIds: Array.isArray(message.clearedIntentIds) ? message.clearedIntentIds : [],
         requiresReview: true,
       };
     }
@@ -354,11 +427,15 @@ export function createStateAuthority({
       });
     }
     const wasStreaming = session.isStreaming;
+    const queueMode = request.requestedMode === "steer" ? "steer" : "followUp";
     const commandName = request.text.startsWith("/") ? request.text.slice(1).split(/\s/, 1)[0] : "";
     const isExtension = !!commandName && !!session.extensionRunner.getCommand(commandName);
     submitting++;
     activeIntents.set(request.intentId, "admitting");
     publishSnapshot();
+    // publishSnapshot synchronizes extension/external queue mutations. The
+    // attributable admission baseline must come from that fresh observation.
+    const queueLengthBeforePrompt = queueLengths[queueMode];
 
     let preflightResolve;
     let crossedPreflight = false;
@@ -375,7 +452,13 @@ export function createStateAuthority({
             source: "interactive",
             streamingBehavior: request.requestedMode,
             preflightResult: (success) => {
-              if (success) crossedPreflight = true;
+              if (success) {
+                crossedPreflight = true;
+                // Correlate synchronously at Pi's acceptance boundary. Waiting
+                // for the submit continuation leaves a re-entrant delivery
+                // window where message_start has no queue intent.
+                if (wasStreaming) registerQueuedIntent(request, queueLengthBeforePrompt);
+              }
               preflightResolve(success);
             },
           }),
@@ -455,6 +538,7 @@ export function createStateAuthority({
         // settles; do not leave consumers with a permanently non-terminal item.
         void promptPromise.then(
           () => {
+            if (wasStreaming) registerQueuedIntent(request, queueLengthBeforePrompt);
             acknowledgeEditorCustody(request);
             activeIntents.delete(request.intentId);
             reportSubmission(resultFor(request, "completed", { queued: wasStreaming }));
@@ -478,7 +562,10 @@ export function createStateAuthority({
 
       activeIntents.set(request.intentId, "consumed");
       acknowledgeEditorCustody(request);
-      if (wasStreaming) rememberAttachments(request);
+      if (wasStreaming) {
+        registerQueuedIntent(request, queueLengthBeforePrompt);
+        rememberAttachments(request);
+      }
       const consumed = resultFor(request, "consumed", { queued: wasStreaming });
       void promptPromise.then(
         () => {
@@ -560,6 +647,15 @@ export function createStateAuthority({
   }
 
   function observeEvent(event) {
+    let publishedEvent = event;
+    if (event?.type === "message_start" && event.message?.role === "user") {
+      const { deliveredQueueIntentIds } = readQueues(true);
+      // More than one removal for one event is ambiguous; retire all rather
+      // than assigning an arbitrary GUI intent.
+      const queueIntentId =
+        deliveredQueueIntentIds.length === 1 ? deliveredQueueIntentIds[0] : undefined;
+      if (queueIntentId) publishedEvent = { ...event, queueIntentId };
+    }
     if (event?.type === "compaction_start") {
       actualCompaction = true;
       barrierSequence++;
@@ -581,7 +677,7 @@ export function createStateAuthority({
         }
       }
     }
-    record({ type: "event", event });
+    record({ type: "event", event: publishedEvent });
     publishSnapshot();
   }
 
@@ -682,6 +778,13 @@ export function createStateAuthority({
         value = { ...base, disposition: "abort_requested", target: "retry" };
       } else if (session.isStreaming) {
         const queued = session.clearQueue() ?? {};
+        const clearedIntentIds = [...queueIdentity.steer, ...queueIdentity.followUp].filter(
+          (intentId) => typeof intentId === "string",
+        );
+        // Destructive removal is not delivery. Retire positional identities
+        // before the next snapshot observes the empty queues, otherwise those
+        // intents could decorate an unrelated future user event.
+        resetQueueIdentity();
         const restorationId = crypto.randomUUID();
         const restoration = {
           type: "queue_restoration",
@@ -689,6 +792,7 @@ export function createStateAuthority({
           steering: Array.isArray(queued.steering) ? queued.steering : [],
           followUp: Array.isArray(queued.followUp) ? queued.followUp : [],
           originalAttachments: attachmentsForClearedQueue(),
+          clearedIntentIds,
           requiresReview: true,
         };
         restorations.set(restorationId, restoration);
@@ -760,6 +864,7 @@ export function createStateAuthority({
     sessionEpoch = provisionalEpoch;
     actualCompaction = false;
     navigationDepth = 0;
+    resetQueueIdentity();
   }
 
   function takeTransitionBatch() {
@@ -815,6 +920,7 @@ export function createStateAuthority({
     const cancelled = transition;
     session = cancelled.priorSession;
     sessionEpoch = cancelled.priorEpoch;
+    resetQueueIdentity();
     transition = null;
     const value = publishSnapshot(true);
     sendControl({ type: "transition_cancelled", transitionId: cancelled.transitionId });

@@ -2,10 +2,13 @@ import type { KnownPiEvent } from "@shared/pi-protocol/events.js";
 import { describe, expect, it } from "vitest";
 import {
   addUserBlock,
+  allTranscriptBlocks,
   applyPiEvent,
   clearPendingUserEcho,
   createTranscriptState,
   seedFromHistory,
+  transcriptBlockCount,
+  transcriptTailBlocks,
 } from "./transcript.js";
 
 function e<T extends KnownPiEvent>(event: T): T {
@@ -387,11 +390,16 @@ describe("transcript reducer", () => {
 describe("transcript reducer — role-based message_start", () => {
   it("user message_start with matching head of pendingEchoes is consumed silently", () => {
     let state = createTranscriptState();
-    state = addUserBlock(state, "hello", undefined, true);
+    state = addUserBlock(state, "hello", undefined, true, "intent-hello");
     expect(state.blocks).toHaveLength(1);
-    expect(state.pendingEchoes).toEqual(["hello"]);
+    expect(state.pendingEchoes).toEqual([
+      expect.objectContaining({ intentId: "intent-hello", content: "hello" }),
+    ]);
 
-    state = applyPiEvent(state, e({ type: "message_start", message: USER_MSG }));
+    state = applyPiEvent(
+      state,
+      e({ type: "message_start", message: USER_MSG, queueIntentId: "intent-hello" }),
+    );
     // No new block — the optimistic user bubble stands.
     expect(state.blocks).toHaveLength(1);
     expect(state.pendingEchoes).toEqual([]);
@@ -399,7 +407,7 @@ describe("transcript reducer — role-based message_start", () => {
 
   it("a non-matching authoritative user event does not steal a queued echo", () => {
     let state = createTranscriptState();
-    state = addUserBlock(state, "queued prompt", undefined, true);
+    state = addUserBlock(state, "queued prompt", undefined, true, "intent-queued");
     state = applyPiEvent(
       state,
       e({ type: "message_start", message: { role: "user", content: "independent prompt" } }),
@@ -408,19 +416,28 @@ describe("transcript reducer — role-based message_start", () => {
     expect(
       state.blocks.map((block) => (block.type === "user" ? block.data.content : undefined)),
     ).toEqual(["queued prompt", "independent prompt"]);
-    expect(state.pendingEchoes).toEqual(["queued prompt"]);
+    expect(state.pendingEchoes).toEqual([
+      expect.objectContaining({ intentId: "intent-queued", content: "queued prompt" }),
+    ]);
 
     state = applyPiEvent(
       state,
-      e({ type: "message_start", message: { role: "user", content: "queued prompt" } }),
+      e({
+        type: "message_start",
+        message: { role: "user", content: "transformed queued prompt" },
+        queueIntentId: "intent-queued",
+      }),
     );
     expect(state.blocks).toHaveLength(2);
+    expect(
+      state.blocks.map((block) => (block.type === "user" ? block.data.content : undefined)),
+    ).toEqual(["transformed queued prompt", "independent prompt"]);
     expect(state.pendingEchoes).toEqual([]);
   });
 
   it("clearing a failed optimistic echo lets a later server user message render", () => {
     let state = createTranscriptState();
-    state = addUserBlock(state, "failed send", undefined, true);
+    state = addUserBlock(state, "failed send", undefined, true, "intent-failed");
     state = clearPendingUserEcho(state, "failed send");
     expect(state.pendingEchoes).toEqual([]);
 
@@ -441,9 +458,11 @@ describe("transcript reducer — role-based message_start", () => {
     let state = createTranscriptState();
     state = addUserBlock(state, "retry me", undefined, false); // history — no echo token
     const historicalId = state.blocks[0]?.id;
-    state = addUserBlock(state, "retry me", undefined, true); // optimistic — registers echo
+    state = addUserBlock(state, "retry me", undefined, true, "intent-retry"); // optimistic
     expect(state.blocks).toHaveLength(2);
-    expect(state.pendingEchoes).toEqual(["retry me"]);
+    expect(state.pendingEchoes).toEqual([
+      expect.objectContaining({ intentId: "intent-retry", content: "retry me" }),
+    ]);
 
     state = clearPendingUserEcho(state, "retry me");
 
@@ -499,19 +518,20 @@ describe("transcript reducer — role-based message_start", () => {
     ).toEqual(["repeat", "repeat"]);
   });
 
-  it("optimistic user block is deduped against a trailing-newline echo", () => {
-    // Direct regression test for the most common normalization case:
-    // pi appends a trailing newline on echo, breaking exact string
-    // equality. The user's "hi" bubble must be the one that stands.
+  it("authoritative transformed text replaces its optimistic bubble by intent", () => {
     let state = createTranscriptState();
-    state = addUserBlock(state, "hi", undefined, true);
+    state = addUserBlock(state, "hi", undefined, true, "intent-hi");
     state = applyPiEvent(
       state,
-      e({ type: "message_start", message: { role: "user", content: "hi\n" } }),
+      e({
+        type: "message_start",
+        message: { role: "user", content: "rewritten hi\n" },
+        queueIntentId: "intent-hi",
+      }),
     );
     expect(state.blocks).toHaveLength(1);
     if (state.blocks[0]?.type === "user") {
-      expect(state.blocks[0].data.content).toBe("hi");
+      expect(state.blocks[0].data.content).toBe("rewritten hi\n");
     }
     expect(state.pendingEchoes).toEqual([]);
   });
@@ -608,7 +628,7 @@ describe("transcript reducer — role-based message_start", () => {
       { id: "user-2", type: "user", data: { content: "Next" } },
     ]);
     const withNotice = applyPiEvent(initial, event);
-    expect(withNotice.blocks.map((block) => block.id)).toEqual([
+    expect(allTranscriptBlocks(withNotice).map((block) => block.id)).toEqual([
       "assistant-1",
       "assistant-1-tool-call-1",
       "cache-miss-history",
@@ -693,16 +713,26 @@ describe("transcript reducer — role-based message_start", () => {
 
   it("multiple pending echoes are consumed FIFO across turns", () => {
     let state = createTranscriptState();
-    state = addUserBlock(state, "first", undefined, true);
-    state = addUserBlock(state, "second", undefined, true);
+    state = addUserBlock(state, "first", undefined, true, "intent-first");
+    state = addUserBlock(state, "second", undefined, true, "intent-second");
     state = applyPiEvent(
       state,
-      e({ type: "message_start", message: { role: "user", content: "first" } }),
+      e({
+        type: "message_start",
+        message: { role: "user", content: "transformed first" },
+        queueIntentId: "intent-first",
+      }),
     );
-    expect(state.pendingEchoes).toEqual(["second"]);
+    expect(state.pendingEchoes).toEqual([
+      expect.objectContaining({ intentId: "intent-second", content: "second" }),
+    ]);
     state = applyPiEvent(
       state,
-      e({ type: "message_start", message: { role: "user", content: "second" } }),
+      e({
+        type: "message_start",
+        message: { role: "user", content: "transformed second" },
+        queueIntentId: "intent-second",
+      }),
     );
     expect(state.pendingEchoes).toEqual([]);
   });
@@ -898,6 +928,50 @@ describe("transcript reducer — streaming perf invariants", () => {
         .map((s) => s.content)
         .join(""),
     ).toBe("second");
+  });
+
+  it("streaming after compaction never copies the archived scrollback chunk", () => {
+    let state = createTranscriptState();
+    for (let index = 0; index < 1_000; index += 1) {
+      state = addUserBlock(state, `archived-${index}`);
+    }
+    const preCompactionArray = state.blocks;
+    state = applyPiEvent(state, e({ type: "compaction_end", result: { summary: "summary" } }));
+    expect(state.archivedBlockChunks[0]).toBe(preCompactionArray);
+    const archivedChunk = state.archivedBlockChunks[0];
+    const firstArchivedBlock = archivedChunk?.[0];
+
+    state = applyPiEvent(state, e({ type: "message_start", message: ASST_MSG }));
+    for (let index = 0; index < 100; index += 1) {
+      state = applyPiEvent(
+        state,
+        e({
+          type: "message_update",
+          message: ASST_MSG,
+          assistantMessageEvent: { type: "text_delta", delta: "x" },
+        }),
+      );
+    }
+
+    expect(state.archivedBlockChunks[0]).toBe(archivedChunk);
+    expect(state.archivedBlockChunks[0]?.[0]).toBe(firstArchivedBlock);
+    expect(state.blocks).toHaveLength(2); // compaction marker + live assistant
+  });
+
+  it("keeps count and tail selection bounded across many tiny archive chunks", () => {
+    let state = createTranscriptState();
+    for (let index = 0; index < 500; index += 1) {
+      state = applyPiEvent(
+        state,
+        e({ type: "compaction_end", result: { summary: `summary-${index}` } }),
+      );
+    }
+
+    expect(state.archivedBlockChunks).toHaveLength(499);
+    expect(state.archivedBlockCount).toBe(499);
+    expect(transcriptBlockCount(state)).toBe(500);
+    expect(transcriptTailBlocks(state, 150)).toHaveLength(150);
+    expect(transcriptTailBlocks(state, 150).at(-1)).toBe(state.blocks.at(-1));
   });
 
   it("a tool_execution_update preserves untouched element references", () => {
@@ -1127,48 +1201,44 @@ describe("transcript reducer — interleaved thinking/text", () => {
   });
 });
 
-// ── Memory: compaction bounds the in-memory transcript ───────────────────
-// blocks used to grow without bound: compaction_end appended a marker but
-// never dropped the blocks it summarised. It now trims at the compaction
-// boundary, keeping only the most recent compaction marker onward (plus a
-// recent-context window on the first compaction). Reload from the session
-// file still restores the full history.
-describe("transcript reducer — compaction trims memory", () => {
-  // Helper: build a transcript with `n` user blocks so a compaction has
-  // something pre-existing to trim.
+// ── Compaction changes model context, never GUI scrollback ──────────────
+describe("transcript reducer — compaction preserves scrollback", () => {
   function withUserBlocks(n: number) {
     let state = createTranscriptState();
     for (let i = 0; i < n; i++) state = addUserBlock(state, `m${i}`);
     return state;
   }
 
-  it("first compaction keeps a recent-context window plus the new marker", () => {
-    // MAX_PRE_COMPACTION_KEEP is 200; with 250 pre-compaction blocks the
-    // oldest 50 are dropped and the most recent 200 are retained, then the
-    // compaction marker is appended.
+  it("keeps every pre-compaction block and appends the marker", () => {
     let state = withUserBlocks(250);
+    const originalIds = state.blocks.map((block) => block.id);
+
     state = applyPiEvent(state, e({ type: "compaction_end", result: { summary: "s1" } }));
-    expect(state.blocks).toHaveLength(201); // 200 retained + 1 marker
-    expect(state.blocks[200]?.type).toBe("compaction");
+
+    const allBlocks = allTranscriptBlocks(state);
+    expect(allBlocks.slice(0, -1).map((block) => block.id)).toEqual(originalIds);
+    expect(allBlocks).toHaveLength(251);
+    expect(allBlocks[250]?.type).toBe("compaction");
+    expect(state.archivedBlockChunks[0]).toHaveLength(250);
+    expect(state.blocks).toHaveLength(1);
   });
 
-  it("a later compaction drops everything before the previous marker", () => {
+  it("preserves scrollback across repeated compactions", () => {
     let state = withUserBlocks(250);
     state = applyPiEvent(state, e({ type: "compaction_end", result: { summary: "s1" } }));
-    // Add 50 more blocks in the new epoch, then compact again.
     for (let i = 0; i < 50; i++) state = addUserBlock(state, `post${i}`);
+    const beforeSecondCompaction = allTranscriptBlocks(state);
+    const firstArchive = state.archivedBlockChunks[0];
+
     state = applyPiEvent(state, e({ type: "compaction_end", result: { summary: "s2" } }));
 
-    // After the second compaction, everything before the *first* compaction
-    // marker is dropped: kept = [first marker .. end] + new marker.
-    // Before the 2nd: [200 user, s1, 50 post] (251). slice(from s1) =
-    // [s1, 50 post] (51) + s2 marker = 52. The first marker is now at index 0.
-    expect(state.blocks[0]?.type).toBe("compaction");
-    if (state.blocks[0]?.type === "compaction") {
-      expect(state.blocks[0].data.summary).toBe("s1");
-    }
-    expect(state.blocks).toHaveLength(52);
-    expect(state.blocks[51]?.type).toBe("compaction");
+    const allBlocks = allTranscriptBlocks(state);
+    expect(allBlocks.slice(0, -1)).toEqual(beforeSecondCompaction);
+    expect(allBlocks).toHaveLength(302);
+    expect(allBlocks[250]?.type).toBe("compaction");
+    expect(allBlocks[301]?.type).toBe("compaction");
+    expect(state.archivedBlockChunks[0]).toBe(firstArchive);
+    expect(state.blocks).toHaveLength(1);
   });
 
   it("compaction on an empty transcript still produces just the marker", () => {

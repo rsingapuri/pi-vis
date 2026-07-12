@@ -108,6 +108,8 @@ export const TurnEndEventSchema = z.object({
 export const MessageStartEventSchema = z.object({
   type: z.literal("message_start"),
   message: WireAgentMessageSchema,
+  /** Host-owned identity of the GUI queue slot delivered by this event. */
+  queueIntentId: z.string().optional(),
 });
 
 export const MessageUpdateEventSchema = z.object({
