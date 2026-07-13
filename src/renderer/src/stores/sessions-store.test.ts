@@ -4148,7 +4148,7 @@ describe("sessions store - recovered authority-frame regressions", () => {
   it("does not dispatch escape after authority transport becomes unavailable", () => {
     const invoke = vi.fn();
     vi.stubGlobal("window", { pivis: { invoke } });
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false, 2, "unavailable"));
+    useSessionsStore.getState().markAuthorityUnavailable(SESSION_A, "transport unavailable");
     useSessionsStore.getState().abortSession(SESSION_A);
     expect(invoke).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
