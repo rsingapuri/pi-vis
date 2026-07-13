@@ -340,11 +340,19 @@ describe("diff-store commit ranges", () => {
     useDiffStore.getState().setCommentEditorOpen(FILE, false);
   });
 
-  it("does one changes refresh for a changed commit range and no refresh for an equal range", () => {
-    useDiffStore.getState().setCommitRange({ start: "a", end: "b" });
+  it("atomically changes base and range with one refresh, and ignores an equal comparison", () => {
+    useDiffStore.getState().setComparison({
+      base: "feature",
+      range: { start: "a", end: "b" },
+    });
+    expect(useDiffStore.getState().selectedBase).toBe("feature");
+    expect(useDiffStore.getState().commitRange).toEqual({ start: "a", end: "b" });
     expect(invoke.mock.calls.filter((call) => call[0] === "git.changes")).toHaveLength(1);
 
-    useDiffStore.getState().setCommitRange({ start: "a", end: "b" });
+    useDiffStore.getState().setComparison({
+      base: "feature",
+      range: { start: "a", end: "b" },
+    });
     expect(invoke.mock.calls.filter((call) => call[0] === "git.changes")).toHaveLength(1);
   });
 

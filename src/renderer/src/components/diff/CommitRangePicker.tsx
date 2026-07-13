@@ -1,6 +1,6 @@
 import type { GitCommitMetadata, GitCommitRange, GitCommitsResult } from "@shared/git.js";
 import type React from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { useVirtualList } from "../../hooks/useVirtualList.js";
 import { useDiffStore } from "../../stores/diff-store.js";
@@ -8,11 +8,18 @@ import { FadeText } from "../common/FadeText.js";
 import { IconChevronDown } from "../common/icons.js";
 import "./CommitRangePicker.css";
 
-function sameRange(a: GitCommitRange | null, b: GitCommitRange | null): boolean {
-  return a?.start === b?.start && a?.end === b?.end;
+function rangeCount(commits: GitCommitMetadata[], range: GitCommitRange): number {
+  const start = commits.findIndex((commit) => commit.sha === range.start);
+  const end = commits.findIndex((commit) => commit.sha === range.end);
+  return start >= 0 && end >= 0 ? Math.abs(end - start) + 1 : 1;
 }
 
-export function CommitRangePicker(): React.ReactElement {
+/**
+ * A compact, base-relative range chooser. It deliberately has no draft: every
+ * selection is committed as it is made, while the first selected commit stays
+ * open as the anchor for one optional inclusive second endpoint.
+ */
+export function CommitRangePicker(): React.ReactElement | null {
   const root = useDiffStore((s) => s.root);
   const base = useDiffStore((s) => s.selectedBase);
   const range = useDiffStore((s) => s.commitRange);
@@ -20,29 +27,55 @@ export function CommitRangePicker(): React.ReactElement {
   const setCommitRange = useDiffStore((s) => s.setCommitRange);
   const [open, setOpen] = useState(false);
   const [commits, setCommits] = useState<GitCommitMetadata[]>([]); // oldest → newest
-  const [truncated, setTruncated] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<GitCommitRange | null>(range);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
   const [first, setFirst] = useState<string | null>(null);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const [listScrollFades, setListScrollFades] = useState({ top: false, bottom: false });
   const pickerRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const popupRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
   useEscapeClaim(open);
+
+  const key = root && base ? `${root}\0${base}` : null;
+  const available = key !== null && loadedKey === key && commits.length > 0;
 
   const close = useCallback((): void => {
     setOpen(false);
-    setDraft(range);
     setFirst(null);
     queueMicrotask(() => triggerRef.current?.focus());
-  }, [range]);
+  }, []);
+
+  // Fetch before the control is rendered. HEAD is intentionally not a
+  // candidate base, and an empty/error result leaves no dead-end popup.
+  useEffect(() => {
+    setOpen(false);
+    setFirst(null);
+    setHighlightedIndex(0);
+    setCommits([]);
+    setLoadedKey(null);
+    if (!key || !root || !base) return;
+    let cancelled = false;
+    void window.pivis
+      .invoke("git.commits", { root, base })
+      .then((result: GitCommitsResult) => {
+        if (cancelled) return;
+        if (result.kind === "ok") {
+          setCommits(result.commits);
+          setLoadedKey(key);
+        }
+      })
+      .catch(() => {
+        // No candidates means no control; errors should not open a dead end.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [key, root, base]);
 
   useEffect(() => {
     if (!open) return;
-    queueMicrotask(() =>
-      dialogRef.current?.querySelector<HTMLElement>("button, [tabindex='0']")?.focus(),
-    );
+    queueMicrotask(() => popupRef.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus());
   }, [open]);
 
   useEffect(() => {
@@ -50,13 +83,7 @@ export function CommitRangePicker(): React.ReactElement {
     const outside = (event: MouseEvent): void => {
       if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) close();
     };
-    document.addEventListener("mousedown", outside, true);
-    return () => document.removeEventListener("mousedown", outside, true);
-  }, [open, close]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent): void => {
+    const onEscape = (event: KeyboardEvent): void => {
       if (
         event.key !== "Escape" ||
         event.altKey ||
@@ -69,41 +96,13 @@ export function CommitRangePicker(): React.ReactElement {
       event.stopImmediatePropagation();
       close();
     };
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [open, close]);
-
-  useEffect(() => {
-    if (!open || !root || !base) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    void window.pivis
-      .invoke("git.commits", { root, base })
-      .then((result: GitCommitsResult) => {
-        if (
-          cancelled ||
-          useDiffStore.getState().root !== root ||
-          useDiffStore.getState().selectedBase !== base
-        )
-          return;
-        if (result.kind === "ok") {
-          setCommits(result.commits);
-          setTruncated(result.truncated);
-          setHighlightedIndex(0);
-        } else if (result.kind === "error") setError(result.message);
-        else setError("Commit history is unavailable for this repository.");
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    document.addEventListener("mousedown", outside, true);
+    document.addEventListener("keydown", onEscape, true);
     return () => {
-      cancelled = true;
+      document.removeEventListener("mousedown", outside, true);
+      document.removeEventListener("keydown", onEscape, true);
     };
-  }, [open, root, base]);
+  }, [open, close]);
 
   const list = [...commits].reverse(); // newest first
   const virtual = useVirtualList<HTMLDivElement>({
@@ -111,35 +110,70 @@ export function CommitRangePicker(): React.ReactElement {
     rowHeight: 44,
     minOverscan: 16,
   });
-  const selectedIndices = draft
+  const count = range === null ? 0 : rangeCount(commits, range);
+  const label = range === null ? "Working tree" : count === 1 ? "1 commit" : `${count} commits`;
+  const selectedIndices = range
     ? [
-        commits.findIndex((c) => c.sha === draft.start),
-        commits.findIndex((c) => c.sha === draft.end),
+        commits.findIndex((commit) => commit.sha === range.start),
+        commits.findIndex((commit) => commit.sha === range.end),
       ]
     : [-1, -1];
   const startIndex = selectedIndices[0] ?? -1;
   const endIndex = selectedIndices[1] ?? -1;
-  const count = startIndex >= 0 && endIndex >= 0 ? endIndex - startIndex + 1 : 0;
-  const label = range === null ? "Working tree" : count === 1 ? "1 commit" : `${count} commits`;
 
   useEffect(() => {
     if (open) virtual.ensureIndexVisible(highlightedIndex);
   }, [highlightedIndex, open, virtual.ensureIndexVisible]);
 
-  const choose = (sha: string): void => {
+  const updateListScrollFades = useCallback(() => {
+    const listElement = listRef.current;
+    if (!listElement) return;
+    const next = {
+      top: listElement.scrollTop > 1,
+      bottom: listElement.scrollHeight - listElement.scrollTop - listElement.clientHeight > 1,
+    };
+    setListScrollFades((current) =>
+      current.top === next.top && current.bottom === next.bottom ? current : next,
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    const listElement = listRef.current;
+    if (!listElement) return;
+    const observer = new ResizeObserver(updateListScrollFades);
+    observer.observe(listElement);
+    const content = listElement.querySelector(".commit-range-picker__spacer");
+    if (content) observer.observe(content);
+    updateListScrollFades();
+    return () => observer.disconnect();
+  });
+
+  const setListElement = useCallback(
+    (element: HTMLDivElement | null) => {
+      listRef.current = element;
+      virtual.containerRef(element);
+    },
+    [virtual.containerRef],
+  );
+
+  const chooseCommit = (sha: string): void => {
     if (first === null) {
-      // A first click is already a valid, one-commit range. The anchor only
-      // controls whether the next click expands that draft.
+      // The initial click is a complete one-commit comparison, and becomes the
+      // in-popup anchor only if the user chooses another endpoint.
+      setCommitRange({ start: sha, end: sha });
       setFirst(sha);
-      setDraft({ start: sha, end: sha });
       return;
     }
-    const a = commits.findIndex((c) => c.sha === first);
-    const b = commits.findIndex((c) => c.sha === sha);
-    if (a < 0 || b < 0) return;
-    setDraft({ start: commits[Math.min(a, b)]!.sha, end: commits[Math.max(a, b)]!.sha });
-    setFirst(null);
+    const start = commits.findIndex((commit) => commit.sha === first);
+    const end = commits.findIndex((commit) => commit.sha === sha);
+    if (start < 0 || end < 0) return;
+    setCommitRange({
+      start: commits[Math.min(start, end)]!.sha,
+      end: commits[Math.max(start, end)]!.sha,
+    });
+    close();
   };
+
   const handleListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
     let next = highlightedIndex;
     switch (event.key) {
@@ -164,7 +198,7 @@ export function CommitRangePicker(): React.ReactElement {
       case "Enter":
       case " ": {
         const commit = list[highlightedIndex];
-        if (commit) choose(commit.sha);
+        if (commit) chooseCommit(commit.sha);
         event.preventDefault();
         event.stopPropagation();
         return;
@@ -177,12 +211,7 @@ export function CommitRangePicker(): React.ReactElement {
     setHighlightedIndex(next);
   };
 
-  const apply = (): void => {
-    if (!sameRange(range, draft)) setCommitRange(draft);
-    setOpen(false);
-    setFirst(null);
-    queueMicrotask(() => triggerRef.current?.focus());
-  };
+  if (!available) return null;
 
   return (
     <div className="commit-range-picker" ref={pickerRef}>
@@ -195,150 +224,97 @@ export function CommitRangePicker(): React.ReactElement {
         aria-expanded={open}
         aria-label="Choose commit range"
         title={editing ? "Finish editing before changing the comparison" : "Choose commit range"}
-        onClick={() => {
-          if (open) {
-            close();
-            return;
-          }
-          setDraft(range);
-          setFirst(null);
-          setOpen(true);
-        }}
+        onClick={() => (open ? close() : setOpen(true))}
       >
         <FadeText>{label}</FadeText>
         <IconChevronDown className="commit-range-picker__caret" />
       </button>
       {open && (
         <div
-          ref={dialogRef}
+          ref={popupRef}
           className="commit-range-picker__popup"
           role="dialog"
           aria-label="Commit range"
         >
-          <div className="commit-range-picker__header">
-            <span className="commit-range-picker__eyebrow">Diff scope</span>
-            <FadeText className="commit-range-picker__base" title={base ?? "No base selected"}>
-              {base ? `${base} → HEAD` : "Choose a base branch"}
-            </FadeText>
-            <p>Choose one commit, or two endpoints. The range is inclusive.</p>
-          </div>
-          {!base ? (
-            <div className="commit-range-picker__guidance">
-              Select a base branch first to choose commits.
-            </div>
-          ) : (
-            <>
-              <button
-                type="button"
-                className={`commit-range-picker__working${draft === null && first === null ? " commit-range-picker__working--selected" : ""}`}
-                aria-pressed={draft === null && first === null}
-                onClick={() => {
-                  setDraft(null);
-                  setFirst(null);
-                }}
+          <button
+            data-autofocus
+            type="button"
+            className={`commit-range-picker__working${range === null ? " commit-range-picker__working--selected" : ""}`}
+            aria-pressed={range === null}
+            onClick={() => {
+              setCommitRange(null);
+              close();
+            }}
+          >
+            Working tree
+          </button>
+          <div
+            ref={setListElement}
+            onScroll={(event) => {
+              virtual.onScroll(event);
+              updateListScrollFades();
+            }}
+            className={`commit-range-picker__list${listScrollFades.top ? " commit-range-picker__list--fade-top" : ""}${listScrollFades.bottom ? " commit-range-picker__list--fade-bottom" : ""}`}
+            role="listbox"
+            aria-label="Commits, newest first"
+            tabIndex={0}
+            aria-activedescendant={
+              list[highlightedIndex] ? `commit-${list[highlightedIndex]!.sha}` : undefined
+            }
+            onKeyDown={handleListKeyDown}
+          >
+            <div className="commit-range-picker__spacer" style={{ height: virtual.totalHeight }}>
+              <div
+                className="commit-range-picker__window"
+                style={{ transform: `translateY(${virtual.offsetY}px)` }}
               >
-                Working tree
-              </button>
-              {loading && <div className="commit-range-picker__guidance">Loading commits…</div>}
-              {error && (
-                <div className="commit-range-picker__guidance" role="alert">
-                  {error}
-                </div>
-              )}
-              {!loading && !error && commits.length === 0 && (
-                <div className="commit-range-picker__guidance">
-                  No commits to show for this base.
-                </div>
-              )}
-              {!loading && !error && commits.length > 0 && (
-                <div
-                  className="commit-range-picker__list"
-                  ref={virtual.containerRef}
-                  onScroll={virtual.onScroll}
-                  role="listbox"
-                  aria-label="Commits, newest first"
-                  tabIndex={0}
-                  aria-activedescendant={
-                    list[highlightedIndex]?.sha ? `commit-${list[highlightedIndex].sha}` : undefined
-                  }
-                  onKeyDown={handleListKeyDown}
-                >
-                  <div
-                    className="commit-range-picker__spacer"
-                    style={{ height: virtual.totalHeight }}
-                  >
-                    <div
-                      className="commit-range-picker__window"
-                      style={{ transform: `translateY(${virtual.offsetY}px)` }}
+                {virtual.rows.map(({ index }) => {
+                  const commit = list[index]!;
+                  const original = commits.length - 1 - index;
+                  const inBand =
+                    startIndex >= 0 &&
+                    endIndex >= 0 &&
+                    original >= Math.min(startIndex, endIndex) &&
+                    original <= Math.max(startIndex, endIndex);
+                  const endpoint =
+                    startIndex === endIndex && original === startIndex
+                      ? "Only"
+                      : original === startIndex
+                        ? "Start"
+                        : original === endIndex
+                          ? "End"
+                          : "";
+                  return (
+                    <button
+                      key={commit.sha}
+                      id={`commit-${commit.sha}`}
+                      type="button"
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected={inBand}
+                      className={`commit-range-picker__commit${inBand ? " commit-range-picker__commit--selected" : ""}${first === commit.sha ? " commit-range-picker__commit--first" : ""}${index === highlightedIndex ? " commit-range-picker__commit--highlighted" : ""}`}
+                      onClick={() => {
+                        setHighlightedIndex(index);
+                        chooseCommit(commit.sha);
+                      }}
                     >
-                      {virtual.rows.map(({ index }) => {
-                        const commit = list[index]!;
-                        const original = commits.length - 1 - index;
-                        const inBand =
-                          startIndex >= 0 && original >= startIndex && original <= endIndex;
-                        const endpoint =
-                          startIndex === endIndex && original === startIndex
-                            ? "Only"
-                            : original === startIndex
-                              ? "Start"
-                              : original === endIndex
-                                ? "End"
-                                : "";
-                        return (
-                          <button
-                            key={commit.sha}
-                            id={`commit-${commit.sha}`}
-                            type="button"
-                            role="option"
-                            tabIndex={-1}
-                            aria-selected={inBand}
-                            className={`commit-range-picker__commit${inBand ? " commit-range-picker__commit--selected" : ""}${first === commit.sha ? " commit-range-picker__commit--first" : ""}${index === highlightedIndex ? " commit-range-picker__commit--highlighted" : ""}`}
-                            onClick={() => {
-                              setHighlightedIndex(index);
-                              choose(commit.sha);
-                            }}
-                          >
-                            <span className="commit-range-picker__sha">{commit.shortSha}</span>
-                            <FadeText className="commit-range-picker__subject">
-                              {commit.subject}
-                            </FadeText>
-                            {endpoint && (
-                              <span className="commit-range-picker__endpoint">{endpoint}</span>
-                            )}
-                            <FadeText
-                              className="commit-range-picker__meta"
-                              title={`${commit.authorName} · ${new Date(commit.authoredAt).toLocaleDateString()}`}
-                            >
-                              {commit.authorName} ·{" "}
-                              {new Date(commit.authoredAt).toLocaleDateString()}
-                            </FadeText>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {truncated && !loading && !error && (
-                <div className="commit-range-picker__hint">Showing latest 500 commits</div>
-              )}
-              {first && (
-                <div className="commit-range-picker__hint">
-                  Select another commit to set the range.
-                </div>
-              )}
-            </>
-          )}
-          <footer className="commit-range-picker__footer">
-            <button type="button" onClick={close}>
-              Cancel
-            </button>
-            <button type="button" className="commit-range-picker__apply" onClick={apply}>
-              {draft === null
-                ? "Show working tree"
-                : `Show ${count} ${count === 1 ? "commit" : "commits"}`}
-            </button>
-          </footer>
+                      <span className="commit-range-picker__sha">{commit.shortSha}</span>
+                      <FadeText className="commit-range-picker__subject">{commit.subject}</FadeText>
+                      {endpoint && (
+                        <span className="commit-range-picker__endpoint">{endpoint}</span>
+                      )}
+                      <FadeText
+                        className="commit-range-picker__meta"
+                        title={`${commit.authorName} · ${new Date(commit.authoredAt).toLocaleDateString()}`}
+                      >
+                        {commit.authorName} · {new Date(commit.authoredAt).toLocaleDateString()}
+                      </FadeText>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

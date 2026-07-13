@@ -387,34 +387,36 @@ test.describe("Diff viewer", () => {
     const viewer = window.locator(".diff-viewer");
     await expect(viewer).toBeVisible({ timeout: 5_000 });
 
-    // Scope candidate commits to main → feature/range, then select exactly
-    // the older feature commit. The range result must exclude both the newer
-    // committed file and the ambient working-tree file.
-    await viewer.locator(".branch-dropdown__trigger").click();
+    // The base and range stay separate. Selecting the first endpoint applies
+    // its one-commit comparison immediately; a second endpoint applies the
+    // inclusive range without an Apply/Cancel step.
+    const base = viewer.getByRole("button", { name: "Compare against base branch" });
+    await base.click();
     await viewer.getByRole("option", { name: /main/ }).click();
-    await expect(viewer.getByRole("button", { name: "Choose commit range" })).toBeEnabled();
-    await viewer.getByRole("button", { name: "Choose commit range" }).click();
+    const range = viewer.getByRole("button", { name: "Choose commit range" });
+    await expect(range).toBeVisible({ timeout: 10_000 });
+    await range.click();
+    await viewer.getByRole("option", { name: /Second feature commit/ }).click();
+    await expect(range).toContainText("1 commit");
     await viewer.getByRole("option", { name: /First feature commit/ }).click();
-    await viewer.getByRole("button", { name: "Show 1 commit" }).click();
 
-    await expect(viewer.locator(".diff-tree__row--file")).toHaveCount(1, { timeout: 10_000 });
-    await expect(viewer.locator(".diff-tree__row--file").first()).toContainText("first.ts");
+    await expect(viewer.locator(".diff-tree__row--file")).toHaveCount(2, { timeout: 10_000 });
     await expect(viewer.locator('[data-testid="diff-section-first.ts"]')).toContainText(
       "export const first = true;",
       { timeout: 10_000 },
     );
-    await expect(viewer.locator("[data-testid='diff-comment-button']")).toHaveCount(0);
-    await expect(viewer.getByRole("button", { name: "Choose commit range" })).toContainText(
-      "1 commit",
+    await expect(viewer.locator('[data-testid="diff-section-second.ts"]')).toContainText(
+      "export const second = true;",
+      { timeout: 10_000 },
     );
+    await expect(viewer.locator("[data-testid='diff-comment-button']")).toHaveCount(0);
+    await expect(range).toContainText("2 commits");
 
     await viewer.getByRole("button", { name: "Close diff viewer" }).click();
     await expect(viewer).toBeHidden({ timeout: 5_000 });
     await changesBtn.click();
     await expect(viewer).toBeVisible({ timeout: 5_000 });
-    await expect(viewer.getByRole("button", { name: "Choose commit range" })).toContainText(
-      "Working tree",
-    );
+    await expect(range).toContainText("Working tree");
 
     await app.close();
     rmrf(folders.settingsDir);

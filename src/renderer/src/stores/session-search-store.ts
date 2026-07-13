@@ -410,21 +410,38 @@ export const useSessionSearchStore = create<SessionSearchStore>((set, get) => ({
 
   rebuild: async () => {
     const current = get();
-    if (!current.workspacePath) return;
+    const workspacePath = current.workspacePath;
+    const queryGeneration = current.queryGeneration;
+    if (!current.open || !workspacePath) return;
     set({ loading: true, error: null });
     try {
       const status = await window.pivis.invoke("sessionSearch.rebuild", {
         rendererGeneration: RENDERER_GENERATION,
-        workspacePath: current.workspacePath,
+        workspacePath,
       });
+      const latest = get();
+      if (
+        !latest.open ||
+        latest.queryGeneration !== queryGeneration ||
+        latest.workspacePath !== workspacePath
+      ) {
+        return;
+      }
       if (status.state === "failed" || status.state === "unavailable") {
         set({ loading: false, error: status.message ?? "Session search is unavailable." });
       }
     } catch (error) {
-      set({
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      const latest = get();
+      if (
+        latest.open &&
+        latest.queryGeneration === queryGeneration &&
+        latest.workspacePath === workspacePath
+      ) {
+        set({
+          loading: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   },
 
@@ -434,20 +451,32 @@ export const useSessionSearchStore = create<SessionSearchStore>((set, get) => ({
     const current = get();
     const targetId = current.selectedTargetId;
     const queryGeneration = current.queryGeneration;
-    if (!current.open || !targetId || current.openError === "Opening session…") return false;
+    const workspacePath = current.workspacePath;
+    if (!current.open || !workspacePath || !targetId || current.openError === "Opening session…")
+      return false;
     set({ openError: "Opening session…" });
+    const isCurrentOpen = (): boolean => {
+      const latest = get();
+      return (
+        latest.open &&
+        latest.queryGeneration === queryGeneration &&
+        latest.workspacePath === workspacePath &&
+        latest.selectedTargetId === targetId &&
+        latest.results.some((result) => result.targetId === targetId)
+      );
+    };
     try {
       const result = await openResult(targetId);
+      if (!isCurrentOpen()) return false;
       if (result === false) {
-        if (get().open) set({ openError: "Could not open this session." });
+        set({ openError: "Could not open this session." });
         return false;
       }
-      // Only a verified success closes the modal. An old callback cannot close
-      // a later instance because `open` is rechecked after awaiting it.
-      if (get().open && get().queryGeneration === queryGeneration) get().closeSearch();
+      // Only the same modal instance and still-selected capability may close.
+      get().closeSearch();
       return true;
     } catch (error) {
-      if (get().open && get().queryGeneration === queryGeneration) {
+      if (isCurrentOpen()) {
         set({ openError: error instanceof Error ? error.message : "Could not open this session." });
       }
       return false;

@@ -116,10 +116,9 @@
   width: 100%;
   background: none;
   border: none;
-  /* Match session rows' hover-revealed action pattern: no right-side space is
-     reserved at rest, so the workspace label gets the full row. Hover/focus
-     expands the inline action buttons and FadeText re-measures to the reduced
-     width. */
+  /* The trailing action group always owns its full width. This keeps the
+     search and collapse targets in fixed slots while the remove control fades
+     in, and lets the workspace label take the remaining space. */
   padding: 0.571rem 0 0.571rem 0.286rem;
   text-align: left;
   display: flex;
@@ -165,10 +164,22 @@
   opacity: 1;
 }
 
-/* Search is a first-class, always-visible workspace capability. Remove and
-   collapse retain the compact hover-revealed treatment around it. */
-.sidebar__workspace-search {
+/* Workspace actions have fixed hit-target slots. Search and collapse are
+   always visible; remove reserves the trailing slot and only fades in so it
+   can never push either control when the header is hovered or focused. */
+.sidebar__workspace-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.286rem;
   flex: 0 0 auto;
+}
+.sidebar__workspace-actions .icon {
+  width: 0.857rem;
+  height: 0.857rem;
+}
+
+/* Search is a first-class, always-visible workspace capability. */
+.sidebar__workspace-search {
   color: var(--text-ghost);
   opacity: 0.7;
 }
@@ -178,48 +189,29 @@
   opacity: 1;
 }
 
-/* Remove/collapse mirror the session archive behavior. At rest they occupy
-   zero width; hovering or keyboard-focusing expands them inline. */
-.sidebar__remove-workspace,
 .sidebar__workspace-chevron {
-  background: none;
-  border: none;
-  cursor: pointer;
   color: var(--text-ghost);
-  width: 0;
-  height: 1.286rem;
-  margin-left: -0.286rem; /* cancel .sidebar__workspace-header's flex gap while collapsed */
-  padding: 0;
-  overflow: hidden;
-  opacity: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-sm);
-  flex-shrink: 0;
-  line-height: 1;
-  transition: width 0.12s ease, margin 0.12s ease, opacity 0.12s ease, color 0.12s ease, background
-    0.1s ease;
 }
-.sidebar__workspace-header:is(:hover, :has(:focus-visible)) .sidebar__remove-workspace,
-.sidebar__workspace-header:is(:hover, :has(:focus-visible)) .sidebar__workspace-chevron {
-  width: 1.286rem;
-  margin-left: 0;
+.sidebar__workspace-chevron:hover,
+.sidebar__workspace-chevron:focus-visible {
+  color: var(--text);
+}
+
+/* The remove slot remains in the flex layout at rest, preserving the search
+   and chevron positions. Opacity keeps it keyboard-focusable; focusing it
+   reveals the control through the header's :has(:focus-visible) state. */
+.sidebar__remove-workspace {
+  color: var(--text-ghost);
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.1s ease, color 0.12s ease;
+}
+.sidebar__workspace-header:is(:hover, :has(:focus-visible)) .sidebar__remove-workspace {
   opacity: 1;
 }
-.sidebar__remove-workspace svg,
-.sidebar__workspace-chevron svg {
-  width: 0.857rem;
-  height: 0.857rem;
-  display: block;
-}
-.sidebar__remove-workspace:hover {
+.sidebar__remove-workspace:hover,
+.sidebar__remove-workspace:focus-visible {
   background: var(--surface-3);
   color: var(--danger);
-}
-.sidebar__workspace-chevron:hover {
-  background: var(--surface-3);
-  color: var(--text);
 }
 /* Shared IconChevronRight sits a touch low in a flex-centered square; nudge it
    up here, then rotate the icon (not the button box) when expanded so the two

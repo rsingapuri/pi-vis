@@ -46,42 +46,6 @@
   box-shadow: var(--elevation-2);
 }
 
-.commit-range-picker__header {
-  display: flex;
-  flex-direction: column;
-  gap: 0.143rem;
-  padding: 0.714rem 0.857rem 0.643rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.commit-range-picker__eyebrow {
-  color: var(--text-muted);
-  font-size: 0.714em;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.commit-range-picker__base {
-  min-width: 0;
-  color: var(--text);
-  font: 0.857em / 1.4 var(--font-code);
-}
-
-.commit-range-picker__header p {
-  margin: 0.143rem 0 0;
-  color: var(--text-muted);
-  font: 0.786em / 1.4 var(--font-display);
-}
-
-.commit-range-picker__guidance,
-.commit-range-picker__hint {
-  padding: 0.75rem 0.857rem;
-  color: var(--text-muted);
-  font: 0.857em / 1.4 var(--font-display);
-}
-
 .commit-range-picker__working,
 .commit-range-picker__commit {
   width: 100%;
@@ -110,10 +74,55 @@
 }
 
 .commit-range-picker__list {
+  --commit-range-scroll-fade: 1.25rem;
   max-height: min(22rem, calc(100vh - 15rem));
   overflow: auto;
   padding: 0 var(--space-2) var(--space-2);
   outline: none;
+}
+.commit-range-picker__list--fade-top {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--commit-range-scroll-fade),
+    #000 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--commit-range-scroll-fade),
+    #000 100%
+  );
+}
+.commit-range-picker__list--fade-bottom {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 calc(100% - var(--commit-range-scroll-fade)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 calc(100% - var(--commit-range-scroll-fade)),
+    transparent 100%
+  );
+}
+.commit-range-picker__list--fade-top.commit-range-picker__list--fade-bottom {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--commit-range-scroll-fade),
+    #000 calc(100% - var(--commit-range-scroll-fade)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--commit-range-scroll-fade),
+    #000 calc(100% - var(--commit-range-scroll-fade)),
+    transparent 100%
+  );
 }
 
 .commit-range-picker__list:focus-visible {
@@ -132,7 +141,6 @@
 .commit-range-picker__commit {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
   gap: 0 0.45rem;
   height: 44px;
   padding: 0.2rem 0.571rem;
@@ -141,16 +149,15 @@
 }
 
 .commit-range-picker__commit--selected {
-  border-color: var(--surface-3);
+  border-color: var(--accent);
   background: var(--surface-2);
 }
 
 .commit-range-picker__commit--first {
-  outline: 1px solid var(--accent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.commit-range-picker__sha,
-.commit-range-picker__endpoint {
+.commit-range-picker__sha {
   color: var(--accent);
 }
 
@@ -158,51 +165,17 @@
   min-width: 0;
 }
 
+.commit-range-picker__endpoint {
+  color: var(--text-muted);
+  font-family: var(--font-display);
+}
+
 .commit-range-picker__meta {
-  grid-column: 2 / span 2;
+  grid-column: 2 / -1;
   min-width: 0;
   color: var(--text-ghost);
   font-family: var(--font-display);
   font-size: 0.85em;
-}
-
-.commit-range-picker__endpoint {
-  font-size: 0.85em;
-}
-
-.commit-range-picker__hint {
-  padding-top: 0.5rem;
-  padding-bottom: 0.5rem;
-  border-top: 1px solid var(--border);
-}
-
-.commit-range-picker__footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  padding: 0.571rem 0.857rem;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.commit-range-picker__footer button {
-  padding: 0.35rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  color: var(--text);
-  font: 0.857em / 1.4 var(--font-display);
-  cursor: pointer;
-}
-
-.commit-range-picker__footer button:hover {
-  border-color: var(--border-strong);
-}
-
-.commit-range-picker__footer .commit-range-picker__apply {
-  border-color: var(--accent-fill);
-  background: var(--accent-fill);
-  color: var(--on-accent);
 }
 
 @media (max-width: 700px) {

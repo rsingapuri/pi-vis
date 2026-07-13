@@ -5,9 +5,8 @@ import type {
   SessionSearchResult,
 } from "@shared/session-search.js";
 import type React from "react";
-import { useCallback, useEffect, useId, useMemo, useRef } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
-import { RENDERER_GENERATION } from "../../lib/renderer-generation.js";
 import { useSessionSearchStore } from "../../stores/session-search-store.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { FadeText } from "../common/FadeText.js";
@@ -22,10 +21,15 @@ interface SessionSearchModalProps {
 }
 
 function formatTime(timestamp: number | null): string {
-  if (timestamp === null) return "Saved history";
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
-    timestamp,
-  );
+  if (timestamp === null || !Number.isFinite(timestamp) || Math.abs(timestamp) > 8.64e15)
+    return "Saved history";
+  try {
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+      timestamp,
+    );
+  } catch {
+    return "Saved history";
+  }
 }
 
 /** Ranges are source offsets, not regexes. Invalid ranges are discarded. */
@@ -59,14 +63,12 @@ function ResultOption({
   result,
   selected,
   id,
-  onSelect,
-  onExpand,
+  onPreview,
 }: {
   result: SessionSearchResult;
   selected: boolean;
   id: string;
-  onSelect: () => void;
-  onExpand: () => void;
+  onPreview: () => void;
 }): React.ReactElement {
   return (
     <div
@@ -75,36 +77,20 @@ function ResultOption({
       aria-selected={selected}
       tabIndex={-1}
       className={`session-search__result${selected ? " session-search__result--selected" : ""}`}
-      onClick={onSelect}
+      onClick={onPreview}
       onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") onSelect();
+        if (event.key === "Enter" || event.key === " ") onPreview();
       }}
     >
       <FadeText className="session-search__result-name" title={result.sessionName}>
         {result.sessionName}
       </FadeText>
-      <div className="session-search__metadata">
-        <span>{result.role.replaceAll("-", " ")}</span>
-        <span>{formatTime(result.timestamp)}</span>
-        {result.worktreeName && <FadeText>{result.worktreeName}</FadeText>}
-      </div>
       <div className="session-search__snippet">
         <HighlightedText text={result.snippet} ranges={result.matchRanges} />
       </div>
       <div className="session-search__metadata">
-        {result.branchKind === "other-saved-branch" && <span>Other saved branch</span>}
-        {result.additionalMatches > 0 && (
-          <button
-            type="button"
-            className="session-search__additional"
-            onClick={(event) => {
-              event.stopPropagation();
-              onExpand();
-            }}
-          >
-            {result.additionalMatches} more matches in this session
-          </button>
-        )}
+        <span>{formatTime(result.timestamp)}</span>
+        {result.worktreeName && <FadeText>{result.worktreeName}</FadeText>}
       </div>
     </div>
   );
@@ -115,7 +101,16 @@ function focusableChildren(element: HTMLElement): HTMLElement[] {
     ...element.querySelectorAll<HTMLElement>(
       'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
     ),
-  ].filter((candidate) => !candidate.hasAttribute("hidden"));
+  ].filter((candidate) => {
+    if (candidate.hasAttribute("hidden")) return false;
+    for (let node: HTMLElement | null = candidate; node; node = node.parentElement) {
+      if (node.hasAttribute("hidden")) return false;
+      const style = window.getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      if (node === element) break;
+    }
+    return true;
+  });
 }
 
 export function SessionSearchModal({
@@ -123,7 +118,10 @@ export function SessionSearchModal({
 }: SessionSearchModalProps): React.ReactElement | null {
   const state = useSessionSearchStore();
   const inputRef = useRef<HTMLInputElement>(null);
+  const previewBackRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const resultsPaneRef = useRef<HTMLElement>(null);
+  const [resultScrollFades, setResultScrollFades] = useState({ top: false, bottom: false });
   const listboxId = useId();
   const selectedOptionId = state.selectedTargetId
     ? `session-search-result-${state.selectedTargetId}`
@@ -136,8 +134,6 @@ export function SessionSearchModal({
     requestAnimationFrame(() => returnFocus?.focus());
   }, []);
 
-  // Event subscription belongs to the modal lifetime, not App: no batch can
-  // mutate this renderer after the search surface has gone away.
   useEffect(() => {
     if (!state.open) return;
     return window.pivis.on("sessionSearch.batch", (batch) => {
@@ -153,12 +149,13 @@ export function SessionSearchModal({
       event.stopPropagation();
       const current = useSessionSearchStore.getState();
       if (current.open) {
+        current.setNarrowPane("results");
         current.openSearch(current.workspacePath, current.returnFocus);
-      } else {
-        current.openSearch(
-          useSessionsStore.getState().activeWorkspacePath,
-          document.activeElement as HTMLElement | null,
-        );
+        return;
+      }
+      const workspacePath = useSessionsStore.getState().activeWorkspacePath;
+      if (workspacePath) {
+        current.openSearch(workspacePath, document.activeElement as HTMLElement | null);
       }
     };
     window.addEventListener("keydown", onShortcut, true);
@@ -168,10 +165,45 @@ export function SessionSearchModal({
   // focusNonce intentionally retriggers selection for Cmd/Ctrl+Shift+F while open.
   // biome-ignore lint/correctness/useExhaustiveDependencies: focusNonce is an imperative focus signal
   useEffect(() => {
-    if (!state.open) return;
+    if (!state.open || state.narrowPane === "context") return;
     inputRef.current?.focus();
     inputRef.current?.select();
-  }, [state.open, state.focusNonce]);
+  }, [state.open, state.focusNonce, state.narrowPane]);
+
+  useEffect(() => {
+    if (!state.open || state.narrowPane !== "context") return;
+    previewBackRef.current?.focus();
+  }, [state.narrowPane, state.open]);
+
+  useEffect(() => {
+    if (!state.open || !state.selectedTargetId || state.narrowPane === "context") return;
+    document
+      .getElementById(`session-search-result-${state.selectedTargetId}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [state.open, state.narrowPane, state.selectedTargetId]);
+
+  const updateResultScrollFades = useCallback(() => {
+    const pane = resultsPaneRef.current;
+    if (!pane) return;
+    const next = {
+      top: pane.scrollTop > 1,
+      bottom: pane.scrollHeight - pane.scrollTop - pane.clientHeight > 1,
+    };
+    setResultScrollFades((current) =>
+      current.top === next.top && current.bottom === next.bottom ? current : next,
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    const pane = resultsPaneRef.current;
+    if (!pane) return;
+    const observer = new ResizeObserver(updateResultScrollFades);
+    observer.observe(pane);
+    const content = pane.querySelector(".session-search__results");
+    if (content) observer.observe(content);
+    updateResultScrollFades();
+    return () => observer.disconnect();
+  });
 
   useEffect(() => {
     if (!state.open) return;
@@ -179,63 +211,43 @@ export function SessionSearchModal({
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        if (state.narrowPane === "context" && window.matchMedia("(max-width: 760px)").matches) {
+        if (state.narrowPane === "context") {
           state.setNarrowPane("results");
-        } else {
-          close();
-        }
+          requestAnimationFrame(() => inputRef.current?.focus());
+        } else close();
         return;
       }
-      if (event.key === "Tab") {
-        const dialog = dialogRef.current;
-        if (!dialog) return;
-        const items = focusableChildren(dialog);
-        if (items.length === 0) return;
-        const first = items[0]!;
-        const last = items[items.length - 1]!;
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
+      if (event.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const items = focusableChildren(dialog);
+      if (!items.length) return;
+      const first = items[0]!;
+      const last = items.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [close, state]);
 
-  const select = useCallback(
-    (targetId: SearchTargetId, preview = false) => {
-      state.selectTarget(targetId);
-      if (preview) state.setNarrowPane("context");
-    },
-    [state],
-  );
-
-  // Arrow navigation may move quickly. Resolve context only after selection
-  // settles briefly, and fence the response again in the store.
-  useEffect(() => {
-    if (!state.open || !state.selectedTargetId) return;
-    if (state.context.state === "loading" && state.context.targetId === state.selectedTargetId) {
-      return;
-    }
-    if (state.context.state === "ready" && state.context.targetId === state.selectedTargetId) {
-      return;
-    }
-    const targetId = state.selectedTargetId;
-    const timer = setTimeout(() => {
-      void useSessionSearchStore.getState().loadContext(targetId);
-    }, 100);
-    return () => clearTimeout(timer);
-  }, [state.context, state.open, state.selectedTargetId]);
+  const select = useCallback((targetId: SearchTargetId) => state.selectTarget(targetId), [state]);
+  const preview = useCallback((targetId: SearchTargetId) => {
+    const store = useSessionSearchStore.getState();
+    store.selectTarget(targetId);
+    store.setNarrowPane("context");
+    void useSessionSearchStore.getState().loadContext(targetId);
+  }, []);
 
   const selectedIndex = useMemo(
     () => state.results.findIndex((result) => result.targetId === state.selectedTargetId),
     [state.results, state.selectedTargetId],
   );
-
   const onInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -245,20 +257,19 @@ export function SessionSearchModal({
       const index = Math.max(0, Math.min(state.results.length - 1, selectedIndex + delta));
       const target = state.results[index];
       if (target) select(target.targetId);
-      return;
-    }
-    if (event.key === "Enter" && state.selectedTargetId) {
+    } else if (event.key === "Enter" && state.selectedTargetId) {
       event.preventDefault();
-      select(state.selectedTargetId, true);
+      preview(state.selectedTargetId);
     }
   };
 
   const openSelected = (): void => {
-    if (!onOpenResult) return;
-    void state.openSelected(onOpenResult);
+    if (onOpenResult) void state.openSelected(onOpenResult);
   };
 
   if (!state.open) return null;
+  const hasQuery = Boolean(state.query.trim());
+  const inPreview = state.narrowPane === "context";
   const context = state.context;
   const contextMatchesSelection =
     context.state === "idle" || context.targetId === state.selectedTargetId;
@@ -266,7 +277,11 @@ export function SessionSearchModal({
   const contextItems = readyContext && isReadyContext(readyContext) ? readyContext.items : [];
   const noWorkspace = !state.workspacePath;
   const workspaceName = state.workspacePath?.split("/").filter(Boolean).at(-1);
-  const noResults = state.query.trim() && !state.loading && state.results.length === 0;
+  const noResults = hasQuery && !state.loading && state.results.length === 0;
+  const selectedResult = state.results.find((result) => result.targetId === state.selectedTargetId);
+  const dialogName = workspaceName
+    ? `Search sessions in ${workspaceName}`
+    : "Search saved sessions";
 
   return (
     <div
@@ -275,80 +290,56 @@ export function SessionSearchModal({
     >
       <div
         ref={dialogRef}
-        className="session-search"
+        className={`session-search${!hasQuery ? " session-search--empty" : ""}${inPreview ? " session-search--preview" : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="session-search-title"
+        aria-label={dialogName}
       >
-        <header className="session-search__header">
-          <div>
-            <h2 id="session-search-title">
-              {workspaceName ? `Search sessions in ${workspaceName}` : "Search saved sessions"}
-            </h2>
-            <FadeText
-              className="session-search__workspace"
-              head
-              {...(state.workspacePath ? { title: state.workspacePath } : {})}
-            >
-              {state.workspacePath ?? "Add a workspace to search saved sessions."}
-            </FadeText>
-          </div>
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={close}
-            aria-label="Close session search"
-          >
-            <IconClose />
-          </button>
-        </header>
-        <div className="session-search__input-wrap">
-          <IconSearch />
-          <input
-            ref={inputRef}
-            type="search"
-            role="combobox"
-            aria-label="Search saved sessions"
-            aria-autocomplete="list"
-            aria-expanded={state.results.length > 0}
-            aria-controls={listboxId}
-            aria-activedescendant={selectedOptionId}
-            value={state.query}
-            placeholder="Search messages, errors, and session names…"
-            disabled={noWorkspace}
-            onChange={(event) => state.setQuery(event.currentTarget.value)}
-            onCompositionStart={() => state.setComposing(true)}
-            onCompositionEnd={(event) => {
-              state.setComposing(false);
-              state.setQuery(event.currentTarget.value);
-            }}
-            onKeyDown={onInputKeyDown}
-          />
-          {state.query && (
-            <button
-              type="button"
-              className="icon-btn"
-              aria-label="Clear search"
-              onClick={() => state.setQuery("")}
-            >
-              <IconClose />
-            </button>
-          )}
-        </div>
-        <div className={`session-search__body session-search__body--${state.narrowPane}`}>
-          <section className="session-search__results-pane" aria-label="Search results">
-            {!state.query && !noWorkspace && (
-              <div className="session-search__empty">
-                <strong>Search saved sessions</strong>
-                <span>Find session names, messages, errors, and saved summaries.</span>
-              </div>
+        {!inPreview && (
+          <div className="session-search__input-wrap">
+            <IconSearch />
+            <input
+              ref={inputRef}
+              type="search"
+              role="combobox"
+              aria-label="Search saved sessions"
+              aria-autocomplete="list"
+              aria-expanded={hasQuery && state.results.length > 0}
+              aria-controls={hasQuery ? listboxId : undefined}
+              aria-activedescendant={hasQuery ? selectedOptionId : undefined}
+              value={state.query}
+              placeholder="Search"
+              disabled={noWorkspace}
+              onChange={(event) => state.setQuery(event.currentTarget.value)}
+              onCompositionStart={() => state.setComposing(true)}
+              onCompositionEnd={(event) => {
+                state.setComposing(false);
+                state.setQuery(event.currentTarget.value);
+              }}
+              onKeyDown={onInputKeyDown}
+            />
+            {state.query && (
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="Clear search"
+                onClick={() => state.setQuery("")}
+              >
+                <IconClose />
+              </button>
             )}
+          </div>
+        )}
+        {hasQuery && !inPreview && (
+          <section
+            ref={resultsPaneRef}
+            className={`session-search__results-pane${resultScrollFades.top ? " session-search__results-pane--fade-top" : ""}${resultScrollFades.bottom ? " session-search__results-pane--fade-bottom" : ""}`}
+            aria-label="Search results"
+            onScroll={updateResultScrollFades}
+          >
             {state.error && (
               <div className="session-search__notice session-search__notice--error">
-                <span>{state.error}</span>
-                <button type="button" onClick={() => void state.rebuild()}>
-                  Retry rebuild
-                </button>
+                {state.error}
               </div>
             )}
             {noResults && (
@@ -370,33 +361,37 @@ export function SessionSearchModal({
                   id={`session-search-result-${result.targetId}`}
                   result={result}
                   selected={result.targetId === state.selectedTargetId}
-                  onSelect={() => select(result.targetId, true)}
-                  onExpand={() => void state.expandSession(result.targetId)}
+                  onPreview={() => preview(result.targetId)}
                 />
               ))}
-              {!state.done && state.results.length > 0 && (
-                <button
-                  type="button"
-                  className="session-search__more"
-                  disabled={state.loading}
-                  onClick={() => void state.loadMore()}
-                >
-                  {state.loading ? "Searching…" : "Load more matches"}
-                </button>
-              )}
             </div>
+            {!state.done && state.results.length > 0 && (
+              <button
+                type="button"
+                className="session-search__more"
+                disabled={state.loading}
+                onClick={() => void state.loadMore()}
+              >
+                {state.loading ? "Searching…" : "Load more sessions"}
+              </button>
+            )}
           </section>
+        )}
+        {inPreview && (
           <section className="session-search__context-pane" aria-label="Saved history context">
             <div className="session-search__context-header">
               <button
+                ref={previewBackRef}
                 type="button"
-                className="icon-btn session-search__back"
+                className="icon-btn"
                 onClick={() => state.setNarrowPane("results")}
                 aria-label="Return to results"
               >
                 <IconChevronLeft />
               </button>
-              <span>Saved history · Read-only</span>
+              <FadeText className="session-search__preview-name">
+                {selectedResult?.sessionName ?? "Saved session"}
+              </FadeText>
               {onOpenResult && (
                 <button
                   type="button"
@@ -414,7 +409,7 @@ export function SessionSearchModal({
               </div>
             )}
             {(context.state === "idle" || !contextMatchesSelection) && (
-              <div className="session-search__empty">Select a result to inspect saved history.</div>
+              <div className="session-search__empty">Loading saved history…</div>
             )}
             {context.state === "loading" && contextMatchesSelection && (
               <div className="session-search__empty">Loading saved history…</div>
@@ -425,19 +420,7 @@ export function SessionSearchModal({
               </div>
             )}
             {readyContext && !isReadyContext(readyContext) && (
-              <div className="session-search__notice">
-                <span>{readyContext.message}</span>
-                {(readyContext.outcome === "changed" || readyContext.outcome === "removed") && (
-                  <div className="session-search__context-actions">
-                    <button type="button" onClick={() => void state.startSearchNow()}>
-                      Refresh result
-                    </button>
-                    <button type="button" onClick={() => state.setNarrowPane("results")}>
-                      Return to results
-                    </button>
-                  </div>
-                )}
-              </div>
+              <div className="session-search__notice">{readyContext.message}</div>
             )}
             {readyContext && isReadyContext(readyContext) && (
               <div className="session-search__context-items">
@@ -449,7 +432,7 @@ export function SessionSearchModal({
                 {readyContext.ancestryIncomplete && (
                   <div className="session-search__notice">Some saved history is unavailable.</div>
                 )}
-                {readyContext.hasEarlier && state.selectedTargetId && (
+                {readyContext.hasEarlier && state.contextBefore < 20 && state.selectedTargetId && (
                   <button
                     type="button"
                     className="session-search__context-more"
@@ -476,7 +459,7 @@ export function SessionSearchModal({
                     </div>
                   </article>
                 ))}
-                {readyContext.hasLater && state.selectedTargetId && (
+                {readyContext.hasLater && state.contextAfter < 20 && state.selectedTargetId && (
                   <button
                     type="button"
                     className="session-search__context-more"
@@ -493,22 +476,7 @@ export function SessionSearchModal({
               </div>
             )}
           </section>
-        </div>
-        <footer className="session-search__footer">
-          <span aria-live="polite">
-            {state.count ? `${state.count.value}${state.count.exact ? "" : "+"} matches` : ""}
-          </span>
-          {state.coverage && (
-            <span>
-              {state.loading
-                ? `Indexing saved sessions — ${state.coverage.indexedSources} of ${state.coverage.totalSources}`
-                : `${state.coverage.indexedSources} sessions searched`}
-            </span>
-          )}
-          {state.coverage && state.coverage.skippedSources > 0 && (
-            <span>{state.coverage.skippedSources} sessions could not be searched</span>
-          )}
-        </footer>
+        )}
       </div>
     </div>
   );

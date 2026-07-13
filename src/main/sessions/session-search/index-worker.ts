@@ -1124,35 +1124,25 @@ function runQuery(
       a.contentPartKey.localeCompare(b.contentPartKey) ||
       a.occurrence - b.occurrence,
   );
-  // Session diversity: at most two visible matches per session. The service
-  // annotates how many additional persisted occurrences exist.
-  const materializedBySession = new Map<string, number>();
+  // Group by the catalogued source identity, never by its mutable display
+  // name. This happens before slicing so a busy session cannot consume a page
+  // and hide other sessions. The representative keeps its opaque target data;
+  // the count describes the remaining persisted matches in that same source.
+  void expandedSourcePaths;
+  const grouped: SearchWorkerMatch[] = [];
+  const representedSources = new Set<string>();
   for (const match of expanded) {
-    const sessionKey = `${match.sourcePath}\0${match.sessionId}`;
-    materializedBySession.set(sessionKey, (materializedBySession.get(sessionKey) ?? 0) + 1);
-  }
-  const diversified: SearchWorkerMatch[] = [];
-  const perSession = new Map<string, number>();
-  const expandedSources = new Set(expandedSourcePaths);
-  for (const match of expanded) {
-    const sessionKey = `${match.sourcePath}\0${match.sessionId}`;
-    const count = perSession.get(sessionKey) ?? 0;
-    const sourceExpanded = expandedSources.has(match.sourcePath);
-    if (!sourceExpanded && count >= 2) continue;
-    perSession.set(sessionKey, count + 1);
-    diversified.push({
+    const sourceKey = `${match.sourcePath}\0${match.sessionId}`;
+    if (representedSources.has(sourceKey)) continue;
+    representedSources.add(sourceKey);
+    grouped.push({
       ...match,
-      additionalMatches: sourceExpanded
-        ? Math.max(
-            0,
-            (totalBySession.get(sessionKey) ?? 1) - (materializedBySession.get(sessionKey) ?? 1),
-          )
-        : Math.max(0, (totalBySession.get(sessionKey) ?? 1) - 2),
+      additionalMatches: Math.max(0, (totalBySession.get(sourceKey) ?? 1) - 1),
     });
   }
   return {
-    matches: diversified.slice(Math.max(0, offset), Math.max(0, offset) + Math.max(1, limit)),
-    total: diversified.length,
+    matches: grouped.slice(Math.max(0, offset), Math.max(0, offset) + Math.max(1, limit)),
+    total: grouped.length,
     truncated:
       candidateStageTruncated || candidates.length >= MAX_CANDIDATES || occurrenceStageTruncated,
   };

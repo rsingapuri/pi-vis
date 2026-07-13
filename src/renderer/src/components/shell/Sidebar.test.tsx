@@ -82,6 +82,33 @@ describe("Sidebar boot workspace restore", () => {
     unmount();
   });
 
+  it("keeps workspace actions in stable trailing slots", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === "workspace.list") return [];
+      if (channel === "workspace.listSessions") return [];
+      throw new Error(`Unexpected IPC channel ${channel}`);
+    });
+    (globalThis.window as unknown as { pivis?: unknown }).pivis = { invoke };
+    useSessionsStore.getState().addWorkspace(WS_A);
+
+    const { container, unmount } = mount(<Sidebar onOpenSettings={() => {}} />);
+    await flushEffects();
+
+    const actions = container.querySelector(".sidebar__workspace-actions");
+    expect(actions).toBeTruthy();
+    const actionButtons = actions!.querySelectorAll<HTMLButtonElement>("button");
+    expect(actionButtons).toHaveLength(3);
+    const [search, chevron, remove] = actionButtons;
+    if (!search || !chevron || !remove) throw new Error("Missing workspace action button");
+    expect(search.classList.contains("sidebar__workspace-search")).toBe(true);
+    expect(search.getAttribute("aria-label")).toBe("Search sessions in workspace-a");
+    expect(chevron.classList.contains("sidebar__workspace-chevron")).toBe(true);
+    expect(chevron.getAttribute("aria-expanded")).toBe("false");
+    expect(remove.classList.contains("sidebar__remove-workspace")).toBe(true);
+    expect(remove.getAttribute("title")).toBe("Remove workspace");
+    unmount();
+  });
+
   it("persists the last active workspace when a live session row is selected", async () => {
     const invoke = vi.fn(async (channel: string, payload: { workspacePath?: string } = {}) => {
       switch (channel) {

@@ -293,8 +293,8 @@ describe("session search index worker engine", () => {
     expect(phrase.matches[0]).toMatchObject({ entryId: "u1", latestPersistedPath: true });
     expect(phrase.matches[0]?.snippet).toContain("lifecycle phrase");
     expect(phrase.matches[0]?.matchRanges.length).toBeGreaterThan(0);
-    expect(phrase.matches).toHaveLength(2);
-    expect(phrase.matches[0]?.additionalMatches).toBe(2);
+    expect(phrase.matches).toHaveLength(1);
+    expect(phrase.matches[0]?.additionalMatches).toBe(3);
     const expanded = sessionSearchWorkerTesting.runQuery(
       workspace,
       '"lifecycle phrase"',
@@ -303,8 +303,8 @@ describe("session search index worker engine", () => {
       [],
       [file],
     );
-    expect(expanded.matches).toHaveLength(4);
-    expect(expanded.matches.every((match) => match.additionalMatches === 0)).toBe(true);
+    expect(expanded.matches).toHaveLength(1);
+    expect(expanded.matches[0]?.additionalMatches).toBe(3);
     const multiTerm = sessionSearchWorkerTesting.runQuery(workspace, "exact phrase", 0, 20, []);
     expect(multiTerm.matches.filter((match) => match.entryId === "u1")).toHaveLength(1);
     expect(
@@ -319,8 +319,8 @@ describe("session search index worker engine", () => {
       [],
       [file],
     );
-    expect(bounded.matches).toHaveLength(128);
-    expect(bounded.matches[0]?.additionalMatches).toBe(3_872);
+    expect(bounded.matches).toHaveLength(1);
+    expect(bounded.matches[0]?.additionalMatches).toBe(3_999);
     expect(bounded.truncated).toBe(true);
 
     expect(

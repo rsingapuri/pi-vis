@@ -198,6 +198,10 @@ export interface DiffStore {
   toggleRail: () => void;
   refreshBadge: (root: string) => Promise<void>;
   loadBranches: () => Promise<void>;
+  /** Atomically switch both comparison dimensions. A changed comparison has
+   * exactly one invalidation and refresh. */
+  setComparison: (comparison: { base: string | null; range: GitCommitRange | null }) => void;
+  /** Compatibility wrappers for existing callers. */
   setBase: (base: string | null) => void;
   setCommitRange: (range: GitCommitRange | null) => void;
   setIncludeRemoteBranches: (v: boolean) => void;
@@ -733,37 +737,23 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       }
     },
 
-    setBase: (base) => {
+    setComparison: ({ base, range }) => {
       if (get().editSession || get().commentEditorFiles.size > 0) return;
-      const sessionId = get().sessionId;
+      const current = get();
+      if (
+        current.selectedBase === base &&
+        current.commitRange?.start === range?.start &&
+        current.commitRange?.end === range?.end
+      ) {
+        return;
+      }
+      const sessionId = current.sessionId;
       if (sessionId) selectedBaseBySession.set(sessionId, base);
       generation++;
       comparisonGeneration++;
       for (const [path, token] of fileGenerations) fileGenerations.set(path, token + 1);
       set({
         selectedBase: base,
-        commitRange: null,
-        historicalContext: null,
-        files: [],
-        searchFiles: [],
-        truncated: false,
-        selectedPath: null,
-        fileState: new Map(),
-        stale: false,
-        baselineFingerprint: null,
-        search: { ...get().search, activeMatch: null },
-      });
-      void get().refresh();
-    },
-
-    setCommitRange: (range) => {
-      if (get().editSession || get().commentEditorFiles.size > 0) return;
-      const current = get().commitRange;
-      if (current?.start === range?.start && current?.end === range?.end) return;
-      generation++;
-      comparisonGeneration++;
-      for (const [path, token] of fileGenerations) fileGenerations.set(path, token + 1);
-      set({
         commitRange: range,
         historicalContext: null,
         files: [],
@@ -773,9 +763,17 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         fileState: new Map(),
         stale: false,
         baselineFingerprint: null,
-        search: { ...get().search, activeMatch: null },
+        search: { ...current.search, activeMatch: null },
       });
       void get().refresh();
+    },
+
+    setBase: (base) => {
+      get().setComparison({ base, range: null });
+    },
+
+    setCommitRange: (range) => {
+      get().setComparison({ base: get().selectedBase, range });
     },
 
     setIncludeRemoteBranches: (v) => {

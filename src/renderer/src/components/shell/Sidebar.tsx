@@ -587,45 +587,47 @@ export function Sidebar({
                   <FadeText>{ws.path.split("/").pop() ?? ws.path}</FadeText>
                 </button>
 
-                <button
-                  type="button"
-                  className="sidebar__remove-workspace"
-                  onClick={() => {
-                    for (const s of Array.from(sessions.values())) {
-                      if (s.workspacePath === ws.path) void closeSessionTab(s.sessionId);
-                    }
-                    window.pivis
-                      .invoke("workspace.remove", { workspacePath: ws.path })
-                      .catch(console.error);
-                    removeWorkspace(ws.path);
-                  }}
-                  title="Remove workspace"
-                >
-                  <IconClose />
-                </button>
-                {sessionSearchAvailable && (
+                <div className="sidebar__workspace-actions">
+                  {sessionSearchAvailable && (
+                    <button
+                      type="button"
+                      className="icon-btn sidebar__workspace-search"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openSessionSearch(ws.path, event.currentTarget);
+                      }}
+                      title={`Search sessions in ${ws.path.split("/").pop() ?? ws.path}`}
+                      aria-label={`Search sessions in ${ws.path.split("/").pop() ?? ws.path}`}
+                    >
+                      <IconSearch />
+                    </button>
+                  )}
                   <button
                     type="button"
-                    className="icon-btn sidebar__workspace-search"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openSessionSearch(ws.path, event.currentTarget);
-                    }}
-                    title={`Search sessions in ${ws.path.split("/").pop() ?? ws.path}`}
-                    aria-label={`Search sessions in ${ws.path.split("/").pop() ?? ws.path}`}
+                    className={`icon-btn sidebar__workspace-chevron ${isExpanded ? "sidebar__workspace-chevron--expanded" : ""}`}
+                    onClick={() => handleToggleExpand(ws.path)}
+                    title={isExpanded ? "Collapse" : "Expand"}
+                    aria-expanded={isExpanded}
                   >
-                    <IconSearch />
+                    <IconChevronRight />
                   </button>
-                )}
-                <button
-                  type="button"
-                  className={`sidebar__workspace-chevron ${isExpanded ? "sidebar__workspace-chevron--expanded" : ""}`}
-                  onClick={() => handleToggleExpand(ws.path)}
-                  title={isExpanded ? "Collapse" : "Expand"}
-                  aria-expanded={isExpanded}
-                >
-                  <IconChevronRight />
-                </button>
+                  <button
+                    type="button"
+                    className="icon-btn sidebar__remove-workspace"
+                    onClick={() => {
+                      for (const s of Array.from(sessions.values())) {
+                        if (s.workspacePath === ws.path) void closeSessionTab(s.sessionId);
+                      }
+                      window.pivis
+                        .invoke("workspace.remove", { workspacePath: ws.path })
+                        .catch(console.error);
+                      removeWorkspace(ws.path);
+                    }}
+                    title="Remove workspace"
+                  >
+                    <IconClose />
+                  </button>
+                </div>
               </div>
 
               {isExpanded && (

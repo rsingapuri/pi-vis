@@ -1,7 +1,7 @@
 // Presentational branch dropdown — reusable across the diff viewer and
 // the worktree bar. Props drive all behaviour; no store dependency.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { useVirtualList } from "../../hooks/useVirtualList.js";
 import { FadeText } from "./FadeText.js";
@@ -63,6 +63,7 @@ export function BranchDropdown({
   placement = "bottom",
 }: BranchDropdownProps): React.ReactElement {
   const [open, setOpen] = useState(false);
+  const listboxId = useId();
   // Claim ESC while the dropdown is open so a background streaming session
   // isn't aborted (the dropdown's own Escape handler closes it). Reused in
   // multiple places (worktree bar, diff viewer); ref-counting makes this
@@ -256,7 +257,7 @@ export function BranchDropdown({
               onKeyDown={handleKeyDown}
               role="combobox"
               aria-expanded={open}
-              aria-controls="branch-dropdown-listbox"
+              aria-controls={listboxId}
               aria-autocomplete="list"
             />
           </div>
@@ -268,7 +269,7 @@ export function BranchDropdown({
               onScroll={virtualList.onScroll}
               className="branch-dropdown__list branch-dropdown__list--virtual"
               role="listbox"
-              id="branch-dropdown-listbox"
+              id={listboxId}
             >
               <div
                 className="branch-dropdown__virtual-spacer"

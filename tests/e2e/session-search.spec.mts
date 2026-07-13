@@ -138,7 +138,7 @@ test.describe("workspace saved-session search", () => {
       const input = page.getByRole("combobox");
 
       await input.fill("zircon");
-      await expect(page.locator(".session-search__footer")).toContainText(/0\+? matches/u, {
+      await expect(page.getByText(/No saved-session matches|No matches yet/u)).toBeVisible({
         timeout: 20_000,
       });
       await expect(page.getByRole("option")).toHaveCount(0);
@@ -148,7 +148,12 @@ test.describe("workspace saved-session search", () => {
       await expect(worktreeResult).toBeVisible({ timeout: 20_000 });
       await expect(worktreeResult).toContainText("rustic-gnome");
 
+      // Arrival and arrow selection are inert: preview is the sole context IPC trigger.
       await input.fill("quartz");
+      await page.keyboard.press("ArrowDown");
+      expect(ipcCalls(ipcLog).filter((call) => call.channel === "sessionSearch.context")).toEqual(
+        [],
+      );
       const oldResult = page
         .getByRole("option", { name: /Ancient lifecycle investigation/u })
         .filter({ hasText: "quartz precompaction" });
@@ -160,10 +165,12 @@ test.describe("workspace saved-session search", () => {
       await expect(page.locator(".session-search__context-items")).toContainText(
         "saved summary after quartz evidence",
       );
+      await page.keyboard.press("Escape");
+      await expect(input).toBeFocused();
 
       await input.fill("juniper");
       const branchResult = page.getByRole("option", { name: /Ancient lifecycle investigation/u });
-      await expect(branchResult).toContainText("Other saved branch", { timeout: 20_000 });
+      await expect(branchResult).toBeVisible({ timeout: 20_000 });
       await branchResult.click();
       await expect(page.getByText(/Other saved branch\. Opening the session/u)).toBeVisible();
 
@@ -180,7 +187,10 @@ test.describe("workspace saved-session search", () => {
         page.locator(".sidebar__workspace--active .sidebar__workspace-name"),
       ).toContainText("workspace-beta");
 
-      // ESC belongs to search and cannot escape/interrupt the underlying host.
+      // Preview Escape returns to results; the next Escape belongs to search
+      // and cannot escape/interrupt the underlying host.
+      await page.keyboard.press("Escape");
+      await expect(page.locator(".session-search__results-pane")).toBeVisible();
       await page.keyboard.press("Escape");
       await expect(page.locator(".session-search-overlay")).toHaveCount(0);
       expect(lines(operationLog)).toHaveLength(0);
@@ -189,7 +199,7 @@ test.describe("workspace saved-session search", () => {
       // incomplete row remains absent until its newline is committed.
       await searchA.click();
       await input.fill("saffronfresh");
-      await expect(page.locator(".session-search__footer")).toContainText(/0\+? matches/u, {
+      await expect(page.getByText(/No saved-session matches|No matches yet/u)).toBeVisible({
         timeout: 20_000,
       });
       const appended = JSON.stringify({
@@ -209,7 +219,7 @@ test.describe("workspace saved-session search", () => {
       expect(performance.now() - appendCommittedAt).toBeLessThan(2_000);
 
       await input.fill("topaz");
-      await expect(page.locator(".session-search__footer")).toContainText(/0\+? matches/u, {
+      await expect(page.getByText(/No saved-session matches|No matches yet/u)).toBeVisible({
         timeout: 20_000,
       });
       await input.fill("juniper");

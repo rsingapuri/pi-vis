@@ -214,6 +214,62 @@ describe("session search store", () => {
     expect(useSessionSearchStore.getState().openError).toBe("Could not open this session.");
   });
 
+  it("does not request context merely because a batch selects its first result", async () => {
+    const store = useSessionSearchStore.getState();
+    store.openSearch("/workspace");
+    store.setQuery("match");
+    await vi.advanceTimersByTimeAsync(SESSION_SEARCH_DEBOUNCE_MS);
+    await Promise.resolve();
+    const client = useSessionSearchStore.getState().clientQueryId!;
+    store.acceptBatch(batch(client));
+    expect(useSessionSearchStore.getState().selectedTargetId).toBe(TARGET_A);
+    expect(invoke).not.toHaveBeenCalledWith("sessionSearch.context", expect.anything());
+  });
+
+  it("drops a rebuild failure after its modal generation closes", async () => {
+    let resolveRebuild!: (value: { state: "failed"; message: string }) => void;
+    invoke.mockImplementation((channel: string) => {
+      if (channel === "sessionSearch.rebuild") {
+        return new Promise((resolve) => {
+          resolveRebuild = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    const store = useSessionSearchStore.getState();
+    store.openSearch("/workspace");
+    const rebuilding = store.rebuild();
+    store.closeSearch();
+    resolveRebuild({ state: "failed", message: "stale failure" });
+    await rebuilding;
+    expect(useSessionSearchStore.getState()).toMatchObject({ open: false, error: null });
+  });
+
+  it("does not let a stale open callback close a newly selected target", async () => {
+    const store = useSessionSearchStore.getState();
+    store.openSearch("/workspace");
+    store.setQuery("match");
+    await vi.advanceTimersByTimeAsync(SESSION_SEARCH_DEBOUNCE_MS);
+    await Promise.resolve();
+    const client = useSessionSearchStore.getState().clientQueryId!;
+    store.acceptBatch(batch(client, { results: [result(TARGET_A), result(TARGET_B)] }));
+    let resolveOpen!: (value: undefined) => void;
+    const opening = store.openSelected(
+      () =>
+        new Promise((resolve) => {
+          resolveOpen = resolve;
+        }),
+    );
+    store.selectTarget(TARGET_B);
+    resolveOpen(undefined);
+    await expect(opening).resolves.toBe(false);
+    expect(useSessionSearchStore.getState()).toMatchObject({
+      open: true,
+      selectedTargetId: TARGET_B,
+      openError: null,
+    });
+  });
+
   it("clears query, results, context, and focus reference on close", () => {
     const node = document.createElement("button");
     const store = useSessionSearchStore.getState();

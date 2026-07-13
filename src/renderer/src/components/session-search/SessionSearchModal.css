@@ -12,9 +12,8 @@
 .session-search {
   display: flex;
   flex-direction: column;
-  inline-size: min(70rem, calc(100vw - 2 * var(--space-4)));
-  block-size: min(44rem, calc(100vh - 2 * var(--space-4)));
-  min-block-size: 20rem;
+  inline-size: min(42rem, calc(100vw - 2 * var(--space-4)));
+  max-block-size: min(44rem, calc(100vh - 2 * var(--space-4)));
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -22,46 +21,22 @@
   box-shadow: var(--elevation-3);
 }
 
-.session-search__header,
-.session-search__context-header,
-.session-search__footer {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.session-search__header {
-  justify-content: space-between;
-  padding: var(--space-3) var(--space-4) var(--space-2);
-}
-
-.session-search__header h2 {
-  margin: 0;
-  color: var(--text);
-  font-family: var(--font-accent);
-  font-size: 1.1em;
-  letter-spacing: var(--font-accent-tracking);
-}
-
-.session-search__workspace {
-  display: block;
-  max-inline-size: min(56rem, 72vw);
-  color: var(--text-muted);
-  font-size: 0.82em;
+/* An unopened palette is deliberately only its workspace-scoped field. */
+.session-search--empty {
+  inline-size: min(34rem, calc(100vw - 2 * var(--space-4)));
 }
 
 .session-search__input-wrap {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin: 0 var(--space-4) var(--space-3);
+  margin: var(--space-3);
   padding: 0 var(--space-2);
   color: var(--text-muted);
   background: var(--input-bg);
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-md);
 }
-
 .session-search__input-wrap input {
   min-inline-size: 0;
   flex: 1;
@@ -72,17 +47,14 @@
   color: var(--text);
   font: inherit;
 }
-
+/* The explicit icon button owns clearing; suppress Chromium's duplicate
+   search-field affordance so the input stays visually and semantically singular. */
+.session-search__input-wrap input[type="search"]::-webkit-search-cancel-button {
+  appearance: none;
+  -webkit-appearance: none;
+}
 .session-search__input-wrap:focus-within {
   border-color: var(--accent);
-}
-
-.session-search__body {
-  display: grid;
-  grid-template-columns: minmax(15rem, 2fr) minmax(21rem, 3fr);
-  min-block-size: 0;
-  flex: 1;
-  border-block: 1px solid var(--border-faint);
 }
 
 .session-search__results-pane,
@@ -90,21 +62,63 @@
   min-block-size: 0;
   overflow: auto;
 }
-
 .session-search__results-pane {
+  --session-search-scroll-fade: 1.25rem;
+  position: relative;
+  border-block-start: 1px solid var(--border-faint);
   padding: var(--space-2);
 }
-.session-search__context-pane {
-  border-inline-start: 1px solid var(--border-faint);
+.session-search__results-pane--fade-top {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--session-search-scroll-fade),
+    #000 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--session-search-scroll-fade),
+    #000 100%
+  );
+}
+.session-search__results-pane--fade-bottom {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 calc(100% - var(--session-search-scroll-fade)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 calc(100% - var(--session-search-scroll-fade)),
+    transparent 100%
+  );
+}
+.session-search__results-pane--fade-top.session-search__results-pane--fade-bottom {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--session-search-scroll-fade),
+    #000 calc(100% - var(--session-search-scroll-fade)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--session-search-scroll-fade),
+    #000 calc(100% - var(--session-search-scroll-fade)),
+    transparent 100%
+  );
 }
 .session-search__results {
   display: grid;
   gap: var(--space-1);
 }
-
 .session-search__result {
   display: grid;
-  gap: 0.24rem;
+  gap: 0.2rem;
   inline-size: 100%;
   padding: var(--space-2);
   overflow: hidden;
@@ -116,7 +130,6 @@
   font: inherit;
   text-align: start;
 }
-
 .session-search__result:hover,
 .session-search__result--selected {
   background: var(--surface-2);
@@ -126,44 +139,6 @@
   min-inline-size: 0;
   font-weight: 600;
 }
-
-.session-search__more {
-  justify-self: center;
-  padding: var(--space-2) var(--space-3);
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-}
-
-.session-search__more:hover {
-  background: var(--surface-2);
-}
-
-.session-search__more:disabled {
-  cursor: default;
-  opacity: 0.65;
-}
-.session-search__metadata {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--text-muted);
-  font-size: 0.76em;
-}
-.session-search__additional {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-}
-.session-search__additional:hover {
-  text-decoration: underline;
-}
 .session-search__snippet {
   display: -webkit-box;
   overflow: hidden;
@@ -171,28 +146,66 @@
   font-size: 0.9em;
   line-height: var(--leading-body);
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
+}
+.session-search__metadata {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  color: var(--text-muted);
+  font-size: 0.76em;
 }
 .session-search__match {
   padding: 0;
-  background: var(--accent-soft);
+  background: transparent;
   color: inherit;
+  font-weight: 700;
 }
-
+.session-search__more,
+.session-search__context-more,
+.session-search__context-actions button {
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+.session-search__more {
+  display: block;
+  margin: var(--space-2) auto 0;
+}
+.session-search__more:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+/* Preview replaces the result list rather than reserving a second pane. */
+.session-search--preview {
+  inline-size: min(48rem, calc(100vw - 2 * var(--space-4)));
+}
+.session-search--preview .session-search__context-pane {
+  max-block-size: min(36rem, calc(100vh - 8rem));
+}
+.session-search__preview-name {
+  min-inline-size: 0;
+  color: var(--text);
+  font-weight: 600;
+}
 .session-search__context-header {
   position: sticky;
   inset-block-start: 0;
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   min-block-size: 2.9rem;
   padding: 0 var(--space-3);
   background: var(--surface);
   border-block-end: 1px solid var(--border-faint);
   color: var(--text-muted);
   font-size: 0.88em;
-}
-
-.session-search__back {
-  display: none;
 }
 .session-search__open {
   margin-inline-start: auto;
@@ -223,10 +236,12 @@
 }
 .session-search__context-item--user {
   margin-inline-start: 12%;
-  background: var(--accent-soft);
 }
 .session-search__context-item--target {
   outline: 1px solid var(--accent);
+}
+.session-search__context-more {
+  justify-self: center;
 }
 .session-search__notice,
 .session-search__empty {
@@ -238,70 +253,24 @@
 .session-search__notice--error {
   color: var(--danger);
 }
-.session-search__context-actions {
-  display: flex;
-  gap: var(--space-2);
-  margin-block-start: var(--space-2);
-}
-.session-search__context-actions button,
-.session-search__context-more {
-  padding: var(--space-1) var(--space-2);
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-}
-.session-search__context-more {
-  justify-self: center;
-}
 .session-search__empty {
   display: grid;
   gap: var(--space-1);
-}
-.session-search__footer {
-  min-block-size: 2.25rem;
-  justify-content: space-between;
-  padding: 0 var(--space-4);
-  color: var(--text-muted);
-  font-size: 0.78em;
 }
 
 @media (max-width: 760px) {
   .session-search-overlay {
     padding: var(--space-2);
   }
-  .session-search {
+  .session-search,
+  .session-search--empty,
+  .session-search--preview {
     inline-size: calc(100vw - 2 * var(--space-2));
-    block-size: calc(100vh - 2 * var(--space-2));
   }
-  .session-search__body {
-    display: block;
-    position: relative;
-  }
-  .session-search__results-pane,
-  .session-search__context-pane {
-    block-size: 100%;
-  }
-  .session-search__context-pane {
-    border-inline-start: 0;
-  }
-  .session-search__body--results .session-search__context-pane,
-  .session-search__body--context .session-search__results-pane {
-    display: none;
-  }
-  .session-search__back {
-    display: inline-flex;
-  }
-  .session-search__footer {
-    gap: var(--space-1);
-    padding: 0 var(--space-2);
-    overflow: hidden;
-    white-space: nowrap;
+  .session-search--preview .session-search__context-pane {
+    max-block-size: calc(100vh - 2 * var(--space-2) - 2.9rem);
   }
 }
-
 @media (prefers-reduced-motion: reduce) {
   .session-search * {
     scroll-behavior: auto;

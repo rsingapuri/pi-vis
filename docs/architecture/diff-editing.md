@@ -15,15 +15,25 @@ the `git.writeWorkingFile` IPC.
 
 ## Base-relative commit ranges
 
-The header's **CommitRangePicker** scopes the viewer to an inclusive commit
-band on the selected base branch's merge-base → current `HEAD` first-parent
-path. A concrete base branch is required; **HEAD** keeps the picker in Working
-tree mode with guidance. `git.commits` returns immutable full object IDs plus
-short SHA, subject, author, and author time, oldest-to-newest internally. The
-picker displays newest-first, supports a one-commit selection or two endpoint
-clicks in either order, and normalizes the draft to `{start, end}` in history
-order. Apply compares `start^` through `end`, so both endpoint commits are
-included. Cancel, outside click, and Escape discard the draft.
+The header keeps separate compact controls: **BaseBranchDropdown** selects
+HEAD or a branch, and **CommitRangePicker** is shown only for a concrete base
+with at least one `git.commits` candidate. The base trigger contains only the
+branch/HEAD name. The range trigger contains only **Working tree**, **1 commit**,
+or **N commits**. Its popup has a Working tree row followed by the newest-first,
+virtualized 500-candidate commit list; it has no header, guidance dead-end, or
+Apply/Cancel footer. Working tree applies immediately. The first commit click
+immediately applies a one-commit range and remains as the optional second-click
+anchor; the second click applies the normalized inclusive `{start, end}` range.
+Outside click and Escape only dismiss the popup and never roll back or otherwise
+change the committed comparison. `git.commits` returns immutable full object
+IDs plus short SHA, subject, author, and author time, oldest-to-newest
+internally.
+
+`setComparison({base, range})` remains the single store transition: one equality
+guard, invalidation/generation bump, per-session base persistence update, and
+refresh. The compatibility `setBase` and `setCommitRange` methods delegate to
+it. A range compares `start^` through `end`, so both endpoint commits are
+included.
 
 Historical range mode is deliberately separate from working-tree mode:
 
@@ -39,7 +49,7 @@ Historical range mode is deliberately separate from working-tree mode:
   refreshes carry the same context and rebuild from those concrete objects
   rather than mutable refs. Mutable base/HEAD range validation is deduplicated
   only while concurrent requests are in flight; settled successes are never
-  cached, so every fresh Apply rechecks current first-parent topology. It reads both sides
+  cached, so every fresh range selection rechecks current first-parent topology. It reads both sides
   from git objects and pins Git's attribute source to the immutable range
   endpoint so later `.gitattributes` edits cannot alter historical binary
   classification. Main capability-checks `git check-attr --source`; Git older

@@ -32,9 +32,11 @@ test.describe("workspace session search", () => {
 
     await button.click();
     await expect(page.getByRole("dialog", { name: "Search sessions in pi-vis" })).toBeVisible();
-    await expect(page.locator(".session-search__workspace")).toContainText(
-      "/Users/demo/src/pi-vis",
+    await expect(page.getByRole("combobox", { name: "Search saved sessions" })).toHaveAttribute(
+      "placeholder",
+      "Search",
     );
+    await expect(page.locator(".session-search__results-pane")).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(page.locator(".session-search-overlay")).toHaveCount(0);
     await expect(button).toBeFocused();
@@ -64,6 +66,11 @@ test.describe("workspace session search", () => {
     await expect(page.locator(".session-search__context-item--target")).toContainText(
       "activation lifecycle",
     );
+    await expect(page.getByRole("button", { name: "Return to results" })).toBeFocused();
+    await page.keyboard.press("Meta+Shift+f");
+    await expect(input).toBeFocused();
+    await option.click();
+    await expect(page.getByRole("button", { name: "Return to results" })).toBeFocused();
 
     const afterPreview = await page.evaluate(() => {
       const hooks = (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview;
@@ -78,6 +85,9 @@ test.describe("workspace session search", () => {
     });
     expect(afterPreview).toEqual(before);
 
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".session-search__results-pane")).toBeVisible();
+    await expect(page.locator(".session-search-overlay")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.locator(".session-search-overlay")).toHaveCount(0);
     const abortAfter = await page.evaluate(
