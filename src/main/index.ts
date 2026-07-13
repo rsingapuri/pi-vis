@@ -8,6 +8,18 @@ import {
 } from "./ipc.js";
 import { loadSettings, saveSettings } from "./settings-store.js";
 
+// A forcibly interrupted E2E parent can close Electron's captured output pipes
+// before global teardown runs. Without listeners, Node turns the resulting
+// stream EPIPE into an uncaught main-process exception and macOS displays a
+// blocking native error dialog for every orphaned test app.
+if (process.env["PIVIS_TEST_REMOTE_DEBUGGING_PORT"]) {
+  const ignoreBrokenTestPipe = (error: NodeJS.ErrnoException): void => {
+    if (error.code !== "EPIPE") throw error;
+  };
+  process.stdout.on("error", ignoreBrokenTestPipe);
+  process.stderr.on("error", ignoreBrokenTestPipe);
+}
+
 function boundsOnScreen(b: { x: number; y: number; width: number; height: number }): boolean {
   return screen.getAllDisplays().some((d) => {
     const wa = d.workArea;
