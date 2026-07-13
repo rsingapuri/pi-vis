@@ -28,6 +28,7 @@ import {
 } from "../../lib/composer-attachments.js";
 import { prependCodeCommentsToPrompt } from "../../lib/diff-comments.js";
 import { findCurrentModel } from "../../lib/model-utils.js";
+import { RENDERER_GENERATION } from "../../lib/renderer-generation.js";
 import { dispatchSessionIntent, querySession } from "../../lib/session-intent.js";
 import { runWorktreeOperation } from "../../lib/worktree-operation.js";
 import { useChangelogStore } from "../../stores/changelog-store.js";
@@ -895,6 +896,22 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         let dispatchIdentity = useSessionsStore.getState().sessions.get(sessionId);
         if (editorPatchRetryNeededRef.current) {
           editorPatchRetryNeededRef.current = false;
+          try {
+            const attached = await window.pivis.invoke("session.authorityAttach", {
+              sessionId,
+              rendererGeneration: RENDERER_GENERATION,
+            });
+            useSessionsStore.getState().applyAuthorityAttach(sessionId, attached);
+            dispatchIdentity = useSessionsStore.getState().sessions.get(sessionId);
+          } catch {
+            editorPatchRetryNeededRef.current = true;
+            addToast(
+              sessionId,
+              "Editor state is synchronizing; retry when it is current",
+              "warning",
+            );
+            return;
+          }
           const snapshot = authoritySnapshotFor(dispatchIdentity);
           if (!snapshot) {
             editorPatchRetryNeededRef.current = true;

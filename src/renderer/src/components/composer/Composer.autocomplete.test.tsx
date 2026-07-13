@@ -170,6 +170,96 @@ function setSessionField(patch: Record<string, unknown>, sessionId = SID): void 
   Object.assign(session, patch);
 }
 
+function followingAuthority(modelId = "model") {
+  const cursor = { ...OWNER, transportSequence: 1, snapshotSequence: 1 };
+  return {
+    rendererGeneration: 1,
+    publicationSequence: 0,
+    owner: OWNER,
+    semantic: { state: "following" as const, cursor },
+    transcript: { state: "following" as const, cursor },
+    extensionUi: { state: "following" as const, cursor },
+    panels: new Map(),
+    authoritativeSnapshot: {
+      owner: OWNER,
+      snapshotSequence: 1,
+      capturedAt: Date.now(),
+      sdk: {
+        isStreaming: false,
+        isIdle: true,
+        isCompacting: false,
+        isRetrying: false,
+        retryAttempt: 0,
+        isBashRunning: false,
+      },
+      activity: {},
+      queues: {
+        steering: [],
+        followUp: [],
+        steeringIntentIds: [],
+        followUpIntentIds: [],
+      },
+      custody: [],
+      editor: { revision: 0, text: "", attachments: [] },
+      activeIntents: [],
+      recentIntentOutcomes: [],
+      recentObservedOperations: [],
+      operationJournalLowWatermark: 0,
+      operationJournalHighWatermark: 0,
+      operationJournalTruncated: false,
+      model: { id: modelId },
+      thinkingLevel: "medium",
+      catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
+    },
+  };
+}
+
+function setAuthorityAttachments(attachments: unknown[]): void {
+  const session = useSessionsStore.getState().sessions.get(SID)!;
+  const projection = session.authorityProjection!;
+  setSessionField({
+    editorAttachments: attachments,
+    authorityProjection: {
+      ...projection,
+      authoritativeSnapshot: {
+        ...projection.authoritativeSnapshot!,
+        editor: { ...projection.authoritativeSnapshot!.editor, attachments },
+      },
+    },
+  });
+}
+
+function authorityAttachResponse() {
+  const projection = followingAuthority();
+  const snapshot = projection.authoritativeSnapshot;
+  const cursor = projection.semantic.cursor;
+  return {
+    baseline: {
+      sessionId: SID,
+      rendererGeneration: projection.rendererGeneration,
+      owner: OWNER,
+      semantic: { sync: { state: "following", cursor }, snapshot },
+      operationJournal: [],
+      transcript: {
+        sync: { state: "following", cursor },
+        persistedHistoryCursor: null,
+        liveTailCursor: null,
+        overlapBoundary: null,
+      },
+      extensionUi: {
+        sync: { state: "following", cursor },
+        notifications: [],
+        statuses: {},
+        widgets: {},
+        dialogs: [],
+      },
+      panels: [],
+      publicationHighWatermark: 0,
+    },
+    replay: [],
+  };
+}
+
 function suggestionCount(container: HTMLElement): number {
   return container.querySelectorAll(".composer__suggestion").length;
 }
@@ -195,6 +285,7 @@ describe("Composer autocomplete and authority intents", () => {
       hostInstanceId: OWNER.hostInstanceId,
       sessionEpoch: OWNER.sessionEpoch,
       editorRevision: 0,
+      authorityProjection: followingAuthority(),
     });
     invoke = vi.fn();
     installInvoke(invoke);
@@ -216,8 +307,16 @@ describe("Composer autocomplete and authority intents", () => {
     document.body.innerHTML = "";
   });
 
-  it("disables submission controls while runtime availability is transitioning", () => {
-    setSessionField({ availability: "transitioning" });
+  it("disables submission controls while semantic authority is synchronizing", () => {
+    const projection = followingAuthority();
+    setSessionField({
+      authorityProjection: {
+        ...projection,
+        semantic: { state: "synchronizing", lastCursor: projection.semantic.cursor, reason: "gap" },
+        staleDiagnosticSnapshot: projection.authoritativeSnapshot,
+        authoritativeSnapshot: undefined,
+      },
+    });
     const composer = mount();
     expect(composer.textarea().disabled).toBe(true);
     expect(
@@ -369,40 +468,7 @@ describe("Composer autocomplete and authority intents", () => {
               revision: (payload as { revision: number }).revision,
             });
       }
-      if (channel === "session.runtimeResync")
-        return Promise.resolve({
-          availability: "available",
-          hostInstanceId: OWNER.hostInstanceId,
-          sessionEpoch: 0,
-          receivedAt: Date.now(),
-          snapshot: {
-            hostInstanceId: OWNER.hostInstanceId,
-            sessionEpoch: 0,
-            snapshotSequence: 1,
-            capturedAt: Date.now(),
-            isStreaming: false,
-            isIdle: true,
-            isCompacting: false,
-            isRetrying: false,
-            retryAttempt: 0,
-            isBashRunning: false,
-            model: { id: "model" },
-            thinkingLevel: "medium",
-            sessionId: SID,
-            pendingMessageCount: 0,
-            steering: [],
-            followUp: [],
-            hostFacts: {
-              submitting: false,
-              actualCompaction: false,
-              navigation: false,
-              pendingDialogs: 0,
-              custodyCount: 0,
-            },
-            catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
-            editor: { revision: 0, text: "/compact retry", attachments: [] },
-          },
-        });
+      if (channel === "session.authorityAttach") return Promise.resolve(authorityAttachResponse());
       if (channel === "session.dispatchIntent") {
         const envelope = payload as Envelope;
         queueMicrotask(() => publishOutcome(envelope));
@@ -421,7 +487,7 @@ describe("Composer autocomplete and authority intents", () => {
     expect(intentCalls(invoke)).toEqual([]);
     key(composer.textarea(), "Enter");
     await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
-    expect(invoke.mock.calls.some(([channel]) => channel === "session.runtimeResync")).toBe(true);
+    expect(invoke.mock.calls.some(([channel]) => channel === "session.authorityAttach")).toBe(true);
     composer.unmount();
   });
 
@@ -553,6 +619,7 @@ describe("Composer attachments under authority outcomes", () => {
       hostInstanceId: OWNER.hostInstanceId,
       sessionEpoch: 0,
       editorRevision: 0,
+      authorityProjection: followingAuthority("text-model"),
     });
     invoke = vi.fn();
     installInvoke(invoke);
@@ -593,16 +660,16 @@ describe("Composer attachments under authority outcomes", () => {
     setSessionField({
       availableModels: [{ id: "text-model", name: "Image", input: ["text", "image"] }],
       commands: [{ name: "widget-on", description: "Open", source: "extension" }],
-      editorAttachments: [
-        { kind: "file", name: "notes.txt", path: "/tmp/notes.txt" },
-        {
-          kind: "image",
-          name: "diagram.png",
-          path: "/tmp/diagram.png",
-          dataUrl: "data:image/png;base64,eA==",
-        },
-      ],
     });
+    setAuthorityAttachments([
+      { kind: "file", name: "notes.txt", path: "/tmp/notes.txt" },
+      {
+        kind: "image",
+        name: "diagram.png",
+        path: "/tmp/diagram.png",
+        dataUrl: "data:image/png;base64,eA==",
+      },
+    ]);
     useSessionsStore
       .getState()
       .setDiffComment(SID, { filePath: "a.ts", lineNumber: 1, lineText: "x", text: "Explain" });
@@ -640,15 +707,15 @@ describe("Composer attachments under authority outcomes", () => {
   it("submits image-only prompts and file paths as prompt intent payloads", async () => {
     setSessionField({
       availableModels: [{ id: "text-model", name: "Image", input: ["text", "image"] }],
-      editorAttachments: [
-        {
-          kind: "image",
-          name: "diagram.png",
-          path: "/tmp/diagram.png",
-          dataUrl: "data:image/png;base64,eA==",
-        },
-      ],
     });
+    setAuthorityAttachments([
+      {
+        kind: "image",
+        name: "diagram.png",
+        path: "/tmp/diagram.png",
+        dataUrl: "data:image/png;base64,eA==",
+      },
+    ]);
     const composer = mount();
     key(composer.textarea(), "Enter");
     await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
