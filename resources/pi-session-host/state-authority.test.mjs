@@ -1854,7 +1854,8 @@ describe("state authority", () => {
     ).resolves.toEqual({
       status: "not_admitted",
       intentId: "too-large",
-      reason: "payload_too_large",
+      reason: "invalid",
+      invalidReason: "payload_too_large",
     });
   });
 

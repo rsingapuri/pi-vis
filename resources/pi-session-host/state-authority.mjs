@@ -361,9 +361,14 @@ export function createStateAuthority({
     };
   }
 
-  function observedJournal() {
+  function observedJournal(owner = semanticOwner()) {
     return operationJournal
-      .filter((entry) => entry.observed === true)
+      .filter(
+        (entry) =>
+          entry.observed === true &&
+          entry.owner?.hostInstanceId === owner.hostInstanceId &&
+          entry.owner?.sessionEpoch === owner.sessionEpoch,
+      )
       .map((entry) => operationProjection(entry));
   }
 
@@ -1983,6 +1988,7 @@ export function createStateAuthority({
       anomaly: null,
     };
     navigationDepth = 0;
+    activeObservedOperations.clear();
     resetQueueIdentity();
   }
 

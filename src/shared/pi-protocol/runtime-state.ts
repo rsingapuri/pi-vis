@@ -685,8 +685,10 @@ export const IntentReceiptSchema = z
           "transitioning",
           "invalid",
         ]),
-        /** `payload_conflict` distinguishes duplicate-ID rejection from malformed input. */
-        invalidReason: z.enum(["malformed", "payload_conflict"]).optional(),
+        /** Machine-readable detail for invalid payload or bounded-admission rejection. */
+        invalidReason: z
+          .enum(["malformed", "payload_conflict", "payload_too_large", "capacity"])
+          .optional(),
       })
       .strict(),
     z
