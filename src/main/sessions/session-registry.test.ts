@@ -1920,7 +1920,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
       title: "Replacement dialog",
     });
 
-    await expect(h.registry.sendPanelInput(id, oldHost, oldEpoch, 1, 1, "stale")).resolves.toEqual({
+    await expect(
+      h.registry.sendPanelInput(id, oldHost, oldEpoch, 1, 1, 1, "stale"),
+    ).resolves.toEqual({
       acknowledgedThrough: 0,
     });
     h.registry.resizePanel(id, oldHost, oldEpoch, 1, 80, 24);
@@ -2064,7 +2066,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       }),
     ).rejects.toThrow("close preparation");
     await expect(
-      h.registry.sendPanelInput(id, ...runtimeIdentity(record), 1, 1, "late input"),
+      h.registry.sendPanelInput(id, ...runtimeIdentity(record), 1, 1, 1, "late input"),
     ).rejects.toThrow("close preparation");
     expect(() => h.registry.resizePanel(id, ...runtimeIdentity(record), 1, 80, 24)).toThrow(
       "close preparation",
@@ -2511,13 +2513,13 @@ describe("SessionRegistry direct AgentSession authority", () => {
     const record = h.registry.getSession(id)!;
     record._panelInputSequence.set(7, 0);
     let resolveFirst!: () => void;
-    record.proc!.sendPanelInput = vi.fn(async (_panelId, sequence) => {
+    record.proc!.sendPanelInput = vi.fn(async (_panelId, _revision, sequence) => {
       if (sequence === 1) await new Promise<void>((resolve) => (resolveFirst = resolve));
       return { acknowledgedThrough: sequence };
     });
 
-    const first = h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 1, "a");
-    const second = h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 2, "b");
+    const first = h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 1, 1, "a");
+    const second = h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 1, 2, "b");
     await vi.waitFor(() => expect(record.proc!.sendPanelInput).toHaveBeenCalledTimes(1));
     resolveFirst();
 
@@ -2533,7 +2535,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
     const record = h.registry.getSession(id)!;
     record._panelInputSequence.set(7, 0);
     await expect(
-      h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 2, "b"),
+      h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 1, 2, "b"),
     ).resolves.toEqual({
       acknowledgedThrough: 0,
       gap: { expected: 1, received: 2 },
@@ -2542,7 +2544,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       throw new Error("host rejected input");
     });
     await expect(
-      h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 1, "a"),
+      h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 1, 1, "a"),
     ).rejects.toThrow("host rejected input");
     expect(record._panelInputSequence.get(7)).toBe(0);
   });

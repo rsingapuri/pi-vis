@@ -345,10 +345,26 @@ export interface IpcInvokeContract {
       expectedHostInstanceId: string;
       expectedSessionEpoch: number;
       panelId: number;
+      revision: number;
       sequence: number;
       data: string;
     };
-    res: { acknowledgedThrough: number; gap?: { expected: number; received: number } };
+    res: {
+      acknowledgedThrough: number;
+      gap?: { expected: number; received: number };
+      repaintRequired?: { revision: number; repaintRequired: boolean };
+    };
+  };
+  /** Renderer acknowledgement after applying a forced reset/full repaint. */
+  "session.panelRepaintAck": {
+    req: {
+      sessionId: SessionId;
+      expectedHostInstanceId: string;
+      expectedSessionEpoch: number;
+      panelId: number;
+      revision: number;
+    };
+    res: { acknowledged: boolean };
   };
   /** Notify the host of a new xterm.js panel size (cols/rows), so the TUI
    *  layout matches the actual panel dimensions. `force` asks the host to

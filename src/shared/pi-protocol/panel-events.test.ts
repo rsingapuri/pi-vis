@@ -26,8 +26,10 @@ describe("PanelOpenEventSchema", () => {
       panelId: 7,
       overlay: false,
       unified: true,
+      baseline: { revision: 3, repaintRequired: true },
     });
     expect(parsed.unified).toBe(true);
+    expect(parsed.baseline).toEqual({ revision: 3, repaintRequired: true });
   });
 });
 
@@ -55,6 +57,9 @@ describe("PanelEventSchema (discriminated union)", () => {
       "panel_data",
     );
     expect(PanelEventSchema.parse({ type: "panel_close", panelId: 1 }).type).toBe("panel_close");
+    expect(PanelEventSchema.parse({ type: "panel_repaint", panelId: 1, revision: 2 }).type).toBe(
+      "panel_repaint",
+    );
     expect(PanelEventSchema.parse({ type: "panel_clear_all" }).type).toBe("panel_clear_all");
   });
 

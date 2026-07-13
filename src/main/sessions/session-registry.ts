@@ -460,7 +460,7 @@ export class SessionRegistry {
       }
       this.publishRuntime(record, record.availability);
     });
-    proc.on("panelOpen", (panelId, overlay, unified, hostInstanceId, sessionEpoch) => {
+    proc.on("panelOpen", (panelId, overlay, unified, hostInstanceId, sessionEpoch, baseline) => {
       if (!current()) return;
       record._mutationSequence++;
       record._panelInputSequence.set(panelId, 0);
@@ -471,9 +471,15 @@ export class SessionRegistry {
         hostInstanceId,
         sessionEpoch,
         ...(unified ? { unified: true } : {}),
+        ...(baseline ? { baseline } : {}),
       };
       record._openPanels.set(panelId, event);
       this.onPanelEvent(record.sessionId, event);
+    });
+    proc.on("panelRepaint", (panelId, revision) => {
+      if (!current()) return;
+      record._mutationSequence++;
+      this.onPanelEvent(record.sessionId, { type: "panel_repaint", panelId, revision });
     });
     proc.on("panelData", (panelId, data) => {
       if (!current()) return;
@@ -1604,6 +1610,11 @@ export class SessionRegistry {
         if (!acknowledged) {
           return this.publishUnavailable(record, "Renderer cancellation acknowledgement timed out");
         }
+        // The successor renderer has a fresh local input sequencer. The host
+        // fenced the old revision before acknowledging detachment, so reset
+        // main's cumulative gate at the same boundary.
+        record._panelInputSequence.clear();
+        record._panelInputChains.clear();
       }
     }
     for (const request of [...record._pendingUnifiedSubmits.values()]) {
@@ -1642,6 +1653,15 @@ export class SessionRegistry {
                 "The prior renderer lost contact before this operation reached a safe boundary",
             }
           : {}),
+      });
+    }
+    // Reinstall panel metadata, never a retained ANSI delta as a keyframe.
+    // Mounting issues a forced public pi-tui repaint before input can flow.
+    for (const panel of record._openPanels.values()) {
+      if (panel.type !== "panel_open") continue;
+      this.onPanelEvent(sessionId, {
+        ...structuredClone(panel),
+        baseline: { revision: 1, repaintRequired: true },
       });
     }
     for (const restoration of record._restorations.values()) {
@@ -1919,9 +1939,14 @@ export class SessionRegistry {
     expectedHostInstanceId: string,
     expectedSessionEpoch: number,
     panelId: number,
+    revision: number,
     sequence: number,
     data: string,
-  ): Promise<{ acknowledgedThrough: number; gap?: { expected: number; received: number } }> {
+  ): Promise<{
+    acknowledgedThrough: number;
+    gap?: { expected: number; received: number };
+    repaintRequired?: { revision: number; repaintRequired: boolean };
+  }> {
     const record = this.sessions.get(sessionId);
     if (record?._closing) throw new Error("Session close preparation is in progress");
     this.markActivationVisitInteracted(record);
@@ -1937,6 +1962,7 @@ export class SessionRegistry {
           expectedHostInstanceId,
           expectedSessionEpoch,
           panelId,
+          revision,
           sequence,
           data,
         ),
@@ -1956,9 +1982,14 @@ export class SessionRegistry {
     expectedHostInstanceId: string,
     expectedSessionEpoch: number,
     panelId: number,
+    revision: number,
     sequence: number,
     data: string,
-  ): Promise<{ acknowledgedThrough: number; gap?: { expected: number; received: number } }> {
+  ): Promise<{
+    acknowledgedThrough: number;
+    gap?: { expected: number; received: number };
+    repaintRequired?: { revision: number; repaintRequired: boolean };
+  }> {
     const acknowledged = record._panelInputSequence.get(panelId) ?? 0;
     const expected = acknowledged + 1;
     if (sequence > acknowledged && sequence !== expected) {
@@ -1970,7 +2001,7 @@ export class SessionRegistry {
     )
       return { acknowledgedThrough: acknowledged };
     const proc = record.proc;
-    const result = await proc.sendPanelInput(panelId, sequence, data);
+    const result = await proc.sendPanelInput(panelId, revision, sequence, data);
     if (
       this.sessions.get(record.sessionId) !== record ||
       record._closing ||
@@ -1984,6 +2015,32 @@ export class SessionRegistry {
       record._mutationSequence++;
     }
     return result;
+  }
+
+  async acknowledgePanelRepaint(
+    sessionId: SessionId,
+    expectedHostInstanceId: string,
+    expectedSessionEpoch: number,
+    panelId: number,
+    revision: number,
+  ): Promise<{ acknowledged: boolean }> {
+    const record = this.sessions.get(sessionId);
+    if (
+      !record ||
+      record._closing ||
+      !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch)
+    )
+      return { acknowledged: false };
+    const proc = record.proc;
+    const acknowledged = await proc.acknowledgePanelRepaint(panelId, revision);
+    if (
+      this.sessions.get(sessionId) !== record ||
+      record.proc !== proc ||
+      !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch)
+    )
+      return { acknowledged: false };
+    if (acknowledged) record._mutationSequence++;
+    return { acknowledged };
   }
 
   resizePanel(

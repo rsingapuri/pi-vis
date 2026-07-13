@@ -1258,6 +1258,7 @@ export function initIpc(win: BrowserWindow): void {
         expectedHostInstanceId: string;
         expectedSessionEpoch: number;
         panelId: number;
+        revision: number;
         sequence: number;
         data: string;
       },
@@ -1268,6 +1269,7 @@ export function initIpc(win: BrowserWindow): void {
           args.expectedHostInstanceId,
           args.expectedSessionEpoch,
           args.panelId,
+          args.revision,
           args.sequence,
           args.data,
         ) ?? {
@@ -1275,6 +1277,27 @@ export function initIpc(win: BrowserWindow): void {
         }
       );
     },
+  );
+
+  ipcMain.handle(
+    "session.panelRepaintAck",
+    async (
+      _evt,
+      args: {
+        sessionId: SessionId;
+        expectedHostInstanceId: string;
+        expectedSessionEpoch: number;
+        panelId: number;
+        revision: number;
+      },
+    ) =>
+      registry?.acknowledgePanelRepaint(
+        args.sessionId,
+        args.expectedHostInstanceId,
+        args.expectedSessionEpoch,
+        args.panelId,
+        args.revision,
+      ) ?? { acknowledged: false },
   );
 
   ipcMain.handle(

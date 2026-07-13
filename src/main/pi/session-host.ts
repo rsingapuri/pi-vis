@@ -172,8 +172,10 @@ export interface SessionHostEvents {
     unified: boolean,
     hostInstanceId: string,
     sessionEpoch: number,
+    baseline?: { revision: number; repaintRequired: boolean },
   ) => void;
   panelData: (panelId: number, data: string) => void;
+  panelRepaint: (panelId: number, revision: number) => void;
   panelClose: (panelId: number) => void;
   panelMode: (panelId: number, mode: "content" | "viewport") => void;
   panelClearAll: () => void;
@@ -224,8 +226,15 @@ type HostWireMessage =
   | { type: "event"; event: PiEvent }
   | ExtensionUiRequest
   | { type: "response"; id: string; success: boolean; data?: unknown; error?: string }
-  | { type: "panel_open"; panelId: number; overlay: boolean; unified?: boolean }
+  | {
+      type: "panel_open";
+      panelId: number;
+      overlay: boolean;
+      unified?: boolean;
+      baseline?: { revision: number; repaintRequired: boolean };
+    }
   | { type: "panel_data"; panelId: number; data: string }
+  | { type: "panel_repaint"; panelId: number; revision: number }
   | { type: "panel_close"; panelId: number }
   | { type: "panel_mode"; panelId: number; mode: "content" | "viewport" }
   | { type: "panel_clear_all" }
@@ -920,12 +929,18 @@ export class SessionHost extends EventEmitter {
           msg.unified === true,
           String(meta.hostInstanceId),
           Number(meta.sessionEpoch),
+          msg.baseline,
         );
         break;
       }
 
       case "panel_data": {
         this.emit("panelData", msg.panelId, msg.data);
+        break;
+      }
+
+      case "panel_repaint": {
+        this.emit("panelRepaint", msg.panelId, msg.revision);
         break;
       }
 
@@ -1262,18 +1277,53 @@ export class SessionHost extends EventEmitter {
 
   sendPanelInput(
     panelId: number,
+    revision: number,
     sequence: number,
     data: string,
-  ): Promise<{ acknowledgedThrough: number; gap?: { expected: number; received: number } }> {
-    return this.requestHost({ type: "panel_input", panelId, sequence, data }).then((response) => {
-      if (!response.success || !response.data) {
-        throw new Error(response.error ?? "Panel input was not acknowledged");
-      }
-      return response.data as {
-        acknowledgedThrough: number;
-        gap?: { expected: number; received: number };
-      };
-    });
+  ): Promise<{
+    acknowledgedThrough: number;
+    gap?: { expected: number; received: number };
+    repaintRequired?: { revision: number; repaintRequired: boolean };
+  }>;
+  /** @deprecated Compatibility seam for older structural host tests. */
+  sendPanelInput(
+    panelId: number,
+    sequence: number,
+    data: string,
+  ): Promise<{ acknowledgedThrough: number; gap?: { expected: number; received: number } }>;
+  sendPanelInput(
+    panelId: number,
+    revisionOrSequence: number,
+    sequenceOrData: number | string,
+    data?: string,
+  ): Promise<{
+    acknowledgedThrough: number;
+    gap?: { expected: number; received: number };
+    repaintRequired?: { revision: number; repaintRequired: boolean };
+  }> {
+    const revision = data === undefined ? undefined : revisionOrSequence;
+    const sequence = data === undefined ? revisionOrSequence : (sequenceOrData as number);
+    const input = data === undefined ? (sequenceOrData as string) : data;
+    return this.requestHost({ type: "panel_input", panelId, revision, sequence, data: input }).then(
+      (response) => {
+        if (!response.success || !response.data) {
+          throw new Error(response.error ?? "Panel input was not acknowledged");
+        }
+        return response.data as {
+          acknowledgedThrough: number;
+          gap?: { expected: number; received: number };
+          repaintRequired?: { revision: number; repaintRequired: boolean };
+        };
+      },
+    );
+  }
+
+  acknowledgePanelRepaint(panelId: number, revision: number): Promise<boolean> {
+    return this.requestHost({ type: "panel_repaint_ack", panelId, revision }).then((response) =>
+      Boolean(
+        response.success && (response.data as { acknowledged?: boolean } | undefined)?.acknowledged,
+      ),
+    );
   }
 
   sendPanelResize(panelId: number, cols: number, rows: number, force = false): void {
@@ -1351,9 +1401,11 @@ export interface SessionHost {
       unified: boolean,
       hostInstanceId: string,
       sessionEpoch: number,
+      baseline?: { revision: number; repaintRequired: boolean },
     ) => void,
   ): this;
   on(event: "panelData", listener: (panelId: number, data: string) => void): this;
+  on(event: "panelRepaint", listener: (panelId: number, revision: number) => void): this;
   on(event: "panelClose", listener: (panelId: number) => void): this;
   on(event: "panelMode", listener: (panelId: number, mode: "content" | "viewport") => void): this;
   on(event: "panelClearAll", listener: () => void): this;
@@ -1388,8 +1440,10 @@ export interface SessionHost {
     unified: boolean,
     hostInstanceId: string,
     sessionEpoch: number,
+    baseline?: { revision: number; repaintRequired: boolean },
   ): boolean;
   emit(event: "panelData", panelId: number, data: string): boolean;
+  emit(event: "panelRepaint", panelId: number, revision: number): boolean;
   emit(event: "panelClose", panelId: number): boolean;
   emit(event: "panelMode", panelId: number, mode: "content" | "viewport"): boolean;
   emit(event: "panelClearAll"): boolean;

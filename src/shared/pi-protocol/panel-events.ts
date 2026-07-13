@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+export const PanelBaselineSchema = z.object({
+  revision: z.number().int().positive(),
+  /** No ANSI tail is a keyframe; a fresh renderer must request a repaint. */
+  repaintRequired: z.boolean(),
+});
+
 /**
  * Panel lifecycle events for custom() → xterm.js rendering.
  *
@@ -23,6 +29,7 @@ export const PanelOpenEventSchema = z.object({
   /** True for the persistent unified-TUI panel (factory `setWidget`); false/absent
    *  for a transient custom() overlay panel. */
   unified: z.boolean().optional(),
+  baseline: PanelBaselineSchema.optional(),
 });
 
 export const PanelDataEventSchema = z.object({
@@ -34,6 +41,13 @@ export const PanelDataEventSchema = z.object({
 export const PanelCloseEventSchema = z.object({
   type: z.literal("panel_close"),
   panelId: z.number(),
+});
+
+/** Sent after a forced terminal reset plus public pi-tui full render. */
+export const PanelRepaintEventSchema = z.object({
+  type: z.literal("panel_repaint"),
+  panelId: z.number(),
+  revision: z.number().int().positive(),
 });
 
 /**
@@ -88,6 +102,7 @@ export const PanelEventSchema = z.discriminatedUnion("type", [
   PanelOpenEventSchema,
   PanelDataEventSchema,
   PanelCloseEventSchema,
+  PanelRepaintEventSchema,
   PanelModeEventSchema,
   PanelClearAllEventSchema,
   UnifiedPanelResetEventSchema,
@@ -97,6 +112,7 @@ export const PanelEventSchema = z.discriminatedUnion("type", [
 export type PanelOpenEvent = z.infer<typeof PanelOpenEventSchema>;
 export type PanelDataEvent = z.infer<typeof PanelDataEventSchema>;
 export type PanelCloseEvent = z.infer<typeof PanelCloseEventSchema>;
+export type PanelRepaintEvent = z.infer<typeof PanelRepaintEventSchema>;
 export type PanelModeEvent = z.infer<typeof PanelModeEventSchema>;
 export type PanelClearAllEvent = z.infer<typeof PanelClearAllEventSchema>;
 export type UnifiedPanelResetEvent = z.infer<typeof UnifiedPanelResetEventSchema>;

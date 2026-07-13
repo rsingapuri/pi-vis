@@ -125,6 +125,8 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
 
     let disposed = false;
     let unsubPanel: (() => void) | null = null;
+    let repaintRevision = 0;
+    let repaintAcknowledged = false;
 
     const fontFamily = resolveMonoFont();
     const { settings, activeColorScheme } = useSettingsStore.getState();
@@ -223,10 +225,30 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
           if (!disposed) sizer.scheduleSync();
         });
       }
+      if (event.type === "panel_repaint" && event.panelId === currentPanel.id) {
+        repaintAcknowledged = false;
+        repaintRevision = event.revision;
+        term.write("", () => {
+          if (disposed) return;
+          void window.pivis
+            .invoke("session.panelRepaintAck", {
+              sessionId,
+              expectedHostInstanceId: currentPanel.hostInstanceId,
+              expectedSessionEpoch: currentPanel.sessionEpoch,
+              panelId: currentPanel.id,
+              revision: repaintRevision,
+            })
+            .then((result) => {
+              if (!disposed && result.acknowledged) repaintAcknowledged = true;
+            })
+            .catch(() => {});
+        });
+      }
     });
 
     // User keystrokes → host TUI (panelInput is shared with custom() panels).
     const onDataDispose = term.onData((data) => {
+      if (!repaintAcknowledged) return;
       const sequence = nextPanelInputSequence(
         sessionId,
         currentPanel.hostInstanceId,
@@ -239,6 +261,7 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
           expectedHostInstanceId: currentPanel.hostInstanceId,
           expectedSessionEpoch: currentPanel.sessionEpoch,
           panelId: currentPanel.id,
+          revision: repaintRevision,
           sequence,
           data,
         })

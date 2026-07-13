@@ -43,6 +43,7 @@ import {
 } from "./bootstrap.mjs";
 import { assertHostCapabilities, setupCommandBridge } from "./bridge.mjs";
 import { buildEditorTheme } from "./editor-theme.mjs";
+import { createPanelReconstruction } from "./panel-reconstruction.mjs";
 import { createDialogResolver, createUIContext } from "./ui-context.mjs";
 
 // --- State ---
@@ -66,6 +67,7 @@ let dialogResolver = null;
 let unifiedTuiController = null;
 let panelCounter = 0;
 const panels = new Map(); // panelId -> { inputHandler, resizeHandler }
+const panelReconstruction = createPanelReconstruction();
 const hostInstanceId = crypto.randomUUID();
 let transportSequence = 0;
 const activeEpoch = 0;
@@ -113,8 +115,8 @@ const panelBridge = {
       panelId,
       overlay: panel.overlay,
       unified: panel.unified,
+      baseline: panelReconstruction.baseline(panelId),
       ...(panel.mode ? { mode: panel.mode } : {}),
-      ...(panel.lastData ? { lastData: panel.lastData } : {}),
     }));
   },
   openPanel({ overlay, unified }) {
@@ -124,8 +126,17 @@ const panelBridge = {
       inputSequence: 0,
       overlay,
       unified: unified === true,
+      cols: 0,
+      rows: 0,
     });
-    send({ type: "panel_open", panelId, overlay, ...(unified ? { unified: true } : {}) });
+    const baseline = panelReconstruction.open(panelId);
+    send({
+      type: "panel_open",
+      panelId,
+      overlay,
+      baseline,
+      ...(unified ? { unified: true } : {}),
+    });
     return panelId;
   },
 
@@ -135,9 +146,8 @@ const panelBridge = {
     // an unbounded leak for the life of the host process.
     const panel = panels.get(panelId);
     if (panel) {
-      // A bounded last frame/chunk is enough for close review without turning
-      // the host into an unbounded terminal replay buffer.
-      panel.lastData = String(data).slice(-65_536);
+      // ANSI deltas are not a keyframe and are never retained as one. A fresh
+      // xterm is rebuilt solely by the forced pi-tui repaint below.
       send({ type: "panel_data", panelId, data });
     }
   },
@@ -146,6 +156,7 @@ const panelBridge = {
     const p = panels.get(panelId);
     if (p) {
       send({ type: "panel_close", panelId });
+      panelReconstruction.close(panelId);
       panels.delete(panelId);
     }
   },
@@ -172,10 +183,14 @@ const panelBridge = {
     if (p) p.inputHandler = null;
   },
 
-  feedInput(panelId, sequence, data) {
+  feedInput(panelId, revision, sequence, data) {
     const panel = panels.get(panelId);
     const acknowledgedThrough = panel?.inputSequence ?? 0;
     if (!panel || sequence <= acknowledgedThrough) return { acknowledgedThrough };
+    const baseline = panelReconstruction.baseline(panelId);
+    if (!panelReconstruction.acceptsInput(panelId, revision)) {
+      return { acknowledgedThrough, repaintRequired: baseline };
+    }
     const expected = acknowledgedThrough + 1;
     if (!panel.inputHandler) return { acknowledgedThrough };
     if (sequence !== expected) {
@@ -184,6 +199,10 @@ const panelBridge = {
     panel.inputHandler(data);
     panel.inputSequence = sequence;
     return { acknowledgedThrough: sequence };
+  },
+
+  acknowledgeRepaint(panelId, revision) {
+    return { acknowledged: panelReconstruction.acknowledge(panelId, revision) };
   },
 
   setResizeHandler(panelId, handler) {
@@ -235,7 +254,28 @@ const panelBridge = {
   // HostTerminal dimensions and asks the TUI to re-render.
   resize(panelId, cols, rows, force = false) {
     const p = panels.get(panelId);
-    p?.resizeHandler?.(cols, rows, force === true);
+    if (!p) return;
+    p.cols = cols;
+    p.rows = rows;
+    if (force !== true) {
+      p.resizeHandler?.(cols, rows, false);
+      return;
+    }
+    // A renderer remount has no trustworthy terminal state. Reset it and use
+    // pi-tui's public forced render; never mistake a bounded ANSI tail for a
+    // reconstructable keyframe. The renderer acks only after applying all
+    // preceding bytes, which fences input until that point.
+    const baseline = panelReconstruction.requireRepaint(panelId);
+    send({ type: "panel_data", panelId, data: "\u001bc" });
+    p.resizeHandler?.(cols, rows, true);
+    send({ type: "panel_repaint", panelId, revision: baseline.revision });
+  },
+
+  fenceAll() {
+    for (const [panelId, panel] of panels) {
+      panel.inputSequence = 0;
+      panelReconstruction.requireRepaint(panelId);
+    }
   },
 };
 
@@ -609,14 +649,15 @@ process.on("message", async (msg) => {
 
       case "renderer_detached":
         dialogResolver?.cancelAll?.();
-        panelBridge.closeAll();
-        unifiedTuiController?.dispose?.({ preservePendingSubmits: true });
+        // Keep host-side public pi-tui instances alive across renderer reload.
+        // Their terminals are fenced and must force-repaint before new input.
+        panelBridge.fenceAll();
         send({ type: "renderer_cancelled", rendererGeneration: msg.rendererGeneration });
         publishSnapshot?.();
         break;
 
       case "panel_input": {
-        const result = panelBridge.feedInput(msg.panelId, msg.sequence, msg.data);
+        const result = panelBridge.feedInput(msg.panelId, msg.revision, msg.sequence, msg.data);
         if (result.acknowledgedThrough === msg.sequence) runtimeAuthority?.noteMutation();
         send({ type: "response", id: msg.id, success: true, data: result });
         break;
@@ -625,6 +666,12 @@ process.on("message", async (msg) => {
       case "panel_resize":
         panelBridge.resize(msg.panelId, msg.cols, msg.rows, msg.force === true);
         break;
+
+      case "panel_repaint_ack": {
+        const result = panelBridge.acknowledgeRepaint(msg.panelId, msg.revision);
+        send({ type: "response", id: msg.id, success: true, data: result });
+        break;
+      }
 
       case "panel_close_request":
         panelBridge.cancel(msg.panelId);

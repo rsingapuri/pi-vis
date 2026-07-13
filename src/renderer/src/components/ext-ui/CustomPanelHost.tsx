@@ -185,6 +185,10 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
 
     let disposed = false;
     let unsubPanel: (() => void) | null = null;
+    // Input starts fenced. Only the repaint marker that follows a terminal
+    // reset + public pi-tui forced render can unlock this mount.
+    let repaintRevision = 0;
+    let repaintAcknowledged = false;
 
     const fontFamily = resolveMonoFont();
     const { settings, activeColorScheme } = useSettingsStore.getState();
@@ -285,6 +289,27 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
           if (!disposed) sizer.scheduleSync();
         });
       }
+      if (event.type === "panel_repaint" && event.panelId === currentPanel.id) {
+        repaintAcknowledged = false;
+        repaintRevision = event.revision;
+        // `panel_repaint` is ordered after all reset/repaint bytes. Wait for
+        // xterm to apply queued writes before acknowledging the revision.
+        term.write("", () => {
+          if (disposed) return;
+          void window.pivis
+            .invoke("session.panelRepaintAck", {
+              sessionId,
+              expectedHostInstanceId: currentPanel.hostInstanceId,
+              expectedSessionEpoch: currentPanel.sessionEpoch,
+              panelId: currentPanel.id,
+              revision: repaintRevision,
+            })
+            .then((result) => {
+              if (!disposed && result.acknowledged) repaintAcknowledged = true;
+            })
+            .catch(() => {});
+        });
+      }
       if (event.type === "panel_close" && event.panelId === currentPanel.id) {
         // Panel closed by extension — unfold state triggers unmount
       }
@@ -292,6 +317,7 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
 
     // ── User keystrokes → panel input IPC ──
     const onDataDispose = term.onData((data) => {
+      if (!repaintAcknowledged) return;
       const sequence = nextPanelInputSequence(
         sessionId,
         currentPanel.hostInstanceId,
@@ -304,6 +330,7 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
           expectedHostInstanceId: currentPanel.hostInstanceId,
           expectedSessionEpoch: currentPanel.sessionEpoch,
           panelId: currentPanel.id,
+          revision: repaintRevision,
           sequence,
           data,
         })
