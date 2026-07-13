@@ -190,12 +190,16 @@ export class RendererPublicationRouter {
         throw new AuthorityAttachError("Authority baseline semantic owner mismatch");
       }
 
-      // The baseline is serialized by the child after its earlier authority
-      // work and names the main publication high-water it covers. Only the
-      // strictly newer buffered tail may be replayed.
-      const replay = this.buffer.filter(
-        ({ publication }) => publication.publicationSequence > highWatermark,
-      );
+      // A child serializes its baseline after some authority work which may
+      // have raced with this request. Therefore the request-time renderer
+      // high-water alone cannot decide the replay tail: discard the covered
+      // prefix for each source plane as named by the returned cursors.
+      const { covered, replay } = this.classifyBufferedTail(sourceBaseline);
+      // Buffered items have already consumed renderer sequence numbers. Make
+      // every covered item part of the baseline's renderer history, then put
+      // the surviving cross-plane tail immediately after that high-water.
+      // This avoids holes when covered prefixes are interleaved by plane.
+      const baselineHighWatermark = highWatermark + covered.length;
       const ownerChanged =
         this.expectedOwner !== undefined && !sameOwner(this.expectedOwner, baselineOwner);
       const foreignTail = replay.some(
@@ -223,7 +227,7 @@ export class RendererPublicationRouter {
         ...structuredClone(sourceBaseline),
         sessionId: this.sessionId,
         rendererGeneration,
-        publicationHighWatermark: highWatermark,
+        publicationHighWatermark: baselineHighWatermark,
       };
       this.expectedOwner = structuredClone(baselineOwner);
       this.seedCursors(baseline);
@@ -233,7 +237,13 @@ export class RendererPublicationRouter {
       this.buffer = [];
       this.synchronizingPlanes.clear();
       this.state = "following";
-      return { baseline, replay: replay.map(({ publication }) => publication) };
+      return {
+        baseline,
+        replay: replay.map(({ publication }, index) => ({
+          ...publication,
+          publicationSequence: baselineHighWatermark + index + 1,
+        })) as RendererPublication[],
+      };
     }
 
     this.state = "synchronizing";
@@ -246,6 +256,37 @@ export class RendererPublicationRouter {
       const sequence = cursorSequence(baseline, plane);
       if (sequence !== undefined) this.lastTransportSequence.set(plane, sequence);
     }
+  }
+
+  /**
+   * The baseline can cover frames received after main started the request.
+   * Source transport sequences are per plane, so only a leading run on each
+   * plane may be absorbed. A later out-of-order item remains replay work and
+   * is rejected by the continuity check rather than silently disappearing.
+   */
+  private classifyBufferedTail(baseline: AuthorityAttachBaseline): {
+    covered: BufferedPublication[];
+    replay: BufferedPublication[];
+  } {
+    const covered: BufferedPublication[] = [];
+    const replay: BufferedPublication[] = [];
+    const acceptingCoveredPrefix = new Map<Plane, boolean>();
+
+    for (const entry of this.buffer) {
+      const plane = entry.publication.plane;
+      const cursor = cursorSequence(baseline, plane);
+      const isCoveredPrefix =
+        cursor !== undefined &&
+        (acceptingCoveredPrefix.get(plane) ?? true) &&
+        entry.transportSequence <= cursor;
+      if (isCoveredPrefix) {
+        covered.push(entry);
+      } else {
+        acceptingCoveredPrefix.set(plane, false);
+        replay.push(entry);
+      }
+    }
+    return { covered, replay };
   }
 
   private contiguousFromBaseline(

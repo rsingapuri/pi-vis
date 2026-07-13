@@ -4,6 +4,7 @@ import type {
   AuthorityFrame,
   RendererPublication,
   RuntimeIdentity,
+  TranscriptPublicationPayload,
 } from "@shared/pi-protocol/runtime-state.js";
 import { describe, expect, it, vi } from "vitest";
 import { RendererPublicationRouter } from "./renderer-publication.js";
@@ -13,7 +14,12 @@ const owner = (epoch = 0): RuntimeIdentity => ({
   sessionEpoch: epoch,
 });
 
-function baseline(currentOwner: RuntimeIdentity, transportSequence = 1, highWatermark = 0) {
+function baseline(
+  currentOwner: RuntimeIdentity,
+  transportSequence = 1,
+  highWatermark = 0,
+  transcriptTransportSequence?: number,
+) {
   return {
     sessionId: "child-session",
     rendererGeneration: 0,
@@ -31,7 +37,17 @@ function baseline(currentOwner: RuntimeIdentity, transportSequence = 1, highWate
     },
     operationJournal: [],
     transcript: {
-      sync: { state: "unavailable", reason: "not_attached" },
+      sync:
+        transcriptTransportSequence === undefined
+          ? { state: "unavailable", reason: "not_attached" }
+          : {
+              state: "following",
+              cursor: {
+                ...currentOwner,
+                transportSequence: transcriptTransportSequence,
+                snapshotSequence: 1,
+              },
+            },
       persistedHistoryCursor: null,
       liveTailCursor: null,
       overlapBoundary: null,
@@ -56,6 +72,15 @@ function frame(currentOwner: RuntimeIdentity, transportSequence: number): Author
     records: [{ type: "anomaly", owner: currentOwner, code: "missing_start_event" }],
     terminalSnapshot: { owner: currentOwner, snapshotSequence: transportSequence },
   } as unknown as AuthorityFrame;
+}
+
+function transcript(
+  currentOwner: RuntimeIdentity,
+  transportSequence: number,
+): TranscriptPublicationPayload {
+  return {
+    cursor: { ...currentOwner, transportSequence, snapshotSequence: 1 },
+  } as unknown as TranscriptPublicationPayload;
 }
 
 describe("RendererPublicationRouter", () => {
@@ -93,6 +118,54 @@ describe("RendererPublicationRouter", () => {
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toMatchObject({ publicationSequence: 2, payload: { frameId: "frame-3" } });
+  });
+
+  it("drops a buffered frame already covered by the returned baseline", async () => {
+    const delivered: RendererPublication[] = [];
+    const router = new RendererPublicationRouter("session" as SessionId, (item) =>
+      delivered.push(item),
+    );
+    router.setExpectedOwner(owner());
+    let resolveBaseline!: (value: AuthorityAttachBaseline) => void;
+    const attaching = router.attach(
+      4,
+      () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveBaseline = resolve)),
+    );
+
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
+    resolveBaseline(baseline(owner(), 2));
+
+    const response = await attaching;
+    expect(response.baseline.publicationHighWatermark).toBe(1);
+    expect(response.replay).toEqual([]);
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
+    expect(delivered[0]).toMatchObject({ publicationSequence: 2, payload: { frameId: "frame-3" } });
+  });
+
+  it("drops covered prefixes independently for mixed planes and replays the contiguous tail", async () => {
+    const delivered: RendererPublication[] = [];
+    const router = new RendererPublicationRouter("session" as SessionId, (item) =>
+      delivered.push(item),
+    );
+    router.setExpectedOwner(owner());
+    let resolveBaseline!: (value: AuthorityAttachBaseline) => void;
+    const attaching = router.attach(
+      4,
+      () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveBaseline = resolve)),
+    );
+
+    // The transcript frame arrives first, but the semantic cursor already
+    // covers the later semantic frame. The replay sequence must be compacted.
+    router.route({ plane: "transcript", owner: owner(), payload: transcript(owner(), 2) });
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
+    resolveBaseline(baseline(owner(), 2, 0, 1));
+
+    const response = await attaching;
+    expect(response.baseline.publicationHighWatermark).toBe(1);
+    expect(response.replay).toHaveLength(1);
+    expect(response.replay[0]).toMatchObject({ plane: "transcript", publicationSequence: 2 });
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
+    expect(delivered[0]).toMatchObject({ publicationSequence: 3, payload: { frameId: "frame-3" } });
   });
 
   it("uses the main publication high-water on same-generation reattach", async () => {
@@ -210,6 +283,49 @@ describe("RendererPublicationRouter", () => {
 
     const response = await attaching;
     expect(getBaseline).toHaveBeenCalledTimes(2);
+    expect(response.baseline.publicationHighWatermark).toBe(2);
+    expect(response.replay).toEqual([]);
+    // Overflowed entries still consumed the sequence space before the retry.
+    expect(router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 4) })).toBe(
+      true,
+    );
+  });
+
+  it("retries after owner replacement without reusing buffered sequence numbers", async () => {
+    const router = new RendererPublicationRouter("session" as SessionId, () => {});
+    router.setExpectedOwner(owner());
+    let resolveFirst!: (value: AuthorityAttachBaseline) => void;
+    const getBaseline = vi
+      .fn<() => Promise<AuthorityAttachBaseline>>()
+      .mockImplementationOnce(
+        () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveFirst = resolve)),
+      )
+      .mockResolvedValueOnce(baseline(owner(1), 2));
+    const attaching = router.attach(1, getBaseline);
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
+    router.setExpectedOwner(owner(1));
+    resolveFirst(baseline(owner(1), 1));
+
+    const response = await attaching;
+    expect(getBaseline).toHaveBeenCalledTimes(2);
+    expect(response.baseline.publicationHighWatermark).toBe(1);
+    expect(response.replay).toEqual([]);
+  });
+
+  it("advances the baseline high-water when it is ahead of every buffered source frame", async () => {
+    const router = new RendererPublicationRouter("session" as SessionId, () => {});
+    router.setExpectedOwner(owner());
+    let resolveBaseline!: (value: AuthorityAttachBaseline) => void;
+    const attaching = router.attach(
+      1,
+      () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveBaseline = resolve)),
+    );
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
+    resolveBaseline(baseline(owner(), 3));
+
+    const response = await attaching;
+    expect(response.baseline.publicationHighWatermark).toBe(2);
     expect(response.replay).toEqual([]);
   });
 });
