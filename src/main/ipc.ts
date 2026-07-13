@@ -360,6 +360,16 @@ export function initIpc(win: BrowserWindow): void {
       eventBatcher?.flush(publication.sessionId as SessionId);
       safeSend("session.publication", publication);
     },
+    (sessionId, owner, sessionFile, sessionName) => {
+      eventBatcher?.flush(sessionId);
+      safeSend("session.fileChanged", {
+        sessionId,
+        hostInstanceId: owner.hostInstanceId,
+        sessionEpoch: owner.sessionEpoch,
+        sessionFile,
+        sessionName,
+      });
+    },
   );
 
   if (getSettings().sessionSearchEnabled) {

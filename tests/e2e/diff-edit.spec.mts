@@ -405,12 +405,14 @@ test.describe("Diff inline edit", () => {
       // Downward drags spanning 3, 4, and 6 rows.
       for (const span of [2, 3, 5]) {
         await window.evaluate(() => window.getSelection()?.removeAllRanges());
+        await expect(window.getByTestId("diff-edit-bubble")).toHaveCount(0);
         await selectRange(window, addIdxs[0]!, addIdxs[span]!);
         await expect(window.getByTestId("diff-edit-bubble")).toBeVisible({ timeout: 5_000 });
       }
 
       // Upward drag (anchor at the bottom) spanning 4 rows.
       await window.evaluate(() => window.getSelection()?.removeAllRanges());
+      await expect(window.getByTestId("diff-edit-bubble")).toHaveCount(0);
       const from = window
         .locator(`.diff-row--add[data-line-idx="${addIdxs[4]!}"] .diff-row__code`)
         .first();
@@ -423,13 +425,14 @@ test.describe("Diff inline edit", () => {
       // Mixed drag: from the first context row down across BOTH del rows into
       // the add block (context + del + add in one selection).
       await window.evaluate(() => window.getSelection()?.removeAllRanges());
-      const firstContext = window
-        .locator('[data-testid="diff-section-edit.ts"] .diff-row[data-line-idx] .diff-row__code')
-        .first();
-      const addTarget = window
-        .locator(`.diff-row--add[data-line-idx="${addIdxs[2]!}"] .diff-row__code`)
-        .first();
-      await dragBetweenCells(window, firstContext, addTarget);
+      await expect(window.getByTestId("diff-edit-bubble")).toHaveCount(0);
+      const contextSelector =
+        '[data-testid="diff-section-edit.ts"] .diff-row[data-line-idx] .diff-row__code';
+      const addSelector = `.diff-row--add[data-line-idx="${addIdxs[2]!}"] .diff-row__code`;
+      // Chromium's pointer hit-testing cannot drag a native selection across
+      // the intervening deletion-only rows reliably. Build the same DOM range
+      // explicitly; the preceding cases already cover physical drag gestures.
+      await selectTextAcrossCells(window, contextSelector, 1, addSelector, 1);
       await expect(window.getByTestId("diff-edit-bubble")).toBeVisible({ timeout: 5_000 });
     } finally {
       await app.close();

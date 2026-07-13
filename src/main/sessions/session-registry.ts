@@ -266,6 +266,12 @@ type TransitionBatchCallback = (
   state: RuntimeStateUpdate,
 ) => void;
 type AuthorityPublicationCallback = (publication: RendererPublication) => void;
+type SessionFileChangedCallback = (
+  sessionId: SessionId,
+  owner: RuntimeIdentity,
+  sessionFile: string,
+  sessionName?: string,
+) => void;
 
 export class SessionRegistry {
   private sessions = new Map<SessionId, SessionRecord>();
@@ -287,6 +293,7 @@ export class SessionRegistry {
       authorityPublicationBufferLimit?: number;
     } = {},
     private onAuthorityPublication: AuthorityPublicationCallback = () => {},
+    private onSessionFileChanged: SessionFileChangedCallback = () => {},
   ) {}
 
   openSession(
@@ -953,8 +960,17 @@ export class SessionRegistry {
     const state = this.publishRuntime(record, "available", undefined, false);
     // Routing is now committed and the successor lock is still held. Only at
     // this point may the predecessor advisory lock be released.
-    if (options.expectedTransition !== undefined)
+    if (options.expectedTransition !== undefined) {
       this.commitTransitionLock(record, batch.transitionId);
+      if (terminal.sessionFile && terminal.sessionFile !== prior?.sessionFile) {
+        this.onSessionFileChanged(
+          record.sessionId,
+          { hostInstanceId: terminal.hostInstanceId, sessionEpoch: terminal.sessionEpoch },
+          terminal.sessionFile,
+          terminal.sessionName,
+        );
+      }
+    }
     this.onTransitionBatch(record.sessionId, batch.records, state);
     return true;
   }

@@ -68,21 +68,33 @@ export function App(): React.ReactElement {
   const updateSettings = useSettingsStore((s) => s.update);
   const [piFound, setPiFound] = useState<boolean | null>(null);
   const [sessionSearchAvailable, setSessionSearchAvailable] = useState(false);
+  const authorityAttachInFlightRef = useRef(new Map<SessionId, Promise<void>>());
   const attachSessionAuthority = useCallback(
-    async (sessionId: SessionId): Promise<void> => {
-      try {
-        await window.pivis.invoke("session.rendererAttach", {
-          sessionId,
-          rendererGeneration: RENDERER_GENERATION,
-        });
-        const response = await window.pivis.invoke("session.authorityAttach", {
-          sessionId,
-          rendererGeneration: RENDERER_GENERATION,
-        });
-        applyAuthorityAttach(sessionId, response);
-      } catch {
-        markAuthorityUnavailable(sessionId, "attach_failed");
-      }
+    (sessionId: SessionId): Promise<void> => {
+      const pending = authorityAttachInFlightRef.current.get(sessionId);
+      if (pending) return pending;
+      const operation = (async () => {
+        try {
+          await window.pivis.invoke("session.rendererAttach", {
+            sessionId,
+            rendererGeneration: RENDERER_GENERATION,
+          });
+          const response = await window.pivis.invoke("session.authorityAttach", {
+            sessionId,
+            rendererGeneration: RENDERER_GENERATION,
+          });
+          applyAuthorityAttach(sessionId, response);
+        } catch {
+          markAuthorityUnavailable(sessionId, "attach_failed");
+        }
+      })();
+      authorityAttachInFlightRef.current.set(sessionId, operation);
+      void operation.finally(() => {
+        if (authorityAttachInFlightRef.current.get(sessionId) === operation) {
+          authorityAttachInFlightRef.current.delete(sessionId);
+        }
+      });
+      return operation;
     },
     [applyAuthorityAttach, markAuthorityUnavailable],
   );
@@ -554,6 +566,13 @@ export function App(): React.ReactElement {
         void (async () => {
           const sid = sessionId as SessionId;
           let current = useSessionsStore.getState().sessions.get(sid);
+          if (!sessionMatchesRuntime(current, { hostInstanceId, sessionEpoch })) {
+            await attachSessionAuthority(sid);
+            current = useSessionsStore.getState().sessions.get(sid);
+          }
+          // A predecessor attach may have been in flight when this replacement
+          // event arrived. Once that serialized attempt retires, make one fresh
+          // successor-baseline attempt before abandoning the event.
           if (!sessionMatchesRuntime(current, { hostInstanceId, sessionEpoch })) {
             await attachSessionAuthority(sid);
             current = useSessionsStore.getState().sessions.get(sid);

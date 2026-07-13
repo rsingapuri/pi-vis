@@ -26,6 +26,7 @@ const authorityIntents = new Map();
 const authorityOutcomes = [];
 const authorityJournal = [];
 const authorityRestorations = new Map();
+const transitionPermitWaiters = new Map();
 let authorityJournalSequence = 0;
 let initialized = false;
 let cwd = process.cwd();
@@ -840,10 +841,27 @@ function commandCatalog() {
   ];
 }
 
-function transition(reason, records = []) {
+function requestTransitionPermit(request) {
+  return new Promise((resolve) => {
+    transitionPermitWaiters.set(request.transitionId, resolve);
+    send({ type: "transition_prepare", ...request });
+  });
+}
+
+async function transition(reason, records = []) {
   const transitionId = `${reason}-${crypto.randomUUID()}`;
   const provisionalEpoch = sessionEpoch + 1;
   sendControl({ type: "transition_started", transitionId, provisionalEpoch });
+  const permit = await requestTransitionPermit({
+    transitionId,
+    phase: "successor",
+    kind: reason,
+    targetFile: sessionFile,
+  });
+  if (!permit.allowed) {
+    sendControl({ type: "transition_cancelled", transitionId });
+    throw new Error(permit.reason ?? "Transition permit denied");
+  }
   sessionEpoch = provisionalEpoch;
   snapshotSequence = 0;
   const terminalSnapshot = snapshot();
@@ -860,7 +878,7 @@ function transition(reason, records = []) {
   emitAuthorityFrame();
 }
 
-function startFreshSession() {
+async function startFreshSession() {
   sessionId = crypto.randomUUID();
   sessionName = undefined;
   sessionFile = allocateSessionPath(`new-${Date.now()}`);
@@ -871,7 +889,7 @@ function startFreshSession() {
   editorText = "";
   editorRevision += 1;
   ensureFile();
-  transition("new-session", [{ type: "event", event: { type: "session_info_changed" } }]);
+  await transition("new-session", [{ type: "event", event: { type: "session_info_changed" } }]);
 }
 
 async function handleCommand(id, command) {
@@ -911,7 +929,7 @@ async function handleCommand(id, command) {
       publishSnapshot();
       break;
     case "new_session":
-      startFreshSession();
+      await startFreshSession();
       reply(id, true, { cancelled: false });
       break;
     case "get_fork_messages":
@@ -1076,7 +1094,7 @@ async function executeAuthorityIntent(entry) {
         await handleCommand(`authority-${entry.intentId}`, { type: "new_session" });
       } else if (command === "reload") {
         finishAuthorityIntent(entry, "completed", { commandType: command, response: {} });
-        transition("authority-reload");
+        await transition("authority-reload");
       } else if (intent.editorRevision !== editorRevision) {
         finishAuthorityIntent(entry, "rejected", {
           ...(command ? { commandType: command } : {}),
@@ -1223,7 +1241,7 @@ async function executeAuthorityIntent(entry) {
       // The terminal predecessor outcome commits before transition() advances
       // the owner and installs its successor baseline.
       finishAuthorityIntent(entry, "completed", {});
-      transition("authority-reload");
+      await transition("authority-reload");
       return;
     default:
       finishAuthorityIntent(entry, "failed", undefined, "Unsupported fake authority intent");
@@ -1460,6 +1478,14 @@ async function handleMessage(message) {
     case "dispatch_intent":
       reply(message.id, true, dispatchAuthorityIntent(message.envelope));
       break;
+    case "transition_permit": {
+      const resolve = transitionPermitWaiters.get(message.transitionId);
+      if (resolve) {
+        transitionPermitWaiters.delete(message.transitionId);
+        resolve({ allowed: message.allowed === true, reason: message.reason });
+      }
+      break;
+    }
     case "query": {
       const envelope = message.envelope;
       if (
@@ -1605,7 +1631,7 @@ async function handleMessage(message) {
       break;
     }
     case "reload":
-      transition("reload");
+      await transition("reload");
       reply(message.id, true);
       break;
     case "editor_patch": {
