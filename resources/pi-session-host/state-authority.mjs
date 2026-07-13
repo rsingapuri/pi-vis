@@ -562,8 +562,12 @@ export function createStateAuthority({
   function authorityRecords(records) {
     const owner = semanticOwner();
     return records.flatMap((recordValue) => {
-      // Pi events are transcript presentation records. Keeping them out of
-      // semantic frames prevents a legacy/event path from implying liveness.
+      // Production Pi events use the independently sequenced transcript
+      // plane. A frame-only embedder still receives the atomic compatibility
+      // record rather than silently losing presentation.
+      if (recordValue?.type === "event" && typeof sendPresentation !== "function") {
+        return [{ type: "event", event: structuredClone(recordValue.event) }];
+      }
       if (recordValue?.type === "intent_outcome" && recordValue.outcome) {
         return [{ type: "intent_outcome", outcome: structuredClone(recordValue.outcome) }];
       }
@@ -1497,11 +1501,15 @@ export function createStateAuthority({
       }
     }
     actualCompaction = compactionBarrierOpen();
-    // The semantic commit retains only semantic facts. The original event is
-    // published exactly once on the transcript plane with its own cursor.
-    const frame = commitSemanticFrame([]);
-    publishTranscript([publishedEvent]);
-    return frame;
+    // Production publishes the event exactly once on its independently
+    // sequenced transcript plane. Keep the legacy record+snapshot fallback for
+    // embedders/tests that have not installed a presentation sink.
+    if (typeof sendPresentation === "function") {
+      const frame = commitSemanticFrame([]);
+      publishTranscript([publishedEvent]);
+      return frame;
+    }
+    return commitSemanticFrame([{ type: "event", event: publishedEvent }]);
   }
 
   function restoreCustody(items, message) {
