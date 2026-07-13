@@ -8,6 +8,8 @@ import type { PanelEvent } from "@shared/pi-protocol/panel-events.js";
 import type { SessionTreeEntry } from "@shared/pi-protocol/responses.js";
 import type {
   CommandSettlement,
+  IntentEnvelope,
+  IntentReceipt,
   ReloadRequest,
   RendererCommandRequest,
   SessionSubmission,
@@ -1149,6 +1151,14 @@ export function initIpc(win: BrowserWindow): void {
     async (_evt, args: { sessionId: SessionId; submission: SessionSubmission }) => {
       if (!registry) throw new Error("Session registry not initialized");
       return registry.submit(args.sessionId, args.submission);
+    },
+  );
+
+  ipcMain.handle(
+    "session.dispatchIntent",
+    async (_evt, envelope: IntentEnvelope): Promise<IntentReceipt> => {
+      if (!registry) throw new Error("Session registry not initialized");
+      return registry.dispatchIntent(envelope);
     },
   );
 

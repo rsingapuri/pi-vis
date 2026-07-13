@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { SessionId } from "@shared/ids.js";
-import type { AgentSessionSnapshot } from "@shared/pi-protocol/runtime-state.js";
+import type { AgentSessionSnapshot, IntentEnvelope } from "@shared/pi-protocol/runtime-state.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeHostProcess } from "../../../tests/fixtures/fake-host-process.mjs";
 import { __forkOverride } from "../pi/session-host.js";
@@ -427,6 +427,158 @@ describe("SessionRegistry direct AgentSession authority", () => {
       hostInstanceId,
       sessionEpoch,
     });
+    h.registry.stopAll();
+  });
+
+  it("fences dispatch intents by renderer generation and expected owner without forwarding", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+    record._rendererGeneration = 2;
+    const dispatch = vi.spyOn(record.proc!, "dispatchIntent");
+
+    await expect(
+      h.registry.dispatchIntent({
+        sessionId: id,
+        intentId: "stale-generation",
+        rendererGeneration: 1,
+        expectedOwner: { hostInstanceId, sessionEpoch },
+        intent: { kind: "runBash", command: "pwd" },
+      }),
+    ).resolves.toEqual({ status: "not_admitted", intentId: "stale-generation", reason: "invalid" });
+    await expect(
+      h.registry.dispatchIntent({
+        sessionId: id,
+        intentId: "stale-owner",
+        rendererGeneration: 2,
+        expectedOwner: { hostInstanceId: "retired-host", sessionEpoch },
+        intent: { kind: "runBash", command: "pwd" },
+      }),
+    ).resolves.toEqual({
+      status: "not_admitted",
+      intentId: "stale-owner",
+      reason: "stale_owner",
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+    h.registry.stopAll();
+  });
+
+  it("fences dispatch intents while unavailable, closing, or transitioning", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+    const dispatch = vi.spyOn(record.proc!, "dispatchIntent");
+    const envelope = (intentId: string): IntentEnvelope => ({
+      sessionId: id,
+      intentId,
+      rendererGeneration: record._rendererGeneration,
+      expectedOwner: { hostInstanceId, sessionEpoch },
+      intent: { kind: "runBash", command: "pwd" },
+    });
+
+    record.availability = "unavailable";
+    await expect(h.registry.dispatchIntent(envelope("unavailable"))).resolves.toEqual({
+      status: "not_admitted",
+      intentId: "unavailable",
+      reason: "transport_unavailable",
+    });
+    record.availability = "transitioning";
+    await expect(h.registry.dispatchIntent(envelope("transitioning"))).resolves.toEqual({
+      status: "not_admitted",
+      intentId: "transitioning",
+      reason: "transitioning",
+    });
+    record.availability = "available";
+    record._closing = true;
+    await expect(h.registry.dispatchIntent(envelope("closing"))).resolves.toEqual({
+      status: "not_admitted",
+      intentId: "closing",
+      reason: "closing",
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+    h.registry.stopAll();
+  });
+
+  it("returns delivery_unknown and retains owner-scoped escrow after dispatch transport loss", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+    const pending = h.registry.dispatchIntent({
+      sessionId: id,
+      intentId: "lost-dispatch",
+      rendererGeneration: record._rendererGeneration,
+      expectedOwner: { hostInstanceId, sessionEpoch },
+      intent: { kind: "runBash", command: "pwd" },
+    });
+    await vi.waitFor(() =>
+      expect(h.fakes[0]!.sent.filter((message) => message.type === "dispatch_intent")).toHaveLength(
+        1,
+      ),
+    );
+    h.fakes[0]!.emitExit(1);
+
+    await expect(pending).resolves.toEqual({
+      status: "delivery_unknown",
+      intentId: "lost-dispatch",
+      owner: { hostInstanceId, sessionEpoch },
+    });
+    expect(record._retainedDispatchIntents).toHaveLength(1);
+    expect([...record._retainedDispatchIntents.values()][0]).toMatchObject({
+      possibleDispatch: true,
+      deliveryUnknown: true,
+    });
+    await vi.waitFor(() => expect(h.fakes).toHaveLength(2));
+    expect(h.fakes[1]!.sent.filter((message) => message.type === "dispatch_intent")).toHaveLength(
+      0,
+    );
+    h.registry.stopAll();
+  });
+
+  it("forwards duplicate and opaque intent payloads to the child without main semantic settlement", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+    const owner = { hostInstanceId, sessionEpoch };
+    const envelope = {
+      sessionId: id,
+      intentId: "opaque-duplicate",
+      rendererGeneration: record._rendererGeneration,
+      expectedOwner: owner,
+      // This deliberately future/unknown kind proves registry routing does not
+      // branch on SessionIntent semantics; the child remains the validator.
+      intent: { kind: "future_child_intent", privatePayload: { answer: 42 } },
+    } as unknown as IntentEnvelope;
+    const dispatch = vi
+      .spyOn(record.proc!, "dispatchIntent")
+      .mockResolvedValueOnce({ status: "admitted", intentId: envelope.intentId, owner })
+      .mockResolvedValueOnce({ status: "duplicate", intentId: envelope.intentId, owner });
+
+    await expect(h.registry.dispatchIntent(envelope)).resolves.toEqual({
+      status: "admitted",
+      intentId: envelope.intentId,
+      owner,
+    });
+    await expect(h.registry.dispatchIntent(envelope)).resolves.toEqual({
+      status: "duplicate",
+      intentId: envelope.intentId,
+      owner,
+    });
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch).toHaveBeenNthCalledWith(1, {
+      intentId: envelope.intentId,
+      expectedOwner: owner,
+      intent: envelope.intent,
+    });
+    expect(h.submissions).toEqual([]);
+    expect(record._retainedDispatchIntents).toHaveLength(0);
     h.registry.stopAll();
   });
 

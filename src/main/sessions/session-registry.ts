@@ -21,6 +21,8 @@ import {
   type AuthorityAttachResponse,
   type CommandSettlement,
   type EscapeResult,
+  type IntentEnvelope,
+  type IntentReceipt,
   type ReloadRequest,
   ReloadRequestSchema,
   type ReloadSettlement,
@@ -64,6 +66,16 @@ interface RetainedCommandIntent {
   request: RendererCommandRequest;
   dispatched: boolean;
   recoveryPublished?: boolean | undefined;
+}
+
+/**
+ * Main-only evidence that child IPC may have accepted an owner-bound intent.
+ * It is deliberately not a retry queue: semantic outcomes stay child-owned.
+ */
+interface RetainedDispatchIntent {
+  envelope: IntentEnvelope;
+  possibleDispatch: boolean;
+  deliveryUnknown?: boolean | undefined;
 }
 
 interface PendingUnifiedSubmit {
@@ -127,6 +139,7 @@ export interface SessionRecord {
   _acknowledgedUnifiedIntents: Set<string>;
   _unifiedRestorationIntents: Map<string, string>;
   _retainedCommandIntents: Map<string, RetainedCommandIntent>;
+  _retainedDispatchIntents: Map<string, RetainedDispatchIntent>;
   _restorations: Map<string, unknown>;
   _rendererGeneration: number;
   _mutationSequence: number;
@@ -272,6 +285,7 @@ export class SessionRegistry {
       _acknowledgedUnifiedIntents: new Set(),
       _unifiedRestorationIntents: new Map(),
       _retainedCommandIntents: new Map(),
+      _retainedDispatchIntents: new Map(),
       _restorations: new Map(),
       _rendererGeneration: 0,
       _mutationSequence: 0,
@@ -1198,6 +1212,99 @@ export class SessionRegistry {
         () => {},
       );
     });
+  }
+
+  /**
+   * Forward an opaque, owner-bound intent to the child controller. Main only
+   * fences renderer/session transport ownership; it never interprets intent
+   * kinds, Pi liveness, or terminal outcomes.
+   */
+  async dispatchIntent(envelope: IntentEnvelope): Promise<IntentReceipt> {
+    if (
+      !envelope ||
+      typeof envelope.sessionId !== "string" ||
+      envelope.sessionId.length === 0 ||
+      typeof envelope.intentId !== "string" ||
+      envelope.intentId.length === 0 ||
+      !Number.isInteger(envelope.rendererGeneration) ||
+      envelope.rendererGeneration < 0 ||
+      !envelope.expectedOwner ||
+      typeof envelope.expectedOwner.hostInstanceId !== "string" ||
+      envelope.expectedOwner.hostInstanceId.length === 0 ||
+      !Number.isInteger(envelope.expectedOwner.sessionEpoch) ||
+      envelope.expectedOwner.sessionEpoch < 0 ||
+      !envelope.intent ||
+      typeof envelope.intent !== "object"
+    ) {
+      throw new Error("Invalid intent envelope");
+    }
+
+    const sessionId = envelope.sessionId as SessionId;
+    const record = this.sessions.get(sessionId);
+    const notAdmitted = (
+      reason: Extract<IntentReceipt, { status: "not_admitted" }>["reason"],
+    ): IntentReceipt => ({ status: "not_admitted", intentId: envelope.intentId, reason });
+    if (!record) return notAdmitted("stale_owner");
+    if (envelope.rendererGeneration !== record._rendererGeneration) return notAdmitted("invalid");
+    if (record._closing) return notAdmitted("closing");
+    if (record._hostTransition || record.availability === "transitioning") {
+      return notAdmitted("transitioning");
+    }
+    if (
+      !record.proc ||
+      !record._procReady ||
+      record.status !== "ready" ||
+      record._dead ||
+      record.availability !== "available"
+    ) {
+      return notAdmitted("transport_unavailable");
+    }
+    if (
+      record.proc.hostInstanceId !== envelope.expectedOwner.hostInstanceId ||
+      record.proc.sessionEpoch !== envelope.expectedOwner.sessionEpoch
+    ) {
+      return notAdmitted("stale_owner");
+    }
+
+    this.markActivationVisitInteracted(record);
+    const proc = record.proc;
+    const escrowKey = `${envelope.expectedOwner.hostInstanceId}\0${envelope.expectedOwner.sessionEpoch}\0${envelope.intentId}`;
+    // Install this before invoking child IPC: a send can cross the child
+    // boundary before its acknowledgement is lost.
+    const retained: RetainedDispatchIntent = {
+      envelope: structuredClone(envelope),
+      possibleDispatch: true,
+    };
+    record._retainedDispatchIntents.set(escrowKey, retained);
+    record._mutationSequence++;
+    const {
+      sessionId: _sessionId,
+      rendererGeneration: _rendererGeneration,
+      ...childEnvelope
+    } = envelope;
+    try {
+      // SessionHost deliberately has a transport-only receipt shape; this
+      // shared cast preserves the renderer IPC contract without inspecting the
+      // child-owned semantic payload.
+      const receipt = (await proc.dispatchIntent(childEnvelope)) as IntentReceipt;
+      if (receipt.status === "delivery_unknown") {
+        retained.deliveryUnknown = true;
+        return receipt;
+      }
+      // The child owns duplicate detection and all terminal semantics. A
+      // receipt only closes main's transport escrow for this attempt.
+      record._retainedDispatchIntents.delete(escrowKey);
+      return receipt;
+    } catch {
+      // Never retry or reinterpret a possible dispatch. Keep owner-scoped
+      // evidence so it cannot silently migrate to a replacement host.
+      retained.deliveryUnknown = true;
+      return {
+        status: "delivery_unknown",
+        intentId: envelope.intentId,
+        owner: envelope.expectedOwner,
+      };
+    }
   }
 
   async submit(
