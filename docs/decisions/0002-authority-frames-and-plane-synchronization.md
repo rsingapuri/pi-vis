@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -10,7 +10,7 @@ A renderer cannot know about a child-process Pi mutation at the instant it occur
 
 ## Decision
 
-Migrate the session protocol to child-owned authority frames.
+The deployed session protocol uses child-owned authority frames.
 
 - The SDK-host `SessionController` is the sole interpreter of Pi semantic state and serializes semantic mutations.
 - The guarantee is **exact as of cursor**: a `following` projection has all complete frames through `(hostInstanceId, sessionEpoch, transportSequence, snapshotSequence)`, not knowledge of a mutation still in transit.
@@ -24,9 +24,9 @@ Migrate the session protocol to child-owned authority frames.
 
 ## Consequences
 
-This is a phased migration. The present snapshot/resync, disposition, editor revision, renderer generation, panel sequence, and transition-batch contracts stay as compatibility behavior until an end-to-end frame path is available. Mixed legacy and frame data must meet only at explicit baselines and must never be combined as a single cursor.
+The end-to-end semantic path is child serialization/journal, opaque main buffered per-plane routing, and the renderer authority reducer. Snapshot/resync, disposition, editor revision, renderer generation, panel sequence, and transition-batch contracts may remain as compatibility diagnostics or explicit-baseline bridges, but are non-authoritative. They must never repair continuity, settle a mutation, or be combined with a frame as a single cursor.
 
-The rollout order is child serialization and journal; main buffered attach/per-plane routing; renderer shadow reducer; interrupt/compaction; submission/editor/queues; remaining mutations; presentation reconstruction; and legacy-path removal. Tests must cover dropped/reordered frames, attach racing a transition, detached operations, duplicate intents, ambiguous dispatch, getter/event disagreement, panel reconstruction, retry barriers, and lock contention.
+Legacy mutation and presentation consumers are prohibited. Renderer and main dispatch only high-level owner-bound intents and render/reduce only authority projections. They must not use generic command dispatch, direct runtime snapshots, transcript events, receipts, returned promises, dispositions, or lifecycle settlements to choose Pi semantics or mutate canonical semantic state. Tests cover dropped/reordered frames, attach racing a transition, detached operations, duplicate intents, ambiguous dispatch, getter/event disagreement, panel reconstruction, retry barriers, and lock contention.
 
 ## References
 

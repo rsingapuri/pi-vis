@@ -3,7 +3,7 @@
 Load only the documentation relevant to the change.
 
 - Broad runtime or repository work: `docs/architecture/overview.md`.
-- SDK host, main/preload IPC, runtime-state schemas, process lifecycle, panels, transitions, authority-frame migration, or per-plane synchronization: `docs/architecture/processes-and-ipc.md`, `docs/architecture/state-and-sessions.md`, and `docs/decisions/0002-authority-frames-and-plane-synchronization.md`.
+- SDK host, main/preload IPC, runtime-state schemas, process lifecycle, panels, transitions, the deployed authority-frame protocol, or per-plane synchronization: `docs/architecture/processes-and-ipc.md`, `docs/architecture/state-and-sessions.md`, and `docs/decisions/0002-authority-frames-and-plane-synchronization.md`.
 - Submission admission, queue custody/restoration, editor revisions, ESC, renderer/UI acknowledgements, or close/cap behavior: also read those two architecture docs and `docs/ui-conventions.md`.
 - Composer/slash execution or command admission/settlement: `docs/architecture/commands.md` and `docs/architecture/command-matrix.md`; for authority-frame migration also read `docs/decisions/0002-authority-frames-and-plane-synchronization.md`.
 - Tree APIs/navigation: `docs/architecture/conversation-tree.md`.
