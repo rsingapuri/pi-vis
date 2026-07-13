@@ -29,6 +29,10 @@ import type { PiRpcResponse } from "@shared/pi-protocol/responses.js";
 import {
   type AgentSessionSnapshot,
   AgentSessionSnapshotSchema,
+  type AuthorityAttachBaseline,
+  AuthorityAttachBaselineSchema,
+  type AuthorityFrame,
+  AuthorityFrameSchema,
   type EscapeResult,
   HostEnvelopeSchema,
   type SessionSubmission,
@@ -206,6 +210,8 @@ export interface SessionHostEvents {
   rendererCancelled: (rendererGeneration: number) => void;
   /** Terminal child-owned intent outcomes; receipts never emit this event. */
   intentOutcome: (outcome: unknown) => void;
+  /** Opaque validated child semantic commit; main does not reduce it. */
+  authorityFrame: (frame: AuthorityFrame) => void;
   unresponsive: () => void;
 }
 
@@ -256,6 +262,7 @@ type HostWireMessage =
   | { type: "clipboard_read_image_request"; id: string }
   | { type: "submission_disposition"; result: SubmissionResult }
   | { type: "intent_outcome"; outcome: unknown }
+  | { type: "authority_frame"; frame: unknown }
   | { type: "queue_restoration"; restorationId: string; [key: string]: unknown }
   | { type: "ui_ack"; operationId: string }
   | { type: "renderer_cancelled"; rendererGeneration: number }
@@ -1011,6 +1018,22 @@ export class SessionHost extends EventEmitter {
         break;
       }
 
+      case "authority_frame": {
+        const frame = AuthorityFrameSchema.safeParse(msg.frame);
+        if (!frame.success) {
+          this.emitError(new Error(`Invalid authority frame: ${frame.error.message}`));
+          return;
+        }
+        if (
+          frame.data.owner.hostInstanceId !== this.hostInstanceId ||
+          frame.data.owner.sessionEpoch !== this.sessionEpoch
+        ) {
+          return;
+        }
+        this.emit("authorityFrame", frame.data);
+        break;
+      }
+
       case "queue_restoration": {
         this.emit("queueRestoration", msg);
         break;
@@ -1254,6 +1277,26 @@ export class SessionHost extends EventEmitter {
     return response.data as EscapeResult;
   }
 
+  async requestAuthorityAttach(rendererGeneration: number): Promise<AuthorityAttachBaseline> {
+    const response = await this.requestHost(
+      { type: "authority_attach", rendererGeneration },
+      10_000,
+    );
+    if (!response.success || !response.data) {
+      throw new Error(response.error ?? "Authority attach failed");
+    }
+    const baseline = AuthorityAttachBaselineSchema.safeParse(response.data);
+    if (!baseline.success)
+      throw new Error(`Invalid authority attach baseline: ${baseline.error.message}`);
+    if (
+      baseline.data.owner.hostInstanceId !== this.hostInstanceId ||
+      baseline.data.owner.sessionEpoch !== this.sessionEpoch
+    ) {
+      throw new Error("Authority attach baseline runtime identity mismatch");
+    }
+    return baseline.data;
+  }
+
   async requestSnapshot(): Promise<AgentSessionSnapshot> {
     const response = await this.requestHost({ type: "state_request" }, 2_000, true);
     if (!response.success || !response.data) throw new Error(response.error ?? "Snapshot failed");
@@ -1486,6 +1529,7 @@ export interface SessionHost {
   on(event: "controlSilence", listener: () => void): this;
   on(event: "submissionDisposition", listener: (result: SubmissionResult) => void): this;
   on(event: "intentOutcome", listener: (outcome: unknown) => void): this;
+  on(event: "authorityFrame", listener: (frame: AuthorityFrame) => void): this;
   on(event: "queueRestoration", listener: (payload: unknown) => void): this;
   on(event: "uiAcknowledged", listener: (operationId: string) => void): this;
   on(event: "lifecycleUiLease", listener: (active: boolean) => void): this;
@@ -1519,6 +1563,7 @@ export interface SessionHost {
   emit(event: "controlSilence"): boolean;
   emit(event: "submissionDisposition", result: SubmissionResult): boolean;
   emit(event: "intentOutcome", outcome: unknown): boolean;
+  emit(event: "authorityFrame", frame: AuthorityFrame): boolean;
   emit(event: "queueRestoration", payload: unknown): boolean;
   emit(event: "uiAcknowledged", operationId: string): boolean;
   emit(event: "lifecycleUiLease", active: boolean): boolean;

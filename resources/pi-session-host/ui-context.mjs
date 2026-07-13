@@ -72,17 +72,7 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
         if (timer) clearTimeout(timer);
         signal?.removeEventListener?.("abort", onAbort);
       };
-      pending.set(id, { resolve: resolveFn, cleanup, method });
-      if (signal?.aborted) {
-        onAbort();
-        return;
-      }
-      signal?.addEventListener?.("abort", onAbort, { once: true });
-      if (typeof opts?.timeout === "number" && opts.timeout >= 0) {
-        timer = setTimeout(onAbort, opts.timeout);
-        timer.unref?.();
-      }
-      sendToMain({
+      const request = {
         type: "extension_ui_request",
         id,
         operationId: id,
@@ -93,7 +83,18 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
         ...(placeholder !== undefined ? { placeholder } : {}),
         ...(prefill !== undefined ? { prefill } : {}),
         ...(opts?.timeout !== undefined ? { timeout: opts.timeout } : {}),
-      });
+      };
+      pending.set(id, { resolve: resolveFn, cleanup, method, request });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+      if (typeof opts?.timeout === "number" && opts.timeout >= 0) {
+        timer = setTimeout(onAbort, opts.timeout);
+        timer.unref?.();
+      }
+      sendToMain(request);
     });
   };
 
@@ -109,6 +110,14 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
     cancelAll,
     get pendingCount() {
       return pending.size;
+    },
+    pendingSnapshot(rendererGeneration = 0) {
+      return [...pending.values()].map((entry) => ({
+        request: structuredClone(entry.request),
+        rendererGeneration,
+        inputPending: true,
+        acknowledged: false,
+      }));
     },
   };
 }

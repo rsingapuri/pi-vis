@@ -12,6 +12,52 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function authorityBaseline(fake: FakeHostProcess, generation = 1) {
+  const owner = { hostInstanceId: fake.hostInstanceId, sessionEpoch: fake.sessionEpoch };
+  const cursor = { ...owner, transportSequence: 1, snapshotSequence: 1 };
+  const snapshot = {
+    owner,
+    snapshotSequence: 1,
+    capturedAt: Date.now(),
+    sdk: { ...fake.runtime },
+    activity: {},
+    queues: { steering: [], followUp: [], steeringIntentIds: [], followUpIntentIds: [] },
+    custody: [],
+    editor: { revision: 0, text: "", attachments: [] },
+    activeIntents: [],
+    recentIntentOutcomes: [],
+    recentObservedOperations: [],
+    operationJournalLowWatermark: 0,
+    operationJournalHighWatermark: 0,
+    operationJournalTruncated: false,
+    model: { id: "fake-model", provider: "fake" },
+    thinkingLevel: "off",
+    catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
+  };
+  return {
+    sessionId: "child-session",
+    rendererGeneration: generation,
+    owner,
+    semantic: { sync: { state: "following", cursor }, snapshot },
+    operationJournal: [],
+    transcript: {
+      sync: { state: "following", cursor },
+      persistedHistoryCursor: null,
+      liveTailCursor: null,
+      overlapBoundary: null,
+    },
+    extensionUi: {
+      sync: { state: "following", cursor },
+      notifications: [],
+      statuses: {},
+      widgets: {},
+      dialogs: [],
+    },
+    panels: [],
+    publicationHighWatermark: 0,
+  };
+}
+
 /**
  * SessionHost lifecycle tests. Drives the host wire protocol deterministically
  * via FakeHostProcess (installed through the __forkOverride test seam) — no
@@ -40,6 +86,32 @@ describe("SessionHost", () => {
     SessionHost.__dialogTimeoutMsForTests = null;
     host.stop();
     vi.useRealTimers();
+  });
+
+  it("validates opaque authority frames and requests a serialized attach baseline", async () => {
+    fake.emitReady("0.80.6");
+    await host.waitForReady();
+    const baseline = authorityBaseline(fake, 3);
+    const frames = vi.fn();
+    host.on("authorityFrame", frames);
+    fake.emitWire({
+      type: "authority_frame",
+      frame: {
+        owner: baseline.owner,
+        transportSequence: 1,
+        frameId: "semantic-1",
+        records: [],
+        terminalSnapshot: baseline.semantic.snapshot,
+      },
+    });
+    expect(frames).toHaveBeenCalledWith(expect.objectContaining({ frameId: "semantic-1" }));
+
+    const attach = host.requestAuthorityAttach(3);
+    const request = fake.sent.find((message) => message.type === "authority_attach");
+    if (!request || typeof request.id !== "string")
+      throw new Error("missing authority attach request");
+    fake.emitWire({ type: "response", id: request.id, success: true, data: baseline });
+    await expect(attach).resolves.toMatchObject({ rendererGeneration: 3, owner: baseline.owner });
   });
 
   describe("control silence", () => {

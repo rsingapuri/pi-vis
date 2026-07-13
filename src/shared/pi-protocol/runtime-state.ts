@@ -1022,6 +1022,11 @@ export const SemanticSnapshotSchema = z
 export type SemanticSnapshot = z.infer<typeof SemanticSnapshotSchema>;
 
 export const AuthorityRecordSchema = z.discriminatedUnion("type", [
+  // Pi events are presentation records carried atomically with the resulting
+  // semantic snapshot; they never become an independent liveness authority.
+  z
+    .object({ type: z.literal("event"), event: PiEventSchema })
+    .strict(),
   z.object({ type: z.literal("intent_outcome"), outcome: IntentOutcomeSchema }).strict(),
   z
     .object({ type: z.literal("observed_operation"), record: ObservedOperationRecordSchema })
@@ -1066,13 +1071,15 @@ export const AuthorityFrameSchema = z
     }
     for (const [index, record] of frame.records.entries()) {
       const owner =
-        record.type === "intent_outcome"
-          ? record.outcome.owner
-          : record.type === "observed_operation"
-            ? record.record.owner
-            : record.type === "custody"
-              ? record.custody.owner
-              : record.owner;
+        record.type === "event"
+          ? frame.owner
+          : record.type === "intent_outcome"
+            ? record.outcome.owner
+            : record.type === "observed_operation"
+              ? record.record.owner
+              : record.type === "custody"
+                ? record.custody.owner
+                : record.owner;
       if (
         owner.hostInstanceId !== frame.owner.hostInstanceId ||
         owner.sessionEpoch !== frame.owner.sessionEpoch

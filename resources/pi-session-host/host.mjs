@@ -56,6 +56,7 @@ let handleEscape = null;
 let handleReload = null;
 let dispatchIntent = null;
 let publishSnapshot = null;
+let requestAuthorityAttach = null;
 let applyEditorPatch = null;
 let runtimeAuthority = null;
 let interruptActiveOperation = null;
@@ -499,6 +500,7 @@ async function handleInit(msg) {
       handleReload: reload,
       dispatchIntent: dispatch,
       publishSnapshot: publish,
+      requestAuthorityAttach: attachAuthority,
       applyEditorPatch: patchEditor,
       authority,
       bindExtensions: bindExt,
@@ -517,6 +519,21 @@ async function handleInit(msg) {
       cwd,
       hostInstanceId,
       sendControl,
+      // Frames are opaque semantic commits. `send` envelopes the child frame
+      // without re-emitting its records/snapshot on compatibility channels.
+      sendFrame: (frame) => send({ type: "authority_frame", frame }),
+      authorityPresentation: {
+        dialogs: (rendererGeneration) =>
+          dialogResolver?.pendingSnapshot?.(rendererGeneration) ?? [],
+        panels: () =>
+          [...panels].map(([panelId, panel]) => ({
+            panelId,
+            overlay: panel.overlay,
+            unified: panel.unified,
+            baseline: panelReconstruction.baseline(panelId),
+            inputAcknowledgedThrough: panel.inputSequence,
+          })),
+      },
       initialBinding: true,
       lifecycleUiTracker,
       uiState: {
@@ -536,6 +553,7 @@ async function handleInit(msg) {
     handleReload = reload;
     dispatchIntent = dispatch;
     publishSnapshot = publish;
+    requestAuthorityAttach = attachAuthority;
     applyEditorPatch = patchEditor;
     interruptActiveOperation = interrupt;
     const initialBatch = authority.commitInitialBinding();
@@ -636,6 +654,12 @@ process.on("message", async (msg) => {
       case "state_request": {
         const snapshot = await runtimeAuthority?.requestFullSnapshot();
         send({ type: "response", id: msg.id, success: true, data: snapshot });
+        break;
+      }
+
+      case "authority_attach": {
+        const baseline = await requestAuthorityAttach?.(msg.rendererGeneration);
+        send({ type: "response", id: msg.id, success: true, data: baseline });
         break;
       }
 

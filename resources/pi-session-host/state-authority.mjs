@@ -29,6 +29,10 @@ export function createStateAuthority({
   let session = initialSession;
   let sessionEpoch = 0;
   let snapshotSequence = 0;
+  // Semantic frames have their own contiguous source cursor. Host IPC carries
+  // unrelated transcript/UI/panel traffic, so its global sequence cannot be
+  // used as a semantic-plane cursor.
+  let semanticTransportSequence = 0;
   let stopped = false;
   // `actualCompaction` is the compatibility projection of the observed
   // lifecycle below. It is deliberately not a guess that events are complete.
@@ -378,6 +382,7 @@ export function createStateAuthority({
   }
 
   function publishSnapshot(full = false) {
+    if (!transition && typeof sendFrame === "function") return commitSemanticFrame([], full);
     const value = snapshot();
     observeSnapshotMutation(value);
     if (transition) {
@@ -391,6 +396,7 @@ export function createStateAuthority({
   function record(recordValue) {
     noteMutation();
     if (transition) transition.records.push(recordValue);
+    else if (typeof sendFrame === "function") commitSemanticFrame([recordValue]);
     else sendRecord(recordValue);
   }
 
@@ -420,37 +426,167 @@ export function createStateAuthority({
     }
   }
 
-  function createSemanticFrame(records = [], full = false) {
-    const terminalSnapshot = snapshot();
-    observeSnapshotMutation(terminalSnapshot);
+  function semanticOwner() {
+    return { hostInstanceId, sessionEpoch };
+  }
+
+  // The legacy snapshot intentionally remains available to compatibility
+  // consumers. Frames use this separate, schema-shaped projection so no
+  // renderer has to merge old host facts with a new semantic commit.
+  function semanticSnapshot() {
+    const value = snapshot();
+    const owner = semanticOwner();
+    const observed = operationJournal
+      .filter((entry) => entry.kind === "compaction")
+      .map((entry) => ({
+        operationId: String(entry.operationId ?? entry.operationSequence),
+        owner,
+        kind: "compaction",
+        state: ["active", "retry_wait"].includes(entry.phase)
+          ? entry.phase === "retry_wait"
+            ? "retry_wait"
+            : "active"
+          : entry.phase === "terminal_success"
+            ? "completed"
+            : entry.phase === "terminal_aborted"
+              ? "aborted"
+              : entry.phase === "terminal_failed"
+                ? "failed"
+                : "unknown",
+        observedAt: entry.observedAt,
+        ...(entry.anomaly ? { detail: String(entry.anomaly) } : {}),
+      }));
+    const outcomes = [...dispatchedIntents.values()]
+      .filter((entry) => entry.outcome)
+      .map((entry) => ({
+        intentId: entry.outcome.intentId,
+        owner,
+        kind: entry.kind,
+        state: entry.outcome.state,
+      }));
+    const active = [...dispatchedIntents.values()]
+      .filter((entry) => !entry.outcome)
+      .map((entry) => ({
+        intentId: entry.intentId,
+        owner,
+        kind: entry.kind,
+        state: "admitted",
+        recordedAt: entry.recordedAt,
+      }));
+    const compactionActivity = compactionBarrierOpen()
+      ? {
+          kind: "compaction",
+          state:
+            compaction.phase === "retry_wait"
+              ? "retry_wait"
+              : compaction.phase === "cancelling"
+                ? "cancelling"
+                : compaction.phase === "active_unknown_origin"
+                  ? "active_unknown_origin"
+                  : "active",
+          attempt: Math.max(0, compaction.attempt),
+          ...(compaction.operationId ? { intentId: compaction.operationId } : {}),
+          ...(compaction.anomaly ? { anomaly: compaction.anomaly } : {}),
+        }
+      : undefined;
     return {
-      owner: { hostInstanceId, sessionEpoch },
-      frameId: `${hostInstanceId}:${sessionEpoch}:${terminalSnapshot.snapshotSequence}`,
-      records: structuredClone(records),
-      terminalSnapshot,
-      full,
+      owner,
+      snapshotSequence: value.snapshotSequence,
+      capturedAt: value.capturedAt,
+      sdk: {
+        isStreaming: value.isStreaming,
+        isIdle: value.isIdle,
+        isCompacting: value.isCompacting,
+        isRetrying: value.isRetrying,
+        retryAttempt: value.retryAttempt,
+        isBashRunning: value.isBashRunning,
+      },
+      activity: {
+        ...(compactionActivity ? { compaction: compactionActivity } : {}),
+      },
+      queues: {
+        steering: value.steering,
+        followUp: value.followUp,
+        steeringIntentIds: value.steeringIntentIds ?? value.steering.map(() => null),
+        followUpIntentIds: value.followUpIntentIds ?? value.followUp.map(() => null),
+      },
+      custody: custody.map((item) => ({
+        custodyId: item.custodyId,
+        intentId: item.request.intentId,
+        owner,
+        queueMode: item.request.requestedMode === "steer" ? "steer" : "followUp",
+        barrier:
+          item.phase === "compaction"
+            ? "compaction"
+            : item.phase === "navigation"
+              ? "navigation"
+              : "admission_fence",
+        enteredAt: item.ingressSequence,
+        requiresReview: false,
+      })),
+      editor: value.editor,
+      activeIntents: active,
+      recentIntentOutcomes: outcomes,
+      recentObservedOperations: observed,
+      operationJournalLowWatermark: value.operationJournalLowWatermark,
+      operationJournalHighWatermark: value.operationJournalHighWatermark,
+      operationJournalTruncated: value.operationJournalTruncated,
+      model: value.model,
+      thinkingLevel: value.thinkingLevel,
+      catalog: value.catalog,
     };
   }
 
-  // The public authority API used by a future opaque-frame transport. With no
-  // frame sink it deliberately preserves the established record-then-snapshot
-  // wire format for current main-process compatibility.
+  function authorityRecords(records) {
+    const owner = semanticOwner();
+    return records.flatMap((recordValue) => {
+      if (recordValue?.type === "event") return [{ type: "event", event: recordValue.event }];
+      if (recordValue?.type === "intent_outcome" && recordValue.outcome) {
+        return [
+          {
+            type: "intent_outcome",
+            outcome: {
+              intentId: recordValue.outcome.intentId,
+              owner,
+              kind: recordValue.outcome.kind,
+              state: recordValue.outcome.state,
+            },
+          },
+        ];
+      }
+      return [];
+    });
+  }
+
+  function createSemanticFrame(records = []) {
+    const terminalSnapshot = semanticSnapshot();
+    observeSnapshotMutation(terminalSnapshot);
+    const transportSequence = ++semanticTransportSequence;
+    return {
+      owner: semanticOwner(),
+      transportSequence,
+      frameId: `${hostInstanceId}:${sessionEpoch}:${transportSequence}`,
+      records: authorityRecords(records),
+      terminalSnapshot,
+    };
+  }
+
+  // With a frame sink, a semantic change is emitted once as an opaque frame;
+  // legacy records/snapshots remain only for callers that have not migrated.
   function commitSemanticFrame(records = [], full = false) {
     if (transition) {
       for (const item of records) record(item);
       return publishSnapshot(full);
     }
-    // Frame-only consumers do not pass through record(), so account for the
-    // semantic mutation before capturing the terminal snapshot.
     if (typeof sendFrame === "function") {
       for (const _item of records) noteMutation();
-      const frame = createSemanticFrame(records, full);
+      const frame = createSemanticFrame(records);
       sendFrame(frame);
       return frame;
     }
-    const frame = createSemanticFrame(records, full);
+    const frame = createSemanticFrame(records);
     for (const item of records) record(item);
-    sendControl({ type: "snapshot", snapshot: frame.terminalSnapshot, full });
+    sendControl({ type: "snapshot", snapshot: snapshot(), full });
     return frame;
   }
 
@@ -919,6 +1055,7 @@ export function createStateAuthority({
       fingerprint,
       kind: intent.kind,
       owner: structuredClone(owner),
+      recordedAt: Date.now(),
       outcome: null,
     };
     dispatchedIntents.set(key, entry);
@@ -1437,6 +1574,91 @@ export function createStateAuthority({
     return publishSnapshot(true);
   }
 
+  // Runs through the same scheduler as mutation ingress. Thus an attach that
+  // races a compaction end or replacement observes the terminal commit, never
+  // an arbitrary interleaving. Presentation planes deliberately use independent
+  // cursors; panels are synchronizing until a forced repaint is acknowledged.
+  function requestAuthorityAttach(rendererGeneration, presentation = {}) {
+    return schedule("ingress", async () => {
+      while (transition) await transition.settled;
+      const semantic = semanticSnapshot();
+      const owner = semantic.owner;
+      // Cursor zero is not wire-valid. Reserve the initial semantic source
+      // cursor for this baseline so the first later frame is contiguous (2),
+      // rather than being mistaken for a duplicate of an attach at cursor 1.
+      if (semanticTransportSequence === 0) semanticTransportSequence = 1;
+      const cursor = {
+        ...owner,
+        transportSequence: semanticTransportSequence,
+        snapshotSequence: semantic.snapshotSequence,
+      };
+      const catalog = semantic.catalog;
+      const journal = operationJournal
+        .filter((entry) => entry.kind === "compaction")
+        .map((entry) => ({
+          type: "observed_operation",
+          sequence: entry.operationSequence,
+          record: {
+            operationId: String(entry.operationId ?? entry.operationSequence),
+            owner,
+            kind: "compaction",
+            state: ["active", "retry_wait"].includes(entry.phase)
+              ? entry.phase === "retry_wait"
+                ? "retry_wait"
+                : "active"
+              : entry.phase === "terminal_success"
+                ? "completed"
+                : entry.phase === "terminal_aborted"
+                  ? "aborted"
+                  : entry.phase === "terminal_failed"
+                    ? "failed"
+                    : "unknown",
+            observedAt: entry.observedAt,
+            ...(entry.anomaly ? { detail: String(entry.anomaly) } : {}),
+          },
+        }));
+      const panels = (presentation.panels?.() ?? []).map((panel) => ({
+        panelKey: `panel:${panel.panelId}`,
+        panelId: panel.panelId,
+        owner,
+        sync: { state: "synchronizing", reason: "repaint_required" },
+        overlay: panel.overlay === true,
+        unified: panel.unified === true,
+        inputAcknowledgedThrough: panel.inputAcknowledgedThrough ?? 0,
+        keyframe: {
+          kind: "repaint_required",
+          renderRevision: panel.baseline?.revision ?? 0,
+        },
+      }));
+      return {
+        // Main replaces this local identity with its SessionId while installing
+        // the baseline. It is still a non-empty child correlation value.
+        sessionId: String(session.sessionId ?? "session"),
+        rendererGeneration,
+        owner,
+        semantic: { sync: { state: "following", cursor }, snapshot: semantic },
+        operationJournal: journal,
+        transcript: {
+          sync: { state: "following", cursor: { ...cursor } },
+          persistedHistoryCursor: session.sessionFile ?? null,
+          liveTailCursor: null,
+          overlapBoundary: null,
+        },
+        extensionUi: {
+          sync: { state: "following", cursor: { ...cursor } },
+          notifications: catalog.notifications ?? [],
+          statuses: catalog.statuses ?? {},
+          widgets: catalog.widgets ?? {},
+          dialogs: presentation.dialogs?.(rendererGeneration) ?? [],
+        },
+        panels,
+        // The main router owns renderer-publication numbering. Zero means no
+        // main publication is claimed by the child baseline itself.
+        publicationHighWatermark: 0,
+      };
+    });
+  }
+
   function cancelTransition(_oldSession) {
     if (!transition) return publishSnapshot(true);
     // Cancellation must restore BOTH parts of runtime identity. In particular,
@@ -1550,6 +1772,8 @@ export function createStateAuthority({
     createSemanticFrame,
     commitSemanticFrame,
     requestFullSnapshot,
+    requestAuthorityAttach,
+    semanticSnapshot,
     observeEvent,
     submit,
     dispatchIntent,

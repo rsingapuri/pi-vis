@@ -144,6 +144,10 @@ export function setupCommandBridge({
   cwd,
   hostInstanceId = "test-host",
   sendControl = () => {},
+  // Host-owned presentation reconstruction baselines. The child authority
+  // serializes these only after prior ingress commits.
+  authorityPresentation = {},
+  sendFrame = null,
   initialBinding = false,
   lifecycleUiTracker = { track: (promise) => promise },
   uiState = {
@@ -177,6 +181,7 @@ export function setupCommandBridge({
     hostInstanceId,
     initialSession: session,
     sendControl,
+    sendFrame,
     sendRecord: (record) => {
       if (record.type === "event") send({ type: "event", event: record.event });
       else if (record.type === "submission")
@@ -1328,6 +1333,8 @@ export function setupCommandBridge({
     handleReload,
     dispatchIntent,
     publishSnapshot: (full = true) => authority.publishSnapshot(full),
+    requestAuthorityAttach: (rendererGeneration) =>
+      authority.requestAuthorityAttach(rendererGeneration, authorityPresentation),
     applyEditorPatch: (patch) => uiState.applyEditorPatch(patch),
     bindExtensions: bindInitialExtensions,
     interruptActiveOperation,

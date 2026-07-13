@@ -599,6 +599,14 @@ export class SessionRegistry {
       if (!current() || (record._editorRecovery && record._deferredInitialBatch)) return;
       this.installSnapshot(record, snapshot);
     });
+    proc.on("authorityFrame", (frame) => {
+      if (!current()) return;
+      this.routeAuthorityPublication(record.sessionId, {
+        plane: "semantic",
+        owner: frame.owner,
+        payload: frame,
+      });
+    });
     proc.on("transitionBatch", (batch) => {
       if (!current()) return;
       const allowInitial =

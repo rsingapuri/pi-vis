@@ -1254,12 +1254,50 @@ describe("state authority", () => {
 
     const baseline = authority.createSemanticFrame();
     expect(baseline.terminalSnapshot).toMatchObject({
-      compaction: { phase: "active", barrierOpen: true },
+      activity: { compaction: { state: "active" } },
       operationJournalLowWatermark: 2,
       operationJournalHighWatermark: 3,
       operationJournalTruncated: true,
     });
     expect(baseline.terminalSnapshot.recentObservedOperations).toHaveLength(2);
+  });
+
+  it("serializes an attach after prior boundaries and supplies a journal plus repaint fences", async () => {
+    const { authority, session } = setup();
+    session.isCompacting = true;
+    authority.observeEvent({ type: "compaction_start" });
+    const attach = authority.requestAuthorityAttach(7, {
+      panels: () => [
+        {
+          panelId: 4,
+          overlay: true,
+          unified: false,
+          baseline: { revision: 9, repaintRequired: true },
+          inputAcknowledgedThrough: 0,
+        },
+      ],
+    });
+    session.isCompacting = false;
+    authority.observeEvent({ type: "compaction_end" });
+
+    await expect(attach).resolves.toMatchObject({
+      rendererGeneration: 7,
+      semantic: {
+        snapshot: { activity: {} },
+      },
+      operationJournal: expect.arrayContaining([
+        expect.objectContaining({ type: "observed_operation" }),
+      ]),
+      panels: [
+        expect.objectContaining({
+          panelId: 4,
+          sync: { state: "synchronizing", reason: "repaint_required" },
+          keyframe: { kind: "repaint_required", renderRevision: 9 },
+        }),
+      ],
+    });
+    const nextFrame = authority.commitSemanticFrame();
+    expect(nextFrame.transportSequence).toBe(3);
   });
 
   it("keeps the compaction barrier through retry_wait", async () => {
@@ -1388,7 +1426,9 @@ describe("state authority", () => {
       expect.objectContaining({
         records: [{ type: "event", event: { type: "compaction_start" } }],
         terminalSnapshot: expect.objectContaining({
-          compaction: expect.objectContaining({ phase: "active" }),
+          activity: expect.objectContaining({
+            compaction: expect.objectContaining({ state: "active" }),
+          }),
         }),
       }),
     );
