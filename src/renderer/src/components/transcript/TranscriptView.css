@@ -94,13 +94,13 @@
   );
 }
 
-/* The fade mask is the only scroll affordance — hide the native scrollbar.
-   Scoped to the transcript so other scroll regions (code blocks, tool cards,
-   dialogs) keep their thin thumb. */
-.transcript-view {
+/* While following the latest output, the edge treatment is the only scroll
+   affordance. Once the user scrolls up, removing this class reveals the shared
+   app scrollbar so their position in a long transcript stays visible. */
+.transcript-view--pinned {
   scrollbar-width: none;
 }
-.transcript-view::-webkit-scrollbar {
+.transcript-view--pinned::-webkit-scrollbar {
   width: 0;
   height: 0;
   display: none;
@@ -120,26 +120,6 @@
   width: 100%;
   max-width: var(--transcript-measure);
   margin-inline: auto;
-}
-
-.show-earlier-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-family: var(--font-display);
-  font-size: 0.857em;
-  font-weight: 500;
-  line-height: var(--leading-label);
-  padding: 0.571rem 1.143rem;
-  cursor: pointer;
-  align-self: center;
-  margin-bottom: var(--space-5);
-}
-
-.show-earlier-btn:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
 }
 
 /* ── Block architecture ───────────────────────────────────────────────

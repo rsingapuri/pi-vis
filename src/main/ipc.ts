@@ -43,7 +43,7 @@ import { clearPiLocationCache, locatePi } from "./pi/locate-pi.js";
 import { initPty, killAllPtys, killPty, resizePty, startPty, writePty } from "./pty.js";
 import { loadBoundHistory } from "./sessions/bound-history.js";
 import { createEventBatcher } from "./sessions/event-batcher.js";
-import { entriesToTranscript, loadHistoryPage } from "./sessions/history-loader.js";
+import { entriesToTranscript, loadHistory } from "./sessions/history-loader.js";
 import {
   extractSessionMeta,
   listSessionsForWorkspace,
@@ -506,22 +506,17 @@ export function initIpc(win: BrowserWindow): void {
         historyGeneration: number;
         expectedHostInstanceId: string | null;
         expectedSessionEpoch: number | null;
-        limit?: number | undefined;
-        before?: number | undefined;
       },
     ) => {
       if (!registry) {
         return { status: "stale" as const, historyGeneration: args.historyGeneration };
       }
       const testDelayMs = Number.parseInt(process.env["PIVIS_TEST_HISTORY_DELAY_MS"] ?? "", 10);
-      const load = async (
-        filePath: string,
-        opts: { limit?: number | undefined; before?: number | undefined },
-      ) => {
+      const load = async (filePath: string) => {
         if (Number.isFinite(testDelayMs) && testDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, testDelayMs));
         }
-        return loadHistoryPage(filePath, opts);
+        return loadHistory(filePath);
       };
       const result = await loadBoundHistory(
         args,

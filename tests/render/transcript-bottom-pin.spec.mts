@@ -44,6 +44,23 @@ async function waitPinned(page: Page): Promise<void> {
   await expect.poll(() => bottomDistance(page), { timeout: 5_000 }).toBeLessThanOrEqual(RESTICK_PX);
 }
 
+async function expectPinnedScrollbar(page: Page, pinned: boolean): Promise<void> {
+  const transcript = page.locator(".transcript-view");
+  if (pinned) {
+    await expect(transcript).toHaveClass(/transcript-view--pinned/);
+  } else {
+    await expect(transcript).not.toHaveClass(/transcript-view--pinned/);
+  }
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const el = document.querySelector(".transcript-view") as HTMLElement;
+        return getComputedStyle(el, "::-webkit-scrollbar").width;
+      }),
+    )
+    .toBe(pinned ? "0px" : "10px");
+}
+
 test.describe("Transcript bottom pinning across Composer replacements", () => {
   test("a JS-sized custom panel opening does not unpin the transcript", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 760 });
@@ -55,6 +72,7 @@ test.describe("Transcript bottom pinning across Composer replacements", () => {
       timeout: 15_000,
     });
     await waitPinned(page);
+    await expectPinnedScrollbar(page, true);
 
     await appendAssistantText(
       page,
@@ -80,6 +98,7 @@ test.describe("Transcript bottom pinning across Composer replacements", () => {
       `\n\nOverflow setup ${Array.from({ length: 30 }, (_, i) => `- setup line ${i + 1}`).join("\n")}`,
     );
     await waitPinned(page);
+    await expectPinnedScrollbar(page, true);
 
     // Simulate a browser/layout scrollTop correction without any wheel/touch/key
     // input. This used to be enough to clear pinnedRef, after which streaming
@@ -90,16 +109,27 @@ test.describe("Transcript bottom pinning across Composer replacements", () => {
       el.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await waitPinned(page);
+    await expectPinnedScrollbar(page, true);
 
     const transcript = page.locator(".transcript-view");
     await transcript.hover();
     await page.mouse.wheel(0, -500);
     await expect.poll(() => bottomDistance(page), { timeout: 5_000 }).toBeGreaterThan(RESTICK_PX);
+    await expectPinnedScrollbar(page, false);
 
     const before = await bottomDistance(page);
     await appendAssistantText(page, `\n\nUser-scrolled follow-up ${"more text ".repeat(80)}`);
     await expect
       .poll(() => bottomDistance(page), { timeout: 2_000 })
       .toBeGreaterThan(Math.min(RESTICK_PX + 1, before));
+    await expectPinnedScrollbar(page, false);
+
+    await page.evaluate(() => {
+      const el = document.querySelector(".transcript-view") as HTMLElement;
+      el.scrollTop = el.scrollHeight;
+      el.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await waitPinned(page);
+    await expectPinnedScrollbar(page, true);
   });
 });

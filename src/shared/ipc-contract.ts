@@ -63,12 +63,6 @@ export interface TranscriptBlock {
   data: unknown;
 }
 
-export interface HistoryPage {
-  blocks: TranscriptBlock[];
-  startIndex: number;
-  total: number;
-}
-
 // Every invoke channel: request type → response type
 export interface IpcInvokeContract {
   "pi.locate": { req: undefined; res: { path: string; version: string } | null };
@@ -174,11 +168,9 @@ export interface IpcInvokeContract {
       historyGeneration: number;
       expectedHostInstanceId: string | null;
       expectedSessionEpoch: number | null;
-      limit?: number | undefined;
-      before?: number | undefined;
     };
     res:
-      | { status: "loaded"; historyGeneration: number; page: HistoryPage }
+      | { status: "loaded"; historyGeneration: number; history: TranscriptBlock[] }
       | { status: "stale"; historyGeneration: number };
   };
   // Replay a branch (an ordered array of SessionTreeEntry) from the host's

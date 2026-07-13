@@ -27,7 +27,6 @@ import {
   hasAssistantContent,
   lastTranscriptBlock,
   transcriptBlockCount,
-  transcriptTailBlocks,
 } from "../../stores/transcript.js";
 import { FadeText } from "../common/FadeText.js";
 import { Spinner } from "../common/Spinner.js";
@@ -35,7 +34,6 @@ import { IconChevronRight } from "../common/icons.js";
 import { DiffBlock } from "./DiffBlock.js";
 import "./TranscriptView.css";
 
-const MAX_VISIBLE_BLOCKS = 150;
 const OUTPUT_PREVIEW_LINES = 4;
 const OUTPUT_VIRTUAL_OVERSCAN = 8;
 const OUTPUT_DEFAULT_ROW_HEIGHT = 18;
@@ -340,13 +338,11 @@ function ToolCardShell({
 
 // ── Block renderers ──────────────────────────────────────────────────────
 
-// memo'd on the `data` prop: the transcript reducer (patchBlock) creates a
-// new `data` object only for the one block a streaming delta touches,
-// leaving every other block's `data` reference stable. So a per-token
-// re-render of the parent reconciles in O(1) — only the streamed block's
-// memo bails out (new `data` ref) and re-renders; the ~150 other visible
-// blocks keep a stable `data` ref and skip. Without this, the parent
-// re-renders all visible blocks on every token (O(150) reconcile per delta).
+// Memoized on the `data` prop: the transcript reducer (patchBlock) creates a
+// new `data` object only for the one block a streaming delta touches, leaving
+// every other block's `data` reference stable. Complete persisted/compacted
+// history is isolated behind the archive memo boundary below, while unchanged
+// blocks in the normally small live tail skip their component render.
 const QueuedBubble = memo(function QueuedBubble({
   text,
   kind,
@@ -1125,15 +1121,24 @@ type TranscriptRenderItem =
       isStreaming: boolean;
     };
 
+interface CompactGroupStats {
+  hasThinking: boolean;
+  toolCalls: number;
+  notices: number;
+}
+
 type CompactRenderItem =
   | { kind: "item"; item: TranscriptRenderItem }
   | {
       kind: "compact_group";
       key: string;
       items: TranscriptRenderItem[];
+      stats: CompactGroupStats;
       summary: string;
       streaming: boolean;
     };
+
+type CompactGroupRenderItem = Extract<CompactRenderItem, { kind: "compact_group" }>;
 
 function renderItemKey(item: TranscriptRenderItem): string {
   return item.kind === "block" ? item.block.id : `${item.blockId}-segment-${item.segmentIndex}`;
@@ -1153,30 +1158,45 @@ function renderItemStreaming(item: TranscriptRenderItem): boolean {
   }
 }
 
-function summarizeCompactGroup(items: readonly TranscriptRenderItem[]): string {
-  let hasThinking = false;
-  let toolCalls = 0;
-  let notices = 0;
+function compactGroupStats(items: readonly TranscriptRenderItem[]): CompactGroupStats {
+  const stats: CompactGroupStats = { hasThinking: false, toolCalls: 0, notices: 0 };
   for (const item of items) {
     if (item.kind === "assistant_segment") {
-      if (item.segment.kind === "thinking") hasThinking = true;
+      if (item.segment.kind === "thinking") stats.hasThinking = true;
       continue;
     }
     if (item.block.type === "tool_call" || item.block.type === "bash") {
-      toolCalls += 1;
+      stats.toolCalls += 1;
     } else if (
       item.block.type === "compaction" ||
       item.block.type === "custom_message" ||
       item.block.type === "custom_entry"
     ) {
-      notices += 1;
+      stats.notices += 1;
     }
   }
+  return stats;
+}
+
+function mergeCompactGroupStats(
+  archived: CompactGroupStats,
+  live: CompactGroupStats | undefined,
+): CompactGroupStats {
+  if (!live) return archived;
+  return {
+    hasThinking: archived.hasThinking || live.hasThinking,
+    toolCalls: archived.toolCalls + live.toolCalls,
+    notices: archived.notices + live.notices,
+  };
+}
+
+function summarizeCompactGroup(stats: CompactGroupStats): string {
   const parts: string[] = [];
-  if (hasThinking) parts.push("Thinking");
-  if (toolCalls > 0)
-    parts.push(`${toolCalls.toLocaleString()} tool call${toolCalls === 1 ? "" : "s"}`);
-  if (notices > 0) parts.push(`${notices.toLocaleString()} notice${notices === 1 ? "" : "s"}`);
+  if (stats.hasThinking) parts.push("Thinking");
+  if (stats.toolCalls > 0)
+    parts.push(`${stats.toolCalls.toLocaleString()} tool call${stats.toolCalls === 1 ? "" : "s"}`);
+  if (stats.notices > 0)
+    parts.push(`${stats.notices.toLocaleString()} notice${stats.notices === 1 ? "" : "s"}`);
   return parts.length > 0 ? parts.join(", ") : "Activity";
 }
 
@@ -1192,11 +1212,13 @@ function buildCompactRenderItems(
     if (!first) return;
     const firstKey = renderItemKey(first);
     const streaming = final && (group.some(renderItemStreaming) || showWorking);
+    const stats = compactGroupStats(group);
     rendered.push({
       kind: "compact_group",
       key: `compact-${firstKey}`,
       items: group,
-      summary: summarizeCompactGroup(group),
+      stats,
+      summary: summarizeCompactGroup(stats),
       streaming,
     });
     group = [];
@@ -1279,14 +1301,59 @@ function TranscriptItemView({
   }
 }
 
+const EMPTY_COMPACT_GROUP_ITEMS: TranscriptRenderItem[] = [];
+
+// The archive/live boundary group keeps its archived portion behind this memo
+// boundary. Live streaming can update the disclosure summary and live items
+// without mapping or reconciling the potentially large archived activity run.
+const CompactTranscriptGroupItems = memo(function CompactTranscriptGroupItems({
+  sessionId,
+  items,
+  source,
+  preserveScroll,
+}: {
+  sessionId: SessionId;
+  items: TranscriptRenderItem[];
+  source: "archived" | "live" | "group";
+  preserveScroll: (mutate: () => void) => void;
+}): React.ReactElement {
+  // Render tests install this dev-only probe to enforce the archive memo
+  // invariant while a boundary disclosure is open. Production builds erase
+  // the branch, and normal development has no hook installed.
+  if (import.meta.env.DEV) {
+    const hook = (
+      window as unknown as {
+        __pivisTestCompactGroupItemsRender?:
+          | ((detail: { source: "archived" | "live" | "group"; itemCount: number }) => void)
+          | undefined;
+      }
+    ).__pivisTestCompactGroupItemsRender;
+    hook?.({ source, itemCount: items.length });
+  }
+  return (
+    <>
+      {items.map((item) => (
+        <TranscriptItemView
+          key={renderItemKey(item)}
+          sessionId={sessionId}
+          item={item}
+          preserveScroll={preserveScroll}
+        />
+      ))}
+    </>
+  );
+});
+
 const CompactTranscriptGroup = memo(function CompactTranscriptGroup({
   sessionId,
+  archivedItems = EMPTY_COMPACT_GROUP_ITEMS,
   items,
   summary,
   streaming,
   preserveScroll,
 }: {
   sessionId: SessionId;
+  archivedItems?: TranscriptRenderItem[] | undefined;
   items: TranscriptRenderItem[];
   summary: string;
   streaming: boolean;
@@ -1309,14 +1376,22 @@ const CompactTranscriptGroup = memo(function CompactTranscriptGroup({
       </button>
       {open && (
         <div className="compact-transcript-group__content">
-          {items.map((item) => (
-            <TranscriptItemView
-              key={renderItemKey(item)}
+          {archivedItems.length > 0 && (
+            <CompactTranscriptGroupItems
               sessionId={sessionId}
-              item={item}
+              items={archivedItems}
+              source="archived"
               preserveScroll={preserveScroll}
             />
-          ))}
+          )}
+          {items.length > 0 && (
+            <CompactTranscriptGroupItems
+              sessionId={sessionId}
+              items={items}
+              source={archivedItems.length > 0 ? "live" : "group"}
+              preserveScroll={preserveScroll}
+            />
+          )}
         </div>
       )}
     </div>
@@ -1324,23 +1399,23 @@ const CompactTranscriptGroup = memo(function CompactTranscriptGroup({
 });
 
 interface ArchivedTranscriptProps {
-  chunks: TypedTranscriptBlock[][];
+  blocks: TypedTranscriptBlock[];
+  compactItems: CompactRenderItem[];
   style: TranscriptStyle;
   sessionId: SessionId;
   preserveScroll: (mutate: () => void) => void;
 }
 
-// This memo boundary is the archive's streaming-performance invariant. The
-// chunks reference changes only for history/compaction, so live-tail tokens do
-// not reconcile, flatten, or map historical render items.
+// This memo boundary is the archive's streaming-performance invariant. Its
+// derived props change only for history/compaction, so live-tail tokens do not
+// reconcile, flatten, or map historical render items.
 const ArchivedTranscript = memo(function ArchivedTranscript({
-  chunks,
+  blocks,
+  compactItems,
   style,
   sessionId,
   preserveScroll,
 }: ArchivedTranscriptProps): React.ReactElement {
-  const blocks = useMemo(() => chunks.flat(), [chunks]);
-  const compactItems = useMemo(() => buildCompactRenderItems(blocks, false), [blocks]);
   return (
     <>
       {style === "compact"
@@ -1376,6 +1451,7 @@ const ArchivedTranscript = memo(function ArchivedTranscript({
 });
 
 const EMPTY_ARCHIVE_CHUNKS: TypedTranscriptBlock[][] = [];
+const EMPTY_LIVE_BLOCKS: TypedTranscriptBlock[] = [];
 
 // ── Main view ────────────────────────────────────────────────────────────
 
@@ -1385,9 +1461,7 @@ interface TranscriptViewProps {
 
 export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
-  const loadEarlierHistory = useSessionsStore((s) => s.loadEarlierHistory);
   const transcriptStyle = useSettingsStore((s) => s.settings.transcriptStyle);
-  const [showAll, setShowAll] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -1398,22 +1472,17 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   // between a programmatic pin and its lagging scroll-event echo is
   // not misread as the user scrolling up.
   const pinnedRef = useRef(true);
+  const [isPinned, setIsPinnedState] = useState(true);
+  const setPinned = useCallback((next: boolean) => {
+    pinnedRef.current = next;
+    setIsPinnedState((current) => (current === next ? current : next));
+  }, []);
   const lastPinnedTopRef = useRef(0);
   const userScrollIntentUntilRef = useRef(0);
   const prevScrollHeightRef = useRef(0);
   const prevClientHeightRef = useRef(0);
   const prevScrollTopRef = useRef(0);
   const [scrollFades, setScrollFades] = useState({ top: false, bottom: false });
-  const paginationRequestIdRef = useRef(0);
-  const prependedRef = useRef<{
-    requestId: number;
-    sessionId: SessionId;
-    beforeStartIndex: number;
-    prevHeight: number;
-    prevTop: number;
-  } | null>(null);
-  const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
 
   const updateScrollFades = useCallback(() => {
     const el = scrollRef.current;
@@ -1432,6 +1501,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   // assignment anyway, but keeping our sentinel non-negative avoids false
   // comparisons after the viewport later shrinks into an overflowing feed.
   const pinToBottom = useCallback(() => {
+    setPinned(true);
     const el = scrollRef.current;
     if (!el) return;
     const target = Math.max(0, el.scrollHeight - el.clientHeight);
@@ -1441,7 +1511,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     prevClientHeightRef.current = el.clientHeight;
     prevScrollTopRef.current = el.scrollTop;
     updateScrollFades();
-  }, [updateScrollFades]);
+  }, [setPinned, updateScrollFades]);
 
   const markUserScrollIntent = useCallback(() => {
     userScrollIntentUntilRef.current = performance.now() + USER_SCROLL_INTENT_MS;
@@ -1466,14 +1536,26 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
 
   const transcript = session?.transcript;
   const archivedChunks = transcript?.archivedBlockChunks ?? EMPTY_ARCHIVE_CHUNKS;
+  const liveBlocks = transcript?.blocks ?? EMPTY_LIVE_BLOCKS;
   const totalBlockCount = transcript ? transcriptBlockCount(transcript) : 0;
-  // Expanded history and the live tail stay separate. Streaming changes only
-  // `transcript.blocks`, so the memoized archive is never flattened/copied per
-  // token even while "Show earlier messages" is active.
-  const visibleBlocks = useMemo<TypedTranscriptBlock[]>(() => {
-    if (!transcript) return [];
-    return showAll ? transcript.blocks : transcriptTailBlocks(transcript, MAX_VISIBLE_BLOCKS);
-  }, [showAll, transcript]);
+  // Complete persisted/compacted history stays in immutable archive chunks,
+  // while streaming changes only the live tail. Derive archive rendering once
+  // per archive change so historical blocks are not revisited for every token.
+  const archivedBlocks = useMemo(() => archivedChunks.flat(), [archivedChunks]);
+  const archivedCompactItems = useMemo(
+    () => buildCompactRenderItems(archivedBlocks, false),
+    [archivedBlocks],
+  );
+  // Keep a trailing archive activity group at the stable archive/live boundary.
+  // It can absorb leading live activity without flattening or regrouping the
+  // complete archive, and its disclosure state survives live-tail updates.
+  const lastArchivedCompactItem = archivedCompactItems.at(-1);
+  const archivedBoundaryGroup: CompactGroupRenderItem | undefined =
+    lastArchivedCompactItem?.kind === "compact_group" ? lastArchivedCompactItem : undefined;
+  const archivedCompactPrefix = useMemo(
+    () => (archivedBoundaryGroup ? archivedCompactItems.slice(0, -1) : archivedCompactItems),
+    [archivedBoundaryGroup, archivedCompactItems],
+  );
   const queuedMessages = session?.queuedMessages;
   const queueRestorations = session?.queueRestorations ?? [];
   // Show the "Running for …" indicator for real agent work. Prompt-backed
@@ -1482,39 +1564,33 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   const showWorking = shouldShowWorkingIndicator(session);
 
   const compactRenderItems = useMemo(
-    () => buildCompactRenderItems(visibleBlocks, showWorking),
-    [showWorking, visibleBlocks],
+    () => buildCompactRenderItems(liveBlocks, showWorking),
+    [showWorking, liveBlocks],
   );
-  const earlierUnloaded = session?.historyCursor?.startIndex ?? 0;
-
-  const handleShowEarlier = useCallback(() => {
-    const el = scrollRef.current;
-    if (earlierUnloaded > 0 && el) {
-      const targetSessionId = sessionId;
-      const requestId = ++paginationRequestIdRef.current;
-      prependedRef.current = {
-        requestId,
-        sessionId: targetSessionId,
-        beforeStartIndex: earlierUnloaded,
-        prevHeight: el.scrollHeight,
-        prevTop: el.scrollTop,
-      };
-      void loadEarlierHistory(targetSessionId).then((loaded) => {
-        if (
-          sessionIdRef.current !== targetSessionId ||
-          prependedRef.current?.requestId !== requestId
-        )
-          return;
-        if (loaded) {
-          setShowAll(true);
-        } else {
-          prependedRef.current = null;
-        }
-      });
-      return;
-    }
-    setShowAll(true);
-  }, [earlierUnloaded, loadEarlierHistory, sessionId]);
+  const firstLiveCompactItem = compactRenderItems[0];
+  const leadingLiveCompactGroup: CompactGroupRenderItem | undefined =
+    firstLiveCompactItem?.kind === "compact_group" ? firstLiveCompactItem : undefined;
+  // Combine only fixed-size metadata across the boundary. Archived activity
+  // remains a stable array owned by the archive; never copy or rescan it on a
+  // live token update.
+  const compactBoundaryStats = archivedBoundaryGroup
+    ? mergeCompactGroupStats(archivedBoundaryGroup.stats, leadingLiveCompactGroup?.stats)
+    : undefined;
+  const compactBoundarySummary = compactBoundaryStats
+    ? summarizeCompactGroup(compactBoundaryStats)
+    : undefined;
+  // A terminal archived activity run remains active while the runtime works
+  // even before the live assistant has emitted a non-empty segment. Visible
+  // live prose (or another non-group item) ends that active presentation.
+  const compactBoundaryStreaming =
+    leadingLiveCompactGroup?.streaming ?? (compactRenderItems.length === 0 && showWorking);
+  const compactLiveItems = useMemo(
+    () =>
+      archivedBoundaryGroup && leadingLiveCompactGroup
+        ? compactRenderItems.slice(1)
+        : compactRenderItems,
+    [archivedBoundaryGroup, compactRenderItems, leadingLiveCompactGroup],
+  );
 
   // Sticky bottom via distance-from-bottom detection. Robust against:
   //   • content *shrink* (async highlight replacing tall raw text, image
@@ -1535,7 +1611,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     if (distance <= SCROLL_RESTICK_PX) {
       // At/near bottom: re-pin (covers shrink-clamps, growth-clamps, and
       // the user actively returning to the bottom).
-      pinnedRef.current = true;
+      setPinned(true);
       lastPinnedTopRef.current = el.scrollTop;
       prevScrollHeightRef.current = el.scrollHeight;
       prevClientHeightRef.current = el.clientHeight;
@@ -1548,7 +1624,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
       // otherwise restore the bottom immediately.
       const userInitiated = performance.now() <= userScrollIntentUntilRef.current;
       if (userInitiated) {
-        pinnedRef.current = false;
+        setPinned(false);
         prevScrollTopRef.current = el.scrollTop;
       } else if (pinnedRef.current) {
         pinToBottom();
@@ -1559,7 +1635,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
       // bottom instead of waiting for the next streamed token.
       pinToBottom();
     }
-  }, [pinToBottom, updateScrollFades]);
+  }, [pinToBottom, setPinned, updateScrollFades]);
 
   // Backstop for size changes that do NOT go through a React render — async
   // syntax highlighting swapping in and images finishing load — neither of
@@ -1598,28 +1674,8 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   // Switching sessions always starts pinned to the bottom
   // biome-ignore lint/correctness/useExhaustiveDependencies: sessionId is a mount trigger, not a reactive dep
   useLayoutEffect(() => {
-    setShowAll(false);
-    pinnedRef.current = true;
     pinToBottom();
   }, [sessionId, pinToBottom]);
-
-  useLayoutEffect(() => {
-    const snap = prependedRef.current;
-    const el = scrollRef.current;
-    if (!snap || !el) return;
-    if (snap.sessionId !== sessionId) {
-      prependedRef.current = null;
-      return;
-    }
-    const currentStartIndex = session?.historyCursor?.startIndex ?? 0;
-    if (!showAll || currentStartIndex >= snap.beforeStartIndex) return;
-    prependedRef.current = null;
-    el.scrollTop = snap.prevTop + (el.scrollHeight - snap.prevHeight);
-    prevScrollHeightRef.current = el.scrollHeight;
-    prevClientHeightRef.current = el.clientHeight;
-    prevScrollTopRef.current = el.scrollTop;
-    updateScrollFades();
-  });
 
   // Follow the bottom across content growth — the whole "tool call added and
   // then expanding" sequence. New blocks (a tool call appearing) AND in-place
@@ -1655,7 +1711,6 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     const newUserBlock = blockCount > prevBlockCountRef.current && lastBlockType === "user";
     prevBlockCountRef.current = blockCount;
     if (newUserBlock) {
-      pinnedRef.current = true;
       pinToBottom();
       return;
     }
@@ -1680,7 +1735,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     const measuredAtBottom = prevHeight - el.scrollTop - prevClientHeight <= SCROLL_RESTICK_PX;
     const userInitiated = performance.now() <= userScrollIntentUntilRef.current;
     const shouldFollow = measuredAtBottom || (pinnedRef.current && !userInitiated);
-    pinnedRef.current = shouldFollow;
+    setPinned(shouldFollow);
     if (shouldFollow) {
       pinToBottom();
     } else {
@@ -1717,6 +1772,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
 
   const transcriptClassName = [
     "transcript-view",
+    isPinned ? "transcript-view--pinned" : "",
     scrollFades.top ? "transcript-view--fade-top" : "",
     scrollFades.bottom ? "transcript-view--fade-bottom" : "",
   ]
@@ -1738,30 +1794,26 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
       onCopy={handleClipboard}
     >
       <div className="transcript-blocks" ref={contentRef}>
-        {(earlierUnloaded > 0 || (!showAll && totalBlockCount > MAX_VISIBLE_BLOCKS)) && (
-          <button
-            type="button"
-            className="show-earlier-btn"
-            onClick={handleShowEarlier}
-            disabled={session?.historyLoadingEarlier}
-          >
-            {session?.historyLoadingEarlier
-              ? "Loading earlier messages…"
-              : `Show ${
-                  earlierUnloaded > 0 ? earlierUnloaded : totalBlockCount - MAX_VISIBLE_BLOCKS
-                } earlier messages`}
-          </button>
-        )}
-        {showAll && (
-          <ArchivedTranscript
-            chunks={archivedChunks}
-            style={transcriptStyle}
+        <ArchivedTranscript
+          blocks={archivedBlocks}
+          compactItems={archivedCompactPrefix}
+          style={transcriptStyle}
+          sessionId={sessionId}
+          preserveScroll={preserveScroll}
+        />
+        {transcriptStyle === "compact" && archivedBoundaryGroup && compactBoundarySummary && (
+          <CompactTranscriptGroup
+            key={archivedBoundaryGroup.key}
             sessionId={sessionId}
+            archivedItems={archivedBoundaryGroup.items}
+            items={leadingLiveCompactGroup?.items ?? EMPTY_COMPACT_GROUP_ITEMS}
+            summary={compactBoundarySummary}
+            streaming={compactBoundaryStreaming}
             preserveScroll={preserveScroll}
           />
         )}
         {transcriptStyle === "compact"
-          ? compactRenderItems.map((item) =>
+          ? compactLiveItems.map((item) =>
               item.kind === "item" ? (
                 <TranscriptItemView
                   key={renderItemKey(item.item)}
@@ -1780,7 +1832,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
                 />
               ),
             )
-          : visibleBlocks.map((block) => (
+          : liveBlocks.map((block) => (
               <TranscriptItemView
                 key={block.id}
                 sessionId={sessionId}

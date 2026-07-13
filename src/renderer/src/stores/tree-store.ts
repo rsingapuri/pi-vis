@@ -221,9 +221,7 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
         entries: branch,
       })) as TranscriptBlock[];
       if (!runtimeIsCurrent(sessionId, runtime)) return;
-      useSessionsStore
-        .getState()
-        .seedHistory(sessionId, { blocks: transcript, startIndex: 0, total: transcript.length });
+      useSessionsStore.getState().seedHistory(sessionId, transcript);
 
       if (data?.editorText !== undefined) {
         useSessionsStore.getState().injectEditorText(sessionId, data.editorText);

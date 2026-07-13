@@ -254,131 +254,127 @@ function seedDemoSession(): void {
   store.setActiveSession(DEMO_SESSION_ID);
   emitRuntimeState(DEMO_SESSION_ID, false);
 
-  store.seedHistory(DEMO_SESSION_ID, {
-    blocks: [
-      {
-        id: "demo-1",
-        type: "user",
-        data: { content: "Can you fix the config loader so relative roots resolve correctly?" },
+  store.seedHistory(DEMO_SESSION_ID, [
+    {
+      id: "demo-1",
+      type: "user",
+      data: { content: "Can you fix the config loader so relative roots resolve correctly?" },
+    },
+    {
+      id: "demo-2",
+      type: "assistant",
+      data: {
+        thinking:
+          "The user is hitting the classic path.join vs path.resolve issue. I should read the loader first to confirm, then make the edit and run the tests.",
+        content: "Sure — let me look at the loader first.",
       },
-      {
-        id: "demo-2",
-        type: "assistant",
-        data: {
-          thinking:
-            "The user is hitting the classic path.join vs path.resolve issue. I should read the loader first to confirm, then make the edit and run the tests.",
-          content: "Sure — let me look at the loader first.",
-        },
+    },
+    {
+      id: "demo-3",
+      type: "tool_call",
+      data: {
+        toolCallId: "t1",
+        toolName: "read",
+        input: { file_path: "src/config/loader.ts" },
+        outputText: READ_OUTPUT,
+        isError: false,
+        isStreaming: false,
       },
-      {
-        id: "demo-3",
-        type: "tool_call",
-        data: {
-          toolCallId: "t1",
-          toolName: "read",
-          input: { file_path: "src/config/loader.ts" },
-          outputText: READ_OUTPUT,
-          isError: false,
-          isStreaming: false,
-        },
+    },
+    {
+      id: "demo-4",
+      type: "tool_call",
+      data: {
+        toolCallId: "t2",
+        toolName: "edit",
+        input: { file_path: "src/config/loader.ts" },
+        outputText: "",
+        diff: EDIT_DIFF,
+        isError: false,
+        isStreaming: false,
       },
-      {
-        id: "demo-4",
-        type: "tool_call",
-        data: {
-          toolCallId: "t2",
-          toolName: "edit",
-          input: { file_path: "src/config/loader.ts" },
-          outputText: "",
-          diff: EDIT_DIFF,
-          isError: false,
-          isStreaming: false,
-        },
+    },
+    {
+      id: "demo-5",
+      type: "tool_call",
+      data: {
+        toolCallId: "t3",
+        toolName: "bash",
+        input: { command: "npm test" },
+        outputText: TEST_OUTPUT,
+        isError: false,
+        isStreaming: false,
       },
-      {
-        id: "demo-5",
-        type: "tool_call",
-        data: {
-          toolCallId: "t3",
-          toolName: "bash",
-          input: { command: "npm test" },
-          outputText: TEST_OUTPUT,
-          isError: false,
-          isStreaming: false,
-        },
+    },
+    {
+      id: "demo-6",
+      type: "tool_call",
+      data: {
+        toolCallId: "t4",
+        toolName: "read",
+        input: { file_path: "src/config/legacy-loader.ts" },
+        outputText: "ENOENT: no such file or directory, open 'src/config/legacy-loader.ts'",
+        isError: true,
+        isStreaming: false,
       },
-      {
-        id: "demo-6",
-        type: "tool_call",
-        data: {
-          toolCallId: "t4",
-          toolName: "read",
-          input: { file_path: "src/config/legacy-loader.ts" },
-          outputText: "ENOENT: no such file or directory, open 'src/config/legacy-loader.ts'",
-          isError: true,
-          isStreaming: false,
-        },
+    },
+    {
+      id: "demo-7",
+      type: "compaction",
+      data: {
+        summary:
+          "Summarized the earlier config-loader investigation, the path resolution bug, and the planned validation steps so the active context can stay focused on the implementation.",
+        reason: "threshold",
+        tokensBefore: 12840,
       },
-      {
-        id: "demo-7",
-        type: "compaction",
-        data: {
-          summary:
-            "Summarized the earlier config-loader investigation, the path resolution bug, and the planned validation steps so the active context can stay focused on the implementation.",
-          reason: "threshold",
-          tokensBefore: 12840,
-        },
+    },
+    {
+      id: "demo-8",
+      type: "custom_message",
+      data: {
+        content:
+          "**Session Info**\n\nName: Config loader fix\nFile: ~/.pi/agent/sessions/demo.jsonl\nID: demo-session",
       },
-      {
-        id: "demo-8",
-        type: "custom_message",
-        data: {
-          content:
-            "**Session Info**\n\nName: Config loader fix\nFile: ~/.pi/agent/sessions/demo.jsonl\nID: demo-session",
-        },
+    },
+    {
+      id: "demo-9",
+      type: "assistant",
+      data: {
+        content: [
+          "Fixed. The loader was using `path.join`, which keeps relative roots relative — `path.resolve` anchors them to the process cwd.",
+          "",
+          "### 1. `src/renderer/src/components/transcript/TranscriptView.tsx` — long path",
+          "",
+          "The change lives in `src/renderer/src/components/transcript/TranscriptView.tsx` near `MAX_PRE_COMPACTION_KEEP`, an intentionally long unbreakable identifier used to test wrapping.",
+          "",
+          "- `loadConfig` now resolves the config path before reading",
+          "- all 10 tests pass",
+          "",
+          "```ts",
+          'const file = path.resolve(root, "config.json");',
+          "```",
+          "",
+          "And an un-annotated fence (no language):",
+          "",
+          "```",
+          'import { DiffBlock } from "./DiffBlock.js";',
+          'import { htmlToMarkdown } from "../../lib/turndown.js";',
+          'import "./TranscriptView.css";',
+          "```",
+        ].join("\n"),
       },
-      {
-        id: "demo-9",
-        type: "assistant",
-        data: {
-          content: [
-            "Fixed. The loader was using `path.join`, which keeps relative roots relative — `path.resolve` anchors them to the process cwd.",
-            "",
-            "### 1. `src/renderer/src/components/transcript/TranscriptView.tsx` — long path",
-            "",
-            "The change lives in `src/renderer/src/components/transcript/TranscriptView.tsx` near `MAX_PRE_COMPACTION_KEEP`, an intentionally long unbreakable identifier used to test wrapping.",
-            "",
-            "- `loadConfig` now resolves the config path before reading",
-            "- all 10 tests pass",
-            "",
-            "```ts",
-            'const file = path.resolve(root, "config.json");',
-            "```",
-            "",
-            "And an un-annotated fence (no language):",
-            "",
-            "```",
-            'import { DiffBlock } from "./DiffBlock.js";',
-            'import { htmlToMarkdown } from "../../lib/turndown.js";',
-            'import "./TranscriptView.css";',
-            "```",
-          ].join("\n"),
-        },
+    },
+    {
+      id: "demo-10",
+      type: "bash",
+      data: {
+        command: "git status --short",
+        outputText: " M src/config/loader.ts\n?? src/config/loader.test.ts",
+        isStreaming: false,
+        exitCode: 0,
       },
-      {
-        id: "demo-10",
-        type: "bash",
-        data: {
-          command: "git status --short",
-          outputText: " M src/config/loader.ts\n?? src/config/loader.test.ts",
-          isStreaming: false,
-          exitCode: 0,
-        },
-      },
-    ],
-    startIndex: 0,
-    total: 10,
-  });
+    },
+  ]);
 
   // Real pi only sends extension statuses over RPC (its own workspace/usage
   // footer lines are TUI rendering); statusText carries raw ANSI colors.
@@ -792,7 +788,7 @@ const stub = {
         return {
           status: "loaded",
           historyGeneration: (req as { historyGeneration: number }).historyGeneration,
-          page: { blocks: [], startIndex: 0, total: 0 },
+          history: [],
         };
       case "session.open":
         return {

@@ -45,14 +45,11 @@ function claimedUnified() {
   return { claimed: true as const, claimId: "claim-test", expiresAt: Date.now() + 60_000 };
 }
 
-function loadedHistory(
-  payload: unknown,
-  page: { blocks: unknown[]; startIndex: number; total: number },
-) {
+function loadedHistory(payload: unknown, history: unknown[]) {
   return {
     status: "loaded" as const,
     historyGeneration: (payload as { historyGeneration: number }).historyGeneration,
-    page,
+    history,
   };
 }
 
@@ -310,7 +307,7 @@ describe("sessions store - diff comments", () => {
         };
       }
       if (channel === "session.loadHistory") {
-        return loadedHistory(payload, { blocks: [], startIndex: 0, total: 0 });
+        return loadedHistory(payload, []);
       }
       throw new Error(`unexpected channel ${channel}`);
     });
@@ -2742,7 +2739,7 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(true);
   });
 
-  it("openSessionTab seeds history from the paged loadHistory contract", async () => {
+  it("openSessionTab seeds the complete loadHistory response", async () => {
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === "session.open") {
         return {
@@ -2754,11 +2751,10 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
         };
       }
       if (channel === "session.loadHistory") {
-        return loadedHistory(payload, {
-          blocks: [{ id: "h1", type: "user", data: { content: "resumed" } }],
-          startIndex: 0,
-          total: 1,
-        });
+        return loadedHistory(payload, [
+          { id: "h1", type: "user", data: { content: "first" } },
+          { id: "h2", type: "user", data: { content: "resumed" } },
+        ]);
       }
       return [];
     });
@@ -2771,209 +2767,67 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(session ? allTranscriptBlocks(session.transcript).map((b) => b.id) : undefined).toEqual([
       "h1",
+      "h2",
     ]);
-    expect(session?.historyCursor).toEqual({ startIndex: 0, total: 1 });
   });
 
-  it("does not apply or clear a same-file pagination response after runtime replacement", async () => {
-    const payloads: unknown[] = [];
-    const resolvers: Array<(history: ReturnType<typeof loadedHistory>) => void> = [];
-    const invoke = vi.fn(async (_channel: string, payload?: unknown) => {
-      payloads.push(payload);
-      return new Promise((resolve) => {
-        resolvers.push(resolve);
-      });
+  it("rereads open-session history when a transcript event arrives during hydration", async () => {
+    const historyRequests: Array<{
+      payload: unknown;
+      resolve: (history: ReturnType<typeof loadedHistory>) => void;
+    }> = [];
+    const invoke = vi.fn((channel: string, payload?: unknown) => {
+      if (channel === "session.open") {
+        return Promise.resolve({
+          outcome: "opened",
+          sessionId: SESSION_A,
+          name: null,
+          preview: null,
+          sessionStatus: "cold",
+        });
+      }
+      if (channel === "session.loadHistory") {
+        return new Promise((resolve) => historyRequests.push({ payload, resolve }));
+      }
+      return Promise.resolve([]);
     });
     vi.stubGlobal("window", { pivis: { invoke } });
-    const store = useSessionsStore.getState();
-    store.createSession(SESSION_A, WORKSPACE, "/f/same.jsonl");
-    store.seedHistory(SESSION_A, {
-      blocks: [{ id: "tail", type: "user", data: { content: "tail" } }],
-      startIndex: 1,
-      total: 2,
+
+    const pending = useSessionsStore.getState().openSessionTab(WORKSPACE, "/f/a.jsonl");
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(1));
+    useSessionsStore.getState().applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "user", content: "racing event" },
     });
-
-    const predecessor = store.loadEarlierHistory(SESSION_A);
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false));
-    const successor = useSessionsStore.getState().loadEarlierHistory(SESSION_A);
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
-
-    resolvers[0]!(
-      loadedHistory(payloads[0], {
-        blocks: [{ id: "predecessor", type: "user", data: { content: "stale" } }],
-        startIndex: 0,
-        total: 2,
-      }),
+    historyRequests[0]!.resolve(
+      loadedHistory(historyRequests[0]!.payload, [
+        { id: "old-history", type: "user", data: { content: "before race" } },
+      ]),
     );
-    await predecessor;
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.historyLoadingEarlier).toBe(true);
 
-    resolvers[1]!(
-      loadedHistory(payloads[1], {
-        blocks: [{ id: "successor", type: "user", data: { content: "current" } }],
-        startIndex: 0,
-        total: 2,
-      }),
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(2));
+    historyRequests[1]!.resolve(
+      loadedHistory(historyRequests[1]!.payload, [
+        { id: "persisted-race", type: "user", data: { content: "racing event" } },
+      ]),
     );
-    await successor;
+    await expect(pending).resolves.toBe(SESSION_A);
 
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(
-      session ? allTranscriptBlocks(session.transcript).map((block) => block.id) : undefined,
-    ).toEqual(["successor", "tail"]);
-    expect(session?.historyLoadingEarlier).toBeUndefined();
-  });
-
-  it("does not report a stale pagination response as accepted after history is reseeded", async () => {
-    let resolvePage!: (page: ReturnType<typeof loadedHistory>) => void;
-    const invoke = vi.fn(
-      async () =>
-        new Promise<ReturnType<typeof loadedHistory>>((resolve) => {
-          resolvePage = resolve;
-        }),
+    expect(session ? allTranscriptBlocks(session.transcript).map((block) => block.id) : []).toEqual(
+      ["persisted-race"],
     );
-    vi.stubGlobal("window", { pivis: { invoke } });
-    const store = useSessionsStore.getState();
-    store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
-    store.seedHistory(SESSION_A, {
-      blocks: [{ id: "tail", type: "user", data: { content: "tail" } }],
-      startIndex: 1,
-      total: 2,
-    });
-
-    const pagination = store.loadEarlierHistory(SESSION_A);
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
-    useSessionsStore.getState().seedHistory(SESSION_A, {
-      blocks: [{ id: "branch", type: "user", data: { content: "branch" } }],
-      startIndex: 0,
-      total: 1,
-    });
-    resolvePage({
-      status: "loaded",
-      historyGeneration: 1,
-      page: {
-        blocks: [{ id: "earlier", type: "user", data: { content: "stale" } }],
-        startIndex: 0,
-        total: 2,
-      },
-    });
-
-    await expect(pagination).resolves.toBe(false);
-    const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(
-      session ? allTranscriptBlocks(session.transcript).map((block) => block.id) : undefined,
-    ).toEqual(["branch"]);
-    expect(session?.historyCursor).toEqual({ startIndex: 0, total: 1 });
-    expect(session?.historyLoadingEarlier).toBeUndefined();
   });
 
-  it("adoptSessionFile clears stale history pagination state", async () => {
+  it("adoptSessionFile clears previously hydrated history", async () => {
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
-    store.seedHistory(SESSION_A, {
-      blocks: [{ id: "tail", type: "user", data: { content: "tail" } }],
-      startIndex: 10,
-      total: 11,
-    });
+    store.seedHistory(SESSION_A, [{ id: "history", type: "user", data: { content: "history" } }]);
 
     await store.adoptSessionFile(SESSION_A, undefined);
 
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.transcript.blocks).toEqual([]);
-    expect(session?.historyCursor).toBeUndefined();
-    expect(session?.historyLoadingEarlier).toBeUndefined();
-  });
-
-  it("loadEarlierHistory prepends the previous page and updates the cursor", async () => {
-    const invoke = vi.fn(async (_channel: string, payload?: unknown) =>
-      loadedHistory(payload, {
-        blocks: [{ id: "earlier", type: "user", data: { content: "earlier" } }],
-        startIndex: 0,
-        total: 2,
-      }),
-    );
-    vi.stubGlobal("window", { pivis: { invoke } });
-    const store = useSessionsStore.getState();
-    store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
-    store.seedHistory(SESSION_A, {
-      blocks: [{ id: "tail", type: "user", data: { content: "tail" } }],
-      startIndex: 1,
-      total: 2,
-    });
-
-    await expect(store.loadEarlierHistory(SESSION_A)).resolves.toBe(true);
-
-    const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(invoke).toHaveBeenCalledWith(
-      "session.loadHistory",
-      expect.objectContaining({
-        sessionId: SESSION_A,
-        expectedSessionFile: "/f/a.jsonl",
-        historyGeneration: 1,
-        before: 1,
-      }),
-    );
-    expect(session ? allTranscriptBlocks(session.transcript).map((b) => b.id) : undefined).toEqual([
-      "earlier",
-      "tail",
-    ]);
-    expect(session?.historyCursor).toEqual({ startIndex: 0, total: 2 });
-    expect(session?.historyLoadingEarlier).toBeUndefined();
-  });
-
-  it("keeps an earlier-history cursor retryable when a page contains no visible progress", async () => {
-    const invoke = vi.fn(async (_channel: string, payload?: unknown) =>
-      loadedHistory(payload, {
-        blocks: [{ id: "tail", type: "user", data: { content: "tail" } }],
-        startIndex: 0,
-        total: 2,
-      }),
-    );
-    vi.stubGlobal("window", { pivis: { invoke } });
-    const store = useSessionsStore.getState();
-    store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
-    store.seedHistory(SESSION_A, {
-      blocks: [{ id: "tail", type: "user", data: { content: "tail" } }],
-      startIndex: 1,
-      total: 2,
-    });
-
-    await expect(store.loadEarlierHistory(SESSION_A)).resolves.toBe(false);
-
-    const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(
-      session ? allTranscriptBlocks(session.transcript).map((block) => block.id) : undefined,
-    ).toEqual(["tail"]);
-    expect(session?.historyCursor).toEqual({ startIndex: 1, total: 2 });
-    expect(session?.historyLoadingEarlier).toBeUndefined();
-  });
-
-  it("loadEarlierHistory is single-flight for a cursor to avoid duplicate prepends", async () => {
-    let resolvePage!: (page: { blocks: never[]; startIndex: number; total: number }) => void;
-    const invoke = vi.fn(
-      () =>
-        new Promise<{ blocks: never[]; startIndex: number; total: number }>((resolve) => {
-          resolvePage = resolve;
-        }),
-    );
-    vi.stubGlobal("window", { pivis: { invoke } });
-    const store = useSessionsStore.getState();
-    store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
-    store.seedHistory(SESSION_A, {
-      blocks: [{ id: "tail", type: "user", data: { content: "tail" } }],
-      startIndex: 1,
-      total: 2,
-    });
-
-    const first = store.loadEarlierHistory(SESSION_A);
-    const second = store.loadEarlierHistory(SESSION_A);
-    expect(invoke).toHaveBeenCalledTimes(1);
-    resolvePage({ blocks: [], startIndex: 0, total: 2 });
-    await Promise.all([first, second]);
-    expect(
-      useSessionsStore.getState().sessions.get(SESSION_A)?.historyLoadingEarlier,
-    ).toBeUndefined();
+    expect(session ? allTranscriptBlocks(session.transcript) : undefined).toEqual([]);
   });
 
   it("tree history makes an empty visible branch count as real session history", () => {
@@ -3390,59 +3244,6 @@ describe("sessions store - historical cache notices", () => {
         expectedSessionEpoch: 1,
       }),
     );
-  });
-
-  it("replays notices again after an earlier-history page is prepended", async () => {
-    invokeMock.mockImplementation(async (channel: string, payload?: unknown) => {
-      if (channel === "session.loadHistory") {
-        return loadedHistory(payload, {
-          blocks: [
-            {
-              id: "assistant-1",
-              type: "assistant",
-              data: { role: "assistant", content: "Done" },
-            },
-          ],
-          startIndex: 0,
-          total: 2,
-        });
-      }
-      return {
-        success: true,
-        data: {
-          notices: [
-            {
-              type: "cache_miss_notice",
-              noticeId: "cache-miss-history",
-              afterEntryId: "assistant-1",
-              missedTokens: 25_000,
-              missedCost: 0.12,
-              idleMs: 0,
-              modelChanged: false,
-            },
-          ],
-        },
-      };
-    });
-    useSessionsStore
-      .getState()
-      .createSession(SESSION_A, WORKSPACE, "/tmp/session.jsonl", undefined, undefined, "ready");
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false));
-    useSessionsStore.getState().seedHistory(SESSION_A, {
-      blocks: [{ id: "user-2", type: "user", data: { content: "Next" } }],
-      startIndex: 1,
-      total: 2,
-    });
-    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalled());
-
-    await useSessionsStore.getState().loadEarlierHistory(SESSION_A);
-
-    await vi.waitFor(() => {
-      const session = useSessionsStore.getState().sessions.get(SESSION_A);
-      expect(
-        session ? allTranscriptBlocks(session.transcript).map((block) => block.id) : undefined,
-      ).toEqual(["assistant-1", "cache-miss-history", "user-2"]);
-    });
   });
 });
 
@@ -4145,7 +3946,7 @@ describe("sessions store - adoptSessionFileAndHydrate", () => {
     invokeMock.mockReset();
     invokeMock.mockImplementation((channel: string, payload?: unknown) => {
       if (channel === "session.loadHistory") {
-        return Promise.resolve(loadedHistory(payload, { blocks: [], startIndex: 0, total: 0 }));
+        return Promise.resolve(loadedHistory(payload, []));
       }
       return Promise.resolve({ success: true });
     });
@@ -4228,20 +4029,16 @@ describe("sessions store - adoptSessionFileAndHydrate", () => {
       message: { role: "user", content: "racing event" },
     });
     historyRequests[0]!.resolve(
-      loadedHistory(historyRequests[0]!.payload, {
-        blocks: [{ id: "persisted-race", type: "user", data: { content: "racing event" } }],
-        startIndex: 0,
-        total: 1,
-      }),
+      loadedHistory(historyRequests[0]!.payload, [
+        { id: "persisted-race", type: "user", data: { content: "racing event" } },
+      ]),
     );
 
     await vi.waitFor(() => expect(historyRequests).toHaveLength(2));
     historyRequests[1]!.resolve(
-      loadedHistory(historyRequests[1]!.payload, {
-        blocks: [{ id: "persisted-race", type: "user", data: { content: "racing event" } }],
-        startIndex: 0,
-        total: 1,
-      }),
+      loadedHistory(historyRequests[1]!.payload, [
+        { id: "persisted-race", type: "user", data: { content: "racing event" } },
+      ]),
     );
     await pending;
 
@@ -4297,11 +4094,9 @@ describe("sessions store - adoptSessionFileAndHydrate", () => {
     });
     useSessionsStore.getState().addCustomMessage(SESSION_A, "new-runtime-content");
     resolveHistory(
-      loadedHistory(historyPayload, {
-        blocks: [{ id: "old-history", type: "user", data: { content: "stale" } }],
-        startIndex: 0,
-        total: 1,
-      }),
+      loadedHistory(historyPayload, [
+        { id: "old-history", type: "user", data: { content: "stale" } },
+      ]),
     );
     await pending;
 

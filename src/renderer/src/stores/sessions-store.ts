@@ -1,6 +1,5 @@
 import type { SessionId } from "@shared/ids.js";
-import type { HistoryPage, SessionStatus, SessionSummary } from "@shared/ipc-contract.js";
-import type { TranscriptBlock } from "@shared/ipc-contract.js";
+import type { SessionStatus, SessionSummary, TranscriptBlock } from "@shared/ipc-contract.js";
 import { type PiRpcCommand, commandNeedsIntent } from "@shared/pi-protocol/commands.js";
 import {
   CacheMissNoticeEventSchema,
@@ -57,7 +56,6 @@ import {
   createTranscriptState,
   finalizeActiveBlocks,
   finishBashBlock,
-  prependHistory,
   retirePendingUserEchoesByIntent,
   seedFromHistory,
   transcriptBlockCount,
@@ -240,11 +238,9 @@ export interface SessionViewState {
    *  messages, which legitimately leaves `transcript.blocks` empty; sidebar /
    *  first-send affordances must still treat that session as non-empty. */
   hasTreeHistory?: boolean | undefined;
-  historyCursor?: { startIndex: number; total: number } | undefined;
   /** Renderer-local transcript ownership generation. Delayed history reads may
    *  apply only while this generation, file, and runtime identity still match. */
   historyGeneration: number;
-  historyLoadingEarlier?: boolean | undefined;
   /** True for a brand-new session (created without a session file) that
    *  has not yet sent its first message. Such sessions are hidden from
    *  the sidebar (the "+ New session" button shows as selected instead)
@@ -593,18 +589,16 @@ async function waitForHistoryHydrationIdle(
   });
 }
 
-async function requestBoundHistoryPage(
+async function requestBoundHistory(
   sessionId: SessionId,
   capture: HistoryReadCapture,
-  opts: { limit?: number | undefined; before?: number | undefined } = {},
-): Promise<HistoryPage | undefined> {
+): Promise<TranscriptBlock[] | undefined> {
   const result = await window.pivis.invoke("session.loadHistory", {
     sessionId,
     expectedSessionFile: capture.sessionFile,
     historyGeneration: capture.historyGeneration,
     expectedHostInstanceId: capture.expectedRuntime?.hostInstanceId ?? null,
     expectedSessionEpoch: capture.expectedRuntime?.sessionEpoch ?? null,
-    ...opts,
   });
   if (result.status !== "loaded" || result.historyGeneration !== capture.historyGeneration) {
     return undefined;
@@ -612,7 +606,7 @@ async function requestBoundHistoryPage(
   if (!historyCaptureMatches(useSessionsStore.getState().sessions.get(sessionId), capture)) {
     return undefined;
   }
-  return result.page;
+  return result.history;
 }
 
 export function shouldShowWorkingIndicator(session: SessionViewState | undefined): boolean {
@@ -917,9 +911,7 @@ interface SessionsStore {
   ) => void;
   applyEvent: (sessionId: SessionId, event: PiEvent) => void;
   applyEvents: (sessionId: SessionId, events: PiEvent[]) => void;
-  seedHistory: (sessionId: SessionId, history: HistoryPage | TranscriptBlock[]) => void;
-  /** Returns true only when an older page was accepted and prepended. */
-  loadEarlierHistory: (sessionId: SessionId) => Promise<boolean>;
+  seedHistory: (sessionId: SessionId, history: TranscriptBlock[]) => void;
   refreshHistoricalCacheMissNotices: (sessionId: SessionId) => Promise<void>;
   addUserMessage: (
     sessionId: SessionId,
@@ -1514,100 +1506,18 @@ const buildSessionsStore = (
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
       if (!s) return {};
-      const page = Array.isArray(history)
-        ? { blocks: history, startIndex: 0, total: history.length }
-        : history;
-      const transcript = seedFromHistory(s.transcript, page.blocks);
+      const transcript = seedFromHistory(s.transcript, history);
       sessions.set(sessionId, {
         ...s,
         transcript,
-        historyCursor: { startIndex: page.startIndex, total: page.total },
         historyGeneration: s.historyGeneration + 1,
-        historyLoadingEarlier: undefined,
-        hasTreeHistory: s.hasTreeHistory || page.total > 0,
+        hasTreeHistory: s.hasTreeHistory || history.length > 0,
       });
       return { sessions };
     });
     if (get().sessions.get(sessionId)?.status === "ready") {
       void get().refreshHistoricalCacheMissNotices(sessionId);
     }
-  },
-
-  loadEarlierHistory: async (sessionId) => {
-    const s = get().sessions.get(sessionId);
-    const cursor = s?.historyCursor;
-    if (!s?.sessionFile || !cursor || cursor.startIndex <= 0 || s.historyLoadingEarlier)
-      return false;
-    const requestedStartIndex = cursor.startIndex;
-    const requestedFile = s.sessionFile;
-    const historyCapture = captureHistoryRead(s);
-    if (!historyCapture) return false;
-    set((state) => {
-      const sessions = new Map(state.sessions);
-      const cur = sessions.get(sessionId);
-      if (!cur || cur.historyCursor?.startIndex !== requestedStartIndex) return {};
-      sessions.set(sessionId, { ...cur, historyLoadingEarlier: true });
-      return { sessions };
-    });
-    let accepted = false;
-    try {
-      const page = await requestBoundHistoryPage(sessionId, historyCapture, {
-        before: requestedStartIndex,
-      });
-      set((state) => {
-        const sessions = new Map(state.sessions);
-        const cur = sessions.get(sessionId);
-        if (!cur) return {};
-        if (
-          cur.sessionFile !== requestedFile ||
-          cur.historyGeneration !== historyCapture.historyGeneration ||
-          cur.historyCursor?.startIndex !== requestedStartIndex
-        ) {
-          return {};
-        }
-        if (!page) {
-          sessions.set(sessionId, { ...cur, historyLoadingEarlier: undefined });
-          return { sessions };
-        }
-        // A page based on a concurrently shortened/rewritten file can carry a
-        // lower cursor but no older transcript blocks. Treat it as stale: if
-        // we advanced the cursor, the retry affordance would disappear even
-        // though nothing became visible.
-        const transcript = prependHistory(cur.transcript, page.blocks);
-        if (transcript === cur.transcript || page.startIndex >= requestedStartIndex) {
-          sessions.set(sessionId, { ...cur, historyLoadingEarlier: undefined });
-          return { sessions };
-        }
-        sessions.set(sessionId, {
-          ...cur,
-          transcript,
-          historyCursor: { startIndex: page.startIndex, total: page.total },
-          historyGeneration: cur.historyGeneration + 1,
-          historyLoadingEarlier: undefined,
-          hasTreeHistory: cur.hasTreeHistory || page.total > 0,
-        });
-        accepted = true;
-        return { sessions };
-      });
-    } catch (err) {
-      set((state) => {
-        const sessions = new Map(state.sessions);
-        const cur = sessions.get(sessionId);
-        if (
-          !cur ||
-          cur.sessionFile !== requestedFile ||
-          cur.historyGeneration !== historyCapture.historyGeneration ||
-          cur.historyCursor?.startIndex !== requestedStartIndex
-        )
-          return {};
-        sessions.set(sessionId, { ...cur, historyLoadingEarlier: undefined });
-        return { sessions };
-      });
-      console.error("Failed to load earlier history:", err);
-      return false;
-    }
-    if (accepted) void get().refreshHistoricalCacheMissNotices(sessionId);
-    return accepted;
   },
 
   refreshHistoricalCacheMissNotices: async (sessionId) => {
@@ -1892,7 +1802,6 @@ const buildSessionsStore = (
         historyGeneration: editorGenerationChanged
           ? current.historyGeneration + 1
           : current.historyGeneration,
-        historyLoadingEarlier: editorGenerationChanged ? undefined : current.historyLoadingEarlier,
         editorRevision: editorChanged
           ? (snapshot?.editor.revision ?? current.editorRevision)
           : current.editorRevision,
@@ -3320,9 +3229,7 @@ const buildSessionsStore = (
         sessionFile,
         transcript: createTranscriptState(),
         hasTreeHistory: false,
-        historyCursor: undefined,
         historyGeneration: s.historyGeneration + 1,
-        historyLoadingEarlier: undefined,
         unreadStatus: undefined,
         turnErrored: false,
         ...(sessionName !== undefined ? { sessionName } : {}),
@@ -3367,9 +3274,9 @@ const buildSessionsStore = (
       }
     }
     if (!sessionFile) return;
-    // Initial hydration is replacement, not pagination. If transcript events
-    // race the file read, never overwrite or merge them with an overlapping
-    // page: wait for the authoritative turn to become idle and reread until
+    // Initial hydration replaces the transcript. If transcript events race
+    // the file read, never overwrite them with overlapping persisted history:
+    // wait for the authoritative turn to become idle and reread until
     // the transcript remains unchanged for the entire request.
     while (continuationGuard()) {
       const beforeRead = get().sessions.get(sessionId);
@@ -3380,7 +3287,7 @@ const buildSessionsStore = (
         continue;
       }
       const transcriptAtRequest = beforeRead?.transcript;
-      const history = await requestBoundHistoryPage(sessionId, historyCapture);
+      const history = await requestBoundHistory(sessionId, historyCapture);
       if (!history || !continuationGuard()) return;
       const current = get().sessions.get(sessionId);
       if (!historyCaptureMatches(current, historyCapture)) return;
@@ -3673,25 +3580,43 @@ const buildSessionsStore = (
           base: res.worktree.base,
         });
       }
-      // loadHistory + seedHistory exactly as before. For adopted sessions pi
-      // persists entries as it goes, so the file IS the transcript.
+      // Persisted history replaces the initial transcript, but renderer attach
+      // and live events can race a large file read. Read only while the session
+      // is idle, require the transcript to remain unchanged for the entire
+      // request, and retry against a newly installed owner instead of applying
+      // a predecessor response.
       if (sessionFile) {
         try {
           let historyCapture = captureHistoryRead(get().sessions.get(sessionId));
-          let history = historyCapture
-            ? await requestBoundHistoryPage(sessionId, historyCapture)
-            : undefined;
-          // Renderer attach may install the already-running host identity while
-          // a cold/open history read is in flight. Retry once against that new
-          // explicit owner; never apply the predecessor result.
-          if (!history && historyCapture) {
-            historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
-            history = historyCapture
-              ? await requestBoundHistoryPage(sessionId, historyCapture)
-              : undefined;
-          }
-          if (history && historyCaptureMatches(get().sessions.get(sessionId), historyCapture!)) {
+          while (historyCapture) {
+            const beforeRead = get().sessions.get(sessionId);
+            if (!historyCaptureMatches(beforeRead, historyCapture)) {
+              historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
+              continue;
+            }
+            if (isSessionWorking(beforeRead)) {
+              if (await waitForHistoryHydrationIdle(sessionId, historyCapture)) continue;
+              historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
+              continue;
+            }
+            const transcriptAtRequest = beforeRead?.transcript;
+            const history = await requestBoundHistory(sessionId, historyCapture);
+            if (!history) {
+              historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
+              continue;
+            }
+            const current = get().sessions.get(sessionId);
+            if (!historyCaptureMatches(current, historyCapture)) {
+              historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
+              continue;
+            }
+            if (current?.transcript !== transcriptAtRequest) {
+              if (await waitForHistoryHydrationIdle(sessionId, historyCapture)) continue;
+              historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
+              continue;
+            }
             get().seedHistory(sessionId, history);
+            break;
           }
         } catch {
           /* stale or unavailable history — fine */

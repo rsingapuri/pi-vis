@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { createReadStream } from "node:fs";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
-import type { HistoryPage, TranscriptBlock } from "@shared/ipc-contract.js";
+import type { TranscriptBlock } from "@shared/ipc-contract.js";
 import { detectTurnError } from "@shared/pi-protocol/turn-error.js";
 import { SessionEntrySchema, SessionHeaderSchema } from "@shared/session-file/entries.js";
 
@@ -371,12 +371,11 @@ function walkActiveChain(entries: EntryMap): Array<Record<string, unknown>> {
   return chain.reverse();
 }
 
-const DEFAULT_HISTORY_LIMIT = 500;
 // Converted histories can be tens of megabytes. Keep only a small working set
 // so opening many long sessions cannot retain every complete JSONL branch in
 // the main process indefinitely.
 const MAX_CACHED_HISTORY_FILES = 3;
-const pageCache = new Map<
+const historyCache = new Map<
   string,
   {
     mtimeMs: number;
@@ -385,17 +384,18 @@ const pageCache = new Map<
   }
 >();
 
-async function loadAllHistoryBlocks(filePath: string): Promise<TranscriptBlock[]> {
+export async function loadHistory(filePath: string): Promise<TranscriptBlock[]> {
+  if (!fs.existsSync(filePath)) return [];
   const stat = await fs.promises.stat(filePath);
   const mtimeMs = stat.mtimeMs;
-  const cached = pageCache.get(filePath);
+  const cached = historyCache.get(filePath);
   if (cached && cached.mtimeMs === mtimeMs && cached.size === stat.size) {
     // Refresh insertion order so Map acts as a tiny LRU.
-    pageCache.delete(filePath);
-    pageCache.set(filePath, cached);
+    historyCache.delete(filePath);
+    historyCache.set(filePath, cached);
     return cached.blocks;
   }
-  if (cached) pageCache.delete(filePath);
+  if (cached) historyCache.delete(filePath);
 
   const { header, entries } = await parseEntries(filePath);
   if (!header) return [];
@@ -406,26 +406,13 @@ async function loadAllHistoryBlocks(filePath: string): Promise<TranscriptBlock[]
   const chain = walkActiveChain(entries);
   // Compaction bounds Pi's active model context; it must not erase GUI
   // scrollback. Convert the complete persisted branch, including messages
-  // before compaction markers, and paginate the resulting transcript blocks.
+  // before compaction markers.
   const blocks = entriesToTranscript(chain);
-  pageCache.set(filePath, { mtimeMs, size: stat.size, blocks });
-  while (pageCache.size > MAX_CACHED_HISTORY_FILES) {
-    const oldest = pageCache.keys().next().value;
+  historyCache.set(filePath, { mtimeMs, size: stat.size, blocks });
+  while (historyCache.size > MAX_CACHED_HISTORY_FILES) {
+    const oldest = historyCache.keys().next().value;
     if (oldest === undefined) break;
-    pageCache.delete(oldest);
+    historyCache.delete(oldest);
   }
   return blocks;
-}
-
-export async function loadHistoryPage(
-  filePath: string,
-  opts: { limit?: number | undefined; before?: number | undefined } = {},
-): Promise<HistoryPage> {
-  if (!fs.existsSync(filePath)) return { blocks: [], startIndex: 0, total: 0 };
-  const blocks = await loadAllHistoryBlocks(filePath);
-  const total = blocks.length;
-  const limit = Math.max(1, Math.floor(opts.limit ?? DEFAULT_HISTORY_LIMIT));
-  const end = Math.max(0, Math.min(opts.before ?? total, total));
-  const startIndex = Math.max(0, end - limit);
-  return { blocks: blocks.slice(startIndex, end), startIndex, total };
 }

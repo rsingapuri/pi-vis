@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { TranscriptBlock } from "@shared/ipc-contract.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { entriesToTranscript, loadHistoryPage } from "./history-loader.js";
+import { entriesToTranscript, loadHistory } from "./history-loader.js";
 
 let dir: string;
 let file: string;
@@ -83,7 +83,7 @@ describe("loadHistory (real pi v3 nested message format)", () => {
       },
     ]);
 
-    const blocks = (await loadHistoryPage(file)).blocks;
+    const blocks = await loadHistory(file);
     expect(blocks).toHaveLength(4);
 
     // user block
@@ -162,7 +162,7 @@ describe("loadHistory (real pi v3 nested message format)", () => {
       },
     ]);
 
-    const blocks = (await loadHistoryPage(file)).blocks;
+    const blocks = await loadHistory(file);
     const text = (b: TranscriptBlock) =>
       ((b.data as Record<string, unknown>)["segments"] as Array<{ content: string }>)
         .map((s) => s.content)
@@ -204,7 +204,7 @@ describe("loadHistory (real pi v3 nested message format)", () => {
       },
     ]);
 
-    const blocks = (await loadHistoryPage(file)).blocks;
+    const blocks = await loadHistory(file);
     expect(blocks[1]?.type).toBe("assistant");
     const segs = (blocks[1]?.data as Record<string, unknown>)["segments"] as Array<{
       kind: string;
@@ -218,7 +218,7 @@ describe("loadHistory (real pi v3 nested message format)", () => {
   });
 });
 
-describe("loadHistoryPage pagination", () => {
+describe("loadHistory complete scrollback and cache", () => {
   function linearUserEntries(count: number): object[] {
     const entries: object[] = [
       {
@@ -235,7 +235,7 @@ describe("loadHistoryPage pagination", () => {
       entries.push({
         id,
         parentId,
-        timestamp: `2024-01-01T00:00:${String(i).padStart(2, "0")}.000Z`,
+        timestamp: new Date(Date.UTC(2024, 0, 1) + i * 1_000).toISOString(),
         type: "message",
         message: { role: "user", content: [{ type: "text", text: `msg-${i}` }] },
       });
@@ -248,40 +248,22 @@ describe("loadHistoryPage pagination", () => {
     return blocks.map((b) => (b.data as { content?: string }).content ?? "");
   }
 
-  it("returns the tail page by default for the requested limit", async () => {
-    writeEntries(linearUserEntries(10));
+  it("returns the complete transcript without a block limit", async () => {
+    writeEntries(linearUserEntries(750));
 
-    const page = await loadHistoryPage(file, { limit: 3 });
+    const blocks = await loadHistory(file);
 
-    expect(page.startIndex).toBe(7);
-    expect(page.total).toBe(10);
-    expect(blockTexts(page.blocks)).toEqual(["msg-8", "msg-9", "msg-10"]);
+    expect(blocks).toHaveLength(750);
+    expect(blockTexts(blocks).slice(0, 2)).toEqual(["msg-1", "msg-2"]);
+    expect(blockTexts(blocks).slice(-2)).toEqual(["msg-749", "msg-750"]);
   });
 
-  it("uses before as the previous page cursor", async () => {
-    writeEntries(linearUserEntries(10));
-
-    const page = await loadHistoryPage(file, { limit: 3, before: 7 });
-
-    expect(page.startIndex).toBe(4);
-    expect(page.total).toBe(10);
-    expect(blockTexts(page.blocks)).toEqual(["msg-5", "msg-6", "msg-7"]);
-  });
-
-  it("clamps empty and zero-limit page requests safely", async () => {
-    writeEntries(linearUserEntries(2));
-
-    const page = await loadHistoryPage(file, { limit: 0, before: -10 });
-
-    expect(page).toEqual({ blocks: [], startIndex: 0, total: 2 });
-  });
-
-  it("reuses the single-file page cache when file identity is unchanged", async () => {
+  it("reuses the single-file history cache when file identity is unchanged", async () => {
     writeEntries(linearUserEntries(1));
     const fixedTime = new Date("2024-02-02T00:00:00.000Z");
     fs.utimesSync(file, fixedTime, fixedTime);
 
-    expect(blockTexts((await loadHistoryPage(file, { limit: 1 })).blocks)).toEqual(["msg-1"]);
+    expect(blockTexts(await loadHistory(file))).toEqual(["msg-1"]);
     writeEntries([
       {
         type: "session",
@@ -300,10 +282,10 @@ describe("loadHistoryPage pagination", () => {
     ]);
     fs.utimesSync(file, fixedTime, fixedTime);
 
-    expect(blockTexts((await loadHistoryPage(file, { limit: 1 })).blocks)).toEqual(["msg-1"]);
+    expect(blockTexts(await loadHistory(file))).toEqual(["msg-1"]);
   });
 
-  it("evicts old complete histories from the bounded page cache", async () => {
+  it("evicts old complete histories from the bounded history cache", async () => {
     const paths = Array.from({ length: 4 }, (_, index) => path.join(dir, `session-${index}.jsonl`));
     const fixedTime = new Date("2024-02-02T00:00:00.000Z");
     for (const candidate of paths) {
@@ -314,7 +296,7 @@ describe("loadHistoryPage pagination", () => {
           .join("\n")}\n`,
       );
       fs.utimesSync(candidate, fixedTime, fixedTime);
-      expect(blockTexts((await loadHistoryPage(candidate)).blocks)).toEqual(["msg-1"]);
+      expect(blockTexts(await loadHistory(candidate))).toEqual(["msg-1"]);
     }
 
     const replacement = linearUserEntries(1) as Array<Record<string, unknown>>;
@@ -326,16 +308,16 @@ describe("loadHistoryPage pagination", () => {
     );
     fs.utimesSync(paths[0]!, fixedTime, fixedTime);
 
-    expect(blockTexts((await loadHistoryPage(paths[0]!)).blocks)).toEqual(["MSG-1"]);
+    expect(blockTexts(await loadHistory(paths[0]!))).toEqual(["MSG-1"]);
   });
 
-  it("invalidates the page cache when mtime changes even if size is unchanged", async () => {
+  it("invalidates the history cache when mtime changes even if size is unchanged", async () => {
     writeEntries(linearUserEntries(1));
     const firstTime = new Date("2024-02-02T00:00:00.000Z");
     const secondTime = new Date("2024-02-02T00:00:02.000Z");
     fs.utimesSync(file, firstTime, firstTime);
     const stat = fs.statSync(file);
-    expect(blockTexts((await loadHistoryPage(file, { limit: 1 })).blocks)).toEqual(["msg-1"]);
+    expect(blockTexts(await loadHistory(file))).toEqual(["msg-1"]);
 
     writeEntries([
       {
@@ -356,7 +338,7 @@ describe("loadHistoryPage pagination", () => {
     fs.utimesSync(file, secondTime, secondTime);
     expect(fs.statSync(file).size).toBe(stat.size);
 
-    expect(blockTexts((await loadHistoryPage(file, { limit: 1 })).blocks)).toEqual(["MSG-1"]);
+    expect(blockTexts(await loadHistory(file))).toEqual(["MSG-1"]);
   });
 
   it("keeps pre-compaction entries available for persisted transcript scrollback", async () => {
@@ -393,10 +375,9 @@ describe("loadHistoryPage pagination", () => {
       },
     ]);
 
-    const page = await loadHistoryPage(file, { limit: 10 });
+    const blocks = await loadHistory(file);
 
-    expect(page.total).toBe(4);
-    expect(page.blocks.map((b) => b.id)).toEqual(["u1", "u2", "c1", "u3"]);
+    expect(blocks.map((b) => b.id)).toEqual(["u1", "u2", "c1", "u3"]);
   });
 });
 

@@ -1,15 +1,13 @@
 import type { SessionId } from "@shared/ids.js";
-import type { HistoryPage } from "@shared/ipc-contract.js";
+import type { TranscriptBlock } from "@shared/ipc-contract.js";
 import { describe, expect, it } from "vitest";
 import { loadBoundHistory } from "./bound-history.js";
 import type { SessionRecord } from "./session-registry.js";
 
 const SID = "history-session" as SessionId;
-const PAGE: HistoryPage = {
-  blocks: [{ id: "history-block", type: "user", data: { content: "history" } }],
-  startIndex: 0,
-  total: 1,
-};
+const HISTORY: TranscriptBlock[] = [
+  { id: "history-block", type: "user", data: { content: "history" } },
+];
 
 function record(
   overrides: Partial<SessionRecord> & { sessionFile?: string | undefined } = {},
@@ -39,12 +37,12 @@ function record(
   } as SessionRecord;
 }
 
-function deferredPage(): {
-  promise: Promise<HistoryPage>;
-  resolve: (page: HistoryPage) => void;
+function deferredHistory(): {
+  promise: Promise<TranscriptBlock[]>;
+  resolve: (history: TranscriptBlock[]) => void;
 } {
-  let resolve!: (page: HistoryPage) => void;
-  const promise = new Promise<HistoryPage>((done) => {
+  let resolve!: (history: TranscriptBlock[]) => void;
+  const promise = new Promise<TranscriptBlock[]>((done) => {
     resolve = done;
   });
   return { promise, resolve };
@@ -60,15 +58,15 @@ const request = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("loadBoundHistory", () => {
-  it("returns a correlated page when the captured owner remains current", async () => {
+  it("returns correlated complete history when the captured owner remains current", async () => {
     const current = record();
     await expect(
       loadBoundHistory(
         request(),
         () => current,
-        async () => PAGE,
+        async () => HISTORY,
       ),
-    ).resolves.toEqual({ status: "loaded", historyGeneration: 7, page: PAGE });
+    ).resolves.toEqual({ status: "loaded", historyGeneration: 7, history: HISTORY });
   });
 
   it("refuses a mismatched file or incomplete runtime identity before I/O", async () => {
@@ -76,7 +74,7 @@ describe("loadBoundHistory", () => {
     let reads = 0;
     const load = async () => {
       reads++;
-      return PAGE;
+      return HISTORY;
     };
     await expect(
       loadBoundHistory(request({ expectedSessionFile: "/tmp/other.jsonl" }), () => current, load),
@@ -99,7 +97,7 @@ describe("loadBoundHistory", () => {
         () => current,
         async () => {
           reads++;
-          return PAGE;
+          return HISTORY;
         },
       ),
     ).resolves.toMatchObject({ status: "stale" });
@@ -115,7 +113,7 @@ describe("loadBoundHistory", () => {
         () => current,
         async () => {
           reads++;
-          return PAGE;
+          return HISTORY;
         },
       ),
     ).resolves.toMatchObject({ status: "stale" });
@@ -124,20 +122,20 @@ describe("loadBoundHistory", () => {
 
   it("discards a cold read when activation installs a process during I/O", async () => {
     const current = record();
-    const deferred = deferredPage();
+    const deferred = deferredHistory();
     const pending = loadBoundHistory(
       request(),
       () => current,
       () => deferred.promise,
     );
     current.proc = { hostInstanceId: "host-a", sessionEpoch: 1 } as SessionRecord["proc"];
-    deferred.resolve(PAGE);
+    deferred.resolve(HISTORY);
     await expect(pending).resolves.toMatchObject({ status: "stale" });
   });
 
   it("discards a cold read when activation starts during I/O before process installation", async () => {
     const current = record();
-    const deferred = deferredPage();
+    const deferred = deferredHistory();
     const pending = loadBoundHistory(
       request(),
       () => current,
@@ -145,7 +143,7 @@ describe("loadBoundHistory", () => {
     );
     current.status = "starting";
     current._activating = true;
-    deferred.resolve(PAGE);
+    deferred.resolve(HISTORY);
     await expect(pending).resolves.toMatchObject({ status: "stale" });
   });
 
@@ -157,7 +155,7 @@ describe("loadBoundHistory", () => {
       status: "ready",
       availability: "available",
     });
-    const first = deferredPage();
+    const first = deferredHistory();
     const hostRestart = loadBoundHistory(
       request({ expectedHostInstanceId: "host-a", expectedSessionEpoch: 1 }),
       () => current,
@@ -165,10 +163,10 @@ describe("loadBoundHistory", () => {
     );
     current.proc = { hostInstanceId: "host-b", sessionEpoch: 1 } as SessionRecord["proc"];
     current.snapshot = { hostInstanceId: "host-b", sessionEpoch: 1 } as SessionRecord["snapshot"];
-    first.resolve(PAGE);
+    first.resolve(HISTORY);
     await expect(hostRestart).resolves.toMatchObject({ status: "stale" });
 
-    const second = deferredPage();
+    const second = deferredHistory();
     const epochTransition = loadBoundHistory(
       request({ expectedHostInstanceId: "host-b", expectedSessionEpoch: 1 }),
       () => current,
@@ -176,7 +174,7 @@ describe("loadBoundHistory", () => {
     );
     current.proc!.sessionEpoch = 2;
     current.snapshot = { hostInstanceId: "host-b", sessionEpoch: 2 } as SessionRecord["snapshot"];
-    second.resolve(PAGE);
+    second.resolve(HISTORY);
     await expect(epochTransition).resolves.toMatchObject({ status: "stale" });
   });
 
@@ -187,7 +185,7 @@ describe("loadBoundHistory", () => {
       status: "ready",
       availability: "available",
     });
-    const deferred = deferredPage();
+    const deferred = deferredHistory();
     const pending = loadBoundHistory(
       request({ expectedHostInstanceId: "host-a", expectedSessionEpoch: 1 }),
       () => current,
@@ -195,20 +193,20 @@ describe("loadBoundHistory", () => {
     );
     current.availability = "transitioning";
     current._hostTransition = { transitionId: "transition", provisionalEpoch: 2 };
-    deferred.resolve(PAGE);
+    deferred.resolve(HISTORY);
     await expect(pending).resolves.toMatchObject({ status: "stale" });
   });
 
   it("discards a read when the registry record is closed and recreated", async () => {
     let current = record();
-    const deferred = deferredPage();
+    const deferred = deferredHistory();
     const pending = loadBoundHistory(
       request(),
       () => current,
       () => deferred.promise,
     );
     current = record();
-    deferred.resolve(PAGE);
+    deferred.resolve(HISTORY);
     await expect(pending).resolves.toMatchObject({ status: "stale" });
   });
 });

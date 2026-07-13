@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { SessionId } from "@shared/ids.js";
-import type { HistoryPage } from "@shared/ipc-contract.js";
+import type { TranscriptBlock } from "@shared/ipc-contract.js";
 import type { SessionRecord } from "./session-registry.js";
 
 export interface BoundHistoryRequest {
@@ -9,18 +9,13 @@ export interface BoundHistoryRequest {
   historyGeneration: number;
   expectedHostInstanceId: string | null;
   expectedSessionEpoch: number | null;
-  limit?: number | undefined;
-  before?: number | undefined;
 }
 
 export type BoundHistoryResult =
-  | { status: "loaded"; historyGeneration: number; page: HistoryPage }
+  | { status: "loaded"; historyGeneration: number; history: TranscriptBlock[] }
   | { status: "stale"; historyGeneration: number };
 
-type HistoryLoader = (
-  filePath: string,
-  opts: { limit?: number | undefined; before?: number | undefined },
-) => Promise<HistoryPage>;
+type HistoryLoader = (filePath: string) => Promise<TranscriptBlock[]>;
 
 interface CapturedHistoryOwner {
   record: SessionRecord;
@@ -124,10 +119,7 @@ export async function loadBoundHistory(
   const record = getSession(request.sessionId);
   if (!record || !matchesRequest(record, request)) return stale();
   const captured = captureOwner(record);
-  const page = await load(captured.sessionFile, {
-    limit: request.limit,
-    before: request.before,
-  });
+  const history = await load(captured.sessionFile);
   if (!ownerStillCurrent(getSession(request.sessionId), captured)) return stale();
-  return { status: "loaded", historyGeneration: request.historyGeneration, page };
+  return { status: "loaded", historyGeneration: request.historyGeneration, history };
 }

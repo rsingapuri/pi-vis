@@ -8,7 +8,6 @@ import {
   createTranscriptState,
   seedFromHistory,
   transcriptBlockCount,
-  transcriptTailBlocks,
 } from "./transcript.js";
 
 function e<T extends KnownPiEvent>(event: T): T {
@@ -637,7 +636,7 @@ describe("transcript reducer — role-based message_start", () => {
     expect(applyPiEvent(withNotice, event)).toBe(withNotice);
   });
 
-  it("ignores replayed cache notices until their history page is loaded", () => {
+  it("ignores replayed cache notices whose history anchor is absent", () => {
     const initial = seedFromHistory(createTranscriptState(), [
       { id: "user-2", type: "user", data: { content: "Next" } },
     ]);
@@ -958,7 +957,7 @@ describe("transcript reducer — streaming perf invariants", () => {
     expect(state.blocks).toHaveLength(2); // compaction marker + live assistant
   });
 
-  it("keeps count and tail selection bounded across many tiny archive chunks", () => {
+  it("keeps count and complete scrollback across many tiny archive chunks", () => {
     let state = createTranscriptState();
     for (let index = 0; index < 500; index += 1) {
       state = applyPiEvent(
@@ -970,8 +969,8 @@ describe("transcript reducer — streaming perf invariants", () => {
     expect(state.archivedBlockChunks).toHaveLength(499);
     expect(state.archivedBlockCount).toBe(499);
     expect(transcriptBlockCount(state)).toBe(500);
-    expect(transcriptTailBlocks(state, 150)).toHaveLength(150);
-    expect(transcriptTailBlocks(state, 150).at(-1)).toBe(state.blocks.at(-1));
+    expect(allTranscriptBlocks(state)).toHaveLength(500);
+    expect(allTranscriptBlocks(state).at(-1)).toBe(state.blocks.at(-1));
   });
 
   it("a tool_execution_update preserves untouched element references", () => {

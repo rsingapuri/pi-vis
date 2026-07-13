@@ -180,33 +180,10 @@ export function lastTranscriptBlock(state: TranscriptState): TypedTranscriptBloc
   return undefined;
 }
 
-/** Flatten only for explicit full-history consumers. Hot streaming views should
- * use `transcriptTailBlocks`, which copies at most their visible window. */
+/** Flatten only for explicit full-history consumers. Hot streaming views keep
+ * immutable archive chunks separate from the mutable live tail. */
 export function allTranscriptBlocks(state: TranscriptState): TypedTranscriptBlock[] {
   return [...state.archivedBlockChunks.flat(), ...state.blocks];
-}
-
-export function transcriptTailBlocks(
-  state: TranscriptState,
-  limit: number,
-): TypedTranscriptBlock[] {
-  if (limit <= 0) return [];
-  const selected: TypedTranscriptBlock[][] = [];
-  let remaining = limit;
-  if (state.blocks.length > 0) {
-    const start = Math.max(0, state.blocks.length - remaining);
-    selected.push(state.blocks.slice(start));
-    remaining -= state.blocks.length - start;
-  }
-  for (let index = state.archivedBlockChunks.length - 1; index >= 0 && remaining > 0; index -= 1) {
-    const chunk = state.archivedBlockChunks[index];
-    if (!chunk || chunk.length === 0) continue;
-    const start = Math.max(0, chunk.length - remaining);
-    selected.push(chunk.slice(start));
-    remaining -= chunk.length - start;
-  }
-  selected.reverse();
-  return selected.flat();
 }
 
 function replaceUserBlockById(
@@ -414,20 +391,6 @@ export function seedFromHistory(
     archivedBlockCount: blocks.length,
     blocks: [],
     pendingRetryErrorBlockId: null,
-  };
-}
-
-export function prependHistory(
-  state: TranscriptState,
-  history: TranscriptBlock[],
-): TranscriptState {
-  const existingIds = new Set(allTranscriptBlocks(state).map((block) => block.id));
-  const blocks = mapHistoryBlocks(history).filter((block) => !existingIds.has(block.id));
-  if (blocks.length === 0) return state;
-  return {
-    ...state,
-    archivedBlockChunks: [blocks, ...state.archivedBlockChunks],
-    archivedBlockCount: state.archivedBlockCount + blocks.length,
   };
 }
 
@@ -739,8 +702,9 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
           archivedBlockCount: state.archivedBlockCount + 1,
         };
       }
-      // The notice belongs to a history page that is not loaded yet. A replay
-      // after the next prepend will place it once its assistant entry appears.
+      // The notice belongs to an entry outside the current transcript (for
+      // example after branch navigation). A later history seed can replay it
+      // once the assistant anchor is present.
       return state;
     }
 
