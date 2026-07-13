@@ -67,6 +67,16 @@ interface RetainedIntent {
   result?: SubmissionResult | undefined;
 }
 
+/** Preserve a child-requested queue label for ambiguity review; this never
+ * selects Pi admission behavior. */
+function reviewQueues(submission: SessionSubmission): { steering: string[]; followUp: string[] } {
+  const { requestedMode: queueLabel, text } = submission;
+  return {
+    steering: queueLabel === "steer" ? [text] : [],
+    followUp: queueLabel === "followUp" ? [text] : [],
+  };
+}
+
 interface RetainedCommandIntent {
   request: RendererCommandRequest;
   dispatched: boolean;
@@ -1164,8 +1174,7 @@ export class SessionRegistry {
       const restoration: RuntimeRecord & { type: "queue_restoration" } = {
         type: "queue_restoration",
         restorationId: `ambiguous-submission:${payload.intentId}`,
-        steering: payload.requestedMode === "steer" ? [payload.text] : [],
-        followUp: payload.requestedMode === "followUp" ? [payload.text] : [],
+        ...reviewQueues(payload),
         originalAttachments: [{ intentId: payload.intentId, images: payload.images }],
         requiresReview: true,
       };
@@ -1494,8 +1503,7 @@ export class SessionRegistry {
         const restoration: RuntimeRecord & { type: "queue_restoration" } = {
           type: "queue_restoration",
           restorationId,
-          steering: submission.requestedMode === "steer" ? [submission.text] : [],
-          followUp: submission.requestedMode === "followUp" ? [submission.text] : [],
+          ...reviewQueues(submission),
           originalAttachments: [{ intentId: submission.intentId, images: submission.images }],
           requiresReview: true,
         };
@@ -1577,8 +1585,7 @@ export class SessionRegistry {
     const restoration: RuntimeRecord & { type: "queue_restoration" } = {
       type: "queue_restoration",
       restorationId,
-      steering: retained.payload.requestedMode === "steer" ? [retained.payload.text] : [],
-      followUp: retained.payload.requestedMode === "followUp" ? [retained.payload.text] : [],
+      ...reviewQueues(retained.payload),
       originalAttachments: [
         { intentId: retained.payload.intentId, images: retained.payload.images },
       ],

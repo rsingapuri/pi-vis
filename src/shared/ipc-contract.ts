@@ -19,11 +19,9 @@ import type { PanelEvent } from "./pi-protocol/panel-events.js";
 import type {
   AuthorityAttachRequest,
   AuthorityAttachResponse,
-  CommandSettlement,
   EscapeResult,
   IntentEnvelope,
   IntentReceipt,
-  LegacyCommandPayload,
   ReloadRequest,
   ReloadSettlement,
   RendererPublication,
@@ -261,26 +259,6 @@ export interface IpcInvokeContract {
     req: { sessionId: SessionId; entries: import("./pi-protocol/responses.js").SessionTreeEntry[] };
     res: TranscriptBlock[];
   };
-  /**
-   * @deprecated Transitional compatibility bridge. New renderer reads must use
-   * `session.query`; new mutations must use `session.dispatchIntent`.
-   * The payload is opaque so the renderer/main process API no longer exposes
-   * Pi's command union while existing callers migrate.
-   */
-  "session.sendCommand": {
-    req: {
-      sessionId: SessionId;
-      command: LegacyCommandPayload;
-      requestId: string;
-      expectedHostInstanceId: string;
-      expectedSessionEpoch: number;
-      intentId?: string;
-      uiSurface?: "composer" | "unified";
-      sourceText?: string;
-      editorRevision?: number;
-    };
-    res: CommandSettlement;
-  };
   /** Owner-bound, retry-policy-governed read-only host API. */
   "session.query": { req: SessionQueryEnvelope; res: SessionQueryResult };
   /** The only text/image submission path. Pi chooses idle prompt vs queued delivery. */
@@ -288,7 +266,7 @@ export interface IpcInvokeContract {
     req: { sessionId: SessionId; submission: SessionSubmission };
     res: SubmissionResult;
   };
-  /** New owner-bound mutation protocol. Kept alongside legacy submit/command IPC during migration. */
+  /** Owner-bound mutation admission; terminal outcomes arrive in authority frames. */
   "session.dispatchIntent": { req: IntentEnvelope; res: IntentReceipt };
   /** Serialized multi-plane baseline plus publications buffered after its high-water mark. */
   "session.authorityAttach": {

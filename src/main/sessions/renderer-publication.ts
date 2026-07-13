@@ -169,6 +169,11 @@ export class RendererPublicationRouter {
     this.overflowed = false;
 
     for (let attempt = 0; attempt < this.maxBaselineAttempts; attempt++) {
+      // This is the main-owned publication high-water covered by the baseline
+      // request. Publications routed while the child serializes its baseline
+      // receive strictly greater numbers and form the replay tail. The child
+      // cannot name this renderer-local sequence space.
+      const highWatermark = this.nextPublicationSequence - 1;
       const sourceBaseline = await getBaseline();
       const baselineOwner = sourceBaseline.owner;
       if (!sameOwner(sourceBaseline.semantic.snapshot.owner, baselineOwner)) {
@@ -178,10 +183,6 @@ export class RendererPublicationRouter {
       // The baseline is serialized by the child after its earlier authority
       // work and names the main publication high-water it covers. Only the
       // strictly newer buffered tail may be replayed.
-      const highWatermark = sourceBaseline.publicationHighWatermark;
-      if (highWatermark >= this.nextPublicationSequence) {
-        throw new AuthorityAttachError("Authority baseline high-watermark is ahead of routing");
-      }
       const replay = this.buffer.filter(
         ({ publication }) => publication.publicationSequence > highWatermark,
       );

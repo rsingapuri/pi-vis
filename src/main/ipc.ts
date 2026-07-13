@@ -7,11 +7,9 @@ import type { ExtensionUiRequest, ExtensionUiResponse } from "@shared/pi-protoco
 import type { PanelEvent } from "@shared/pi-protocol/panel-events.js";
 import type { SessionTreeEntry } from "@shared/pi-protocol/responses.js";
 import type {
-  CommandSettlement,
   IntentEnvelope,
   IntentReceipt,
   ReloadRequest,
-  RendererCommandRequest,
   SessionQueryEnvelope,
   SessionQueryResult,
   SessionSubmission,
@@ -1060,91 +1058,6 @@ export function initIpc(win: BrowserWindow): void {
     "session.transcriptForEntries",
     (_evt, args: { sessionId: SessionId; entries: SessionTreeEntry[] }) => {
       return entriesToTranscript(args.entries);
-    },
-  );
-
-  ipcMain.handle(
-    "session.sendCommand",
-    async (
-      _evt,
-      args: { sessionId: SessionId } & RendererCommandRequest,
-    ): Promise<CommandSettlement> => {
-      const reg = registry;
-      if (!reg) throw new Error("Session registry not initialized");
-      const res = await reg.executeRendererCommand(args.sessionId, {
-        requestId: args.requestId,
-        command: args.command,
-        expectedHostInstanceId: args.expectedHostInstanceId,
-        expectedSessionEpoch: args.expectedSessionEpoch,
-        ...(args.intentId ? { intentId: args.intentId } : {}),
-        ...(args.uiSurface ? { uiSurface: args.uiSurface } : {}),
-        ...(args.sourceText !== undefined ? { sourceText: args.sourceText } : {}),
-        ...(args.editorRevision !== undefined ? { editorRevision: args.editorRevision } : {}),
-      });
-
-      // Harvest the session file from responses that carry it, so a brand-new
-      // session's tab becomes durable the moment pi reports a path. This is
-      // what makes the byFile double-open guard and loadHistory work later.
-      if (
-        (args.command.type === "get_session_stats" || args.command.type === "get_state") &&
-        res.success &&
-        res.data &&
-        typeof res.data === "object" &&
-        typeof (res.data as Record<string, unknown>)["sessionFile"] === "string"
-      ) {
-        reg.noteSessionFile(
-          args.sessionId,
-          (res.data as Record<string, unknown>)["sessionFile"] as string,
-        );
-      }
-
-      // File-mutating commands (new_session / switch_session / fork / clone)
-      // re-point the session to a new file. We follow up with get_state to
-      // read the authoritative sessionFile + sessionName, then emit
-      // `session.fileChanged` so the renderer can adopt the new path and
-      // reseed the transcript. Skipped on success:false (the user gets a
-      // toast) and on data.cancelled: true (the operation was refused).
-      if (
-        res.success &&
-        res.data &&
-        typeof res.data === "object" &&
-        (res.data as { cancelled?: boolean }).cancelled !== true &&
-        (args.command.type === "new_session" ||
-          args.command.type === "switch_session" ||
-          args.command.type === "fork" ||
-          args.command.type === "clone")
-      ) {
-        try {
-          const successor = res.successorIdentity;
-          if (!successor) throw new Error("Replacement completed without successor identity");
-          const stateRes = await reg.readInternalProbe(
-            args.sessionId,
-            { type: "get_state" },
-            successor,
-          );
-          if (stateRes.success && stateRes.data && typeof stateRes.data === "object") {
-            const data = stateRes.data as Record<string, unknown>;
-            const sessionFile =
-              typeof data["sessionFile"] === "string" ? (data["sessionFile"] as string) : undefined;
-            const sessionName =
-              typeof data["sessionName"] === "string" ? (data["sessionName"] as string) : undefined;
-            reg.updateSessionFile(args.sessionId, sessionFile);
-            eventBatcher?.flush(args.sessionId);
-            safeSend("session.fileChanged", {
-              sessionId: args.sessionId,
-              hostInstanceId: successor.hostInstanceId,
-              sessionEpoch: successor.sessionEpoch,
-              sessionFile,
-              sessionName,
-            });
-          }
-        } catch (err) {
-          // get_state is best-effort; the original response is still returned.
-          console.error("fileChanged follow-up failed:", err);
-        }
-      }
-
-      return res;
     },
   );
 

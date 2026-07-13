@@ -178,10 +178,10 @@ describe("state rewrite architectural source gates", () => {
   it("keeps prompt-versus-queue selection out of renderer and main", () => {
     const queueDecisions = matchingLines(processFiles, (line) => {
       const code = withoutComments(line);
-      return (
-        /\brequestedMode\s*(?:===|!==|\?)/.test(code) ||
-        /\brequestedMode\s*:\s*["'](?:steer|followUp)["']/.test(code)
-      );
+      // Carrying the requested queue mode in the high-level submit intent is
+      // required by the protocol. What is forbidden here is using that hint to
+      // choose or infer Pi's actual prompt/queue behavior outside the child.
+      return /\brequestedMode\s*(?:===|!==|\?)/.test(code);
     });
     expect(
       queueDecisions,

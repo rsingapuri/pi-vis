@@ -95,6 +95,30 @@ describe("RendererPublicationRouter", () => {
     expect(delivered[0]).toMatchObject({ publicationSequence: 2, payload: { frameId: "frame-3" } });
   });
 
+  it("uses the main publication high-water on same-generation reattach", async () => {
+    const delivered: RendererPublication[] = [];
+    const router = new RendererPublicationRouter("session" as SessionId, (item) =>
+      delivered.push(item),
+    );
+    router.setExpectedOwner(owner());
+    await router.attach(4, async () => baseline(owner(), 1));
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
+    expect(delivered[0]?.publicationSequence).toBe(1);
+
+    let resolveBaseline!: (value: AuthorityAttachBaseline) => void;
+    const reattaching = router.attach(
+      4,
+      () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveBaseline = resolve)),
+    );
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
+    resolveBaseline(baseline(owner(), 2, 0));
+
+    const response = await reattaching;
+    expect(response.baseline.publicationHighWatermark).toBe(1);
+    expect(response.replay).toHaveLength(1);
+    expect(response.replay[0]?.publicationSequence).toBe(2);
+  });
+
   it("fences predecessor owners and never forwards their semantic frame", async () => {
     const delivered: RendererPublication[] = [];
     const router = new RendererPublicationRouter("session" as SessionId, (item) =>
