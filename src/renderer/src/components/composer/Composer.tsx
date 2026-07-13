@@ -1075,16 +1075,16 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         // outcome. Unknown/cancelled/rejected work remains in editor custody.
         const terminalOutcome =
           completion?.outcome.state === "completed" || completion?.outcome.state === "failed";
-        const acceptedPromptCanClear =
+        const acceptedPromptOutcome =
           finalAction.kind === "send-prompt" &&
           terminalOutcome &&
           ((completion?.outcome.kind === "submit" &&
             ["in_custody", "consumed", "completed", "extension_error"].includes(
               completion.outcome.result?.disposition ?? "",
             )) ||
-            completion?.outcome.kind === "invokeCommand") &&
-          originatingComposerStillMounted &&
-          localPayloadUnchanged;
+            completion?.outcome.kind === "invokeCommand");
+        const acceptedPromptCanClear =
+          acceptedPromptOutcome && originatingComposerStillMounted && localPayloadUnchanged;
         const completedCommandCanClear =
           finalAction.kind !== "send-prompt" &&
           finalAction.kind !== "unsupported" &&
@@ -1114,7 +1114,10 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
             useSessionsStore.getState().clearEditorInjection(sessionId);
           }
         }
-        if (acceptedPromptCanClear && pendingDiffComments.length > 0) {
+        // Diff comments have their own stable revision fence. A concurrent
+        // composer edit must preserve text/attachments, but must not keep the
+        // exact comment revisions that authority already accepted.
+        if (acceptedPromptOutcome && pendingDiffComments.length > 0) {
           clearSubmittedDiffComments(sessionId, pendingDiffComments);
         }
       } catch (err) {

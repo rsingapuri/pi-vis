@@ -259,7 +259,11 @@ function publishExtensionUi(request) {
     publication: {
       plane: "extensionUi",
       owner: authorityOwner(),
-      payload: { kind: "request", cursor, request: structuredClone(request) },
+      payload: {
+        kind: "request",
+        cursor,
+        request: { ...structuredClone(request), hostInstanceId, sessionEpoch },
+      },
     },
   });
 }
@@ -1061,6 +1065,10 @@ async function executeAuthorityIntent(entry) {
       if (command === "compact") {
         await handleCommand(`authority-${entry.intentId}`, { type: "compact" });
         finishAuthorityIntent(entry, "completed", { commandType: command, response: {} });
+      } else if (command === "new") {
+        // Settle against the predecessor before the fixture advances its epoch.
+        finishAuthorityIntent(entry, "completed", { commandType: command, response: {} });
+        await handleCommand(`authority-${entry.intentId}`, { type: "new_session" });
       } else if (command === "reload") {
         finishAuthorityIntent(entry, "completed", { commandType: command, response: {} });
         transition("authority-reload");

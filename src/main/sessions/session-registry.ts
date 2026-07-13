@@ -458,11 +458,18 @@ export class SessionRegistry {
       record._procReady = true;
       record.status = "ready";
       record.error = undefined;
+      // Install the first owner-correlated snapshot before exposing `ready`.
+      // Otherwise renderer ready listeners can dispatch queries against an
+      // owner that changes while the initial resync is still in flight.
+      await this.resyncSession(sessionId);
+      if (record._dead || record.proc !== proc) {
+        proc.stop();
+        return;
+      }
       // Keep the recovery budget across a successful ready handshake. A second
       // crash inside RAPID_FAILURE_WINDOW_MS must leave the session failed
       // rather than creating an endless crash/restart loop.
       this.onStatusChanged(sessionId, "ready", undefined, proc.piVersion);
-      await this.resyncSession(sessionId);
     } catch (error) {
       if (record._dead) return;
       const message = error instanceof Error ? error.message : String(error);
