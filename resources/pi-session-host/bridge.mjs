@@ -182,6 +182,8 @@ export function setupCommandBridge({
       else if (record.type === "submission")
         send({ type: "submission_disposition", result: record.result });
       else if (record.type === "queue_restoration") send(record);
+      else if (record.type === "intent_outcome")
+        send({ type: "intent_outcome", outcome: record.outcome });
       // Escape dispositions are represented in an atomic transition batch.
       // Outside one, the request/response path is its authoritative delivery.
     },
@@ -592,6 +594,89 @@ export function setupCommandBridge({
       }
       throw err;
     }
+  }
+
+  async function dispatchIntent(envelope) {
+    return authority.dispatchIntent(envelope, async (intent, owner) => {
+      const submission = (text, overrides = {}) =>
+        authority.submit(
+          {
+            intentId: envelope.intentId,
+            expectedHostId: owner.hostInstanceId,
+            expectedEpoch: owner.sessionEpoch,
+            editorRevision: intent.editorRevision,
+            text,
+            images: intent.images ?? [],
+            requestedMode: intent.requestedMode ?? "followUp",
+            surface: intent.surface ?? "composer",
+            ...overrides,
+          },
+          true,
+        );
+
+      switch (intent.kind) {
+        case "interrupt":
+          return authority.requestEscape(envelope.intentId);
+        case "submit":
+          return submission(intent.text);
+        case "invokeCommand": {
+          if (typeof intent.text !== "string" || !intent.text.startsWith("/")) {
+            throw new Error("invokeCommand requires slash command text");
+          }
+          // Let Pi's public prompt/extension runner parse the exact command
+          // text. The renderer never selects a PiRpcCommand discriminator.
+          return submission(intent.text, { images: [] });
+        }
+        case "compact": {
+          const compactIntentId = authority.beginCompactionInvocation(envelope.intentId);
+          try {
+            return await trackInterruptibleOperation(
+              "compact",
+              () => _session.abort(),
+              () => _session.compact(intent.instructions),
+            );
+          } finally {
+            authority.settleCompactionInvocation(compactIntentId);
+          }
+        }
+        case "runBash":
+          return trackInterruptibleOperation(
+            "bash",
+            () => _session.abortBash(),
+            () =>
+              _session.executeBash(intent.command, undefined, {
+                ...(intent.excludeFromContext !== undefined
+                  ? { excludeFromContext: intent.excludeFromContext }
+                  : {}),
+              }),
+          );
+        case "navigate":
+          return authority.runNavigation(() =>
+            _session.navigateTree(intent.targetId, { summarize: intent.summarize }),
+          );
+        case "setModel": {
+          const models = await _session.modelRegistry.getAvailable();
+          const model = models.find(
+            (candidate) =>
+              candidate.provider === intent.provider && candidate.id === intent.modelId,
+          );
+          if (!model) throw new Error(`Model not found: ${intent.provider}/${intent.modelId}`);
+          await _session.setModel(model);
+          return { model };
+        }
+        case "setThinking":
+          _session.setThinkingLevel(intent.level);
+          return { level: intent.level };
+        case "rename":
+          _session.setSessionName(intent.name);
+          return { name: intent.name };
+        case "reload":
+          await handleReload();
+          return { owner: { hostInstanceId, sessionEpoch: authority.sessionEpoch } };
+        default:
+          throw new Error(`Unknown intent kind: ${intent.kind}`);
+      }
+    });
   }
 
   async function handleCommand(msg) {
@@ -1241,6 +1326,7 @@ export function setupCommandBridge({
     handleSubmit,
     handleEscape,
     handleReload,
+    dispatchIntent,
     publishSnapshot: (full = true) => authority.publishSnapshot(full),
     applyEditorPatch: (patch) => uiState.applyEditorPatch(patch),
     bindExtensions: bindInitialExtensions,

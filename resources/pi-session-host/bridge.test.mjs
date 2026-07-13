@@ -113,7 +113,7 @@ function setup(sessionOverrides, bridgeOverrides = {}) {
     panelBridge,
     ...bridgeOverrides,
   });
-  const { handleCommand, handleSubmit, handleReload, bindExtensions } = bridge;
+  const { handleCommand, handleSubmit, handleReload, dispatchIntent, bindExtensions } = bridge;
   let nextId = 0;
   const run = async (command) => {
     const id = `cmd-${++nextId}`;
@@ -132,6 +132,7 @@ function setup(sessionOverrides, bridgeOverrides = {}) {
     interruptActiveOperation: bridge.interruptActiveOperation,
     handleSubmit,
     handleReload,
+    dispatchIntent,
     bindExtensions,
     run,
   };
@@ -347,6 +348,92 @@ describe("setupCommandBridge — wiring", () => {
 });
 
 // ─── Command mapping ─────────────────────────────────────────────────────────
+
+describe("setupCommandBridge — target intent dispatch", () => {
+  function envelope(intentId, intent) {
+    return {
+      intentId,
+      expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+      intent,
+    };
+  }
+
+  it("records admission separately from terminal outcomes for every child-owned intent kind", async () => {
+    const { session, runtime, send, dispatchIntent } = setup();
+    session.prompt.mockImplementation(async (_text, options) => options.preflightResult(true));
+    const intents = [
+      ["interrupt", {}],
+      [
+        "submit",
+        {
+          editorRevision: 0,
+          text: "hello",
+          images: [],
+          requestedMode: "followUp",
+          surface: "composer",
+        },
+      ],
+      ["compact", { instructions: "brief" }],
+      ["runBash", { command: "pwd", excludeFromContext: true }],
+      ["navigate", { targetId: "leaf-9", summarize: true }],
+      ["setModel", { provider: "anthropic", modelId: "claude-x" }],
+      ["setThinking", { level: "high" }],
+      ["rename", { name: "Renamed" }],
+      ["reload", {}],
+      ["invokeCommand", { text: "/extension arg", editorRevision: 0 }],
+    ];
+
+    for (const [kind, payload] of intents) {
+      await expect(
+        dispatchIntent(envelope(`intent-${kind}`, { kind, ...payload })),
+      ).resolves.toEqual(
+        expect.objectContaining({ status: "admitted", intentId: `intent-${kind}` }),
+      );
+      await vi.waitFor(() =>
+        expect(send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "intent_outcome",
+            outcome: expect.objectContaining({ intentId: `intent-${kind}`, kind }),
+          }),
+        ),
+      );
+    }
+
+    expect(session.compact).toHaveBeenCalledWith("brief");
+    expect(session.executeBash).toHaveBeenCalledWith("pwd", undefined, {
+      excludeFromContext: true,
+    });
+    expect(session.navigateTree).toHaveBeenCalledWith("leaf-9", { summarize: true });
+    expect(session.setModel).toHaveBeenCalled();
+    expect(session.setThinkingLevel).toHaveBeenCalledWith("high");
+    expect(session.setSessionName).toHaveBeenCalledWith("Renamed");
+    expect(session.reload).toHaveBeenCalledOnce();
+    // Both text intents use the child public prompt/extension path; no
+    // renderer-selected PiRpcCommand type enters this dispatch.
+    expect(session.prompt).toHaveBeenCalledWith("/extension arg", expect.any(Object));
+    expect(runtime.newSession).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates same-owner IDs, rejects conflicts and fences stale owners before Pi", async () => {
+    const { session, dispatchIntent } = setup();
+    session.executeBash.mockResolvedValue({ output: "ok" });
+    const original = envelope("once", { kind: "runBash", command: "echo once" });
+
+    await expect(dispatchIntent(original)).resolves.toMatchObject({ status: "admitted" });
+    await expect(dispatchIntent(original)).resolves.toMatchObject({ status: "duplicate" });
+    await expect(
+      dispatchIntent(envelope("once", { kind: "runBash", command: "echo different" })),
+    ).resolves.toMatchObject({ status: "not_admitted", reason: "invalid" });
+    await expect(
+      dispatchIntent({
+        ...original,
+        intentId: "old",
+        expectedOwner: { hostInstanceId: "old", sessionEpoch: 0 },
+      }),
+    ).resolves.toMatchObject({ status: "not_admitted", reason: "stale_owner" });
+    await vi.waitFor(() => expect(session.executeBash).toHaveBeenCalledTimes(1));
+  });
+});
 
 describe("setupCommandBridge — command mapping", () => {
   it("get_state mirrors RpcSessionState (messageCount from messages.length) and queue arrays", async () => {

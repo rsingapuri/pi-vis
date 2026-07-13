@@ -45,6 +45,10 @@ export function createStateAuthority({
   const operationJournal = [];
   const recentIntentOutcomes = [];
   const intentLedger = new Map();
+  // Target-protocol intents are independent from the compatibility submission
+  // ledger above. Their key is explicitly owner-bound, so an old owner's
+  // duplicate can never be admitted by a successor.
+  const dispatchedIntents = new Map();
   let navigationDepth = 0;
   let submitting = 0;
   let unresolvedAdmissions = 0;
@@ -210,6 +214,10 @@ export function createStateAuthority({
       requestedMode: request.requestedMode,
       surface: request.surface,
     });
+  }
+
+  function intentOwnerKey(owner, intentId) {
+    return `${owner.hostInstanceId}:${owner.sessionEpoch}:${intentId}`;
   }
 
   function appendOperation(recordValue) {
@@ -446,8 +454,52 @@ export function createStateAuthority({
     return frame;
   }
 
+  function settleDispatchedIntent(intentId, owner, kind, state, result) {
+    const key = intentOwnerKey(owner, intentId);
+    const entry = dispatchedIntents.get(key);
+    if (!entry || entry.outcome) return entry?.outcome;
+    const outcome = {
+      intentId,
+      owner: structuredClone(owner),
+      kind,
+      state,
+      ...(result === undefined ? {} : { result: structuredClone(result) }),
+    };
+    entry.outcome = outcome;
+    appendOperation({
+      kind: "intent",
+      phase: state,
+      intentId,
+      intentKind: kind,
+      owner: structuredClone(owner),
+    });
+    // Outcomes are semantic records, never IPC-response completion claims.
+    commitSemanticFrame([{ type: "intent_outcome", outcome }]);
+    return outcome;
+  }
+
+  function settleDispatchedSubmission(result) {
+    const owner = {
+      hostInstanceId: result.hostInstanceId,
+      sessionEpoch: result.sessionEpoch,
+    };
+    const key = intentOwnerKey(owner, result.intentId);
+    const entry = dispatchedIntents.get(key);
+    if (!entry) return;
+    const states = {
+      completed: "completed",
+      rejected: "rejected",
+      not_submitted: "rejected",
+      extension_error: "failed",
+      outcome_unknown: "outcome_unknown",
+    };
+    const state = states[result.disposition];
+    if (state) settleDispatchedIntent(result.intentId, owner, entry.kind, state, result);
+  }
+
   function reportSubmission(result) {
     retainIntentOutcome(result);
+    settleDispatchedSubmission(result);
     const submissionRecord = { type: "submission", result };
     // A forced predecessor settlement must never be folded into a successor's
     // atomic transition batch. Publish it on the live transition channel so
@@ -476,11 +528,18 @@ export function createStateAuthority({
     ) {
       return { live: true, provisionalEpoch: transition.provisionalEpoch };
     }
+    // Outcome records retain their original owner. Never fold a predecessor
+    // result into a successor transition batch where compatibility consumers
+    // could mistake it for successor semantic state.
+    if (transition && message?.type === "intent_outcome") {
+      return { live: true, provisionalEpoch: transition.provisionalEpoch };
+    }
     const mutates =
       message?.type === "event" ||
       message?.type === "extension_ui_request" ||
       message?.type === "unified_submit_request" ||
       message?.type === "submission_disposition" ||
+      message?.type === "intent_outcome" ||
       message?.type === "queue_restoration" ||
       (typeof message?.type === "string" && message.type.startsWith("panel_"));
     if (mutates) noteMutation();
@@ -495,6 +554,8 @@ export function createStateAuthority({
       value = { type: "panel", event: message };
     } else if (message?.type === "submission_disposition") {
       value = { type: "submission", result: message.result };
+    } else if (message?.type === "intent_outcome") {
+      value = { type: "intent_outcome", outcome: message.outcome };
     } else if (message?.type === "queue_restoration") {
       value = {
         type: "queue_restoration",
@@ -807,7 +868,114 @@ export function createStateAuthority({
     }
   }
 
-  function submit(request) {
+  /**
+   * Target SessionIntent ingress. The receipt says only that this child wrote
+   * an owner-bound intent record and accepted execution responsibility. The
+   * terminal outcome is emitted later as an authority semantic record.
+   */
+  function dispatchIntent(envelope, execute) {
+    const intent = envelope?.intent;
+    const owner = envelope?.expectedOwner;
+    const intentId = envelope?.intentId;
+    if (
+      !intent ||
+      typeof intent.kind !== "string" ||
+      typeof intentId !== "string" ||
+      !owner ||
+      typeof owner.hostInstanceId !== "string" ||
+      !Number.isInteger(owner.sessionEpoch)
+    ) {
+      return Promise.resolve({
+        status: "not_admitted",
+        intentId: intentId ?? "",
+        reason: "invalid",
+      });
+    }
+    if (owner.hostInstanceId !== hostInstanceId || owner.sessionEpoch !== sessionEpoch) {
+      return Promise.resolve({ status: "not_admitted", intentId, reason: "stale_owner" });
+    }
+    if (stopped || closePreparation?.confirmed) {
+      return Promise.resolve({ status: "not_admitted", intentId, reason: "closing" });
+    }
+    if (transition) {
+      return Promise.resolve({ status: "not_admitted", intentId, reason: "transitioning" });
+    }
+
+    const key = intentOwnerKey(owner, intentId);
+    const fingerprint = stableFingerprint({ owner, intent });
+    const prior = dispatchedIntents.get(key);
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) {
+        return Promise.resolve({ status: "not_admitted", intentId, reason: "invalid" });
+      }
+      return Promise.resolve({ status: "duplicate", intentId, owner: structuredClone(owner) });
+    }
+
+    // This write happens before scheduling any possible SDK call. The bounded
+    // operation journal therefore has a durable admission boundary even if the
+    // child dies during dispatch.
+    const entry = {
+      intentId,
+      fingerprint,
+      kind: intent.kind,
+      owner: structuredClone(owner),
+      outcome: null,
+    };
+    dispatchedIntents.set(key, entry);
+    appendOperation({
+      kind: "intent",
+      phase: "admitted",
+      intentId,
+      intentKind: intent.kind,
+      owner: structuredClone(owner),
+    });
+    commitSemanticFrame([{ type: "intent_admitted", intentId, owner, kind: intent.kind }]);
+
+    void schedule("ingress", async () => {
+      try {
+        // Transitions never inherit queued ingress. Do not run a delayed
+        // predecessor intent against a successor session.
+        if (
+          transition ||
+          owner.hostInstanceId !== hostInstanceId ||
+          owner.sessionEpoch !== sessionEpoch
+        ) {
+          settleDispatchedIntent(intentId, owner, intent.kind, "outcome_unknown", {
+            message: "Intent execution lost its owning authority",
+          });
+          return;
+        }
+        const result = await execute(intent, owner);
+        // submit/invokeCommand settle when their existing child admission
+        // lifecycle produces a terminal submission result. Immediate refusal
+        // is terminal here; consumed/custody are not completion.
+        if (intent.kind === "submit" || intent.kind === "invokeCommand") {
+          const disposition = result?.disposition;
+          if (["consumed", "in_custody", "admitting"].includes(disposition)) return;
+          const state =
+            disposition === "outcome_unknown"
+              ? "outcome_unknown"
+              : disposition === "extension_error"
+                ? "failed"
+                : disposition === "rejected" || disposition === "not_submitted"
+                  ? "rejected"
+                  : "completed";
+          settleDispatchedIntent(intentId, owner, intent.kind, state, result);
+          return;
+        }
+        settleDispatchedIntent(intentId, owner, intent.kind, "completed", result);
+      } catch (error) {
+        settleDispatchedIntent(intentId, owner, intent.kind, "failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        publishSnapshot();
+      }
+    });
+    return Promise.resolve({ status: "admitted", intentId, owner: structuredClone(owner) });
+  }
+
+  function submit(request, alreadySerialized = false) {
     // Defense in depth: renderer classification already omits images for slash
     // commands, but the host must never forward an attachment payload if a
     // stale or malformed caller supplies one.
@@ -829,7 +997,10 @@ export function createStateAuthority({
     }
     const ledger = { fingerprint, settled: false, initial: null, terminal: null, promise: null };
     intentLedger.set(normalized.intentId, ledger);
-    ledger.promise = schedule("ingress", () => admit(normalized)).then(
+    const admission = alreadySerialized
+      ? Promise.resolve().then(() => admit(normalized))
+      : schedule("ingress", () => admit(normalized));
+    ledger.promise = admission.then(
       (result) => {
         ledger.initial = structuredClone(result);
         retainIntentOutcome(result);
@@ -1153,6 +1324,18 @@ export function createStateAuthority({
         intentId,
         disposition: "outcome_unknown",
       })),
+      // A child can have accepted a wire intent but lose its process before a
+      // terminal semantic frame is delivered. Preserve that exact owner-bound
+      // admission as review-only unknown work; it is never replayed here or by
+      // a successor authority.
+      dispatchedIntents: [...dispatchedIntents.values()]
+        .filter((entry) => !entry.outcome)
+        .map((entry) => ({
+          intentId: entry.intentId,
+          owner: structuredClone(entry.owner),
+          kind: entry.kind,
+          state: "outcome_unknown",
+        })),
       compaction: compactionBarrierOpen()
         ? { state: "outcome_unknown", lastObserved: compactionProjection() }
         : null,
@@ -1369,6 +1552,7 @@ export function createStateAuthority({
     requestFullSnapshot,
     observeEvent,
     submit,
+    dispatchIntent,
     beginCompactionInvocation,
     settleCompactionInvocation,
     failureEscrow,

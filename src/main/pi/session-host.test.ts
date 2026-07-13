@@ -426,6 +426,66 @@ describe("SessionHost", () => {
     });
   });
 
+  describe("dispatchIntent", () => {
+    const intentEnvelope = {
+      intentId: "intent-1",
+      expectedOwner: { hostInstanceId: "", sessionEpoch: 0 },
+      intent: { kind: "runBash", command: "pwd" },
+    };
+
+    it("returns an admission receipt while terminal outcomes arrive on the authority wire", async () => {
+      await fake.emitReady("0.80.6");
+      await host.waitForReady();
+      const envelope = {
+        ...intentEnvelope,
+        expectedOwner: { hostInstanceId: fake.hostInstanceId, sessionEpoch: 0 },
+      };
+      const outcomes: unknown[] = [];
+      host.on("intentOutcome", (outcome) => outcomes.push(outcome));
+      const receipt = host.dispatchIntent(envelope);
+      const wire = [...fake.sent].reverse().find((message) => message.type === "dispatch_intent");
+      if (!wire) throw new Error("missing dispatch_intent");
+      expect(wire.envelope).toEqual(envelope);
+      fake.emitWire({
+        type: "response",
+        id: wire.id,
+        success: true,
+        data: { status: "admitted", intentId: "intent-1", owner: envelope.expectedOwner },
+      });
+      await expect(receipt).resolves.toEqual({
+        status: "admitted",
+        intentId: "intent-1",
+        owner: envelope.expectedOwner,
+      });
+      expect(outcomes).toEqual([]);
+      fake.emitWire({
+        type: "intent_outcome",
+        outcome: {
+          intentId: "intent-1",
+          owner: envelope.expectedOwner,
+          kind: "runBash",
+          state: "completed",
+        },
+      });
+      expect(outcomes).toHaveLength(1);
+    });
+
+    it("escrows a lost dispatch acknowledgement as delivery_unknown without retrying", async () => {
+      await fake.emitReady("0.80.6");
+      await host.waitForReady();
+      const receipt = host.dispatchIntent({
+        ...intentEnvelope,
+        expectedOwner: { hostInstanceId: fake.hostInstanceId, sessionEpoch: 0 },
+      });
+      fake.emitExit(1);
+      await expect(receipt).resolves.toMatchObject({
+        status: "delivery_unknown",
+        intentId: "intent-1",
+      });
+      expect(fake.sent.filter((message) => message.type === "dispatch_intent")).toHaveLength(1);
+    });
+  });
+
   describe("sendCommand", () => {
     it("correlates a response by id and resolves with data", async () => {
       await fake.emitReady("0.80.0");

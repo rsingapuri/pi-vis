@@ -1316,6 +1316,69 @@ describe("state authority", () => {
     );
   });
 
+  it("records dispatch admission before Pi, retains outcomes, and separates receipt from settlement", async () => {
+    const gate = deferred();
+    const { authority, sendRecord } = setup();
+    const envelope = {
+      intentId: "wire-intent",
+      expectedOwner: { hostInstanceId: "host-1", sessionEpoch: 0 },
+      intent: { kind: "runBash", command: "pwd" },
+    };
+    let snapshotAtExecution;
+    const execute = vi.fn(() => {
+      snapshotAtExecution = authority.snapshot();
+      return gate.promise;
+    });
+
+    await expect(authority.dispatchIntent(envelope, execute)).resolves.toEqual({
+      status: "admitted",
+      intentId: "wire-intent",
+      owner: envelope.expectedOwner,
+    });
+    await expect(authority.dispatchIntent(envelope, execute)).resolves.toMatchObject({
+      status: "duplicate",
+    });
+    await expect(
+      authority.dispatchIntent(
+        { ...envelope, intent: { kind: "runBash", command: "rm -rf /nope" } },
+        execute,
+      ),
+    ).resolves.toMatchObject({ status: "not_admitted", reason: "invalid" });
+    await expect(
+      authority.dispatchIntent(
+        {
+          ...envelope,
+          intentId: "stale",
+          expectedOwner: { hostInstanceId: "old", sessionEpoch: 0 },
+        },
+        execute,
+      ),
+    ).resolves.toMatchObject({ status: "not_admitted", reason: "stale_owner" });
+
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    expect(snapshotAtExecution.recentObservedOperations).toContainEqual(
+      expect.objectContaining({ kind: "intent", phase: "admitted", intentId: "wire-intent" }),
+    );
+    expect(sendRecord).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "intent_outcome" }),
+    );
+    expect(authority.failureEscrow().dispatchedIntents).toContainEqual({
+      intentId: "wire-intent",
+      owner: envelope.expectedOwner,
+      kind: "runBash",
+      state: "outcome_unknown",
+    });
+    gate.resolve({ output: "/tmp", exitCode: 0 });
+    await vi.waitFor(() =>
+      expect(sendRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({ intentId: "wire-intent", state: "completed" }),
+        }),
+      ),
+    );
+  });
+
   it("exposes an atomic semantic frame and failure escrow without inventing a compaction end", () => {
     const sendFrame = vi.fn();
     const { authority, sendRecord, sendControl } = setup({}, { sendFrame });

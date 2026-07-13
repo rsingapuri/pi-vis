@@ -54,6 +54,7 @@ let handleCommand = null;
 let handleSubmit = null;
 let handleEscape = null;
 let handleReload = null;
+let dispatchIntent = null;
 let publishSnapshot = null;
 let applyEditorPatch = null;
 let runtimeAuthority = null;
@@ -496,6 +497,7 @@ async function handleInit(msg) {
       handleSubmit: submit,
       handleEscape: escapeRequest,
       handleReload: reload,
+      dispatchIntent: dispatch,
       publishSnapshot: publish,
       applyEditorPatch: patchEditor,
       authority,
@@ -532,6 +534,7 @@ async function handleInit(msg) {
     handleSubmit = submit;
     handleEscape = escapeRequest;
     handleReload = reload;
+    dispatchIntent = dispatch;
     publishSnapshot = publish;
     applyEditorPatch = patchEditor;
     interruptActiveOperation = interrupt;
@@ -556,7 +559,18 @@ process.on("message", async (msg) => {
   try {
     const closeAllowed = new Set(["prepare_close", "confirm_close", "cancel_close"]);
     if (runtimeAuthority?.isClosing && msg.type !== "init" && !closeAllowed.has(msg.type)) {
-      if (typeof msg.id === "string") {
+      if (msg.type === "dispatch_intent") {
+        send({
+          type: "response",
+          id: msg.id,
+          success: true,
+          data: {
+            status: "not_admitted",
+            intentId: typeof msg.envelope?.intentId === "string" ? msg.envelope.intentId : "",
+            reason: "closing",
+          },
+        });
+      } else if (typeof msg.id === "string") {
         send({
           type: "response",
           id: msg.id,
@@ -570,6 +584,25 @@ process.on("message", async (msg) => {
       case "init":
         await handleInit(msg);
         break;
+
+      case "dispatch_intent": {
+        if (!dispatchIntent) {
+          send({
+            type: "response",
+            id: msg.id,
+            success: true,
+            data: {
+              status: "not_admitted",
+              intentId: typeof msg.envelope?.intentId === "string" ? msg.envelope.intentId : "",
+              reason: "transport_unavailable",
+            },
+          });
+          return;
+        }
+        const receipt = await dispatchIntent(msg.envelope);
+        send({ type: "response", id: msg.id, success: true, data: receipt });
+        break;
+      }
 
       case "command":
         if (!handleCommand) {

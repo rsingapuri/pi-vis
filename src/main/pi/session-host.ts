@@ -150,6 +150,18 @@ export function isSessionHost(proc: unknown): proc is SessionHost {
   return typeof (proc as SessionHost | null)?.sendPanelInput === "function";
 }
 
+export interface RuntimeOwner {
+  hostInstanceId: string;
+  sessionEpoch: number;
+}
+
+export interface IntentReceipt {
+  status: "admitted" | "duplicate" | "not_admitted" | "delivery_unknown";
+  intentId: string;
+  owner?: RuntimeOwner;
+  reason?: "stale_owner" | "transport_unavailable" | "closing" | "transitioning" | "invalid";
+}
+
 interface PendingRequest {
   resolve: (res: PiRpcResponse) => void;
   reject: (err: Error) => void;
@@ -192,6 +204,8 @@ export interface SessionHostEvents {
   uiAcknowledged: (operationId: string) => void;
   lifecycleUiLease: (active: boolean) => void;
   rendererCancelled: (rendererGeneration: number) => void;
+  /** Terminal child-owned intent outcomes; receipts never emit this event. */
+  intentOutcome: (outcome: unknown) => void;
   unresponsive: () => void;
 }
 
@@ -241,6 +255,7 @@ type HostWireMessage =
   | { type: "unified_submit_request"; id: string; text: string; editorRevision: number }
   | { type: "clipboard_read_image_request"; id: string }
   | { type: "submission_disposition"; result: SubmissionResult }
+  | { type: "intent_outcome"; outcome: unknown }
   | { type: "queue_restoration"; restorationId: string; [key: string]: unknown }
   | { type: "ui_ack"; operationId: string }
   | { type: "renderer_cancelled"; rendererGeneration: number }
@@ -989,6 +1004,13 @@ export class SessionHost extends EventEmitter {
         break;
       }
 
+      case "intent_outcome": {
+        // This is intentionally opaque at the compatibility boundary. The
+        // child semantic frame/journal owns its meaning and terminal state.
+        this.emit("intentOutcome", msg.outcome);
+        break;
+      }
+
       case "queue_restoration": {
         this.emit("queueRestoration", msg);
         break;
@@ -1178,6 +1200,46 @@ export class SessionHost extends EventEmitter {
         reject(err);
       });
     });
+  }
+
+  async dispatchIntent(envelope: {
+    intentId: string;
+    expectedOwner: RuntimeOwner;
+    observedCursor?: unknown;
+    intent: Record<string, unknown>;
+  }): Promise<IntentReceipt> {
+    try {
+      const response = await this.requestHost({ type: "dispatch_intent", envelope }, 10_000);
+      if (!response.success || !response.data || typeof response.data !== "object") {
+        return {
+          status: "delivery_unknown",
+          intentId: envelope.intentId,
+          owner: envelope.expectedOwner,
+        };
+      }
+      const receipt = response.data as Partial<IntentReceipt>;
+      if (
+        !["admitted", "duplicate", "not_admitted", "delivery_unknown"].includes(
+          String(receipt.status),
+        ) ||
+        receipt.intentId !== envelope.intentId
+      ) {
+        return {
+          status: "delivery_unknown",
+          intentId: envelope.intentId,
+          owner: envelope.expectedOwner,
+        };
+      }
+      return receipt as IntentReceipt;
+    } catch {
+      // The child may have received the message before this process observed
+      // transport loss. Do not retry it or infer completion on this path.
+      return {
+        status: "delivery_unknown",
+        intentId: envelope.intentId,
+        owner: envelope.expectedOwner,
+      };
+    }
   }
 
   async submit(submission: SessionSubmission): Promise<SubmissionResult> {
@@ -1423,6 +1485,7 @@ export interface SessionHost {
   on(event: "transportGap", listener: (expected: number, received: number) => void): this;
   on(event: "controlSilence", listener: () => void): this;
   on(event: "submissionDisposition", listener: (result: SubmissionResult) => void): this;
+  on(event: "intentOutcome", listener: (outcome: unknown) => void): this;
   on(event: "queueRestoration", listener: (payload: unknown) => void): this;
   on(event: "uiAcknowledged", listener: (operationId: string) => void): this;
   on(event: "lifecycleUiLease", listener: (active: boolean) => void): this;
@@ -1455,6 +1518,7 @@ export interface SessionHost {
   emit(event: "transportGap", expected: number, received: number): boolean;
   emit(event: "controlSilence"): boolean;
   emit(event: "submissionDisposition", result: SubmissionResult): boolean;
+  emit(event: "intentOutcome", outcome: unknown): boolean;
   emit(event: "queueRestoration", payload: unknown): boolean;
   emit(event: "uiAcknowledged", operationId: string): boolean;
   emit(event: "lifecycleUiLease", active: boolean): boolean;
