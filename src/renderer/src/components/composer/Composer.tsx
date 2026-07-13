@@ -1,6 +1,11 @@
 import type { SessionId } from "@shared/ids.js";
-import { type PiRpcCommand, commandNeedsIntent } from "@shared/pi-protocol/commands.js";
 import type { ModelInfo } from "@shared/pi-protocol/responses.js";
+import type {
+  IntentOutcome,
+  RuntimeIdentity,
+  SessionIntent,
+  SessionQuery,
+} from "@shared/pi-protocol/runtime-state.js";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
@@ -23,6 +28,7 @@ import {
 } from "../../lib/composer-attachments.js";
 import { prependCodeCommentsToPrompt } from "../../lib/diff-comments.js";
 import { findCurrentModel } from "../../lib/model-utils.js";
+import { dispatchSessionIntent, querySession } from "../../lib/session-intent.js";
 import { runWorktreeOperation } from "../../lib/worktree-operation.js";
 import { useChangelogStore } from "../../stores/changelog-store.js";
 import { openDiffForSession } from "../../stores/diff-store.js";
@@ -355,17 +361,13 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const editorInjectionText = session?.editorInjection?.text;
 
   const addUserMessage = useSessionsStore((s) => s.addUserMessage);
-  const addBashCommand = useSessionsStore((s) => s.addBashCommand);
-  const finishBashCommand = useSessionsStore((s) => s.finishBashCommand);
   const addToast = useSessionsStore((s) => s.addToast);
-  const applyModelChange = useSessionsStore((s) => s.applyModelChange);
   const addCustomMessage = useSessionsStore((s) => s.addCustomMessage);
   const openPicker = useSessionsStore((s) => s.openPicker);
   const openImages = useImageViewerStore((s) => s.openImages);
   // Shared with the unified-TUI submit path (handleUnifiedSubmitRequest) so a
   // /fork|/clone|/switch_session|/resume hydrates the transcript + sidebar the
   // same way regardless of which surface dispatched it.
-  const adoptSessionFileAndHydrate = useSessionsStore((s) => s.adoptSessionFileAndHydrate);
   const closeSessionTab = useSessionsStore((s) => s.closeSessionTab);
   const setNewSessionDraft = useSessionsStore((s) => s.setNewSessionDraft);
   const setSessionDraft = useSessionsStore((s) => s.setSessionDraft);
@@ -931,318 +933,183 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         const submittedAttachmentsKey = JSON.stringify(replicatedAttachmentsRef.current);
         const submittedLocalEditGeneration = localEditGenerationRef.current;
 
+        const intentObservation = (sid: SessionId) => {
+          const runtime = useSessionsStore.getState().sessions.get(sid);
+          if (!runtime?.hostInstanceId || runtime.availability !== "available") return undefined;
+          const semantic = runtime.authorityProjection?.semantic;
+          const cursor =
+            semantic?.state === "following" &&
+            semantic.cursor.hostInstanceId === runtime.hostInstanceId &&
+            semantic.cursor.sessionEpoch === runtime.sessionEpoch
+              ? semantic.cursor
+              : undefined;
+          return {
+            owner: { hostInstanceId: runtime.hostInstanceId, sessionEpoch: runtime.sessionEpoch },
+            ...(cursor ? { cursor } : {}),
+            editorRevision: editorRevisionRef.current,
+            userMessageSequence: runtime.transcript.userMessageSequence,
+          };
+        };
+        const awaitIntentOutcome = (
+          sid: SessionId,
+          intentId: string,
+          owner: RuntimeIdentity,
+        ): Promise<IntentOutcome> => {
+          const findOutcome = (): IntentOutcome | undefined => {
+            const projection = useSessionsStore.getState().sessions.get(sid)?.authorityProjection;
+            return projection?.authoritativeSnapshot?.recentIntentOutcomes.find(
+              (outcome) =>
+                outcome.intentId === intentId &&
+                outcome.owner.hostInstanceId === owner.hostInstanceId &&
+                outcome.owner.sessionEpoch === owner.sessionEpoch,
+            );
+          };
+          const immediate = findOutcome();
+          if (immediate) return Promise.resolve(immediate);
+          return new Promise((resolve, reject) => {
+            const unsubscribe = useSessionsStore.subscribe(() => {
+              const outcome = findOutcome();
+              if (outcome) {
+                unsubscribe();
+                resolve(outcome);
+                return;
+              }
+              const runtime = useSessionsStore.getState().sessions.get(sid);
+              if (
+                !runtime?.hostInstanceId ||
+                runtime.hostInstanceId !== owner.hostInstanceId ||
+                runtime.sessionEpoch !== owner.sessionEpoch
+              ) {
+                unsubscribe();
+                reject(new InputNotConsumedError("Session changed before intent outcome"));
+              }
+            });
+          });
+        };
         const deps = {
-          // The executeAction interface is intentionally generic-string for
-          // testability; the real invoke has a typed channel union, but the
-          // runtime call sites pass the right channel so the runtime contract
-          // is honored. We narrow at the boundary by giving the casted
-          // wrapper the right call signature.
-          invoke: async <T = unknown>(channel: string, payload: unknown) => {
-            let identityBoundPayload =
-              channel === "session.sendCommand" && payload && typeof payload === "object"
-                ? {
-                    ...payload,
-                    expectedHostInstanceId: dispatchIdentity.hostInstanceId,
-                    expectedSessionEpoch: dispatchIdentity.sessionEpoch,
-                  }
-                : payload;
-            if (channel === "session.sendCommand") {
-              const command = (payload as { command: PiRpcCommand }).command;
-              identityBoundPayload = {
-                ...(identityBoundPayload as object),
-                requestId: crypto.randomUUID(),
-                ...(commandNeedsIntent(command) ? { intentId: crypto.randomUUID() } : {}),
-                sourceText: submittedLocalText,
-                editorRevision: submittedEditorRevision,
-                uiSurface: "composer",
-              };
-            } else if (channel === "session.reload") {
-              identityBoundPayload = {
-                sessionId,
-                request: {
-                  requestId: crypto.randomUUID(),
-                  intentId: crypto.randomUUID(),
-                  expectedHostInstanceId: dispatchIdentity.hostInstanceId,
-                  expectedSessionEpoch: dispatchIdentity.sessionEpoch,
-                  sourceText: submittedLocalText,
-                },
-              };
-            } else if (channel === "session.share") {
-              identityBoundPayload = {
-                ...(payload as object),
-                expectedHostInstanceId: dispatchIdentity.hostInstanceId,
-                expectedSessionEpoch: dispatchIdentity.sessionEpoch,
-                exportIntentId: crypto.randomUUID(),
-              };
-            }
-            const result = (await window.pivis.invoke(
-              channel as Parameters<typeof window.pivis.invoke>[0],
-              identityBoundPayload as Parameters<typeof window.pivis.invoke>[1],
-            )) as unknown as {
-              success: boolean;
-              data?: T;
-              error?: string;
-              disposition?: "not_executed" | "completed" | "outcome_unknown";
-              successorIdentity?: { hostInstanceId: string; sessionEpoch: number };
-            };
-            if (
-              (channel === "session.sendCommand" || channel === "session.reload") &&
-              result.disposition &&
-              result.disposition !== "completed"
-            ) {
-              throw new InputNotConsumedError(result.error ?? `Command ${result.disposition}`);
-            }
-            if (
-              channel === "session.sendCommand" &&
-              !result.successorIdentity &&
-              !sessionMatchesRuntime(useSessionsStore.getState().sessions.get(sessionId), {
-                hostInstanceId: dispatchIdentity.hostInstanceId!,
-                sessionEpoch: dispatchIdentity.sessionEpoch,
-              })
-            ) {
-              throw new InputNotConsumedError("Session changed before command continuation");
-            }
-            return result;
-          },
-          uiSurface: "composer" as const,
-          submit: async (
+          dispatch: (
             sid: SessionId,
-            submission: import("@shared/pi-protocol/runtime-state.js").SessionSubmission,
+            intent: SessionIntent,
+            intentId?: ReturnType<typeof crypto.randomUUID>,
           ) => {
-            await editorPatchTailRef.current;
-            return window.pivis.invoke("session.submit", {
-              sessionId: sid,
-              submission,
+            const observation = intentObservation(sid);
+            if (!observation)
+              return Promise.reject(new InputNotConsumedError("Runtime snapshot is unavailable"));
+            return dispatchSessionIntent(
+              sid,
+              intent,
+              {
+                owner: observation.owner,
+                ...(observation.cursor ? { cursor: observation.cursor } : {}),
+              },
+              intentId,
+            );
+          },
+          query: (sid: SessionId, query: SessionQuery) => {
+            const observation = intentObservation(sid);
+            if (!observation)
+              return Promise.reject(new InputNotConsumedError("Runtime snapshot is unavailable"));
+            return querySession(sid, query, {
+              owner: observation.owner,
+              ...(observation.cursor ? { cursor: observation.cursor } : {}),
             });
           },
-          getSubmissionContext: (sid: SessionId) => {
-            const runtime = useSessionsStore.getState().sessions.get(sid);
-            if (!runtime?.hostInstanceId || runtime.availability !== "available") return undefined;
-            return {
-              hostInstanceId: runtime.hostInstanceId,
-              sessionEpoch: runtime.sessionEpoch,
-              editorRevision: editorRevisionRef.current,
-              userMessageSequence: runtime.transcript.userMessageSequence,
-            };
-          },
+          awaitIntentOutcome,
+          getIntentObservation: intentObservation,
+          uiSurface: "composer" as const,
+          invoke: async <T = unknown>(channel: string, payload: unknown) =>
+            window.pivis.invoke(
+              channel as Parameters<typeof window.pivis.invoke>[0],
+              payload as Parameters<typeof window.pivis.invoke>[1],
+            ) as Promise<T>,
           addToast,
           addUserMessage: (
             sid: SessionId,
             message: string,
             images?: string[],
-            opts?: {
-              registerEcho?: boolean;
-              clearDraft?: boolean;
-              afterUserMessageSequence?: number;
-              intentId?: string;
-            },
+            opts?: { registerEcho?: boolean; afterUserMessageSequence?: number; intentId?: string },
           ) => addUserMessage(sid, message, images, { ...opts, clearDraft: false }),
-          clearPendingUserEcho: useSessionsStore.getState().clearPendingUserEcho,
-          addBashCommand,
-          finishBashCommand,
-          applyModelChange,
           addCustomMessage,
-          openChangelog: (markdown: string) => {
-            // The changelog modal is mounted at the App level (overlay over
-            // the session area). The store owns its state; we just call
-            // the action — same pattern as openDiffViewer / openLogin.
-            useChangelogStore.getState().openChangelog(markdown);
-          },
+          openChangelog: (markdown: string) => useChangelogStore.getState().openChangelog(markdown),
           openPicker: (sid: SessionId, picker: PickerRequest) =>
             openPicker(sid, {
               ...picker,
               expectedHostInstanceId: dispatchIdentity.hostInstanceId!,
               expectedSessionEpoch: dispatchIdentity.sessionEpoch,
             }),
-          adoptSessionFile: (sid: SessionId, file?: string, name?: string) =>
-            adoptSessionFileAndHydrate(sid, file, name),
           closeSessionTab: async (sid: SessionId) => closeSessionTab(sid),
-          openAppSettings: () => {
-            // The settings panel is owned by App.tsx; we dispatch a custom
-            // event that the App subscribes to. Keeps Composer free of
-            // cross-tree prop drilling.
-            window.dispatchEvent(new CustomEvent("pivis:open-settings"));
-          },
-          openDiffViewer: (sid: SessionId) => {
-            // The diff viewer is mounted at the App level (overlay over
-            // the session area). The store owns its state; we just call
-            // the helper.
-            openDiffForSession(sid);
-          },
+          openAppSettings: () => window.dispatchEvent(new CustomEvent("pivis:open-settings")),
+          openDiffViewer: (sid: SessionId) => openDiffForSession(sid),
           openTreeViewer: (sid: SessionId) => {
-            // Tree viewer mirrors diff viewer's lifecycle: store-owned,
-            // App-mounted. Calling openTreeForSession triggers the
-            // get_tree fetch and flips phase to loading→ready.
             void useTreeStore.getState().openTreeForSession(sid);
           },
-          openLogin: () => {
-            window.dispatchEvent(new CustomEvent("pivis:open-login"));
-          },
+          openLogin: () => window.dispatchEvent(new CustomEvent("pivis:open-login")),
           copyToClipboard: async (t: string) => {
             await window.pivis.invoke("clipboard.writeText", { text: t });
           },
-          getAvailableModels: (sid: SessionId): ModelInfo[] => {
-            const s = useSessionsStore.getState().sessions.get(sid);
-            return s?.availableModels ?? [];
-          },
-          getSessionName: (sid: SessionId) =>
-            useSessionsStore.getState().sessions.get(sid)?.sessionName,
-          setSessionName: useSessionsStore.getState().setSessionName,
-          getCurrentModel: (sid: SessionId) =>
-            useSessionsStore.getState().sessions.get(sid)?.currentModel,
-          isWorking: (sid: SessionId) =>
-            isSessionWorking(useSessionsStore.getState().sessions.get(sid)),
+          getAvailableModels: (sid: SessionId): ModelInfo[] =>
+            useSessionsStore.getState().sessions.get(sid)?.availableModels ?? [],
           getSessionWorkspacePath: (sid: SessionId) =>
             useSessionsStore.getState().sessions.get(sid)?.workspacePath,
-          listSessions: (p: string) =>
-            window.pivis.invoke("workspace.listSessions", { workspacePath: p }),
-          onPromptAccepted: () => {
-            if (isRealPrompt && pendingDiffComments.length > 0) {
-              clearSubmittedDiffComments(sessionId, pendingDiffComments);
-            }
-          },
+          listSessions: (workspacePath: string) =>
+            window.pivis.invoke("workspace.listSessions", { workspacePath }),
         };
 
-        const actionResult = await executeAction(sessionId, finalAction, deps);
-        const submissionResult =
-          actionResult && "disposition" in actionResult ? actionResult : undefined;
-        const commandCompletion =
-          actionResult && "completionRuntime" in actionResult ? actionResult : undefined;
-        if (commandCompletion) {
-          try {
-            const resynced = await window.pivis.invoke("session.runtimeResync", { sessionId });
-            if (
-              resynced.hostInstanceId === commandCompletion.completionRuntime.hostInstanceId &&
-              resynced.sessionEpoch === commandCompletion.completionRuntime.sessionEpoch
-            ) {
-              useSessionsStore.getState().applyRuntimeState(sessionId, resynced);
-              if (resynced.snapshot) editorRevisionRef.current = resynced.snapshot.editor.revision;
-            }
-          } catch {
-            // Without the acknowledged successor snapshot, preserve the command;
-            // clearing it against the retired epoch would lose editor custody.
-          }
-        }
-        const acceptedDisposition =
-          submissionResult &&
-          ["in_custody", "consumed", "completed", "extension_error"].includes(
-            submissionResult.disposition,
-          );
-        const sameCustody =
-          submissionResult?.hostInstanceId === session?.hostInstanceId &&
-          submissionResult?.sessionEpoch === session?.sessionEpoch &&
-          submissionResult?.editorRevision === submittedEditorRevision;
+        const completion = await executeAction(sessionId, finalAction, deps);
         const currentSession = useSessionsStore.getState().sessions.get(sessionId);
         const originatingComposerStillMounted =
           mountedRef.current && renderedSessionIdRef.current === sessionId;
-        const dispatchRuntimeStillCurrent =
-          currentSession?.availability === "available" &&
-          currentSession.status === "ready" &&
-          dispatchIdentity.hostInstanceId === currentSession.hostInstanceId &&
-          dispatchIdentity.sessionEpoch === currentSession.sessionEpoch;
-        const completionIdentity = commandCompletion?.completionRuntime;
-        const completionRuntimeStillCurrent =
-          !!completionIdentity &&
-          currentSession?.availability === "available" &&
-          currentSession.status === "ready" &&
-          completionIdentity.hostInstanceId === currentSession.hostInstanceId &&
-          completionIdentity.sessionEpoch === currentSession.sessionEpoch;
-        const commandRuntimeStillCurrent = commandCompletion
-          ? completionRuntimeStillCurrent
-          : dispatchRuntimeStillCurrent;
         const currentAttachmentsKey = JSON.stringify(replicatedAttachmentsRef.current);
-        const noNewLocalEdit = localEditGenerationRef.current === submittedLocalEditGeneration;
-        const noLaterHostEditorMutation =
-          (currentSession?.editorRevision ?? submittedEditorRevision) <=
-          submittedEditorRevision + 1;
-        const currentInjection = currentSession?.editorInjection;
-        const noLaterHostInjection =
-          currentInjection === undefined ||
-          currentInjection.nonce === submittedEditorInjectionNonce ||
-          (currentInjection.text === "" &&
-            (currentInjection.revision ?? submittedEditorRevision + 1) <=
-              submittedEditorRevision + 1);
         const localPayloadUnchanged =
-          noNewLocalEdit &&
+          localEditGenerationRef.current === submittedLocalEditGeneration &&
           textRef.current === submittedLocalText &&
           currentAttachmentsKey === submittedAttachmentsKey;
-        const hostAlreadyClearedPayload =
-          noNewLocalEdit &&
-          textRef.current === "" &&
-          currentAttachmentsKey === (isRealPrompt ? "[]" : submittedAttachmentsKey);
+        // Receipt admission never reaches this branch: executeAction returns
+        // only after the semantic authority projection published a terminal
+        // outcome. Unknown/cancelled/rejected work remains in editor custody.
+        const terminalOutcome =
+          completion?.outcome.state === "completed" || completion?.outcome.state === "failed";
         const acceptedPromptCanClear =
           finalAction.kind === "send-prompt" &&
+          terminalOutcome &&
+          ((completion?.outcome.kind === "submit" &&
+            ["in_custody", "consumed", "completed", "extension_error"].includes(
+              completion.outcome.result?.disposition ?? "",
+            )) ||
+            completion?.outcome.kind === "invokeCommand") &&
           originatingComposerStillMounted &&
-          dispatchRuntimeStillCurrent &&
-          acceptedDisposition &&
-          sameCustody &&
-          noLaterHostEditorMutation &&
-          noLaterHostInjection &&
-          (localPayloadUnchanged || hostAlreadyClearedPayload);
+          localPayloadUnchanged;
         const completedCommandCanClear =
           finalAction.kind !== "send-prompt" &&
-          originatingComposerStillMounted &&
-          commandRuntimeStillCurrent &&
           finalAction.kind !== "unsupported" &&
+          terminalOutcome &&
+          originatingComposerStillMounted &&
           localPayloadUnchanged;
-        // Prompt custody may advance the authoritative revision before the RPC
-        // response arrives. Renderer-local edit generation, payload identity,
-        // and runtime identity distinguish that acknowledgement from newer
-        // typing without relying on the now-stale pre-submit revision.
         if (acceptedPromptCanClear || completedCommandCanClear) {
-          if (completedCommandCanClear) {
+          if (completedCommandCanClear || !isRealPrompt) {
             synchronizeEditorText("", replicatedAttachmentsRef.current);
           }
           textRef.current = "";
           setText("");
-          // Only an ordinary prompt consumes staged context. Commands clear
-          // their own text while keeping images/files for the next prompt.
           if (isRealPrompt) {
             setAttachments([]);
             setFileAttachments([]);
             replicatedAttachmentsRef.current = [];
           }
           setSlashIndex(0);
-        }
-        if (isRealPrompt && pendingDiffComments.length > 0) {
-          clearSubmittedDiffComments(sessionId, pendingDiffComments);
-        }
-
-        // The store actions for content-bearing sends
-        // (addUserMessage/addBashCommand/addCustomMessage) and applyEvent's
-        // user-echo backstop already clear the per-workspace draft for
-        // prompts/bash/template/skill sends. But non-promoting slash
-        // commands (/model, /name, /settings, /diff, /login, …) add no
-        // transcript block, so they'd leave their command text lingering in
-        // the active pending draft (or, for non-pending sessions, on
-        // switch-back). Clear here too, once the action has dispatched
-        // successfully past all guards. This is idempotent with the
-        // store-side clears.
-        // Read isNewPending from the store (authoritative at this moment)
-        // rather than pendingRef.current, which may not have re-rendered yet
-        // after addUserMessage flipped isNewPending to false during the await
-        // above. In practice both agree (the store actions already cleared
-        // the relevant draft for content sends; this clear is load-bearing
-        // only for non-promoting slash commands where isNewPending is
-        // unchanged), but reading the store is robust against future
-        // mutations added between executeAction and here.
-        if (acceptedPromptCanClear || completedCommandCanClear) {
           const stillPending = !!useSessionsStore.getState().sessions.get(sessionId)?.isNewPending;
           if (stillPending && workspacePathRef.current) {
             useSessionsStore.getState().clearNewSessionDraft(workspacePathRef.current);
           } else {
             useSessionsStore.getState().setSessionDraft(sessionId, "");
           }
+          const injection = currentSession?.editorInjection;
+          if (injection?.nonce === submittedEditorInjectionNonce) {
+            useSessionsStore.getState().clearEditorInjection(sessionId);
+          }
         }
-        // Consume only the injection that existed before this send. An
-        // extension may call setEditorText while its command is executing;
-        // clearing that newer nonce would discard replacement text before the
-        // Composer's effect can apply it.
-        if (
-          originatingComposerStillMounted &&
-          currentInjection?.nonce === submittedEditorInjectionNonce
-        ) {
-          useSessionsStore.getState().clearEditorInjection(sessionId);
+        if (acceptedPromptCanClear && pendingDiffComments.length > 0) {
+          clearSubmittedDiffComments(sessionId, pendingDiffComments);
         }
       } catch (err) {
         if (err instanceof InputNotConsumedError) return;
@@ -1258,12 +1125,8 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       sessionId,
       addToast,
       addUserMessage,
-      addBashCommand,
-      finishBashCommand,
-      applyModelChange,
       addCustomMessage,
       openPicker,
-      adoptSessionFileAndHydrate,
       closeSessionTab,
       attachments,
       fileAttachments,
