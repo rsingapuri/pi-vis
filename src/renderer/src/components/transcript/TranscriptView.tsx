@@ -1015,17 +1015,12 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
   data: CustomEntryBlockData;
   preserveScroll: (mutate: () => void) => void;
 }): React.ReactElement {
-  const hostInstanceId = useSessionsStore((state) => {
-    const session = state.sessions.get(sessionId);
-    return session?.availability === "available" ? session.hostInstanceId : undefined;
+  const runtime = useSessionsStore((state) => {
+    const snapshot = authoritySnapshotFor(state.sessions.get(sessionId));
+    return snapshot ? snapshot.owner : undefined;
   });
-  const sessionEpoch = useSessionsStore(
-    (state) => state.sessions.get(sessionId)?.sessionEpoch ?? 0,
-  );
-  const runtime = useMemo(
-    () => (hostInstanceId ? { hostInstanceId, sessionEpoch } : undefined),
-    [hostInstanceId, sessionEpoch],
-  );
+  const hostInstanceId = runtime?.hostInstanceId;
+  const sessionEpoch = runtime?.sessionEpoch ?? 0;
   const observedCursor = useSessionsStore((state) => {
     const semantic = state.sessions.get(sessionId)?.authorityProjection?.semantic;
     return semantic?.state === "following" &&

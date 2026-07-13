@@ -35,7 +35,7 @@ import { useGlobalEscapeInterrupt } from "./hooks/useGlobalEscapeInterrupt.js";
 import { RENDERER_GENERATION } from "./lib/renderer-generation.js";
 import { useAppUpdatesStore } from "./stores/app-updates-store.js";
 import { openDiffForSession, useDiffStore } from "./stores/diff-store.js";
-import { useSessionsStore } from "./stores/sessions-store.js";
+import { sessionMatchesRuntime, useSessionsStore } from "./stores/sessions-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUpdatesStore } from "./stores/updates-store.js";
 import "./App.css";
@@ -68,6 +68,24 @@ export function App(): React.ReactElement {
   const updateSettings = useSettingsStore((s) => s.update);
   const [piFound, setPiFound] = useState<boolean | null>(null);
   const [sessionSearchAvailable, setSessionSearchAvailable] = useState(false);
+  const attachSessionAuthority = useCallback(
+    async (sessionId: SessionId): Promise<void> => {
+      try {
+        await window.pivis.invoke("session.rendererAttach", {
+          sessionId,
+          rendererGeneration: RENDERER_GENERATION,
+        });
+        const response = await window.pivis.invoke("session.authorityAttach", {
+          sessionId,
+          rendererGeneration: RENDERER_GENERATION,
+        });
+        applyAuthorityAttach(sessionId, response);
+      } catch {
+        markAuthorityUnavailable(sessionId, "attach_failed");
+      }
+    },
+    [applyAuthorityAttach, markAuthorityUnavailable],
+  );
   // onClose	SettingsView handler
   const [showSettings, setShowSettings] = useState(false);
   // Claim ESC while Settings is open so a background streaming session isn't
@@ -404,6 +422,24 @@ export function App(): React.ReactElement {
       applyAuthorityPublication(publication);
     });
 
+    const unsubRuntime = window.pivis.on("session.runtimeState", ({ sessionId, state }) => {
+      const sid = sessionId as SessionId;
+      if (state.availability === "available") {
+        const session = useSessionsStore.getState().sessions.get(sid);
+        const projection = session?.authorityProjection;
+        const needsBaseline =
+          projection?.semantic.state !== "following" ||
+          projection.transcript.state !== "following" ||
+          projection.extensionUi.state !== "following" ||
+          [...projection.panels.values()].some((panel) => panel.sync.state !== "following");
+        if (session?.status === "ready" && needsBaseline) void attachSessionAuthority(sid);
+        return;
+      }
+      // Runtime-state events are transport fences only. They never install or
+      // mutate Pi semantic values; recovery requires a serialized baseline.
+      markAuthorityUnavailable(sid, state.reason ?? state.availability);
+    });
+
     const unsubQueueRestoration = window.pivis.on("session.queueRestoration", (restoration) => {
       applyQueueRestoration(restoration.sessionId as SessionId, restoration);
     });
@@ -430,7 +466,7 @@ export function App(): React.ReactElement {
         // but a cold start is when the Composer's suggestions are empty
         // and the user is about to type `/`.
         if (status === "ready") {
-          void refreshCommands(sid);
+          void attachSessionAuthority(sid).then(() => refreshCommands(sid));
         }
       },
     );
@@ -518,33 +554,11 @@ export function App(): React.ReactElement {
         void (async () => {
           const sid = sessionId as SessionId;
           let current = useSessionsStore.getState().sessions.get(sid);
-          if (
-            current?.hostInstanceId !== hostInstanceId ||
-            current.sessionEpoch !== sessionEpoch ||
-            current.availability !== "available"
-          ) {
-            try {
-              const resynced = await window.pivis.invoke("session.runtimeResync", {
-                sessionId: sid,
-              });
-              if (
-                resynced.hostInstanceId !== hostInstanceId ||
-                resynced.sessionEpoch !== sessionEpoch ||
-                resynced.availability !== "available"
-              )
-                return;
-              useSessionsStore.getState().applyRuntimeState(sid, resynced);
-              current = useSessionsStore.getState().sessions.get(sid);
-            } catch {
-              return;
-            }
+          if (!sessionMatchesRuntime(current, { hostInstanceId, sessionEpoch })) {
+            await attachSessionAuthority(sid);
+            current = useSessionsStore.getState().sessions.get(sid);
           }
-          if (
-            current?.hostInstanceId !== hostInstanceId ||
-            current.sessionEpoch !== sessionEpoch ||
-            current.availability !== "available"
-          )
-            return;
+          if (!sessionMatchesRuntime(current, { hostInstanceId, sessionEpoch })) return;
           // Re-assert the session as active. Same sessionId re-points to the new
           // file, so activeSessionId is usually already correct — but explicitly
           // setting it clears any stale unreadStatus on the previously-active
@@ -604,6 +618,7 @@ export function App(): React.ReactElement {
     return () => {
       unsubEvent();
       unsubPublication();
+      unsubRuntime();
       unsubQueueRestoration();
       unsubUiReq();
       unsubUiAck();
@@ -623,6 +638,8 @@ export function App(): React.ReactElement {
   }, [
     applyEvents,
     applyAuthorityPublication,
+    attachSessionAuthority,
+    markAuthorityUnavailable,
     applyQueueRestoration,
     applyWorktree,
     applyWorkspace,
@@ -642,37 +659,15 @@ export function App(): React.ReactElement {
       : [];
     // Renderer generation is window-wide. Attach every live session so a
     // background dialog/panel cannot remain blocked on the renderer that died.
-    for (const sid of sessionIds) {
-      void window.pivis
-        .invoke("session.rendererAttach", {
-          sessionId: sid,
-          rendererGeneration: RENDERER_GENERATION,
-        })
-        .catch(() => {});
-      // authorityAttach is baseline + buffered replay. It is the only path
-      // that can move a semantic plane back to following after a gap.
-      void window.pivis
-        .invoke("session.authorityAttach", {
-          sessionId: sid,
-          rendererGeneration: RENDERER_GENERATION,
-        })
-        .then((response) => applyAuthorityAttach(sid, response))
-        .catch(() => markAuthorityUnavailable(sid, "attach_failed"));
-    }
+    for (const sid of sessionIds) void attachSessionAuthority(sid);
     const onFocus = () => {
       for (const sid of sessionIds) {
-        void window.pivis
-          .invoke("session.authorityAttach", {
-            sessionId: sid,
-            rendererGeneration: RENDERER_GENERATION,
-          })
-          .then((response) => applyAuthorityAttach(sid, response))
-          .catch(() => markAuthorityUnavailable(sid, "attach_failed"));
+        void attachSessionAuthority(sid);
       }
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [liveSessionIdsKey, applyAuthorityAttach, markAuthorityUnavailable]);
+  }, [liveSessionIdsKey, attachSessionAuthority]);
 
   const handlePiRecheck = useCallback(async () => {
     const info = await window.pivis.invoke("pi.locate", undefined);

@@ -1512,8 +1512,18 @@ const buildSessionsStore = (
         // value). See P1-c.
         const transcript = becomingTerminal ? finalizeActiveBlocks(s.transcript) : s.transcript;
         const runtime = becomingTerminal || status === "starting" ? resetRuntimeState(s) : s;
+        const authorityProjection =
+          becomingTerminal || status === "starting"
+            ? unavailableAuthority(
+                s.authorityProjection ?? createRendererAuthorityState(),
+                error ?? `session_${status}`,
+              )
+            : s.authorityProjection;
         sessions.set(sessionId, {
-          ...runtime,
+          ...(authorityProjection
+            ? applyAuthoritySemanticProjection(runtime, authorityProjection)
+            : runtime),
+          ...(authorityProjection ? { authorityProjection } : {}),
           status,
           error,
           transcript,
@@ -1926,7 +1936,29 @@ const buildSessionsStore = (
           publication,
         );
         if (authorityProjection === current.authorityProjection) return {};
-        accepted = true;
+        accepted =
+          publication.plane === "semantic"
+            ? authorityProjection.lastSemanticFrame?.frameId === publication.payload.frameId
+            : publication.plane === "transcript"
+              ? authorityProjection.transcript.state === "following" &&
+                authorityProjection.transcript.cursor.transportSequence ===
+                  publication.payload.cursor.transportSequence
+              : publication.plane === "extensionUi"
+                ? authorityProjection.extensionUi.state === "following" &&
+                  authorityProjection.extensionUi.cursor.transportSequence ===
+                    publication.payload.cursor.transportSequence
+                : (() => {
+                    const key =
+                      publication.payload.kind === "keyframe"
+                        ? publication.payload.panel.panelKey
+                        : publication.payload.panelKey;
+                    const panel = authorityProjection.panels.get(key);
+                    return (
+                      panel?.sync.state === "following" &&
+                      panel.sync.cursor.transportSequence ===
+                        publication.payload.cursor.transportSequence
+                    );
+                  })();
         const sessions = new Map(state.sessions);
         const authorityPanels = [...authorityProjection.panels.values()];
         const customPanel = authorityPanels.find((panel) => !panel.baseline.unified);
@@ -2096,7 +2128,7 @@ const buildSessionsStore = (
     // A receipt is admission feedback only. Interrupt outcome and liveness are
     // reduced later from the semantic authority frame.
     const session = get().sessions.get(sessionId);
-    if (!session || session.availability !== "available") return;
+    if (!session) return;
     const observation = authorityObservation(session);
     if (!observation) return;
     void dispatchSessionIntent(sessionId, { kind: "interrupt" }, observation).catch((error) =>
@@ -2465,9 +2497,7 @@ const buildSessionsStore = (
             projection.semantic.cursor.hostInstanceId !== owner.hostInstanceId ||
             projection.semantic.cursor.sessionEpoch !== owner.sessionEpoch
           ) {
-            finish(() =>
-              reject(new InputNotConsumedError("Intent authority became unavailable")),
-            );
+            finish(() => reject(new InputNotConsumedError("Intent authority became unavailable")));
           }
         });
         const expiryTimer = globalThis.setTimeout(
@@ -2481,11 +2511,7 @@ const buildSessionsStore = (
     };
 
     const deps = {
-      dispatch: (
-        sid: SessionId,
-        intent: SessionIntent,
-        intentId?: string,
-      ) => {
+      dispatch: (sid: SessionId, intent: SessionIntent, intentId?: string) => {
         ensureClaimCurrent();
         const observation = intentObservation(sid);
         if (!observation) throw new InputNotConsumedError("Session runtime is unavailable");
@@ -2943,12 +2969,7 @@ const buildSessionsStore = (
   bootstrapModelState: async (sessionId) => {
     if (typeof window === "undefined" || !window.pivis) return;
     const session = get().sessions.get(sessionId);
-    if (
-      !session ||
-      session.modelInitialized ||
-      session.availability !== "available" ||
-      !authorityObservation(session)
-    ) {
+    if (!session || session.modelInitialized || !authorityObservation(session)) {
       return;
     }
     set((state) => {
@@ -2983,7 +3004,6 @@ const buildSessionsStore = (
     if (
       !session ||
       !observation ||
-      session.availability !== "available" ||
       (expectedRuntime &&
         (expectedRuntime.hostInstanceId !== observation.owner.hostInstanceId ||
           expectedRuntime.sessionEpoch !== observation.owner.sessionEpoch))
@@ -3013,7 +3033,7 @@ const buildSessionsStore = (
     if (typeof window === "undefined" || !window.pivis) return { ok: false, error: "Unavailable" };
     const session = get().sessions.get(sessionId);
     const observation = session ? authorityObservation(session) : undefined;
-    if (!session || !observation || session.availability !== "available") {
+    if (!session || !observation) {
       return { ok: false, error: "Runtime unavailable" };
     }
     try {

@@ -68,10 +68,63 @@ describe("useGlobalEscapeInterrupt", () => {
         availability: "available",
         hostInstanceId: "host-escape",
         sessionEpoch: 4,
+        authorityProjection: {
+          rendererGeneration: 1,
+          publicationSequence: 0,
+          owner: { hostInstanceId: "host-escape", sessionEpoch: 4 },
+          semantic: {
+            state: "following",
+            cursor: {
+              hostInstanceId: "host-escape",
+              sessionEpoch: 4,
+              transportSequence: 1,
+              snapshotSequence: 1,
+            },
+          },
+          transcript: { state: "synchronizing", reason: "test" },
+          extensionUi: { state: "synchronizing", reason: "test" },
+          panels: new Map(),
+          recentRecords: [],
+          authoritativeSnapshot: {
+            owner: { hostInstanceId: "host-escape", sessionEpoch: 4 },
+            snapshotSequence: 1,
+            capturedAt: Date.now(),
+            sdk: {
+              isStreaming: false,
+              isIdle: true,
+              isCompacting: false,
+              isRetrying: false,
+              retryAttempt: 0,
+              isBashRunning: false,
+            },
+            activity: {},
+            queues: {
+              steering: [],
+              followUp: [],
+              steeringIntentIds: [],
+              followUpIntentIds: [],
+            },
+            custody: [],
+            editor: { revision: 0, text: "", attachments: [] },
+            activeIntents: [],
+            recentIntentOutcomes: [],
+            recentObservedOperations: [],
+            operationJournalLowWatermark: 0,
+            operationJournalHighWatermark: 0,
+            operationJournalTruncated: false,
+            model: null,
+            thinkingLevel: "off",
+            catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
+          },
+        },
       });
       return { sessions, activeSessionId: SESSION_A };
     });
-    invokeSpy = vi.fn().mockResolvedValue({ disposition: "already_inactive" });
+    invokeSpy = vi.fn().mockResolvedValue({
+      status: "admitted",
+      intentId: "interrupt",
+      owner: { hostInstanceId: "host-escape", sessionEpoch: 4 },
+    });
     // @ts-expect-error test bridge
     window.pivis = { invoke: invokeSpy };
   });
@@ -86,12 +139,15 @@ describe("useGlobalEscapeInterrupt", () => {
     const { defaultPrevented, secondListenerCalled } = dispatchKey();
     expect(defaultPrevented).toBe(true);
     expect(secondListenerCalled).toBe(false);
-    expect(invokeSpy).toHaveBeenCalledWith("session.escape", {
-      sessionId: SESSION_A,
-      requestId: expect.any(String),
-      expectedHostInstanceId: "host-escape",
-      expectedSessionEpoch: 4,
-    });
+    expect(invokeSpy).toHaveBeenCalledWith(
+      "session.dispatchIntent",
+      expect.objectContaining({
+        sessionId: SESSION_A,
+        intentId: expect.any(String),
+        expectedOwner: { hostInstanceId: "host-escape", sessionEpoch: 4 },
+        intent: { kind: "interrupt" },
+      }),
+    );
   });
 
   it("an overlay claim defers ESC", () => {
