@@ -1,14 +1,14 @@
 import type { SessionId } from "@shared/ids.js";
 import type { SessionSummary } from "@shared/ipc-contract.js";
-import type { ProjectTrustOption } from "@shared/pi-protocol/commands.js";
 import type { ModelInfo } from "@shared/pi-protocol/responses.js";
+import type { AuthorityCursor } from "@shared/pi-protocol/runtime-state.js";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { useVirtualList } from "../../hooks/useVirtualList.js";
 import type { PickerRequest } from "../../lib/commands/execute.js";
 import { findCurrentModel, modelDisplayName, modelKey } from "../../lib/model-utils.js";
-import { invokeSessionCommand } from "../../lib/session-command.js";
+import { dispatchSessionIntent } from "../../lib/session-intent.js";
 import { sessionMatchesRuntime, useSessionsStore } from "../../stores/sessions-store.js";
 import { FadeText } from "../common/FadeText.js";
 import "./AppPickerHost.css";
@@ -51,9 +51,7 @@ interface PickerHostProps {
 export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElement | null {
   const picker = useSessionsStore((s) => s.sessions.get(sessionId)?.pendingPicker);
   const closePicker = useSessionsStore((s) => s.closePicker);
-  const applyModelChange = useSessionsStore((s) => s.applyModelChange);
   const addToast = useSessionsStore((s) => s.addToast);
-  const injectEditorText = useSessionsStore((s) => s.injectEditorText);
   const openSessionTab = useSessionsStore((s) => s.openSessionTab);
   const setActiveSession = useSessionsStore((s) => s.setActiveSession);
 
@@ -69,16 +67,40 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           sessionEpoch: picker.expectedSessionEpoch,
         }
       : undefined;
-  const requirePickerRuntime = () => {
+  const pickerCursor = (() => {
+    const semantic = useSessionsStore.getState().sessions.get(sessionId)
+      ?.authorityProjection?.semantic;
+    return semantic?.state === "following" &&
+      semantic.cursor.hostInstanceId === pickerRuntime?.hostInstanceId &&
+      semantic.cursor.sessionEpoch === pickerRuntime.sessionEpoch
+      ? semantic.cursor
+      : undefined;
+  })();
+  const requirePickerObservation = () => {
     if (!pickerRuntime) throw new Error("Picker has no originating runtime identity");
-    return pickerRuntime;
+    return { owner: pickerRuntime, ...(pickerCursor ? { cursor: pickerCursor } : {}) };
   };
   const pickerSlotIsCurrent = () =>
     useSessionsStore.getState().sessions.get(sessionId)?.pendingPicker === picker;
-  const pickerRuntimeIsCurrent = () =>
-    !!pickerRuntime &&
-    pickerSlotIsCurrent() &&
-    sessionMatchesRuntime(useSessionsStore.getState().sessions.get(sessionId), pickerRuntime);
+  const pickerRuntimeIsCurrent = (cursor: AuthorityCursor | undefined = pickerCursor) => {
+    const current = useSessionsStore.getState().sessions.get(sessionId);
+    if (
+      !pickerRuntime ||
+      !pickerSlotIsCurrent() ||
+      !sessionMatchesRuntime(current, pickerRuntime)
+    ) {
+      return false;
+    }
+    if (!cursor) return true;
+    const semantic = current?.authorityProjection?.semantic;
+    return (
+      semantic?.state === "following" &&
+      semantic.cursor.hostInstanceId === cursor.hostInstanceId &&
+      semantic.cursor.sessionEpoch === cursor.sessionEpoch &&
+      semantic.cursor.transportSequence === cursor.transportSequence &&
+      semantic.cursor.snapshotSequence === cursor.snapshotSequence
+    );
+  };
 
   // The picker sub-components are mounted when a picker is active. They
   // each receive the same close-on-cancel pattern.
@@ -90,12 +112,16 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           {...(picker.search !== undefined ? { search: picker.search } : {})}
           onClose={() => closePicker(sessionId)}
           onPick={async (model) => {
-            const res = await applyModelChange(sessionId, model, pickerRuntime);
-            if (!pickerRuntimeIsCurrent()) return;
-            if (res.ok) {
-              addToast(sessionId, `Model: ${modelDisplayName(model)}`);
-            } else {
-              addToast(sessionId, `Failed to set model: ${res.error}`, "error");
+            const observation = requirePickerObservation();
+            const receipt = await dispatchSessionIntent(
+              sessionId,
+              { kind: "setModel", provider: model.provider ?? "", modelId: model.id },
+              observation,
+            );
+            if (!pickerRuntimeIsCurrent(observation.cursor)) return;
+            if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+              addToast(sessionId, "Failed to request model change", "error");
+              return;
             }
             closePicker(sessionId);
           }}
@@ -106,56 +132,23 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           messages={picker.messages}
           onClose={() => closePicker(sessionId)}
           onPick={async (entryId) => {
-            const res = (await invokeSessionCommand(
+            const observation = requirePickerObservation();
+            const receipt = await dispatchSessionIntent(
               sessionId,
-              { type: "fork", entryId },
-              requirePickerRuntime(),
-              { sourceText: "/fork" },
-            )) as {
-              success: boolean;
-              data?: { text?: string; cancelled?: boolean };
-              error?: string;
-              successorIdentity?: { hostInstanceId: string; sessionEpoch: number };
-            };
-            if (!res.success) {
-              if (!pickerRuntimeIsCurrent()) return;
-              addToast(sessionId, res.error ?? "Failed to fork", "error");
-              closePicker(sessionId);
+              {
+                kind: "invokeCommand",
+                text: `/fork ${entryId}`,
+                editorRevision:
+                  useSessionsStore.getState().sessions.get(sessionId)?.editorRevision ?? 0,
+              },
+              observation,
+            );
+            if (!pickerRuntimeIsCurrent(observation.cursor)) return;
+            if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+              addToast(sessionId, "Failed to request fork", "error");
               return;
             }
-            if (res.data?.cancelled) {
-              if (pickerRuntimeIsCurrent()) closePicker(sessionId);
-              return;
-            }
-            const successor = res.successorIdentity;
-            if (!successor) {
-              addToast(sessionId, "Fork completed without a correlated successor runtime", "error");
-              return;
-            }
-            const resynced = await window.pivis.invoke("session.runtimeResync", { sessionId });
-            if (
-              resynced.hostInstanceId !== successor.hostInstanceId ||
-              resynced.sessionEpoch !== successor.sessionEpoch ||
-              !pickerSlotIsCurrent()
-            )
-              return;
-            useSessionsStore.getState().applyRuntimeState(sessionId, resynced);
-            if (
-              !sessionMatchesRuntime(useSessionsStore.getState().sessions.get(sessionId), successor)
-            )
-              return;
-            // TUI prefills the editor with the forked-from text. The
-            // fileChanged event (emitted by main) takes care of the
-            // transcript reset and tab re-pointing; we only need to
-            // prefill the composer.
-            if (res.data?.text) {
-              injectEditorText(sessionId, res.data.text);
-            }
-            addToast(sessionId, "Forked to new session");
-            // The fileChanged event will close the picker via state
-            // replacement (adoptSessionFile resets the session but
-            // doesn't clear pendingPicker). Close it manually for the
-            // in-place UX.
+            // Authority frames own the successor, transcript, and editor.
             closePicker(sessionId);
           }}
         />
@@ -185,7 +178,7 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
               return;
             }
             const id = await openSessionTab(workspacePath, target.filePath, { focus: true });
-            if (!pickerSlotIsCurrent()) return;
+            if (!pickerRuntimeIsCurrent()) return;
             if (id) setActiveSession(id);
             closePicker(sessionId);
           }}
@@ -197,28 +190,24 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           enabledIds={picker.enabledIds}
           onClose={() => closePicker(sessionId)}
           onApply={async (enabledIds, persist) => {
-            const commandType = persist ? "save_scoped_models" : "set_scoped_models";
-            const res = (await invokeSessionCommand(
+            const observation = requirePickerObservation();
+            const command = persist ? "/models save" : "/models apply";
+            const receipt = await dispatchSessionIntent(
               sessionId,
-              { type: commandType, enabledIds },
-              requirePickerRuntime(),
-            )) as { success: boolean; error?: string };
-            if (!pickerRuntimeIsCurrent()) return;
-            if (!res.success) {
-              addToast(sessionId, res.error ?? "Failed to update model scope", "error");
+              {
+                kind: "invokeCommand",
+                text: enabledIds ? `${command} ${enabledIds.join(",")}` : command,
+                editorRevision:
+                  useSessionsStore.getState().sessions.get(sessionId)?.editorRevision ?? 0,
+              },
+              observation,
+            );
+            if (!pickerRuntimeIsCurrent(observation.cursor)) return;
+            if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+              addToast(sessionId, "Failed to request model scope update", "error");
               return;
             }
-            addToast(
-              sessionId,
-              persist ? "Model selection saved to settings" : "Model scope updated (this session)",
-              "success",
-            );
-            // Re-fetch the effective available-models list so the /model
-            // dropdown reflects the new scope live (mirrors pi's
-            // getAvailableModels returning the scoped subset). Best-effort:
-            // refreshAvailableModels swallows errors.
-            await useSessionsStore.getState().refreshAvailableModels(sessionId, pickerRuntime);
-            if (pickerRuntimeIsCurrent()) closePicker(sessionId);
+            closePicker(sessionId);
           }}
         />
       )}
@@ -227,35 +216,30 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           providers={picker.providers}
           onClose={() => closePicker(sessionId)}
           onPick={async (provider) => {
-            const res = (await invokeSessionCommand(
+            const observation = requirePickerObservation();
+            const receipt = await dispatchSessionIntent(
               sessionId,
-              { type: "logout_provider", provider: provider.id },
-              requirePickerRuntime(),
-            )) as { success: boolean; error?: string };
-            if (!pickerRuntimeIsCurrent()) return;
-            if (!res.success) {
-              addToast(sessionId, res.error ?? "Failed to log out", "error");
+              {
+                kind: "invokeCommand",
+                text: `/logout ${provider.id}`,
+                editorRevision:
+                  useSessionsStore.getState().sessions.get(sessionId)?.editorRevision ?? 0,
+              },
+              observation,
+            );
+            if (!pickerRuntimeIsCurrent(observation.cursor)) return;
+            if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+              addToast(sessionId, "Failed to request logout", "error");
               return;
             }
-            const msg =
-              provider.authType === "oauth"
-                ? `Logged out of ${provider.name}`
-                : `Removed stored API key for ${provider.name}. Environment variables and models.json config are unchanged.`;
-            addToast(sessionId, msg, "success");
-            // Refresh the model dropdown so a logged-out provider's models
-            // (available only via the stored credential) disappear from
-            // /model. Mirrors pi's modelRegistry.refresh() +
-            // updateAvailableProviderCount() (the bridge already awaits
-            // modelRegistry.refresh() inside logout_provider).
-            await useSessionsStore.getState().refreshAvailableModels(sessionId, pickerRuntime);
-            if (pickerRuntimeIsCurrent()) closePicker(sessionId);
+            closePicker(sessionId);
           }}
         />
       )}
       {picker.kind === "trust" && (
         <TrustPicker
           sessionId={sessionId}
-          runtime={requirePickerRuntime()}
+          runtime={requirePickerObservation().owner}
           cwd={picker.cwd}
           savedDecision={picker.savedDecision}
           projectTrusted={picker.projectTrusted}
@@ -964,7 +948,7 @@ function TrustPicker({
   cwd: string;
   savedDecision: boolean | null;
   projectTrusted: boolean;
-  options: ProjectTrustOption[];
+  options: Array<{ label: string; trusted: boolean; updates: unknown[] }>;
   onClose: () => void;
 }): React.ReactElement {
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -1006,65 +990,68 @@ function TrustPicker({
         return;
       }
       setSaving(true);
+      const semantic = useSessionsStore.getState().sessions.get(sessionId)
+        ?.authorityProjection?.semantic;
+      const cursor =
+        semantic?.state === "following" &&
+        semantic.cursor.hostInstanceId === runtime.hostInstanceId &&
+        semantic.cursor.sessionEpoch === runtime.sessionEpoch
+          ? semantic.cursor
+          : undefined;
+      const observation = { owner: runtime, ...(cursor ? { cursor } : {}) };
+      const isCurrent = () => {
+        const session = useSessionsStore.getState().sessions.get(sessionId);
+        if (!sessionMatchesRuntime(session, runtime)) return false;
+        if (!cursor) return true;
+        const current = session?.authorityProjection?.semantic;
+        return (
+          current?.state === "following" &&
+          current.cursor.hostInstanceId === cursor.hostInstanceId &&
+          current.cursor.sessionEpoch === cursor.sessionEpoch &&
+          current.cursor.transportSequence === cursor.transportSequence &&
+          current.cursor.snapshotSequence === cursor.snapshotSequence
+        );
+      };
       try {
-        const res = (await invokeSessionCommand(
+        const receipt = await dispatchSessionIntent(
           sessionId,
           {
-            type: "set_trust",
-            updates: option.updates,
-            trusted: option.trusted,
+            kind: "invokeCommand",
+            text: `/trust ${option.trusted ? "trust" : "untrust"}`,
+            editorRevision:
+              useSessionsStore.getState().sessions.get(sessionId)?.editorRevision ?? 0,
           },
-          runtime,
-        )) as { success: boolean; error?: string };
-        if (!sessionMatchesRuntime(useSessionsStore.getState().sessions.get(sessionId), runtime)) {
-          setSaving(false);
-          return;
-        }
-        if (!res.success) {
-          addToast(sessionId, res.error ?? "Failed to save trust decision", "error");
-          setSaving(false);
-          return;
-        }
-        addToast(
-          sessionId,
-          `Saved trust decision: ${option.trusted ? "trusted" : "untrusted"}.`,
-          "success",
+          observation,
         );
-        closePicker(sessionId);
-        // Reload so the new decision takes effect (mirrors pi's "Restart pi
-        // for this to take effect."). Refused mid-turn by the registry, but
-        // /trust is user-initiated and unlikely to race a turn; a refusal
-        // surfaces as a toast.
-        const reloadRes = await window.pivis.invoke("session.reload", {
+        if (!isCurrent()) return;
+        if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+          addToast(sessionId, "Failed to request trust update", "error");
+          setSaving(false);
+          return;
+        }
+        // Trust changes take effect through the same owner-bound replacement
+        // protocol; authority frames publish the successor.
+        const reloadReceipt = await dispatchSessionIntent(
           sessionId,
-          request: {
-            requestId: crypto.randomUUID(),
-            intentId: crypto.randomUUID(),
-            expectedHostInstanceId: runtime.hostInstanceId,
-            expectedSessionEpoch: runtime.sessionEpoch,
-            sourceText: "/trust reload",
-          },
-        });
+          { kind: "reload" },
+          observation,
+        );
+        if (!isCurrent()) return;
         if (
-          !reloadRes.success ||
-          reloadRes.disposition !== "completed" ||
-          !reloadRes.successorIdentity
+          reloadReceipt.status === "not_admitted" ||
+          reloadReceipt.status === "delivery_unknown"
         ) {
           addToast(
             sessionId,
-            reloadRes.error ?? "Reload failed; trust applies on next session start.",
+            "Trust was requested; it applies on the next session start.",
             "warning",
           );
-        } else {
-          const resynced = await window.pivis.invoke("session.runtimeResync", { sessionId });
-          if (
-            resynced.hostInstanceId === reloadRes.successorIdentity.hostInstanceId &&
-            resynced.sessionEpoch === reloadRes.successorIdentity.sessionEpoch
-          ) {
-            useSessionsStore.getState().applyRuntimeState(sessionId, resynced);
-          }
+          setSaving(false);
+          return;
         }
+        closePicker(sessionId);
       } catch (err) {
+        if (!isCurrent()) return;
         addToast(sessionId, err instanceof Error ? err.message : String(err), "error");
         setSaving(false);
       }

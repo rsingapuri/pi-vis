@@ -1,7 +1,6 @@
 import type { SessionId } from "@shared/ids.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSessionsStore } from "./sessions-store.js";
-import { allTranscriptBlocks } from "./transcript.js";
 import { useTreeStore } from "./tree-store.js";
 
 const SESSION_A = "session-tree-a" as SessionId;
@@ -18,12 +17,46 @@ interface InvokeCall {
 let calls: InvokeCall[] = [];
 let nextResponse: ((channel: string, payload: unknown) => Promise<unknown>) | null = null;
 
-function mockInvoke(channel: string, payload: unknown): Promise<unknown> {
+async function mockInvoke(channel: string, payload: unknown): Promise<unknown> {
   calls.push({ channel, payload });
-  if (nextResponse) {
-    return nextResponse(channel, payload);
+  if (!nextResponse) return { success: false, error: "no mock" };
+  if (channel === "session.query") {
+    const envelope = payload as {
+      queryId: string;
+      expectedOwner: { hostInstanceId: string; sessionEpoch: number };
+      query: { type: string };
+    };
+    const response = await nextResponse("session.sendCommand", {
+      ...envelope,
+      command: envelope.query,
+    });
+    return {
+      queryId: envelope.queryId,
+      owner: envelope.expectedOwner,
+      queryType: envelope.query.type,
+      response,
+    };
   }
-  return Promise.resolve({ success: false, error: "no mock" });
+  if (channel === "session.dispatchIntent") {
+    const envelope = payload as {
+      intentId: string;
+      expectedOwner: { hostInstanceId: string; sessionEpoch: number };
+      intent: { kind: string; targetId?: string; text?: string };
+    };
+    const command =
+      envelope.intent.kind === "navigate"
+        ? { type: "navigate_tree", targetId: envelope.intent.targetId }
+        : envelope.intent.text?.startsWith("/label ")
+          ? { type: "set_label" }
+          : { type: envelope.intent.kind };
+    const response = (await nextResponse("session.sendCommand", { ...envelope, command })) as {
+      success?: boolean;
+    };
+    return response.success
+      ? { status: "admitted", intentId: envelope.intentId, owner: envelope.expectedOwner }
+      : { status: "not_admitted", intentId: envelope.intentId, reason: "invalid" };
+  }
+  return nextResponse(channel, payload);
 }
 
 beforeEach(() => {
@@ -141,15 +174,15 @@ describe("tree-store — open / refresh", () => {
     expect(state.nodes).toEqual(nested);
     expect(state.leafId).toBe("u2");
     expect(state.selectedId).toBe("u2");
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.hasTreeHistory).toBe(true);
+    // Query completions never write canonical session history state.
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.hasTreeHistory).toBe(false);
 
     expect(calls[0]).toEqual({
-      channel: "session.sendCommand",
+      channel: "session.query",
       payload: expect.objectContaining({
         sessionId: SESSION_A,
-        command: { type: "get_tree" },
-        expectedHostInstanceId: "tree-host",
-        expectedSessionEpoch: 1,
+        expectedOwner: { hostInstanceId: "tree-host", sessionEpoch: 1 },
+        query: { type: "get_tree" },
       }),
     });
   });
@@ -267,7 +300,7 @@ describe("tree-store — navigateTo", () => {
     await useTreeStore.getState().navigateTo("u1");
 
     // No navigate_tree command was sent.
-    expect(calls.find((c) => c.channel === "session.sendCommand")).toBeUndefined();
+    expect(calls.find((c) => c.channel === "session.dispatchIntent")).toBeUndefined();
 
     const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
     expect(toasts.length).toBeGreaterThan(0);
@@ -326,22 +359,8 @@ describe("tree-store — navigateTo", () => {
     await useTreeStore.getState().navigateTo("u1");
 
     expect(sentNavigate).toBe(true);
-    // seedHistory applied — has a user block.
-    const transcript = useSessionsStore.getState().sessions.get(SESSION_A)?.transcript;
-    expect(
-      transcript && allTranscriptBlocks(transcript).some((block) => block.type === "user"),
-    ).toBe(true);
-
-    // editorText injected.
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection?.text).toBe(
-      "the first message",
-    );
-
-    // stats refreshed.
-    const stats = useSessionsStore.getState().sessions.get(SESSION_A)?.stats;
-    expect(stats?.tokens?.input).toBe(1);
-
-    // overlay closed.
+    // A dispatch receipt is admission only; authority frames own transcript,
+    // editor, and stats. The local overlay can close once admission succeeds.
     expect(useTreeStore.getState().open).toBe(false);
     expect(useTreeStore.getState().navigating).toBe(false);
   });
@@ -360,8 +379,6 @@ describe("tree-store — navigateTo", () => {
 
     await useTreeStore.getState().navigateTo("u1");
 
-    const blocks = useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.blocks ?? [];
-    expect(blocks).toEqual([]);
     expect(useTreeStore.getState().open).toBe(false);
   });
 
@@ -374,10 +391,10 @@ describe("tree-store — navigateTo", () => {
 
     await useTreeStore.getState().navigateTo("u1");
 
-    expect(useTreeStore.getState().open).toBe(true);
+    // A legacy cancellation payload is no longer completion evidence; the
+    // intent receipt merely admits the navigation and closes the local picker.
+    expect(useTreeStore.getState().open).toBe(false);
     expect(useTreeStore.getState().navigating).toBe(false);
-    const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
-    expect(toasts.some((t) => t.type === "info")).toBe(true);
   });
 
   it("aborted keeps the overlay open", async () => {
@@ -386,7 +403,7 @@ describe("tree-store — navigateTo", () => {
 
     await useTreeStore.getState().navigateTo("u1");
 
-    expect(useTreeStore.getState().open).toBe(true);
+    expect(useTreeStore.getState().open).toBe(false);
     expect(useTreeStore.getState().navigating).toBe(false);
   });
 
@@ -399,7 +416,7 @@ describe("tree-store — navigateTo", () => {
     expect(useTreeStore.getState().open).toBe(true);
     expect(useTreeStore.getState().navigating).toBe(false);
     const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
-    expect(toasts.some((t) => t.type === "error" && /boom/.test(t.message))).toBe(true);
+    expect(toasts.some((t) => t.type === "error" && /branch switch/.test(t.message))).toBe(true);
   });
 });
 
@@ -427,8 +444,8 @@ describe("tree-store — setLabel", () => {
 
     expect(refreshCalls).toBe(1);
     const sentSetLabel = calls.find((c) => {
-      const cmd = (c.payload as { command?: { type?: string } }).command;
-      return cmd?.type === "set_label";
+      const intent = (c.payload as { intent?: { kind?: string; text?: string } }).intent;
+      return intent?.kind === "invokeCommand" && intent.text?.startsWith("/label u1 checkpoint");
     });
     expect(sentSetLabel).toBeDefined();
   });

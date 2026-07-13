@@ -1,10 +1,11 @@
 import type { SessionId } from "@shared/ids.js";
+import type { AuthorityCursor } from "@shared/pi-protocol/runtime-state.js";
 import type { TranscriptStyle } from "@shared/settings.js";
 import type React from "react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnsiText } from "../../lib/ansi.js";
 import { Markdown } from "../../lib/markdown.js";
-import { invokeSessionCommand } from "../../lib/session-command.js";
+import { querySession } from "../../lib/session-intent.js";
 import { htmlToMarkdown } from "../../lib/turndown.js";
 import { useImageViewerStore } from "../../stores/image-viewer-store.js";
 import {
@@ -983,6 +984,24 @@ const CustomMessageBlock = memo(function CustomMessageBlock({
 
 type RenderedEntry = { rendered: boolean; ansi?: string; error?: boolean };
 
+function cursorIsCurrent(
+  sessionId: SessionId,
+  runtime: { hostInstanceId: string; sessionEpoch: number },
+  cursor: AuthorityCursor | undefined,
+): boolean {
+  const session = useSessionsStore.getState().sessions.get(sessionId);
+  if (!sessionMatchesRuntime(session, runtime)) return false;
+  if (!cursor) return true;
+  const semantic = session?.authorityProjection?.semantic;
+  return (
+    semantic?.state === "following" &&
+    semantic.cursor.hostInstanceId === cursor.hostInstanceId &&
+    semantic.cursor.sessionEpoch === cursor.sessionEpoch &&
+    semantic.cursor.transportSequence === cursor.transportSequence &&
+    semantic.cursor.snapshotSequence === cursor.snapshotSequence
+  );
+}
+
 const CustomEntryBlock = memo(function CustomEntryBlock({
   sessionId,
   data,
@@ -1003,6 +1022,14 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
     () => (hostInstanceId ? { hostInstanceId, sessionEpoch } : undefined),
     [hostInstanceId, sessionEpoch],
   );
+  const observedCursor = useSessionsStore((state) => {
+    const semantic = state.sessions.get(sessionId)?.authorityProjection?.semantic;
+    return semantic?.state === "following" &&
+      semantic.cursor.hostInstanceId === hostInstanceId &&
+      semantic.cursor.sessionEpoch === sessionEpoch
+      ? semantic.cursor
+      : undefined;
+  });
   const renderedEpochRef = useRef(sessionEpoch);
   const hostRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLPreElement>(null);
@@ -1047,7 +1074,8 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
       setRendered(undefined);
       return;
     }
-    void invokeSessionCommand(
+    const observation = { owner: runtime, ...(observedCursor ? { cursor: observedCursor } : {}) };
+    void querySession(
       sessionId,
       {
         type: "render_entry",
@@ -1055,23 +1083,27 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
         cols,
         expanded,
       },
-      runtime,
+      observation,
     )
-      .then((response) => {
+      .then((result) => {
         if (
           cancelled ||
           renderedEpochRef.current !== sessionEpoch ||
-          !sessionMatchesRuntime(useSessionsStore.getState().sessions.get(sessionId), runtime)
+          result.owner.hostInstanceId !== runtime.hostInstanceId ||
+          result.owner.sessionEpoch !== runtime.sessionEpoch ||
+          !cursorIsCurrent(sessionId, runtime, observedCursor)
         )
           return;
-        const result = response.success ? (response.data as RenderedEntry | undefined) : undefined;
-        setRendered(result && typeof result.rendered === "boolean" ? result : undefined);
+        const rendered = result.response.success
+          ? (result.response.data as RenderedEntry | undefined)
+          : undefined;
+        setRendered(rendered && typeof rendered.rendered === "boolean" ? rendered : undefined);
       })
       .catch(() => {
         if (
           cancelled ||
           renderedEpochRef.current !== sessionEpoch ||
-          !sessionMatchesRuntime(useSessionsStore.getState().sessions.get(sessionId), runtime)
+          !cursorIsCurrent(sessionId, runtime, observedCursor)
         )
           return;
         // Hide entries without a renderer rather than showing stale extension data.
@@ -1080,7 +1112,7 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, data.entryId, cols, expanded, sessionEpoch, runtime]);
+  }, [sessionId, data.entryId, cols, expanded, sessionEpoch, runtime, observedCursor]);
 
   const visible = rendered?.rendered === true;
   return (

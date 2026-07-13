@@ -7,35 +7,48 @@
 // installed pi lacks session.sessionManager.getTree() / session.navigateTree().
 
 import type { SessionId } from "@shared/ids.js";
-import type { TranscriptBlock } from "@shared/ipc-contract.js";
-import type {
-  FlatTreeNode,
-  GetTreeData,
-  NavigateTreeData,
-  SessionTreeEntry,
-  SessionTreeNode,
-} from "@shared/pi-protocol/responses.js";
-import type { SessionStats } from "@shared/pi-protocol/responses.js";
+import type { FlatTreeNode, GetTreeData, SessionTreeNode } from "@shared/pi-protocol/responses.js";
+import type { AuthorityCursor, RuntimeIdentity } from "@shared/pi-protocol/runtime-state.js";
 import { create } from "zustand";
 import { buildNestedTree } from "../components/tree/tree-flatten.js";
-import { invokeSessionCommand } from "../lib/session-command.js";
+import { dispatchSessionIntent, querySession } from "../lib/session-intent.js";
 import { isSessionWorking, useSessionsStore } from "./sessions-store.js";
 
-function currentRuntime(sessionId: SessionId) {
-  const session = useSessionsStore.getState().sessions.get(sessionId);
-  return session?.hostInstanceId && session.availability === "available"
-    ? { hostInstanceId: session.hostInstanceId, sessionEpoch: session.sessionEpoch }
-    : undefined;
+interface TreeObservation {
+  owner: RuntimeIdentity;
+  cursor?: AuthorityCursor | undefined;
 }
 
-function runtimeIsCurrent(
-  sessionId: SessionId,
-  runtime: { hostInstanceId: string; sessionEpoch: number },
-): boolean {
-  const current = currentRuntime(sessionId);
+function currentObservation(sessionId: SessionId): TreeObservation | undefined {
+  const session = useSessionsStore.getState().sessions.get(sessionId);
+  if (!session?.hostInstanceId || session.availability !== "available") return undefined;
+  const owner = { hostInstanceId: session.hostInstanceId, sessionEpoch: session.sessionEpoch };
+  const semantic = session.authorityProjection?.semantic;
+  const cursor =
+    semantic?.state === "following" &&
+    semantic.cursor.hostInstanceId === owner.hostInstanceId &&
+    semantic.cursor.sessionEpoch === owner.sessionEpoch
+      ? semantic.cursor
+      : undefined;
+  return { owner, ...(cursor ? { cursor } : {}) };
+}
+
+function observationIsCurrent(sessionId: SessionId, observation: TreeObservation): boolean {
+  const current = currentObservation(sessionId);
+  if (
+    !current ||
+    current.owner.hostInstanceId !== observation.owner.hostInstanceId ||
+    current.owner.sessionEpoch !== observation.owner.sessionEpoch
+  )
+    return false;
+  if (!observation.cursor) return true;
+  const cursor = current.cursor;
   return (
-    current?.hostInstanceId === runtime.hostInstanceId &&
-    current.sessionEpoch === runtime.sessionEpoch
+    !!cursor &&
+    cursor.hostInstanceId === observation.cursor.hostInstanceId &&
+    cursor.sessionEpoch === observation.cursor.sessionEpoch &&
+    cursor.transportSequence === observation.cursor.transportSequence &&
+    cursor.snapshotSequence === observation.cursor.snapshotSequence
   );
 }
 
@@ -167,90 +180,34 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
       useSessionsStore.getState().addToast(sessionId, STREAMING_GUARD_MESSAGE, "warning");
       return;
     }
-    const runtime = currentRuntime(sessionId);
-    if (!runtime) {
+    const observation = currentObservation(sessionId);
+    if (!observation) {
       useSessionsStore.getState().addToast(sessionId, "Session runtime is unavailable", "warning");
       return;
     }
 
     set({ navigating: true });
     try {
-      const res = (await invokeSessionCommand(
+      const receipt = await dispatchSessionIntent(
         sessionId,
         {
-          type: "navigate_tree",
+          kind: "navigate",
           targetId,
-          summarize: get().summarizeOnSwitch || undefined,
+          ...(get().summarizeOnSwitch ? { summarize: true } : {}),
         },
-        runtime,
-        { sourceText: `Navigate conversation tree to ${targetId}` },
-      )) as { success: boolean; error?: string; data?: NavigateTreeData };
-      if (!runtimeIsCurrent(sessionId, runtime)) return;
-
-      if (!res.success) {
-        // Defensive — the navigate command failing mid-flight should
-        // leave the viewer in place so the user can retry.
-        useSessionsStore
-          .getState()
-          .addToast(sessionId, res.error ?? "Failed to switch branches", "error");
+        observation,
+      );
+      if (!observationIsCurrent(sessionId, observation) || get().sessionId !== sessionId) return;
+      if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+        useSessionsStore.getState().addToast(sessionId, "Failed to request branch switch", "error");
         set({ navigating: false });
         return;
       }
-
-      const data = res.data;
-      if (data?.cancelled) {
-        useSessionsStore.getState().addToast(sessionId, "Branch switch cancelled", "info");
-        set({ navigating: false });
-        return;
-      }
-      if (data?.aborted) {
-        useSessionsStore.getState().addToast(sessionId, "Branch switch aborted", "info");
-        set({ navigating: false });
-        return;
-      }
-
-      // Success path: rebuild transcript from the returned branch (host's
-      // in-memory getBranch() result — see plan §3), prefill the composer
-      // when navigateTree returned editorText, refresh stats, then close
-      // the overlay. We deliberately do NOT reconcile model/thinking
-      // level — navigateTree mutates only agent.state.messages (review
-      // S4).
-      const branch: SessionTreeEntry[] = data?.branch ?? [];
-      const transcript = (await window.pivis.invoke("session.transcriptForEntries", {
-        sessionId,
-        entries: branch,
-      })) as TranscriptBlock[];
-      if (!runtimeIsCurrent(sessionId, runtime)) return;
-      useSessionsStore.getState().seedHistory(sessionId, transcript);
-
-      if (data?.editorText !== undefined) {
-        useSessionsStore.getState().injectEditorText(sessionId, data.editorText);
-      }
-
-      // Refresh token stats. navigateTree doesn't change model/thinking
-      // level (only agent.state.messages), so those need no reconcile;
-      // token stats DO track the branch (review S4, corrected).
-      try {
-        const statsRes = (await invokeSessionCommand(
-          sessionId,
-          { type: "get_session_stats" },
-          runtime,
-        )) as { success: boolean; data?: SessionStats };
-        if (statsRes.success && statsRes.data && runtimeIsCurrent(sessionId, runtime)) {
-          useSessionsStore.getState().setStats(sessionId, statsRes.data);
-        }
-      } catch {
-        // Stats refresh is best-effort — don't block the navigation.
-      }
-
-      if (!runtimeIsCurrent(sessionId, runtime)) return;
-      useSessionsStore.getState().addToast(sessionId, "Switched to selected branch", "success");
+      // A receipt is admission only. Authority frames own the resulting
+      // transcript, editor, stats, and navigation outcome.
       set({ navigating: false, open: false });
     } catch (err) {
-      // Transient (host restarting, IPC hiccup). Toast the real error but
-      // KEEP the overlay open so the user can retry — closing on a transient
-      // would lose their place in the tree. The viewer auto-recovers on the
-      // next session-ready transition.
+      if (!observationIsCurrent(sessionId, observation) || get().sessionId !== sessionId) return;
       useSessionsStore
         .getState()
         .addToast(sessionId, err instanceof Error ? err.message : String(err), "error");
@@ -261,26 +218,31 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
   setLabel: async (targetId, label) => {
     const sessionId = get().sessionId;
     if (!sessionId) return;
+    const observation = currentObservation(sessionId);
+    if (!observation) {
+      useSessionsStore.getState().addToast(sessionId, "Session runtime is unavailable", "warning");
+      return;
+    }
     try {
-      const runtime = currentRuntime(sessionId);
-      if (!runtime) throw new Error("Session runtime is unavailable");
-      const res = (await invokeSessionCommand(
+      // Tree labels are an SDK-host command surface. The high-level intent
+      // carries opaque slash text rather than exposing Pi command types here.
+      const receipt = await dispatchSessionIntent(
         sessionId,
-        { type: "set_label", targetId, label },
-        runtime,
-      )) as { success: boolean; error?: string };
-      if (!runtimeIsCurrent(sessionId, runtime)) return;
-      if (!res.success) {
-        useSessionsStore
-          .getState()
-          .addToast(sessionId, res.error ?? "Failed to set label", "error");
+        {
+          kind: "invokeCommand",
+          text: label ? `/label ${targetId} ${label}` : `/label ${targetId}`,
+          editorRevision: useSessionsStore.getState().sessions.get(sessionId)?.editorRevision ?? 0,
+        },
+        observation,
+      );
+      if (!observationIsCurrent(sessionId, observation) || get().sessionId !== sessionId) return;
+      if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+        useSessionsStore.getState().addToast(sessionId, "Failed to set label", "error");
         return;
       }
-      // Refresh — cheap; appendLabelChange already updated the in-memory
-      // labelsById map, so getTree() now reflects the new label on the
-      // target node (review N2).
       await get().refresh();
     } catch (err) {
+      if (!observationIsCurrent(sessionId, observation) || get().sessionId !== sessionId) return;
       useSessionsStore
         .getState()
         .addToast(sessionId, err instanceof Error ? err.message : String(err), "error");
@@ -290,16 +252,22 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
   refresh: async () => {
     const sessionId = get().sessionId;
     if (!sessionId) return;
+    const observation = currentObservation(sessionId);
+    if (!observation) {
+      set({ phase: "error", errorMessage: "Session runtime is unavailable" });
+      return;
+    }
     let res: { success: boolean; error?: string; data?: GetTreeData };
     try {
-      const runtime = currentRuntime(sessionId);
-      if (!runtime) throw new Error("Session runtime is unavailable");
-      res = (await invokeSessionCommand(sessionId, { type: "get_tree" }, runtime)) as {
-        success: boolean;
-        error?: string;
-        data?: GetTreeData;
-      };
-      if (!runtimeIsCurrent(sessionId, runtime)) return;
+      const result = await querySession(sessionId, { type: "get_tree" }, observation);
+      if (
+        result.owner.hostInstanceId !== observation.owner.hostInstanceId ||
+        result.owner.sessionEpoch !== observation.owner.sessionEpoch ||
+        !observationIsCurrent(sessionId, observation) ||
+        get().sessionId !== sessionId
+      )
+        return;
+      res = result.response as { success: boolean; error?: string; data?: GetTreeData };
     } catch (err) {
       // A thrown command is never a capability gap. Capability gaps return a
       // resolved unsupported response. A throw here is transient — the host
@@ -342,10 +310,6 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
     // so sidebar / first-send affordances don't mistake it for a new blank tab.
     // Ignore settings-only bootstrap entries; they should not promote a truly
     // empty session.
-    const hasConversationHistory = flat.some(
-      (node) => node.entry.type === "message" || node.entry.type === "branch_summary",
-    );
-    useSessionsStore.getState().setTreeHistoryPresent(sessionId, hasConversationHistory);
     set({
       phase: "ready",
       errorMessage: null,
