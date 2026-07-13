@@ -322,12 +322,18 @@ test.describe("Real SDK-host smoke", () => {
       await expect(window.getByText("Compaction failed", { exact: false }).first()).toBeVisible();
       await expect(textarea).toHaveValue("");
 
-      await textarea.fill("/smoke-e2e");
+      // A missing compaction_end leaves that authority conservatively fenced;
+      // do not prove extension execution by overtaking its unknown boundary.
+      // A fresh session verifies the independent extension command path.
+      await window.getByRole("button", { name: "New session" }).click();
+      const freshTextarea = window.locator(".composer__textarea");
+      await expect(freshTextarea).toBeEnabled({ timeout: 60_000 });
+      await freshTextarea.fill("/smoke-e2e");
       await expect(
         window.locator(".composer__suggestion").filter({ hasText: "smoke-e2e" }),
       ).toBeVisible();
-      await textarea.press("Enter");
-      await expect(textarea).toHaveValue("");
+      await freshTextarea.press("Enter");
+      await expect(freshTextarea).toHaveValue("");
       await expect(
         window.getByText("Real SDK host command completed", { exact: true }),
       ).toBeVisible({ timeout: 30_000 });

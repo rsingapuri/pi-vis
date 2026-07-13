@@ -67,11 +67,12 @@ function observationForSession(
   return authorityObservationFor(session?.authorityProjection);
 }
 
-function observationIsCurrent(sessionId: SessionId, observation: AuthorityObservation): boolean {
-  return sameObservation(
-    observation,
-    observationForSession(useSessionsStore.getState().sessions.get(sessionId)),
-  );
+function observationOwnerIsCurrent(
+  sessionId: SessionId,
+  observation: AuthorityObservation,
+): boolean {
+  const current = observationForSession(useSessionsStore.getState().sessions.get(sessionId));
+  return !!current && sameOwner(observation.owner, current.owner);
 }
 
 /** Mirror pi-ai's getSupportedThinkingLevels without importing pi internals. */
@@ -112,18 +113,27 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
     [authorityProjection],
   );
   const live = session?.status === "ready" && observation !== undefined;
+  // Read-only catalog/stat responses are owner-fenced but are not canonical
+  // semantic projections. Keeping this observation stable across heartbeat
+  // cursor advances prevents slow SDK reads from being restarted forever.
+  const readHostInstanceId = observation?.owner.hostInstanceId;
+  const readSessionEpoch = observation?.owner.sessionEpoch;
+  const readObservation = useMemo<AuthorityObservation | undefined>(
+    () =>
+      readHostInstanceId !== undefined && readSessionEpoch !== undefined
+        ? { owner: { hostInstanceId: readHostInstanceId, sessionEpoch: readSessionEpoch } }
+        : undefined,
+    [readHostInstanceId, readSessionEpoch],
+  );
 
-  // Catalog is a read-only query. Its response is useful only at the exact
-  // owner/cursor that requested it; a newer frame re-runs this effect instead
-  // of allowing an older read to overwrite the newer projection.
   useEffect(() => {
-    if (!live || !observation) return;
-    void querySession(sessionId, { type: "get_available_models" }, observation)
+    if (!live || !readObservation) return;
+    void querySession(sessionId, { type: "get_available_models" }, readObservation)
       .then((result) => {
         if (
           !result.response.success ||
-          !sameOwner(result.owner, observation.owner) ||
-          !observationIsCurrent(sessionId, observation)
+          !sameOwner(result.owner, readObservation.owner) ||
+          !observationOwnerIsCurrent(sessionId, readObservation)
         )
           return;
         const raw = result.response.data as { models?: unknown[] } | undefined;
@@ -136,7 +146,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
         useSessionsStore.getState().setAvailableModels(sessionId, models);
       })
       .catch(() => {});
-  }, [sessionId, live, observation]);
+  }, [sessionId, live, readObservation]);
 
   // Poll stats after each agent_end and periodically while streaming. Queries
   // carry the observed cursor and only write their result while it remains the
@@ -148,7 +158,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
           if (
             !result.response.success ||
             !sameOwner(result.owner, capturedObservation.owner) ||
-            !observationIsCurrent(sessionId, capturedObservation)
+            !observationOwnerIsCurrent(sessionId, capturedObservation)
           ) {
             return;
           }
@@ -164,19 +174,23 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
   );
 
   useEffect(() => {
-    if (!live || !observation) return;
-    fetchStats(observation);
-    const interval = setInterval(() => fetchStats(observation), 60_000);
+    if (!live || !readObservation) return;
+    fetchStats(readObservation);
+    const interval = setInterval(() => fetchStats(readObservation), 60_000);
     return () => clearInterval(interval);
-  }, [fetchStats, live, observation]);
+  }, [fetchStats, live, readObservation]);
 
   useEffect(() => {
     return window.pivis.on("session.events", ({ sessionId: sid, events }) => {
-      if (sid === sessionId && events.some((event) => event.type === "agent_end") && observation) {
-        fetchStats(observation);
+      if (
+        sid === sessionId &&
+        events.some((event) => event.type === "agent_end") &&
+        readObservation
+      ) {
+        fetchStats(readObservation);
       }
     });
-  }, [fetchStats, observation, sessionId]);
+  }, [fetchStats, readObservation, sessionId]);
 
   // The model + thinking pickers (and their handlers) live in
   // <SessionControls> — this component only owns the name, the worktree chip,

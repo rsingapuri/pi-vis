@@ -889,10 +889,12 @@ describe("state authority", () => {
     authority.publishSnapshot();
     session.clearQueue.mockReturnValueOnce({ steering: [], followUp: [] });
 
-    await authority.requestEscape("after-consumption");
+    await expect(authority.requestEscape("after-consumption")).resolves.not.toHaveProperty(
+      "restorationId",
+    );
 
-    expect(sendRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "queue_restoration", originalAttachments: [] }),
+    expect(sendRecord).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "queue_restoration" }),
     );
   });
 

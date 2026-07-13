@@ -1804,20 +1804,35 @@ export function createStateAuthority({
         // before the next snapshot observes the empty queues, otherwise those
         // intents could decorate an unrelated future user event.
         resetQueueIdentity();
-        const restorationId = crypto.randomUUID();
-        const restoration = {
-          type: "queue_restoration",
-          restorationId,
-          steering: Array.isArray(queued.steering) ? queued.steering : [],
-          followUp: Array.isArray(queued.followUp) ? queued.followUp : [],
-          originalAttachments: attachmentsForClearedQueue(),
-          clearedIntentIds,
-          requiresReview: true,
-        };
-        restorations.set(restorationId, restoration);
-        record(restoration);
+        const steering = Array.isArray(queued.steering) ? queued.steering : [];
+        const followUp = Array.isArray(queued.followUp) ? queued.followUp : [];
+        const originalAttachments = attachmentsForClearedQueue();
+        const hasRestoration =
+          steering.length > 0 ||
+          followUp.length > 0 ||
+          originalAttachments.length > 0 ||
+          clearedIntentIds.length > 0;
+        const restorationId = hasRestoration ? crypto.randomUUID() : undefined;
+        if (restorationId) {
+          const restoration = {
+            type: "queue_restoration",
+            restorationId,
+            steering,
+            followUp,
+            originalAttachments,
+            clearedIntentIds,
+            requiresReview: true,
+          };
+          restorations.set(restorationId, restoration);
+          record(restoration);
+        }
         void session.abort().catch(() => {});
-        value = { ...base, disposition: "abort_requested", target: "streaming", restorationId };
+        value = {
+          ...base,
+          disposition: "abort_requested",
+          target: "streaming",
+          ...(restorationId ? { restorationId } : {}),
+        };
       } else if (session.isBashRunning) {
         session.abortBash();
         value = { ...base, disposition: "abort_requested", target: "bash" };

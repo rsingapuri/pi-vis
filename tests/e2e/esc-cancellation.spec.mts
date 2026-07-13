@@ -111,6 +111,9 @@ test.describe("process-level ESC cancellation", () => {
       await textarea.fill("hello queue owner");
       await textarea.press("Enter");
       const streaming = await waitForOperation(folders, "started", "streaming");
+      // Host logs can lead the authority frame; wait until the renderer has
+      // reduced the streaming snapshot before editing the next queue item.
+      await expect(window.locator(".status-dot--streaming")).toBeVisible();
       await textarea.fill("queued for explicit review");
       await textarea.press("Enter");
       await waitForOperation(folders, "queued", "steer");

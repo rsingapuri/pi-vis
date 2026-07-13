@@ -144,12 +144,20 @@ function sendControl(payload) {
   send({ type: "control", payload });
 }
 
+let extensionUiRequestSequence = 0;
 function sendUiRequest(req) {
   // Extension UI has one canonical presentation route once authority exists.
   // The compatibility message remains available to older renderers but is not
   // used to restore a following authority projection.
-  runtimeAuthority?.publishExtensionUi?.(req);
-  send(req);
+  // Fire-and-forget UI methods do not receive a Pi dialog ID, but the typed
+  // presentation contract still requires stable request identity for replay
+  // and baseline overlap. Dialog requests retain their existing IDs.
+  const request = {
+    ...req,
+    id: req.id ?? `extension-ui-${++extensionUiRequestSequence}`,
+  };
+  runtimeAuthority?.publishExtensionUi?.(request);
+  send(request);
 }
 
 // --- Panel bridge (for custom() to ANSI output) ---

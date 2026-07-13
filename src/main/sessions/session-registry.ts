@@ -203,7 +203,9 @@ function removeRuntimePinWithRetry(alias: string, attemptsRemaining = 60): void 
 
 // Transport freshness is independent of child Pi liveness. Semantic admission
 // is delegated to the serialized child lifecycle-permit transaction.
-const TRANSPORT_LEASE_MS = 2_000;
+// Child idle heartbeats are emitted every two seconds. Keep a full missed-beat
+// margin so ordinary timer/IPC jitter cannot repeatedly fence a healthy host.
+const TRANSPORT_LEASE_MS = 5_000;
 /** A visit release is startup cancellation, never a later idle-host policy. */
 const ACTIVATION_VISIT_RELEASE_WINDOW_MS = 2_000;
 const DEFAULT_UNIFIED_CLAIM_TIMEOUT_MS = 60_000;
@@ -1499,6 +1501,10 @@ export class SessionRegistry {
 
     const proc = record.proc;
     const response = await proc.query(commandForSessionQuery(envelope.query));
+    const actualOwnerAfterQuery = {
+      hostInstanceId: record.proc?.hostInstanceId ?? "none",
+      sessionEpoch: record.proc?.sessionEpoch ?? -1,
+    };
     if (
       this.sessions.get(sessionId) !== record ||
       !record._procReady ||
@@ -1510,7 +1516,22 @@ export class SessionRegistry {
       record.proc !== proc ||
       !this.matchesExpectedRuntime(record, expected.hostInstanceId, expected.sessionEpoch)
     ) {
-      throw new Error("Session changed during query");
+      const reasons = [
+        ...(this.sessions.get(sessionId) !== record ? ["record_replaced"] : []),
+        ...(!record._procReady ? ["not_ready"] : []),
+        ...(record.status !== "ready" ? [`status_${record.status}`] : []),
+        ...(record._closing ? ["closing"] : []),
+        ...(record._dead ? ["dead"] : []),
+        ...(record.availability !== "available" ? [`availability_${record.availability}`] : []),
+        ...(record._hostTransition ? ["transition"] : []),
+        ...(record.proc !== proc ? ["process_replaced"] : []),
+        ...(!this.matchesExpectedRuntime(record, expected.hostInstanceId, expected.sessionEpoch)
+          ? [
+              `owner_${actualOwnerAfterQuery.hostInstanceId}:${actualOwnerAfterQuery.sessionEpoch}_expected_${expected.hostInstanceId}:${expected.sessionEpoch}`,
+            ]
+          : []),
+      ];
+      throw new Error(`Session changed during query (${reasons.join(",") || "unknown"})`);
     }
     return {
       queryId: envelope.queryId,

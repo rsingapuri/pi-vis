@@ -490,7 +490,7 @@ async function runHello(submission) {
       message,
       assistantMessageEvent: { type: "text_delta", delta },
     });
-    await sleep(80);
+    await sleep(300);
     if (!operationIsActive("streaming", operationToken)) return;
   }
   emitEvent({ type: "message_end", message });
@@ -1042,6 +1042,11 @@ async function executeAuthorityIntent(entry) {
           text: intent.text,
           images: structuredClone(intent.images),
         });
+        logOperation("queued", {
+          kind: intent.requestedMode,
+          intentId: entry.intentId,
+          text: intent.text,
+        });
         finishAuthorityIntent(entry, "completed", {
           disposition: "completed",
           editorRevision: submission.editorRevision,
@@ -1171,8 +1176,47 @@ async function executeAuthorityIntent(entry) {
               ? "streaming"
               : runtimeBash
                 ? "bash"
-                : "editor";
-      finishAuthorityIntent(entry, "completed", { target, interrupted: target !== "editor" });
+                : runtimeEditorPending
+                  ? "editor"
+                  : "idle";
+      const interrupted = target !== "editor" && target !== "idle";
+      if (interrupted) {
+        cancelOperation(target);
+        if (target === "navigation") runtimeNavigation = false;
+        if (target === "compaction") runtimeCompacting = false;
+        if (target === "retry") {
+          runtimeRetrying = false;
+          retryAttempt = 0;
+        }
+        if (target === "bash") runtimeBash = false;
+        if (target === "streaming") {
+          runtimeStreaming = false;
+          const queued = [...steeringQueue, ...followUpQueue];
+          if (queued.length > 0) {
+            const restoration = {
+              type: "queue_restoration",
+              restorationId: `fake-queue-${crypto.randomUUID()}`,
+              steering: steeringQueue.map((item) => item.text),
+              followUp: followUpQueue.map((item) => item.text),
+              originalAttachments: queued.map((item) => ({
+                intentId: item.intentId,
+                images: structuredClone(item.images),
+              })),
+              requiresReview: true,
+            };
+            authorityRestorations.set(restoration.restorationId, restoration);
+            emitAuthorityFrame([restoration]);
+          }
+          steeringQueue.length = 0;
+          followUpQueue.length = 0;
+        }
+      }
+      logOperation("escape", { target, requestId: entry.intentId });
+      finishAuthorityIntent(entry, "completed", {
+        target: target === "idle" ? "editor" : target,
+        interrupted,
+      });
+      publishSnapshot();
       return;
     }
     case "reload":
@@ -1301,6 +1345,7 @@ async function handleMessage(message) {
         type: message?.type,
         command: message?.command?.type,
         text: message?.submission?.text,
+        intent: message?.envelope?.intent,
       })}\n`,
     );
   }
