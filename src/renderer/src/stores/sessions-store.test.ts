@@ -3743,6 +3743,518 @@ describe("sessions store - authority intent projection", () => {
   });
 });
 
+// These are authority-frame translations of regressions that previously used
+// direct runtime snapshots and optimistic mutations.  They deliberately pin
+// what remains visible to the renderer, while keeping receipts non-canonical.
+describe("sessions store - recovered authority-frame regressions", () => {
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+      sessionDrafts: new Map(),
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    installAuthority();
+  });
+
+  const namedFrame = (sequence: number, name: string): [SemanticSnapshot, AuthorityRecord[]] => {
+    const snapshot = semanticSnapshot(sequence);
+    const records: AuthorityRecord[] = [
+      {
+        type: "intent_outcome",
+        outcome: {
+          intentId: `rename-${sequence}`,
+          owner: snapshot.owner,
+          kind: "rename",
+          state: "completed",
+          result: { name },
+        },
+      },
+    ];
+    return [snapshot, records];
+  };
+
+  it("retains a semantic working state across a same-sequence unavailable transport fact", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        sdk: {
+          isStreaming: true,
+          isIdle: false,
+          isCompacting: false,
+          isRetrying: false,
+          retryAttempt: 0,
+          isBashRunning: false,
+        },
+      }),
+    );
+    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(true, 2, "unavailable"));
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.availability).toBe("unavailable");
+    // The transport fact is diagnostic; the following semantic frame remains
+    // the sole source of the visible turn state.
+    expect(isSessionWorking(session)).toBe(true);
+  });
+
+  it("does not let a stale direct sequence replace a following authority frame", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, { model: { id: "frame-model", provider: "provider" } }),
+    );
+    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(true, 1));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe("frame-model");
+  });
+
+  it("marks a turn complete only when its terminal authority frame is idle", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        sdk: {
+          isStreaming: true,
+          isIdle: false,
+          isCompacting: false,
+          isRetrying: false,
+          retryAttempt: 0,
+          isBashRunning: false,
+        },
+      }),
+    );
+    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false, 3));
+    expect(isSessionWorking(useSessionsStore.getState().sessions.get(SESSION_A))).toBe(true);
+    publishSemantic(SESSION_A, 3, semanticSnapshot(3));
+    expect(isSessionWorking(useSessionsStore.getState().sessions.get(SESSION_A))).toBe(false);
+  });
+
+  it("commits a terminal semantic frame in one notification", () => {
+    const updates: Array<{ model: string | undefined; thinking: string | undefined }> = [];
+    const unsubscribe = useSessionsStore.subscribe((state) => {
+      const session = state.sessions.get(SESSION_A);
+      updates.push({ model: session?.currentModel, thinking: session?.thinkingLevel });
+    });
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, { model: { id: "atomic", provider: "p" }, thinkingLevel: "high" }),
+    );
+    unsubscribe();
+    expect(updates).toEqual([{ model: "atomic", thinking: "high" }]);
+  });
+
+  it("fences canonical queue state when a publication sequence has a gap", () => {
+    publishSemantic(
+      SESSION_A,
+      3,
+      semanticSnapshot(3, {
+        queues: {
+          steering: ["must not guess"],
+          followUp: [],
+          steeringIntentIds: ["q"],
+          followUpIntentIds: [],
+        },
+      }),
+    );
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.authorityProjection?.semantic.state).toBe("synchronizing");
+    expect(session?.queuedMessages).toBeUndefined();
+  });
+
+  it("uses the terminal frame model instead of a requested model", () => {
+    useSessionsStore.getState().setCurrentModel(SESSION_A, "requested");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe("model-old");
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { model: { id: "applied", provider: "p" } }));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      currentModel: "applied",
+      currentProvider: "p",
+    });
+  });
+
+  it("projects a same-id provider change from its authority frame", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, { model: { id: "model-old", provider: "other-provider" } }),
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      currentModel: "model-old",
+      currentProvider: "other-provider",
+    });
+  });
+
+  it("clears canonical model identity when a terminal frame reports no model", () => {
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { model: null }));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      currentModel: undefined,
+      currentProvider: undefined,
+    });
+  });
+
+  it("keeps a requested thinking level non-canonical until its frame arrives", () => {
+    useSessionsStore.getState().setThinkingLevel(SESSION_A, "high");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("low");
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { thinkingLevel: "high" }));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("high");
+  });
+
+  it("clears a prior completed name when a successor owner baseline has none", () => {
+    const [frame, records] = namedFrame(2, "old host name");
+    publishSemantic(SESSION_A, 2, frame, records);
+    const successor = authorityAttach(
+      semanticSnapshot(1, { owner: { hostInstanceId: "host-next", sessionEpoch: 2 } }),
+    );
+    successor.baseline.publicationHighWatermark = 2;
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, successor);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBeUndefined();
+  });
+
+  it("ignores a rename outcome from an older publication", () => {
+    const [newer, newerRecords] = namedFrame(2, "new name");
+    publishSemantic(SESSION_A, 2, newer, newerRecords);
+    const [older, olderRecords] = namedFrame(1, "old name");
+    publishSemantic(SESSION_A, 1, older, olderRecords);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe("new name");
+  });
+
+  it("does not let transcript metadata replace an authority-confirmed name", () => {
+    const [frame, records] = namedFrame(2, "authority name");
+    publishSemantic(SESSION_A, 2, frame, records);
+    useSessionsStore
+      .getState()
+      .applyEvent(SESSION_A, { type: "session_info_changed", name: "legacy name" });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe("authority name");
+  });
+
+  it("replaces steering and follow-up queues from each terminal frame", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        queues: {
+          steering: ["first"],
+          followUp: ["later"],
+          steeringIntentIds: ["one"],
+          followUpIntentIds: ["two"],
+        },
+      }),
+    );
+    publishSemantic(
+      SESSION_A,
+      3,
+      semanticSnapshot(3, {
+        queues: {
+          steering: ["replacement"],
+          followUp: [],
+          steeringIntentIds: ["three"],
+          followUpIntentIds: [],
+        },
+      }),
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.queuedMessages).toMatchObject({
+      steering: [{ text: "replacement", intentId: "three" }],
+      followUp: [],
+    });
+  });
+
+  it("keeps repeated queued prompts distinct by their authority intent ids", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        queues: {
+          steering: ["same", "same"],
+          followUp: [],
+          steeringIntentIds: ["one", "two"],
+          followUpIntentIds: [],
+        },
+      }),
+    );
+    const queued = useSessionsStore.getState().sessions.get(SESSION_A)?.queuedMessages?.steering;
+    expect(queued?.map((message) => message.text)).toEqual(["same", "same"]);
+    expect(new Set(queued?.map((message) => message.intentId)).size).toBe(2);
+  });
+
+  it("removes an emptied queue only after the next terminal frame", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        queues: {
+          steering: ["queued"],
+          followUp: [],
+          steeringIntentIds: ["q"],
+          followUpIntentIds: [],
+        },
+      }),
+    );
+    publishSemantic(SESSION_A, 3, semanticSnapshot(3));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.queuedMessages).toBeUndefined();
+  });
+
+  it("does not project queue changes from a receipt-like local echo", () => {
+    useSessionsStore.getState().addUserMessage(SESSION_A, "local", undefined, {
+      registerEcho: true,
+      intentId: "local-intent",
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.queuedMessages).toBeUndefined();
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        queues: {
+          steering: ["host queued"],
+          followUp: [],
+          steeringIntentIds: ["host-intent"],
+          followUpIntentIds: [],
+        },
+      }),
+    );
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.queuedMessages?.steering[0],
+    ).toMatchObject({ text: "host queued", intentId: "host-intent" });
+  });
+
+  it("projects editor revision and text together from a terminal frame", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, { editor: { revision: 7, text: "authoritative", attachments: [] } }),
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      editorRevision: 7,
+      editorInjection: { text: "authoritative", revision: 7 },
+    });
+  });
+
+  it("makes a terminal editor frame authoritative after a patch in flight", () => {
+    useSessionsStore.getState().beginEditorPatch(SESSION_A);
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, { editor: { revision: 1, text: "host", attachments: [] } }),
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection).toMatchObject({
+      text: "host",
+      revision: 1,
+    });
+    useSessionsStore.getState().endEditorPatch(SESSION_A);
+  });
+
+  it("projects an attachment-only rejected patch as an editor conflict", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        editor: {
+          revision: 2,
+          text: "host",
+          attachments: [],
+          conflictText: "",
+          conflictAttachments: [{ kind: "file", name: "local.txt" }],
+        },
+      }),
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorConflict).toMatchObject({
+      authoritativeText: "host",
+      localText: "",
+      localAttachments: [{ kind: "file", name: "local.txt" }],
+    });
+  });
+
+  it("retains same-text editor conflict candidates with different attachments", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        editor: {
+          revision: 2,
+          text: "host",
+          attachments: [],
+          conflictText: "same",
+          conflictAttachments: [{ kind: "file", name: "first" }],
+          alternateConflictText: "same",
+          alternateConflictAttachments: [{ kind: "file", name: "second" }],
+        },
+      }),
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorConflict).toMatchObject({
+      localText: "same",
+      localAttachments: [{ kind: "file", name: "first" }],
+      alternateText: "same",
+      alternateAttachments: [{ kind: "file", name: "second" }],
+    });
+  });
+
+  it("deduplicates identical editor conflict candidates from a terminal frame", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        editor: {
+          revision: 2,
+          text: "host",
+          attachments: [],
+          conflictText: "same",
+          conflictAttachments: [{ kind: "file", name: "file" }],
+          alternateConflictText: "same",
+          alternateConflictAttachments: [{ kind: "file", name: "file" }],
+        },
+      }),
+    );
+    const conflict = useSessionsStore.getState().sessions.get(SESSION_A)?.editorConflict;
+    expect(conflict).toMatchObject({ localText: "same" });
+    expect(conflict?.alternateText).toBeUndefined();
+  });
+
+  it("keeps a newer local draft when an authority successor replaces the host", () => {
+    useSessionsStore.getState().setSessionDraft(SESSION_A, "local draft");
+    installAuthority(
+      SESSION_A,
+      semanticSnapshot(1, {
+        owner: { hostInstanceId: "host-next", sessionEpoch: 2 },
+        editor: { revision: 1, text: "host draft", attachments: [] },
+      }),
+    );
+    expect(useSessionsStore.getState().sessionDrafts.get(SESSION_A)).toBe("local draft");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection?.text).toBe(
+      "host draft",
+    );
+  });
+
+  it("keeps staged attachments until an authority frame changes their baseline", () => {
+    useSessionsStore
+      .getState()
+      .stageEditorAttachments(SESSION_A, [
+        { kind: "file", name: "local.txt", path: "/tmp/local.txt" },
+      ]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toEqual([
+      { kind: "file", name: "local.txt", path: "/tmp/local.txt" },
+    ]);
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        editor: { revision: 1, text: "", attachments: [{ kind: "file", name: "host.txt" }] },
+      }),
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toEqual([
+      { kind: "file", name: "host.txt" },
+    ]);
+  });
+
+  it("does not dispatch escape after authority transport becomes unavailable", () => {
+    const invoke = vi.fn();
+    vi.stubGlobal("window", { pivis: { invoke } });
+    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false, 2, "unavailable"));
+    useSessionsStore.getState().abortSession(SESSION_A);
+    expect(invoke).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the current authority owner when dispatching escape", () => {
+    const invoke = vi.fn(async () => ({ disposition: "already_inactive" }));
+    vi.stubGlobal("window", { pivis: { invoke } });
+    useSessionsStore.getState().abortSession(SESSION_A);
+    expect(invoke).toHaveBeenCalledWith(
+      "session.dispatchIntent",
+      expect.objectContaining({
+        expectedOwner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        intent: { kind: "interrupt" },
+      }),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("does not execute a unified action when its execution claim is denied", async () => {
+    const invoke = vi.fn(async (channel: string) =>
+      channel === "session.claimUnifiedSubmit" ? { claimed: false } : { success: true },
+    );
+    vi.stubGlobal("window", { pivis: { invoke, on: vi.fn(() => () => {}) } });
+    try {
+      await useSessionsStore
+        .getState()
+        .handleUnifiedSubmitRequest(
+          SESSION_A,
+          "claimed",
+          "!echo no-replay",
+          0,
+          "intent",
+          "host-1",
+          1,
+        );
+      expect(invoke).not.toHaveBeenCalledWith("session.dispatchIntent", expect.anything());
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not restore a stale semantic cache after an unavailable fence", () => {
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { model: { id: "fresh", provider: "p" } }));
+    useSessionsStore.getState().markAuthorityUnavailable(SESSION_A, "lost");
+    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false, 99));
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.currentModel).toBeUndefined();
+    expect(session?.authorityProjection?.staleDiagnosticSnapshot?.model?.id).toBe("fresh");
+  });
+
+  it("keeps live transcript content when a semantic frame follows it", () => {
+    useSessionsStore
+      .getState()
+      .addUserMessage(SESSION_A, "scrollback", undefined, { registerEcho: false });
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2));
+    expect(
+      allTranscriptBlocks(useSessionsStore.getState().sessions.get(SESSION_A)!.transcript),
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ type: "user" })]));
+  });
+
+  it("starts a new session without canonical runtime fields before its baseline", () => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      workspaces: new Map(),
+      activeSessionId: null,
+      activeWorkspacePath: null,
+    });
+    useSessionsStore.getState().createSession(SESSION_B, WORKSPACE);
+    const session = useSessionsStore.getState().sessions.get(SESSION_B);
+    expect(session?.currentModel).toBeUndefined();
+    expect(session?.thinkingLevel).toBeUndefined();
+    expect(session?.authorityProjection?.semantic.state).toBe("synchronizing");
+  });
+
+  it("replaces predecessor model and queue fields when a new owner attaches", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        model: { id: "old", provider: "p" },
+        queues: {
+          steering: ["old queue"],
+          followUp: [],
+          steeringIntentIds: ["old"],
+          followUpIntentIds: [],
+        },
+      }),
+    );
+    const successor = authorityAttach(
+      semanticSnapshot(1, {
+        owner: { hostInstanceId: "host-next", sessionEpoch: 2 },
+        model: { id: "new", provider: "next" },
+      }),
+    );
+    successor.baseline.publicationHighWatermark = 2;
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, successor);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      hostInstanceId: "host-next",
+      currentModel: "new",
+      currentProvider: "next",
+      queuedMessages: undefined,
+    });
+  });
+});
+
 describe("sessions store - explicit search result open", () => {
   const invokeMock = vi.fn();
 
