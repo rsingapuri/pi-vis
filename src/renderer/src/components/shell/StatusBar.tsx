@@ -1,7 +1,7 @@
 import type { SessionId } from "@shared/ids.js";
 import type React from "react";
 import { AnsiText } from "../../lib/ansi.js";
-import { useSessionsStore } from "../../stores/sessions-store.js";
+import { authoritySnapshotFor, useSessionsStore } from "../../stores/sessions-store.js";
 import { FadeText } from "../common/FadeText.js";
 import "./StatusBar.css";
 
@@ -21,10 +21,11 @@ function abbreviateHome(p: string): string {
 export function StatusBar({ sessionId }: StatusBarProps): React.ReactElement | null {
   const session = useSessionsStore((s) => (sessionId ? s.sessions.get(sessionId) : undefined));
 
-  if (!session) return null;
+  const snapshot = authoritySnapshotFor(session);
+  if (!session || !snapshot) return null;
 
   const segmentLines: { key: string; text: string }[] = [];
-  for (const [key, text] of session.statusSegments) {
+  for (const [key, text] of Object.entries(snapshot.catalog.statuses)) {
     text.split("\n").forEach((line, i) => {
       segmentLines.push({ key: `${key}:${i}`, text: line });
     });
@@ -36,10 +37,10 @@ export function StatusBar({ sessionId }: StatusBarProps): React.ReactElement | n
         <FadeText head className="statusbar__path">
           {abbreviateHome(session.workspacePath)}
         </FadeText>
-        {session.currentModel && (
+        {snapshot.model && (
           <FadeText className="statusbar__model">
-            {session.currentModel}
-            {session.currentProvider ? ` [${session.currentProvider}]` : ""}
+            {snapshot.model.id}
+            {snapshot.model.provider ? ` [${snapshot.model.provider}]` : ""}
           </FadeText>
         )}
       </div>

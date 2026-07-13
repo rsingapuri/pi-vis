@@ -41,18 +41,11 @@ type PendingIntent<T> = { intentId: string; value: T };
 
 function authorityObservationFor(
   projection: SessionViewState["authorityProjection"],
-  compatibilityOwner: AuthorityObservation["owner"] | undefined,
 ): AuthorityObservation | undefined {
-  if (projection) {
-    if (projection.semantic.state !== "following" || !projection.authoritativeSnapshot) {
-      return undefined;
-    }
-    return { owner: projection.authoritativeSnapshot.owner, cursor: projection.semantic.cursor };
+  if (projection?.semantic.state !== "following" || !projection.authoritativeSnapshot) {
+    return undefined;
   }
-  // The authority-frame path is deployed alongside the compatibility runtime
-  // projection. Until an attach baseline exists, a fresh available legacy
-  // owner is still a valid semantic gate; it simply has no cursor to observe.
-  return compatibilityOwner ? { owner: compatibilityOwner } : undefined;
+  return { owner: projection.authoritativeSnapshot.owner, cursor: projection.semantic.cursor };
 }
 
 function sameOwner(a: AuthorityObservation["owner"], b: AuthorityObservation["owner"]): boolean {
@@ -71,11 +64,7 @@ function sameObservation(a: AuthorityObservation, b: AuthorityObservation | unde
 function observationForSession(
   session: SessionViewState | undefined,
 ): AuthorityObservation | undefined {
-  const compatibilityOwner =
-    session?.status === "ready" && session.availability === "available" && session.hostInstanceId
-      ? { hostInstanceId: session.hostInstanceId, sessionEpoch: session.sessionEpoch }
-      : undefined;
-  return authorityObservationFor(session?.authorityProjection, compatibilityOwner);
+  return authorityObservationFor(session?.authorityProjection);
 }
 
 function observationIsCurrent(sessionId: SessionId, observation: AuthorityObservation): boolean {
@@ -118,27 +107,11 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
   // header controls and reads. Retained legacy values are diagnostics while a
   // semantic plane is synchronizing and must not drive a mutation.
   const authorityProjection = session?.authorityProjection;
-  const availability = session?.availability;
-  const hostInstanceId = session?.hostInstanceId;
-  const sessionEpoch = session?.sessionEpoch;
-  const status = session?.status;
   const observation = useMemo(
-    () =>
-      authorityObservationFor(
-        authorityProjection,
-        status === "ready" &&
-          availability === "available" &&
-          hostInstanceId &&
-          sessionEpoch !== undefined
-          ? { hostInstanceId, sessionEpoch }
-          : undefined,
-      ),
-    [authorityProjection, availability, hostInstanceId, sessionEpoch, status],
+    () => authorityObservationFor(authorityProjection),
+    [authorityProjection],
   );
-  const live =
-    session?.status === "ready" &&
-    session.availability === "available" &&
-    observation !== undefined;
+  const live = session?.status === "ready" && observation !== undefined;
 
   // Catalog is a read-only query. Its response is useful only at the exact
   // owner/cursor that requested it; a newer frame re-runs this effect instead
@@ -350,12 +323,9 @@ export function SessionControls({
   const groupModelsByProvider = useSettingsStore((s) => s.settings.groupModelsByProvider);
   const observation = observationForSession(session);
   const semanticSnapshot = session?.authorityProjection?.authoritativeSnapshot;
-  // The compatibility snapshot remains a display-only diagnostic until the
-  // semantic frame baseline is attached. It never receives optimistic writes;
-  // once a frame is following, its terminal snapshot is preferred.
-  const currentModel = semanticSnapshot?.model?.id ?? session?.currentModel;
-  const currentProvider = semanticSnapshot?.model?.provider ?? session?.currentProvider;
-  const currentThinkingLevel = semanticSnapshot?.thinkingLevel ?? session?.thinkingLevel;
+  const currentModel = semanticSnapshot?.model?.id;
+  const currentProvider = semanticSnapshot?.model?.provider;
+  const currentThinkingLevel = semanticSnapshot?.thinkingLevel;
   const [pendingModel, setPendingModel] = useState<PendingIntent<ModelInfo> | null>(null);
   const [pendingThinking, setPendingThinking] = useState<PendingIntent<ThinkingLevel> | null>(null);
 

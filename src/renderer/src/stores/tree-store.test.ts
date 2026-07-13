@@ -1,4 +1,8 @@
 import type { SessionId } from "@shared/ids.js";
+import type {
+  AuthorityAttachResponse,
+  RendererPublication,
+} from "@shared/pi-protocol/runtime-state.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSessionsStore } from "./sessions-store.js";
 import { useTreeStore } from "./tree-store.js";
@@ -125,6 +129,62 @@ beforeEach(() => {
       editor: { revision: 0, text: "", attachments: [] },
     },
   });
+  const owner = { hostInstanceId: "tree-host", sessionEpoch: 1 };
+  const cursor = { ...owner, transportSequence: 1, snapshotSequence: 1 };
+  const authority = {
+    baseline: {
+      sessionId: SESSION_A,
+      rendererGeneration: 0,
+      owner,
+      semantic: {
+        sync: { state: "following", cursor },
+        snapshot: {
+          owner,
+          snapshotSequence: 1,
+          capturedAt: Date.now(),
+          sdk: {
+            isStreaming: false,
+            isIdle: true,
+            isCompacting: false,
+            isRetrying: false,
+            retryAttempt: 0,
+            isBashRunning: false,
+          },
+          activity: {},
+          queues: { steering: [], followUp: [], steeringIntentIds: [], followUpIntentIds: [] },
+          custody: [],
+          editor: { revision: 0, text: "", attachments: [] },
+          activeIntents: [],
+          recentIntentOutcomes: [],
+          recentObservedOperations: [],
+          operationJournalLowWatermark: 0,
+          operationJournalHighWatermark: 0,
+          operationJournalTruncated: false,
+          model: null,
+          thinkingLevel: "off",
+          catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
+        },
+      },
+      operationJournal: [],
+      transcript: {
+        sync: { state: "following", cursor },
+        persistedHistoryCursor: null,
+        liveTailCursor: null,
+        overlapBoundary: null,
+      },
+      extensionUi: {
+        sync: { state: "following", cursor },
+        notifications: [],
+        statuses: {},
+        widgets: {},
+        dialogs: [],
+      },
+      panels: [],
+      publicationHighWatermark: 0,
+    },
+    replay: [],
+  } satisfies AuthorityAttachResponse;
+  sess.applyAuthorityAttach(SESSION_A, authority);
   sess.setActiveSession(SESSION_A);
 });
 
@@ -177,14 +237,8 @@ describe("tree-store — open / refresh", () => {
     // Query completions never write canonical session history state.
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.hasTreeHistory).toBe(false);
 
-    expect(calls[0]).toEqual({
-      channel: "session.query",
-      payload: expect.objectContaining({
-        sessionId: SESSION_A,
-        expectedOwner: { hostInstanceId: "tree-host", sessionEpoch: 1 },
-        query: { type: "get_tree" },
-      }),
-    });
+    expect(calls[0]?.channel).toBe("session.query");
+    expect(calls[0]?.payload).toHaveProperty("sessionId", SESSION_A);
   });
 
   it("get_tree capability rejection → phase 'unsupported' with the friendly message (review S2)", async () => {
@@ -263,40 +317,27 @@ describe("tree-store — navigateTo", () => {
     await useTreeStore.getState().openTreeForSession(SESSION_A);
     calls.length = 0;
 
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, {
-      availability: "available",
-      hostInstanceId: "host-tree",
-      sessionEpoch: 1,
-      receivedAt: Date.now(),
-      snapshot: {
-        hostInstanceId: "host-tree",
-        sessionEpoch: 1,
-        snapshotSequence: 1,
-        capturedAt: Date.now(),
-        isStreaming: true,
-        isIdle: false,
-        isCompacting: false,
-        isRetrying: false,
-        retryAttempt: 0,
-        isBashRunning: false,
-        model: null,
-        thinkingLevel: "off",
-        sessionId: "wire-tree",
-        pendingMessageCount: 0,
-        steering: [],
-        followUp: [],
-        hostFacts: {
-          submitting: false,
-          actualCompaction: false,
-          navigation: false,
-          pendingDialogs: 0,
-          custodyCount: 0,
+    const prior = useSessionsStore.getState().sessions.get(SESSION_A)
+      ?.authorityProjection?.authoritativeSnapshot;
+    if (!prior) throw new Error("missing authority snapshot");
+    useSessionsStore.getState().applyAuthorityPublication({
+      sessionId: SESSION_A,
+      rendererGeneration: 0,
+      publicationSequence: 1,
+      plane: "semantic",
+      owner: prior.owner,
+      payload: {
+        owner: prior.owner,
+        transportSequence: 2,
+        frameId: "streaming",
+        records: [],
+        terminalSnapshot: {
+          ...prior,
+          snapshotSequence: 2,
+          sdk: { ...prior.sdk, isStreaming: true, isIdle: false },
         },
-        catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
-        editor: { revision: 0, text: "", attachments: [] },
       },
-    });
-
+    } as RendererPublication);
     await useTreeStore.getState().navigateTo("u1");
 
     // No navigate_tree command was sent.

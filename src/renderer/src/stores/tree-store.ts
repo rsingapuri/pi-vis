@@ -12,7 +12,7 @@ import type { AuthorityCursor, RuntimeIdentity } from "@shared/pi-protocol/runti
 import { create } from "zustand";
 import { buildNestedTree } from "../components/tree/tree-flatten.js";
 import { dispatchSessionIntent, querySession } from "../lib/session-intent.js";
-import { isSessionWorking, useSessionsStore } from "./sessions-store.js";
+import { authoritySnapshotFor, isSessionWorking, useSessionsStore } from "./sessions-store.js";
 
 interface TreeObservation {
   owner: RuntimeIdentity;
@@ -21,16 +21,10 @@ interface TreeObservation {
 
 function currentObservation(sessionId: SessionId): TreeObservation | undefined {
   const session = useSessionsStore.getState().sessions.get(sessionId);
-  if (!session?.hostInstanceId || session.availability !== "available") return undefined;
-  const owner = { hostInstanceId: session.hostInstanceId, sessionEpoch: session.sessionEpoch };
-  const semantic = session.authorityProjection?.semantic;
-  const cursor =
-    semantic?.state === "following" &&
-    semantic.cursor.hostInstanceId === owner.hostInstanceId &&
-    semantic.cursor.sessionEpoch === owner.sessionEpoch
-      ? semantic.cursor
-      : undefined;
-  return { owner, ...(cursor ? { cursor } : {}) };
+  const snapshot = authoritySnapshotFor(session);
+  const semantic = session?.authorityProjection?.semantic;
+  if (!snapshot || semantic?.state !== "following") return undefined;
+  return { owner: snapshot.owner, cursor: semantic.cursor };
 }
 
 function observationIsCurrent(sessionId: SessionId, observation: TreeObservation): boolean {

@@ -46,12 +46,9 @@ export function App(): React.ReactElement {
   const liveSessionIdsKey = useSessionsStore((s) => [...s.sessions.keys()].join("\u0000"));
   const setSessionStatus = useSessionsStore((s) => s.setSessionStatus);
   const applyEvents = useSessionsStore((s) => s.applyEvents);
-  const applyRuntimeState = useSessionsStore((s) => s.applyRuntimeState);
   const applyAuthorityAttach = useSessionsStore((s) => s.applyAuthorityAttach);
   const applyAuthorityPublication = useSessionsStore((s) => s.applyAuthorityPublication);
   const markAuthorityUnavailable = useSessionsStore((s) => s.markAuthorityUnavailable);
-  const applyTransitionBatch = useSessionsStore((s) => s.applyTransitionBatch);
-  const applySubmissionDisposition = useSessionsStore((s) => s.applySubmissionDisposition);
   const applyQueueRestoration = useSessionsStore((s) => s.applyQueueRestoration);
   const applyWorktree = useSessionsStore((s) => s.applyWorktree);
   const applyWorkspace = useSessionsStore((s) => s.applyWorkspace);
@@ -395,30 +392,11 @@ export function App(): React.ReactElement {
       applyEvents(sessionId as SessionId, events);
     });
 
-    const unsubRuntime = window.pivis.on("session.runtimeState", ({ sessionId, state }) => {
-      applyRuntimeState(sessionId as SessionId, state);
-    });
-
-    // Authority publications are reduced separately from the legacy snapshot
-    // projection. During migration this is intentionally a shadow path: no
-    // event/promise completion can blend frame state into a legacy cursor.
+    // Authority publications are the sole semantic projection. Compatibility
+    // events below may rebuild presentation only; they never repair a frame.
     const unsubPublication = window.pivis.on("session.publication", (publication) => {
       applyAuthorityPublication(publication);
     });
-
-    const unsubTransition = window.pivis.on(
-      "session.transitionBatch",
-      ({ sessionId, records, state }) => {
-        applyTransitionBatch(sessionId as SessionId, records, state);
-      },
-    );
-
-    const unsubSubmission = window.pivis.on(
-      "session.submissionDisposition",
-      ({ sessionId, result }) => {
-        applySubmissionDisposition(sessionId as SessionId, result);
-      },
-    );
 
     const unsubQueueRestoration = window.pivis.on("session.queueRestoration", (restoration) => {
       applyQueueRestoration(restoration.sessionId as SessionId, restoration);
@@ -609,10 +587,7 @@ export function App(): React.ReactElement {
 
     return () => {
       unsubEvent();
-      unsubRuntime();
       unsubPublication();
-      unsubTransition();
-      unsubSubmission();
       unsubQueueRestoration();
       unsubUiReq();
       unsubUiAck();
@@ -631,10 +606,7 @@ export function App(): React.ReactElement {
     };
   }, [
     applyEvents,
-    applyRuntimeState,
     applyAuthorityPublication,
-    applyTransitionBatch,
-    applySubmissionDisposition,
     applyQueueRestoration,
     applyWorktree,
     applyWorkspace,
@@ -660,10 +632,9 @@ export function App(): React.ReactElement {
           sessionId: sid,
           rendererGeneration: RENDERER_GENERATION,
         })
-        .then((state) => applyRuntimeState(sid, state))
         .catch(() => {});
       // authorityAttach is baseline + buffered replay. It is the only path
-      // that can move a shadow plane back to following after a gap.
+      // that can move a semantic plane back to following after a gap.
       void window.pivis
         .invoke("session.authorityAttach", {
           sessionId: sid,
@@ -675,10 +646,6 @@ export function App(): React.ReactElement {
     const onFocus = () => {
       for (const sid of sessionIds) {
         void window.pivis
-          .invoke("session.runtimeResync", { sessionId: sid })
-          .then((state) => applyRuntimeState(sid, state))
-          .catch(() => {});
-        void window.pivis
           .invoke("session.authorityAttach", {
             sessionId: sid,
             rendererGeneration: RENDERER_GENERATION,
@@ -689,7 +656,7 @@ export function App(): React.ReactElement {
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [liveSessionIdsKey, applyRuntimeState, applyAuthorityAttach, markAuthorityUnavailable]);
+  }, [liveSessionIdsKey, applyAuthorityAttach, markAuthorityUnavailable]);
 
   const handlePiRecheck = useCallback(async () => {
     const info = await window.pivis.invoke("pi.locate", undefined);

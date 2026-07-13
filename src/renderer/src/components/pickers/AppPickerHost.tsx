@@ -9,7 +9,11 @@ import { useVirtualList } from "../../hooks/useVirtualList.js";
 import type { PickerRequest } from "../../lib/commands/execute.js";
 import { findCurrentModel, modelDisplayName, modelKey } from "../../lib/model-utils.js";
 import { dispatchSessionIntent } from "../../lib/session-intent.js";
-import { sessionMatchesRuntime, useSessionsStore } from "../../stores/sessions-store.js";
+import {
+  authoritySnapshotFor,
+  sessionMatchesRuntime,
+  useSessionsStore,
+} from "../../stores/sessions-store.js";
 import { FadeText } from "../common/FadeText.js";
 import "./AppPickerHost.css";
 
@@ -272,9 +276,11 @@ function ModelPicker({
   onClose: () => void;
   onPick: (model: ModelInfo) => void;
 }): React.ReactElement {
-  const availableModels = useSessionsStore((s) => s.sessions.get(sessionId)?.availableModels ?? []);
-  const currentModel = useSessionsStore((s) => s.sessions.get(sessionId)?.currentModel);
-  const currentProvider = useSessionsStore((s) => s.sessions.get(sessionId)?.currentProvider);
+  const session = useSessionsStore((s) => s.sessions.get(sessionId));
+  const semanticSnapshot = authoritySnapshotFor(session);
+  const availableModels = semanticSnapshot ? (session?.availableModels ?? []) : [];
+  const currentModel = semanticSnapshot?.model?.id;
+  const currentProvider = semanticSnapshot?.model?.provider;
   // Resolve the single active entry once and compare items by key — so that
   // when the provider is unknown and duplicate same-id entries exist, at most
   // ONE row is marked selected (not every same-id copy).

@@ -460,7 +460,9 @@ describe.skip("sessions store - session name from pi", () => {
   });
 });
 
-describe("sessions store - runtime snapshots", () => {
+// Direct runtime snapshots are compatibility diagnostics; semantic projection
+// coverage lives in the authority-frame suite below.
+describe.skip("sessions store - legacy runtime snapshots", () => {
   beforeEach(() => {
     useSessionsStore.setState({
       sessions: new Map(),
@@ -1118,7 +1120,7 @@ describe("sessions store - extension UI clear payloads", () => {
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
   });
 
-  it("setStatus → setStatus(undef) round-trip removes the key from statusSegments", () => {
+  it("does not let compatibility setStatus mutate the semantic catalog", () => {
     useSessionsStore.getState().addUiRequest(SESSION_A, {
       type: "extension_ui_request",
       id: "s1",
@@ -1126,9 +1128,9 @@ describe("sessions store - extension UI clear payloads", () => {
       statusKey: "plan",
       statusText: "plan active",
     });
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.statusSegments.get("plan")).toBe(
-      "plan active",
-    );
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.statusSegments.get("plan"),
+    ).toBeUndefined();
 
     useSessionsStore.getState().addUiRequest(SESSION_A, {
       type: "extension_ui_request",
@@ -1153,7 +1155,7 @@ describe("sessions store - extension UI clear payloads", () => {
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.statusSegments.size).toBe(0);
   });
 
-  it("setWidget → setWidget(undef) round-trip removes the key from widgets", () => {
+  it("does not let compatibility setWidget mutate the semantic catalog", () => {
     useSessionsStore.getState().addUiRequest(SESSION_A, {
       type: "extension_ui_request",
       id: "w1",
@@ -1161,10 +1163,9 @@ describe("sessions store - extension UI clear payloads", () => {
       widgetKey: "plan",
       widgetLines: ["Plan mode: planning", "Produce a <proposed_plan> block."],
     });
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.widgets.get("plan")).toEqual([
-      "Plan mode: planning",
-      "Produce a <proposed_plan> block.",
-    ]);
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.widgets.get("plan"),
+    ).toBeUndefined();
 
     useSessionsStore.getState().addUiRequest(SESSION_A, {
       type: "extension_ui_request",
@@ -1225,11 +1226,11 @@ describe("sessions store - runtime turn-result status", () => {
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
   });
 
-  it("marks a completed direct runtime transition done", () => {
+  it("does not settle a turn from a direct runtime transition", () => {
     const store = useSessionsStore.getState();
     store.applyRuntimeState(SESSION_A, runtimeState(true));
     store.applyRuntimeState(SESSION_A, runtimeState(false, 2));
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("done");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBeUndefined();
   });
 });
 
@@ -1609,10 +1610,8 @@ describe("sessions store - shouldShowWorkingIndicator", () => {
   });
   const session = () => useSessionsStore.getState().sessions.get(SESSION_A);
 
-  it("uses direct runtime availability", () => {
+  it("does not use direct runtime availability", () => {
     useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(true));
-    expect(shouldShowWorkingIndicator(session())).toBe(true);
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false, 2, "unavailable"));
     expect(shouldShowWorkingIndicator(session())).toBe(false);
   });
 });
@@ -2771,7 +2770,21 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE);
     store.createSession(SESSION_B, WORKSPACE, "/f/b.jsonl", undefined, undefined, "ready");
-    store.applyRuntimeState(SESSION_A, runtimeState(true));
+    store.applyAuthorityAttach(
+      SESSION_A,
+      authorityAttach(
+        semanticSnapshot(1, {
+          sdk: {
+            isStreaming: true,
+            isIdle: false,
+            isCompacting: false,
+            isRetrying: false,
+            retryAttempt: 0,
+            isBashRunning: false,
+          },
+        }),
+      ),
+    );
     useSessionsStore.setState({ activeSessionId: SESSION_A, activeWorkspacePath: WORKSPACE });
 
     store.setActiveSession(SESSION_B);
@@ -4099,7 +4112,7 @@ describe("sessions store - adoptSessionFileAndHydrate", () => {
       .adoptSessionFileAndHydrate(SESSION_A, "/new/session.jsonl", "Forked");
     const s = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(s?.sessionFile).toBe("/new/session.jsonl");
-    expect(s?.sessionName).toBe("Forked");
+    expect(s?.sessionName).toBeUndefined();
     expect(invokeMock).toHaveBeenCalledWith(
       "session.loadHistory",
       expect.objectContaining({
@@ -4176,12 +4189,8 @@ describe("sessions store - adoptSessionFileAndHydrate", () => {
   });
 
   it("does not seed delayed predecessor history across a later runtime generation", async () => {
-    const runtime = runtimeState(false);
-    const identity = {
-      hostInstanceId: runtime.snapshot!.hostInstanceId,
-      sessionEpoch: runtime.snapshot!.sessionEpoch,
-    };
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtime);
+    const identity = { hostInstanceId: "host-1", sessionEpoch: 1 };
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());
     useSessionsStore.getState().setSessionStatus(SESSION_A, "ready");
     let historyPayload: unknown;
     let resolveHistory!: (history: ReturnType<typeof loadedHistory>) => void;
@@ -4209,16 +4218,11 @@ describe("sessions store - adoptSessionFileAndHydrate", () => {
         }),
       ),
     );
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, {
-      ...runtime,
-      sessionEpoch: identity.sessionEpoch + 1,
-      receivedAt: Date.now(),
-      snapshot: {
-        ...runtime.snapshot!,
-        sessionEpoch: identity.sessionEpoch + 1,
-        snapshotSequence: runtime.snapshot!.snapshotSequence + 1,
-      },
-    });
+    const successor = authorityAttach(
+      semanticSnapshot(1, { owner: { hostInstanceId: "host-2", sessionEpoch: 2 } }),
+    );
+    successor.baseline.publicationHighWatermark = 1;
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, successor);
     useSessionsStore.getState().addCustomMessage(SESSION_A, "new-runtime-content");
     resolveHistory(
       loadedHistory(historyPayload, [
@@ -4359,8 +4363,7 @@ function semanticSnapshot(
 
 function authorityAttach(snapshot = semanticSnapshot(1)): AuthorityAttachResponse {
   const cursor = {
-    hostInstanceId: "host-1",
-    sessionEpoch: 1,
+    ...snapshot.owner,
     transportSequence: 1,
     snapshotSequence: snapshot.snapshotSequence,
   };
@@ -4473,13 +4476,8 @@ describe("sessions store - authority intent projection", () => {
   });
 
   it("does not let transcript metadata override authoritative snapshots", () => {
-    const snapshot = runtimeState(false, 2);
-    if (!snapshot.snapshot) throw new Error("missing snapshot");
-    snapshot.snapshot.model = { id: "model-snapshot", provider: "provider" };
-    snapshot.snapshot.thinkingLevel = "high";
-    snapshot.snapshot.sessionName = "snapshot name";
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, snapshot);
-
+    const snapshot = semanticSnapshot(1, { thinkingLevel: "high" });
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach(snapshot));
     useSessionsStore.getState().applyEvents(SESSION_A, [
       { type: "thinking_level_changed", level: "off" },
       { type: "session_info_changed", name: "transcript name" },
@@ -4487,7 +4485,114 @@ describe("sessions store - authority intent projection", () => {
 
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(session?.thinkingLevel).toBe("high");
-    expect(session?.sessionName).toBe("snapshot name");
+    expect(session?.sessionName).toBeUndefined();
+  });
+
+  it("never falls back to a legacy snapshot after semantic synchronization is fenced", () => {
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());
+    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(true, 99));
+    useSessionsStore
+      .getState()
+      .applyAuthorityPublication(semanticPublication(3, semanticSnapshot(3)));
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.authorityProjection?.semantic.state).toBe("synchronizing");
+    expect(session?.authorityProjection?.authoritativeSnapshot).toBeUndefined();
+    expect(session?.authorityProjection?.staleDiagnosticSnapshot?.model?.id).toBe("model-old");
+    expect(isSessionWorking(session)).toBe(false);
+    expect(session?.currentModel).toBeUndefined();
+  });
+
+  it("keeps an unavailable semantic snapshot diagnostic-only", () => {
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());
+    useSessionsStore.getState().markAuthorityUnavailable(SESSION_A, "transport_lost");
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.authorityProjection?.semantic.state).toBe("unavailable");
+    expect(session?.authorityProjection?.authoritativeSnapshot).toBeUndefined();
+    expect(session?.authorityProjection?.staleDiagnosticSnapshot?.model?.id).toBe("model-old");
+    expect(session?.currentModel).toBeUndefined();
+    expect(session?.statusSegments.size).toBe(0);
+  });
+
+  it("commits every compatibility semantic field from one frame", () => {
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());
+    const next = semanticSnapshot(2, {
+      sdk: {
+        isStreaming: true,
+        isIdle: false,
+        isCompacting: true,
+        isRetrying: true,
+        retryAttempt: 2,
+        isBashRunning: true,
+      },
+      model: { id: "model-new", provider: "new-provider" },
+      thinkingLevel: "high",
+      editor: { revision: 7, text: "authoritative edit", attachments: ["attachment"] },
+      queues: {
+        steering: ["steer"],
+        followUp: ["follow"],
+        steeringIntentIds: ["steer-intent"],
+        followUpIntentIds: ["follow-intent"],
+      },
+      catalog: {
+        notifications: [],
+        statuses: { mode: "busy" },
+        widgets: { widget: ["line"] },
+        title: "Authority title",
+        capabilityDiagnostics: [],
+      },
+    });
+    useSessionsStore.getState().applyAuthorityPublication(semanticPublication(2, next));
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session).toMatchObject({
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+      currentModel: "model-new",
+      currentProvider: "new-provider",
+      thinkingLevel: "high",
+      editorRevision: 7,
+      editorAttachments: ["attachment"],
+      sessionTitle: "Authority title",
+    });
+    expect(session?.queuedMessages?.steering[0]?.text).toBe("steer");
+    expect(session?.statusSegments.get("mode")).toBe("busy");
+    expect(session?.widgets.get("widget")).toEqual(["line"]);
+    expect(isSessionWorking(session)).toBe(true);
+  });
+
+  it("replaces an owner without retaining predecessor semantic fields", () => {
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());
+    useSessionsStore.getState().applyAuthorityPublication(
+      semanticPublication(2, semanticSnapshot(2), [
+        {
+          type: "intent_outcome",
+          outcome: {
+            intentId: "rename-old",
+            owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+            kind: "rename",
+            state: "completed",
+            result: { name: "predecessor" },
+          },
+        },
+      ]),
+    );
+    const successor = semanticSnapshot(1, {
+      owner: { hostInstanceId: "host-2", sessionEpoch: 2 },
+      model: { id: "successor-model" },
+      thinkingLevel: "off",
+      catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
+    });
+    const successorAttach = authorityAttach(successor);
+    successorAttach.baseline.publicationHighWatermark = 2;
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, successorAttach);
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.hostInstanceId).toBe("host-2");
+    expect(session?.currentModel).toBe("successor-model");
+    expect(session?.sessionName).toBeUndefined();
+    expect(session?.queuedMessages).toBeUndefined();
   });
 });
 

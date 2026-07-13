@@ -15,6 +15,7 @@ import type {
   RendererPublication,
   RuntimeRecord,
   RuntimeStateUpdate,
+  SemanticSnapshot,
   SubmissionResult,
 } from "@shared/pi-protocol/runtime-state.js";
 import type { ThinkingLevel } from "@shared/pi-protocol/thinking.js";
@@ -70,9 +71,6 @@ import {
   transcriptHasBlocks,
 } from "./transcript.js";
 
-const LOCAL_THEME_FALLBACK_DIAGNOSTIC =
-  "Pi public API cannot install the pi-vis palette globally; extension panels use a local semantic theme.";
-
 export interface QueuedMessage {
   id: string;
   text: string;
@@ -87,11 +85,11 @@ export interface SessionViewState {
   status: SessionStatus;
   error?: string | undefined;
   transcript: TranscriptState;
-  /** Runtime booleans are valid only while availability is available. */
+  /** Compatibility transport diagnostic. It never authorizes semantic controls. */
   availability: RuntimeStateUpdate["availability"];
+  /** Legacy direct snapshot retained only for compatibility diagnostics. */
   runtimeSnapshot?: AgentSessionSnapshot | undefined;
-  /** Authority-frame migration projection. It is intentionally shadow-only
-   * until consumers migrate at explicit attach baselines. */
+  /** Sole renderer semantic projection. Only a following semantic plane is authoritative. */
   authorityProjection?: RendererAuthorityState | undefined;
   hostInstanceId?: string | undefined;
   sessionEpoch: number;
@@ -472,44 +470,38 @@ function hasActiveAgentWork(session: SessionViewState | undefined): boolean {
  * command waiting on the user, not model/tool work, so suppress that idle wait
  * until the transcript proves actual assistant/tool work is active.
  */
+export function authoritySnapshotFor(
+  session: SessionViewState | undefined,
+): SemanticSnapshot | undefined {
+  const projection = session?.authorityProjection;
+  return projection?.semantic.state === "following" ? projection.authoritativeSnapshot : undefined;
+}
+
+/** Semantic controls require a complete authority frame, never a legacy lease. */
+export function hasAuthoritativeSemanticState(session: SessionViewState | undefined): boolean {
+  return authoritySnapshotFor(session) !== undefined;
+}
+
 export function isSessionWorking(session: SessionViewState | undefined): boolean {
-  if (!session || session.availability !== "available") return false;
-  const semantic = session.authorityProjection;
-  if (
-    semantic?.semantic.state === "following" &&
-    semantic.authoritativeSnapshot &&
-    semantic.semantic.cursor.hostInstanceId === session.hostInstanceId &&
-    semantic.semantic.cursor.sessionEpoch === session.sessionEpoch
-  ) {
-    return semantic.authoritativeSnapshot.sdk.isStreaming;
-  }
-  return session.runtimeSnapshot?.isStreaming === true;
+  return authoritySnapshotFor(session)?.sdk.isStreaming === true;
 }
 
 function authorityObservation(session: SessionViewState) {
-  if (!session.hostInstanceId) return undefined;
+  const snapshot = authoritySnapshotFor(session);
   const semantic = session.authorityProjection;
-  const cursor =
-    semantic?.semantic.state === "following" &&
-    semantic.semantic.cursor.hostInstanceId === session.hostInstanceId &&
-    semantic.semantic.cursor.sessionEpoch === session.sessionEpoch
-      ? semantic.semantic.cursor
-      : undefined;
-  return {
-    owner: { hostInstanceId: session.hostInstanceId, sessionEpoch: session.sessionEpoch },
-    ...(cursor ? { cursor } : {}),
-  };
+  if (!snapshot || semantic?.semantic.state !== "following") return undefined;
+  return { owner: snapshot.owner, cursor: semantic.semantic.cursor };
 }
 
 export function sessionMatchesRuntime(
   session: SessionViewState | undefined,
   runtime: { hostInstanceId: string; sessionEpoch: number },
 ): session is SessionViewState {
+  const snapshot = authoritySnapshotFor(session);
   return (
-    session?.availability === "available" &&
-    session.status === "ready" &&
-    session.hostInstanceId === runtime.hostInstanceId &&
-    session.sessionEpoch === runtime.sessionEpoch
+    session?.status === "ready" &&
+    snapshot?.owner.hostInstanceId === runtime.hostInstanceId &&
+    snapshot.owner.sessionEpoch === runtime.sessionEpoch
   );
 }
 
@@ -524,11 +516,9 @@ function captureHistoryRead(
   expectedRuntime?: { hostInstanceId: string; sessionEpoch: number },
 ): HistoryReadCapture | undefined {
   if (!session?.sessionFile) return undefined;
+  const snapshot = authoritySnapshotFor(session);
   const runtime =
-    expectedRuntime ??
-    (session.availability === "available" && session.status === "ready" && session.hostInstanceId
-      ? { hostInstanceId: session.hostInstanceId, sessionEpoch: session.sessionEpoch }
-      : undefined);
+    expectedRuntime ?? (session.status === "ready" && snapshot ? snapshot.owner : undefined);
   return {
     sessionFile: session.sessionFile,
     historyGeneration: session.historyGeneration,
@@ -809,55 +799,70 @@ function applyAuthoritySemanticProjection(
   authorityProjection: RendererAuthorityState,
 ): SessionViewState {
   const snapshot = authorityProjection.authoritativeSnapshot;
-  if (authorityProjection.semantic.state !== "following" || !snapshot) return current;
-  const editorChanged =
+  if (authorityProjection.semantic.state !== "following" || !snapshot) {
+    // A retained frame is explicitly diagnostic while fenced. Do not leave a
+    // compatibility field looking current and accidentally re-enable a control.
+    return {
+      ...current,
+      hostInstanceId: undefined,
+      currentModel: undefined,
+      currentProvider: undefined,
+      thinkingLevel: undefined,
+      sessionName: undefined,
+      sessionTitle: undefined,
+      runningSince: undefined,
+      queuedMessages: undefined,
+      statusSegments: new Map(),
+      widgets: new Map(),
+      editorInjection: undefined,
+    };
+  }
+  const ownerChanged =
     current.hostInstanceId !== snapshot.owner.hostInstanceId ||
-    current.sessionEpoch !== snapshot.owner.sessionEpoch ||
-    snapshot.editor.revision > current.editorRevision;
-  const priorStreaming = isSessionWorking(current);
+    current.sessionEpoch !== snapshot.owner.sessionEpoch;
+  const priorStreaming = authoritySnapshotFor(current)?.sdk.isStreaming === true;
   const sessionName = [
     ...(authorityProjection.lastSemanticFrame?.records ?? []),
     ...snapshot.recentIntentOutcomes.map((outcome) => ({
       type: "intent_outcome" as const,
       outcome,
     })),
-  ].reduce<string | undefined>((name, record) => {
-    if (
-      record.type === "intent_outcome" &&
-      record.outcome.kind === "rename" &&
-      record.outcome.state === "completed" &&
-      record.outcome.result?.name !== undefined
-    ) {
-      return record.outcome.result.name;
-    }
-    return name;
-  }, current.sessionName);
+  ].reduce<string | undefined>(
+    (name, record) => {
+      if (
+        record.type === "intent_outcome" &&
+        record.outcome.kind === "rename" &&
+        record.outcome.state === "completed" &&
+        record.outcome.result?.name !== undefined
+      ) {
+        return record.outcome.result.name;
+      }
+      return name;
+    },
+    ownerChanged ? undefined : current.sessionName,
+  );
+  // This is deliberately one object construction: frame records and every
+  // compatibility projection of its terminal semantic snapshot commit together.
   return {
     ...current,
     hostInstanceId: snapshot.owner.hostInstanceId,
     sessionEpoch: snapshot.owner.sessionEpoch,
+    historyGeneration: ownerChanged ? current.historyGeneration + 1 : current.historyGeneration,
     currentModel: snapshot.model?.id,
     currentProvider: snapshot.model?.provider,
     thinkingLevel: snapshot.thinkingLevel,
     sessionName,
-    editorRevision: editorChanged ? snapshot.editor.revision : current.editorRevision,
-    editorAttachments:
-      editorChanged && current.editorPatchPending === 0
-        ? snapshot.editor.attachments
-        : current.editorAttachments,
-    editorConflict: editorChanged
-      ? editorConflictFromCandidates(snapshot.editor)
-      : current.editorConflict,
+    editorRevision: snapshot.editor.revision,
+    editorAttachments: snapshot.editor.attachments,
+    editorConflict: editorConflictFromCandidates(snapshot.editor),
     editorInjection:
-      editorChanged &&
-      current.editorPatchPending === 0 &&
       snapshot.editor.conflictText === undefined
         ? {
             text: snapshot.editor.text,
             nonce: ++editorInjectionNonce,
             revision: snapshot.editor.revision,
           }
-        : current.editorInjection,
+        : undefined,
     runningSince:
       !priorStreaming && snapshot.sdk.isStreaming
         ? Date.now()
@@ -873,7 +878,7 @@ function applyAuthoritySemanticProjection(
     ),
     statusSegments: new Map(Object.entries(snapshot.catalog.statuses)),
     widgets: new Map(Object.entries(snapshot.catalog.widgets)),
-    sessionTitle: snapshot.catalog.title ?? current.sessionTitle,
+    sessionTitle: snapshot.catalog.title,
   };
 }
 
@@ -1619,12 +1624,7 @@ const buildSessionsStore = (
 
   refreshHistoricalCacheMissNotices: async (sessionId) => {
     const session = get().sessions.get(sessionId);
-    if (
-      !session?.sessionFile ||
-      session.status !== "ready" ||
-      session.availability !== "available" ||
-      !session.hostInstanceId
-    )
+    if (!session?.sessionFile || session.status !== "ready" || !authoritySnapshotFor(session))
       return;
     const observation = authorityObservation(session);
     if (!observation) return;
@@ -1810,154 +1810,29 @@ const buildSessionsStore = (
     set((state) => {
       const current = state.sessions.get(sessionId);
       if (!current) return {};
-      const incomingSnapshot = runtimeState.snapshot;
+      const incoming = runtimeState.snapshot;
       const prior = current.runtimeSnapshot;
-      const staleSnapshot =
-        !!incomingSnapshot &&
-        prior?.hostInstanceId === incomingSnapshot.hostInstanceId &&
-        (incomingSnapshot.sessionEpoch < prior.sessionEpoch ||
-          (incomingSnapshot.sessionEpoch === prior.sessionEpoch &&
-            incomingSnapshot.snapshotSequence <= prior.snapshotSequence));
-      // Availability is an independently sequenced transport fact. Main may
-      // intentionally repeat the last snapshot when a lease expires or a
-      // transition starts; reject only stale snapshot replacement, never the
-      // unavailable/transitioning update itself.
-      const snapshot = staleSnapshot ? undefined : incomingSnapshot;
-      const available =
-        runtimeState.availability === "available" && !!(snapshot ?? current.runtimeSnapshot);
-      // Preserve the last direct snapshot for diagnostics and correlated
-      // resumption; availability gates every selector, so this cannot be
-      // mistaken for current idle/running authority while transport is fenced.
-      const nextSnapshot = snapshot ?? current.runtimeSnapshot;
-      const wasRunning = isSessionWorking(current);
-      const nowRunning = available && nextSnapshot?.isStreaming === true;
-      const authoritativeTurnEnded =
-        prior?.isStreaming === true &&
-        runtimeState.availability === "available" &&
-        snapshot?.isStreaming === false &&
-        snapshot.hostInstanceId === prior.hostInstanceId &&
-        snapshot.sessionEpoch === prior.sessionEpoch;
-      const catalog = snapshot?.catalog;
-      const statusSegments = catalog
-        ? new Map(Object.entries(catalog.statuses))
-        : current.statusSegments;
-      const widgets = catalog ? new Map(Object.entries(catalog.widgets)) : current.widgets;
-      const knownToastIds = new Set(current.toasts.map((toast) => toast.id));
-      const replicatedToasts = catalog
-        ? [
-            ...catalog.notifications
-              .filter((notice) => !knownToastIds.has(notice.id))
-              .map((notice) => ({
-                id: notice.id,
-                message: notice.message,
-                type: notice.type,
-                createdAt: Date.now(),
-              })),
-            ...catalog.capabilityDiagnostics
-              // A local public Theme is the expected, fully functional path
-              // for pi-vis-owned panels on current Pi. Keep the limitation in
-              // replicated diagnostics, but do not alarm users on every
-              // session startup for this non-actionable decorative fallback.
-              .filter((message) => message !== LOCAL_THEME_FALLBACK_DIAGNOSTIC)
-              .map((message) => ({ id: `capability:${message}`, message }))
-              .filter((notice) => !knownToastIds.has(notice.id))
-              .map((notice) => ({
-                ...notice,
-                type: "warning",
-                createdAt: Date.now(),
-              })),
-          ]
-        : [];
-      const editorGenerationChanged =
-        !!snapshot &&
-        (current.hostInstanceId !== snapshot.hostInstanceId ||
-          current.sessionEpoch !== snapshot.sessionEpoch);
-      const editorChanged =
-        !!snapshot &&
-        (editorGenerationChanged || snapshot.editor.revision > current.editorRevision);
-      const localDraft = state.sessionDrafts.get(sessionId) ?? "";
-      const localEditorDiverged =
-        !!snapshot &&
-        editorGenerationChanged &&
-        (localDraft !== snapshot.editor.text ||
-          JSON.stringify(current.editorAttachments) !==
-            JSON.stringify(snapshot.editor.attachments));
+      const stale =
+        !!incoming &&
+        prior?.hostInstanceId === incoming.hostInstanceId &&
+        (incoming.sessionEpoch < prior.sessionEpoch ||
+          (incoming.sessionEpoch === prior.sessionEpoch &&
+            incoming.snapshotSequence <= prior.snapshotSequence));
+      // Direct snapshots remain an isolated compatibility diagnostic. In
+      // particular they must not update owner, liveness, queues, editor,
+      // catalog, model, thinking, or intent-derived fields.
       const sessions = new Map(state.sessions);
       sessions.set(sessionId, {
         ...current,
         availability: runtimeState.availability,
-        runtimeSnapshot: nextSnapshot,
-        hostInstanceId:
-          runtimeState.hostInstanceId ?? snapshot?.hostInstanceId ?? current.hostInstanceId,
-        sessionEpoch: snapshot?.sessionEpoch ?? current.sessionEpoch,
-        historyGeneration: editorGenerationChanged
-          ? current.historyGeneration + 1
-          : current.historyGeneration,
-        editorRevision: editorChanged
-          ? (snapshot?.editor.revision ?? current.editorRevision)
-          : current.editorRevision,
-        editorAttachments:
-          editorChanged && !localEditorDiverged && current.editorPatchPending === 0
-            ? (snapshot?.editor.attachments ?? [])
-            : current.editorAttachments,
-        editorConflict: snapshot
-          ? editorConflictFromCandidates(
-              snapshot.editor,
-              localEditorDiverged
-                ? { text: localDraft, attachments: current.editorAttachments }
-                : undefined,
-            )
-          : current.editorConflict,
-        // Snapshot editor state is replicated host state. Conflict text stays
-        // separately available in the host snapshot; never replace a local edit
-        // with it while a conflict is being reviewed.
-        editorInjection:
-          editorChanged &&
-          current.editorPatchPending === 0 &&
-          !localEditorDiverged &&
-          snapshot?.editor.conflictText === undefined
-            ? {
-                text: snapshot.editor.text,
-                nonce: ++editorInjectionNonce,
-                revision: snapshot.editor.revision,
-              }
-            : current.editorInjection,
-        unreadStatus: authoritativeTurnEnded
-          ? current.turnErrored || current.unreadStatus === "error"
-            ? "error"
-            : "done"
-          : current.unreadStatus,
-        turnErrored: authoritativeTurnEnded ? false : current.turnErrored,
-        runningSince:
-          !wasRunning && nowRunning
-            ? Date.now()
-            : wasRunning && !nowRunning
-              ? undefined
-              : current.runningSince,
-        queuedMessages: snapshot
-          ? queuedMessagesFromSnapshot(
-              snapshot.steering,
-              snapshot.followUp,
-              snapshot.steeringIntentIds,
-              snapshot.followUpIntentIds,
-              current.transcript.pendingEchoes,
-            )
-          : current.queuedMessages,
-        currentModel: snapshot ? snapshot.model?.id : current.currentModel,
-        currentProvider: snapshot ? snapshot.model?.provider : current.currentProvider,
-        thinkingLevel: snapshot?.thinkingLevel ?? current.thinkingLevel,
-        sessionFile: snapshot?.sessionFile ?? current.sessionFile,
-        sessionName: snapshot ? snapshot.sessionName : current.sessionName,
-        statusSegments,
-        widgets,
-        toasts: replicatedToasts.length ? [...current.toasts, ...replicatedToasts] : current.toasts,
-        sessionTitle: catalog?.title ?? current.sessionTitle,
+        runtimeSnapshot: stale ? prior : (incoming ?? prior),
       });
       return { sessions };
     });
   },
 
   applyAuthorityAttach: (sessionId, response) => {
+    let following = false;
     set((state) => {
       const current = state.sessions.get(sessionId);
       if (!current) return {};
@@ -1966,6 +1841,7 @@ const buildSessionsStore = (
         response,
       );
       if (authorityProjection === current.authorityProjection) return {};
+      following = authorityProjection.semantic.state === "following";
       const sessions = new Map(state.sessions);
       sessions.set(sessionId, {
         ...applyAuthoritySemanticProjection(current, authorityProjection),
@@ -1973,6 +1849,9 @@ const buildSessionsStore = (
       });
       return { sessions };
     });
+    if (following && get().sessions.get(sessionId)?.status === "ready") {
+      void get().refreshCommands(sessionId);
+    }
   },
 
   applyAuthorityPublication: (publication) => {
@@ -2003,7 +1882,10 @@ const buildSessionsStore = (
         reason,
       );
       const sessions = new Map(state.sessions);
-      sessions.set(sessionId, { ...current, authorityProjection });
+      sessions.set(sessionId, {
+        ...applyAuthoritySemanticProjection(current, authorityProjection),
+        authorityProjection,
+      });
       return { sessions };
     });
   },
@@ -2011,14 +1893,13 @@ const buildSessionsStore = (
   applyTransitionBatch: (sessionId, records, runtimeState) => {
     runAtomically(() => {
       for (const record of records) {
+        // Compatibility transition records may still reconstruct presentation,
+        // but never mutate semantic state or settle an intent.
         if (record.type === "event") get().applyEvents(sessionId, [record.event]);
         else if (record.type === "ui") get().addUiRequest(sessionId, record.request);
         else if (record.type === "panel") get().handlePanelEvent(sessionId, record.event);
-        else if (record.type === "submission") {
-          get().applySubmissionDisposition(sessionId, record.result);
-        } else if (record.type === "queue_restoration") {
+        else if (record.type === "queue_restoration")
           get().applyQueueRestoration(sessionId, record);
-        }
       }
       get().applyRuntimeState(sessionId, runtimeState);
     });
@@ -2120,17 +2001,9 @@ const buildSessionsStore = (
     if (restored) get().injectEditorText(sessionId, restored);
   },
 
-  applySubmissionDisposition: (sessionId, result) => {
-    if (result.disposition === "outcome_unknown" || result.disposition === "extension_error") {
-      get().addToast(
-        sessionId,
-        result.message ??
-          (result.disposition === "outcome_unknown"
-            ? "Submission outcome is unknown; review it before retrying."
-            : "Extension command failed."),
-        result.disposition === "outcome_unknown" ? "warning" : "error",
-      );
-    }
+  applySubmissionDisposition: (_sessionId, _result) => {
+    // A compatibility disposition/receipt is admission feedback only. Typed
+    // intent outcomes in an authority frame are the only canonical settlement.
   },
 
   abortSession: (sessionId) => {
@@ -2150,7 +2023,8 @@ const buildSessionsStore = (
       const s = state.sessions.get(sessionId);
       if (!s) return {};
 
-      // Handle fire-and-forget methods as side effects
+      // Only notifications remain a compatibility presentation side effect.
+      // Catalog/editor mutations are projected exclusively by semantic frames.
       if (
         ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(request.method)
       ) {
@@ -2173,38 +2047,8 @@ const buildSessionsStore = (
               },
             ],
           });
-        } else if (request.method === "setStatus") {
-          // Pi sends `statusText: undefined` to clear a segment (the field is
-          // omitted from the JSON wire). A present `statusText` (including the
-          // empty string) replaces the entry. `Map.delete` on a non-existent
-          // key is a no-op, so clearing a missing key is safe.
-          const statusSegments = new Map(sFinal.statusSegments);
-          const sr = request as { statusKey: string; statusText?: string };
-          if (sr.statusText === undefined) {
-            statusSegments.delete(sr.statusKey);
-          } else {
-            statusSegments.set(sr.statusKey, sr.statusText);
-          }
-          sessions.set(sessionId, { ...sFinal, statusSegments });
-        } else if (request.method === "setWidget") {
-          // Same clear-on-undefined contract as setStatus. The store keeps
-          // `widgets` typed as `Map<string, string[]>` and guarantees no
-          // undefined values, so the Composer's widget strip never has to
-          // guard for them.
-          const widgets = new Map(sFinal.widgets);
-          const wr = request as { widgetKey: string; widgetLines?: string[] };
-          if (wr.widgetLines === undefined) {
-            widgets.delete(wr.widgetKey);
-          } else {
-            widgets.set(wr.widgetKey, wr.widgetLines);
-          }
-          sessions.set(sessionId, { ...sFinal, widgets });
-        } else if (request.method === "setTitle") {
-          const tr = request as { title: string };
-          sessions.set(sessionId, { ...sFinal, sessionTitle: tr.title });
-        } else if (request.method === "set_editor_text") {
-          // This transcript/UI notification is not an editor authority write.
-          // The revisioned editor snapshot/frame supplies the canonical text.
+        } else {
+          // Retain no semantic mutation from compatibility UI events.
           sessions.set(sessionId, sFinal);
         }
         return { sessions };
@@ -3094,22 +2938,6 @@ const buildSessionsStore = (
     if (expectedRuntime && !sessionMatchesRuntime(before, expectedRuntime)) return;
     await get().adoptSessionFile(sessionId, sessionFile, sessionName);
     if (!continuationGuard()) return;
-    if (expectedRuntime && before?.runtimeSnapshot) {
-      const adopted = get().sessions.get(sessionId);
-      if (
-        adopted?.availability === "unavailable" &&
-        adopted.hostInstanceId === expectedRuntime.hostInstanceId &&
-        adopted.sessionEpoch === expectedRuntime.sessionEpoch
-      ) {
-        get().applyRuntimeState(sessionId, {
-          availability: "available",
-          hostInstanceId: before.runtimeSnapshot.hostInstanceId,
-          sessionEpoch: before.runtimeSnapshot.sessionEpoch,
-          receivedAt: Date.now(),
-          snapshot: before.runtimeSnapshot,
-        });
-      }
-    }
     if (!sessionFile) return;
     // Initial hydration replaces the transcript. If transcript events race
     // the file read, never overwrite them with overlapping persisted history:
@@ -3143,7 +2971,7 @@ const buildSessionsStore = (
   refreshCommands: async (sessionId) => {
     if (typeof window === "undefined" || !window.pivis) return;
     const session = get().sessions.get(sessionId);
-    if (!session || session.availability !== "available") return;
+    if (!session) return;
     const observation = authorityObservation(session);
     if (!observation) return;
     try {

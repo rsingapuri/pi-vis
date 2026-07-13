@@ -35,6 +35,8 @@ import { openDiffForSession } from "../../stores/diff-store.js";
 import { useImageViewerStore } from "../../stores/image-viewer-store.js";
 import { useOverlayStore } from "../../stores/overlay-store.js";
 import {
+  authoritySnapshotFor,
+  hasAuthoritativeSemanticState,
   isNewSessionPending,
   isSessionWorking,
   sessionHasHistory,
@@ -155,6 +157,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   // submit time from the same snapshot to avoid a render-during-update race.
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
   const escapeClaimCount = useOverlayStore((s) => s.count);
+  const semanticSnapshot = authoritySnapshotFor(session);
   const commands = session?.commands ?? [];
   const discovered = useMemo(() => new Map(commands.map((c) => [c.name, c])), [commands]);
   // The nonce is a monotonic counter; the effect below re-runs whenever
@@ -166,18 +169,19 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     replicatedAttachmentsRef.current = serializeComposerAttachments(attachments, fileAttachments);
   }, [attachments, fileAttachments]);
 
-  const editorHostInstanceId = session?.hostInstanceId;
-  const editorSessionEpoch = session?.sessionEpoch;
+  const editorHostInstanceId = semanticSnapshot?.owner.hostInstanceId;
+  const editorSessionEpoch = semanticSnapshot?.owner.sessionEpoch;
   useEffect(() => {
     // Re-seed from the latest replicated value whenever composer custody moves
     // to another session/host generation. Reading through the store avoids
     // resetting the serialized patch chain on every snapshot revision.
     const current = useSessionsStore.getState().sessions.get(sessionId);
-    editorRevisionRef.current = current?.editorRevision ?? 0;
+    const currentSnapshot = authoritySnapshotFor(current);
+    editorRevisionRef.current = currentSnapshot?.editor.revision ?? 0;
     editorPatchEpochRef.current++;
     editorPatchRetryNeededRef.current = false;
     editorPatchTailRef.current = Promise.resolve("accepted");
-    const restored = parseReplicatedAttachments(current?.editorAttachments ?? []);
+    const restored = parseReplicatedAttachments(currentSnapshot?.editor.attachments ?? []);
     replicatedAttachmentsRef.current = serializeComposerAttachments(
       restored.images,
       restored.files,
@@ -188,7 +192,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     void editorSessionEpoch;
   }, [sessionId, editorHostInstanceId, editorSessionEpoch]);
 
-  const authoritativeEditorRevision = session?.editorRevision;
+  const authoritativeEditorRevision = semanticSnapshot?.editor.revision;
   useEffect(() => {
     // External host edits (extensions/unified TUI) advance the revision. Local
     // optimistic patches already advance the ref first, so only move forward.
@@ -207,9 +211,10 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       const revision = baseRevision + 1;
       const patchEpoch = editorPatchEpochRef.current;
       const runtimeIdentity = useSessionsStore.getState().sessions.get(sessionId);
-      if (!runtimeIdentity?.hostInstanceId) return baseRevision;
-      const expectedHostInstanceId = runtimeIdentity.hostInstanceId;
-      const expectedSessionEpoch = runtimeIdentity.sessionEpoch;
+      const runtimeSnapshot = authoritySnapshotFor(runtimeIdentity);
+      if (!runtimeSnapshot) return baseRevision;
+      const expectedHostInstanceId = runtimeSnapshot.owner.hostInstanceId;
+      const expectedSessionEpoch = runtimeSnapshot.owner.sessionEpoch;
       editorRevisionRef.current = revision;
       // Component-local file/image objects are a retention root immediately,
       // before the async host acknowledgement, so a rapid session switch
@@ -380,8 +385,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   // The composer is interactive only when the session is live AND we're not
   // mid worktree-creation (the submit is already in flight — the input is
   // frozen so it reads as "sending", not "still unsubmitted text").
-  const live =
-    session?.status === "ready" && session.availability === "available" && !worktreeCreating;
+  const live = session?.status === "ready" && !!semanticSnapshot && !worktreeCreating;
 
   // Image-attach capability. Pi only forwards image content to models whose
   // registry record lists "image" as an input modality; for a text-only
@@ -394,15 +398,15 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     () =>
       findCurrentModel(
         session?.availableModels ?? [],
-        session?.currentModel,
-        session?.currentProvider,
+        semanticSnapshot?.model?.id,
+        semanticSnapshot?.model?.provider,
       ),
-    [session?.availableModels, session?.currentModel, session?.currentProvider],
+    [session?.availableModels, semanticSnapshot?.model?.id, semanticSnapshot?.model?.provider],
   );
   const modelSupportsImages = currentModelInfo?.input
     ? currentModelInfo.input.includes("image")
     : true;
-  const modelLabel = currentModelInfo?.name ?? session?.currentModel ?? "This model";
+  const modelLabel = currentModelInfo?.name ?? semanticSnapshot?.model?.id ?? "This model";
 
   // Editor injection: a useEffect on the nonce (monotonic) re-picks up the
   // same text without thrashing on identical payloads.
@@ -763,8 +767,8 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       const content = overrideContent ?? text;
       if (overrideContent !== undefined) textRef.current = overrideContent;
       const store = useSessionsStore.getState();
-      if (store.sessions.get(sessionId)?.availability !== "available") {
-        store.addToast(sessionId, "Session runtime is not currently available", "warning");
+      if (!hasAuthoritativeSemanticState(store.sessions.get(sessionId))) {
+        store.addToast(sessionId, "Session semantic state is synchronizing", "warning");
         return;
       }
       if ((store.sessions.get(sessionId)?.editorAttachmentReads ?? 0) > 0) {
@@ -877,7 +881,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         // `finally` below still resets `submittingRef`.
         if (
           finalAction.kind === "send-prompt" &&
-          !session?.currentModel &&
+          !semanticSnapshot?.model &&
           finalAction.commandSource === undefined
         ) {
           addToast(sessionId, "No model selected", "error");
@@ -891,35 +895,29 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         let dispatchIdentity = useSessionsStore.getState().sessions.get(sessionId);
         if (editorPatchRetryNeededRef.current) {
           editorPatchRetryNeededRef.current = false;
-          try {
-            const resynced = await window.pivis.invoke("session.runtimeResync", { sessionId });
-            if (
-              !dispatchIdentity?.hostInstanceId ||
-              resynced.availability !== "available" ||
-              !resynced.snapshot ||
-              resynced.hostInstanceId !== dispatchIdentity.hostInstanceId ||
-              resynced.sessionEpoch !== dispatchIdentity.sessionEpoch
-            ) {
-              addToast(sessionId, "Session changed before editor retry", "warning");
-              return;
-            }
-            useSessionsStore.getState().applyRuntimeState(sessionId, resynced);
-            editorRevisionRef.current = resynced.snapshot.editor.revision;
-            dispatchIdentity = useSessionsStore.getState().sessions.get(sessionId);
-            synchronizeEditorText(textRef.current, replicatedAttachmentsRef.current);
-          } catch (error) {
+          const snapshot = authoritySnapshotFor(dispatchIdentity);
+          if (!snapshot) {
             editorPatchRetryNeededRef.current = true;
-            addToast(sessionId, `Could not resynchronize editor: ${String(error)}`, "error");
+            addToast(
+              sessionId,
+              "Editor state is synchronizing; retry when it is current",
+              "warning",
+            );
             return;
           }
+          editorRevisionRef.current = snapshot.editor.revision;
+          synchronizeEditorText(textRef.current, replicatedAttachmentsRef.current);
+          dispatchIdentity = useSessionsStore.getState().sessions.get(sessionId);
         }
         const patchOutcome = await editorPatchTailRef.current;
         const currentDispatchIdentity = useSessionsStore.getState().sessions.get(sessionId);
         if (patchOutcome !== "accepted") return;
+        const dispatchSnapshot = authoritySnapshotFor(dispatchIdentity);
+        const currentDispatchSnapshot = authoritySnapshotFor(currentDispatchIdentity);
         if (
-          !dispatchIdentity?.hostInstanceId ||
-          dispatchIdentity.hostInstanceId !== currentDispatchIdentity?.hostInstanceId ||
-          dispatchIdentity.sessionEpoch !== currentDispatchIdentity?.sessionEpoch
+          !dispatchSnapshot ||
+          dispatchSnapshot.owner.hostInstanceId !== currentDispatchSnapshot?.owner.hostInstanceId ||
+          dispatchSnapshot.owner.sessionEpoch !== currentDispatchSnapshot?.owner.sessionEpoch
         ) {
           addToast(sessionId, "Session changed before input could be dispatched", "warning");
           return;
@@ -935,17 +933,12 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
 
         const intentObservation = (sid: SessionId) => {
           const runtime = useSessionsStore.getState().sessions.get(sid);
-          if (!runtime?.hostInstanceId || runtime.availability !== "available") return undefined;
-          const semantic = runtime.authorityProjection?.semantic;
-          const cursor =
-            semantic?.state === "following" &&
-            semantic.cursor.hostInstanceId === runtime.hostInstanceId &&
-            semantic.cursor.sessionEpoch === runtime.sessionEpoch
-              ? semantic.cursor
-              : undefined;
+          const snapshot = authoritySnapshotFor(runtime);
+          const semantic = runtime?.authorityProjection?.semantic;
+          if (!runtime || !snapshot || semantic?.state !== "following") return undefined;
           return {
-            owner: { hostInstanceId: runtime.hostInstanceId, sessionEpoch: runtime.sessionEpoch },
-            ...(cursor ? { cursor } : {}),
+            owner: snapshot.owner,
+            cursor: semantic.cursor,
             editorRevision: editorRevisionRef.current,
             userMessageSequence: runtime.transcript.userMessageSequence,
           };
@@ -1034,8 +1027,8 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           openPicker: (sid: SessionId, picker: PickerRequest) =>
             openPicker(sid, {
               ...picker,
-              expectedHostInstanceId: dispatchIdentity.hostInstanceId!,
-              expectedSessionEpoch: dispatchIdentity.sessionEpoch,
+              expectedHostInstanceId: dispatchSnapshot.owner.hostInstanceId,
+              expectedSessionEpoch: dispatchSnapshot.owner.sessionEpoch,
             }),
           closeSessionTab: async (sid: SessionId) => closeSessionTab(sid),
           openAppSettings: () => window.dispatchEvent(new CustomEvent("pivis:open-settings")),
@@ -1132,6 +1125,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       fileAttachments,
       modelSupportsImages,
       modelLabel,
+      semanticSnapshot?.model,
       clearSubmittedDiffComments,
       synchronizeEditorText,
     ],

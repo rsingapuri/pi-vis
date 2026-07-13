@@ -9,6 +9,7 @@ import { querySession } from "../../lib/session-intent.js";
 import { htmlToMarkdown } from "../../lib/turndown.js";
 import { useImageViewerStore } from "../../stores/image-viewer-store.js";
 import {
+  authoritySnapshotFor,
   sessionMatchesRuntime,
   shouldShowWorkingIndicator,
   useSessionsStore,
@@ -243,7 +244,10 @@ function formatDuration(ms: number): string {
  *  from the store's logical working transition, so prompt admission and
  *  retries stay on one continuous timer. */
 function WorkingRow({ sessionId }: { sessionId: SessionId }): React.ReactElement {
-  const runningSince = useSessionsStore((s) => s.sessions.get(sessionId)?.runningSince);
+  const session = useSessionsStore((s) => s.sessions.get(sessionId));
+  const runningSince = authoritySnapshotFor(session)?.sdk.isStreaming
+    ? session?.runningSince
+    : undefined;
   const [, setTick] = useState(0);
   // Re-render once a second while a turn is actively running so the elapsed
   // display stays live. `runningSince` is undefined between turns, in which
@@ -1588,7 +1592,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     () => (archivedBoundaryGroup ? archivedCompactItems.slice(0, -1) : archivedCompactItems),
     [archivedBoundaryGroup, archivedCompactItems],
   );
-  const queuedMessages = session?.queuedMessages;
+  const queuedMessages = authoritySnapshotFor(session) ? session?.queuedMessages : undefined;
   const queueRestorations = session?.queueRestorations ?? [];
   // Show the "Running for …" indicator for real agent work. Prompt-backed
   // extension UI can set isStreaming while merely waiting on the user, so the
