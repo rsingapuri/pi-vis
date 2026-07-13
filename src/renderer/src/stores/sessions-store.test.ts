@@ -50,6 +50,30 @@ function claimedUnified() {
   return { claimed: true as const, claimId: "claim-test", expiresAt: Date.now() + 60_000 };
 }
 
+/** Install a complete semantic baseline: compatibility snapshots are diagnostics only. */
+function installAuthority(sessionId = SESSION_A, snapshot = semanticSnapshot(1)): void {
+  // Transport availability is independent from semantic authority; a valid
+  // baseline is usable only while its host transport is available.
+  useSessionsStore.getState().applyRuntimeState(sessionId, runtimeState(false));
+  const attach = authorityAttach(snapshot);
+  attach.baseline.sessionId = sessionId;
+  useSessionsStore.getState().applyAuthorityAttach(sessionId, attach);
+  useSessionsStore.getState().setSessionStatus(sessionId, "ready");
+}
+
+function publishSemantic(
+  sessionId: SessionId,
+  transportSequence: number,
+  snapshot: SemanticSnapshot,
+  records: AuthorityRecord[] = [],
+): void {
+  useSessionsStore
+    .getState()
+    .applyAuthorityPublication(
+      semanticPublication(transportSequence, snapshot, records, sessionId),
+    );
+}
+
 function loadedHistory(payload: unknown, history: unknown[]) {
   return {
     status: "loaded" as const,
@@ -346,7 +370,7 @@ describe("sessions store - diff comments", () => {
  * field) is exactly what the dropdown renders. The UI is a pure function
  * of `state.sessions.get(sessionId).thinkingLevel`.
  */
-describe.skip("sessions store - thinking level invariant", () => {
+describe("sessions store - thinking level invariant", () => {
   beforeEach(() => {
     // Reset by replacing the whole store with a fresh one.
     useSessionsStore.setState({
@@ -364,22 +388,23 @@ describe.skip("sessions store - thinking level invariant", () => {
     expect(session?.thinkingLevel).toBeUndefined();
   });
 
-  it("setThinkingLevel updates the session's level (used to seed from get_state)", () => {
+  it("projects the thinking level from its terminal authority frame", () => {
+    installAuthority(SESSION_A);
     useSessionsStore.getState().setThinkingLevel(SESSION_A, "high");
+    // Compatibility setters/receipts cannot select a canonical value.
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("low");
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { thinkingLevel: "high" }));
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("high");
   });
 
-  it("applyEvent reconciles to the value pi reports in thinking_level_changed", () => {
-    // User requested "xhigh"; pi silently clamped to "high".
-    useSessionsStore.getState().setThinkingLevel(SESSION_A, "xhigh");
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("xhigh");
-
+  it("reconciles a clamped level from the terminal authority frame", () => {
+    installAuthority(SESSION_A);
     useSessionsStore.getState().applyEvent(SESSION_A, {
       type: "thinking_level_changed",
-      level: "high",
+      level: "xhigh",
     });
-
-    // The dropdown must show what pi actually applied, not the requested value.
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("low");
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { thinkingLevel: "high" }));
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("high");
   });
 
@@ -393,24 +418,23 @@ describe.skip("sessions store - thinking level invariant", () => {
     expect(useSessionsStore.getState().sessions.get(SESSION_B)?.thinkingLevel).toBeUndefined();
   });
 
-  it("scopes thinking-level changes to a single session", () => {
-    useSessionsStore.getState().setThinkingLevel(SESSION_A, "high");
-    useSessionsStore.getState().setThinkingLevel(SESSION_B, "off");
+  it("scopes authoritative thinking frames to a single session", () => {
+    installAuthority(SESSION_A);
+    installAuthority(SESSION_B);
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { thinkingLevel: "high" }));
+    publishSemantic(SESSION_B, 2, semanticSnapshot(2, { thinkingLevel: "off" }));
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("high");
     expect(useSessionsStore.getState().sessions.get(SESSION_B)?.thinkingLevel).toBe("off");
   });
 
-  it("tolerates coerced-off values (e.g. switching to a non-reasoning model)", () => {
-    useSessionsStore.getState().setThinkingLevel(SESSION_A, "xhigh");
-    useSessionsStore.getState().applyEvent(SESSION_A, {
-      type: "thinking_level_changed",
-      level: "off",
-    });
+  it("tolerates an authoritative coerced-off value", () => {
+    installAuthority(SESSION_A);
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { thinkingLevel: "off" }));
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("off");
   });
 });
 
-describe.skip("sessions store - session name from pi", () => {
+describe("sessions store - session name from pi", () => {
   beforeEach(() => {
     useSessionsStore.setState({
       sessions: new Map(),
@@ -420,49 +444,101 @@ describe.skip("sessions store - session name from pi", () => {
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
   });
 
-  it("updates sessionName when pi emits session_info_changed", () => {
-    useSessionsStore.getState().applyEvent(SESSION_A, {
-      type: "session_info_changed",
-      name: "Refactor config loader",
-    });
+  it("updates sessionName from a completed rename outcome", () => {
+    installAuthority();
+    const snapshot = semanticSnapshot(2);
+    publishSemantic(SESSION_A, 2, snapshot, [
+      {
+        type: "intent_outcome",
+        outcome: {
+          intentId: "rename",
+          owner: snapshot.owner,
+          kind: "rename",
+          state: "completed",
+          result: { name: "Refactor config loader" },
+        },
+      },
+    ]);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe(
       "Refactor config loader",
     );
   });
 
-  it("overwrites a previously-set name with the new one from pi", () => {
-    useSessionsStore.getState().setSessionName(SESSION_A, "Old name");
-    useSessionsStore.getState().applyEvent(SESSION_A, {
-      type: "session_info_changed",
-      name: "New name",
-    });
+  it("overwrites a prior name with a newer completed rename outcome", () => {
+    installAuthority();
+    const first = semanticSnapshot(2);
+    publishSemantic(SESSION_A, 2, first, [
+      {
+        type: "intent_outcome",
+        outcome: {
+          intentId: "old",
+          owner: first.owner,
+          kind: "rename",
+          state: "completed",
+          result: { name: "Old name" },
+        },
+      },
+    ]);
+    const second = semanticSnapshot(3);
+    publishSemantic(SESSION_A, 3, second, [
+      {
+        type: "intent_outcome",
+        outcome: {
+          intentId: "new",
+          owner: second.owner,
+          kind: "rename",
+          state: "completed",
+          result: { name: "New name" },
+        },
+      },
+    ]);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe("New name");
   });
 
-  it("clears the name when a new-session reset omits it", () => {
-    useSessionsStore.getState().setSessionName(SESSION_A, "Old name");
-    useSessionsStore.getState().applyEvent(SESSION_A, { type: "session_info_changed" });
+  it("clears the name when a successor baseline omits it", () => {
+    installAuthority();
+    const successor = semanticSnapshot(1, { owner: { hostInstanceId: "host-2", sessionEpoch: 2 } });
+    installAuthority(SESSION_A, successor);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBeUndefined();
   });
 
-  it("scopes session name changes to a single session", () => {
+  it("scopes completed rename outcomes to a single session", () => {
     useSessionsStore.getState().createSession(SESSION_B, WORKSPACE);
-    useSessionsStore.getState().applyEvent(SESSION_A, {
-      type: "session_info_changed",
-      name: "A's name",
-    });
-    useSessionsStore.getState().applyEvent(SESSION_B, {
-      type: "session_info_changed",
-      name: "B's name",
-    });
+    installAuthority(SESSION_A);
+    installAuthority(SESSION_B);
+    const snapshot = semanticSnapshot(2);
+    publishSemantic(SESSION_A, 2, snapshot, [
+      {
+        type: "intent_outcome",
+        outcome: {
+          intentId: "a",
+          owner: snapshot.owner,
+          kind: "rename",
+          state: "completed",
+          result: { name: "A's name" },
+        },
+      },
+    ]);
+    publishSemantic(SESSION_B, 2, snapshot, [
+      {
+        type: "intent_outcome",
+        outcome: {
+          intentId: "b",
+          owner: snapshot.owner,
+          kind: "rename",
+          state: "completed",
+          result: { name: "B's name" },
+        },
+      },
+    ]);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe("A's name");
     expect(useSessionsStore.getState().sessions.get(SESSION_B)?.sessionName).toBe("B's name");
   });
 });
 
-// Direct runtime snapshots are compatibility diagnostics; semantic projection
-// coverage lives in the authority-frame suite below.
-describe.skip("sessions store - legacy runtime snapshots", () => {
+// Runtime snapshots remain transport diagnostics. Semantic controls are projected only
+// from complete, contiguous authority frames.
+describe("sessions store - runtime snapshots", () => {
   beforeEach(() => {
     useSessionsStore.setState({
       sessions: new Map(),
@@ -471,488 +547,119 @@ describe.skip("sessions store - legacy runtime snapshots", () => {
       activeWorkspacePath: null,
     });
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    installAuthority();
   });
 
-  it("orders direct snapshots and ignores an older sequence", () => {
-    const store = useSessionsStore.getState();
-    store.applyRuntimeState(SESSION_A, runtimeState(true, 2));
-    store.applyRuntimeState(SESSION_A, runtimeState(false, 1));
+  it("does not let direct runtime snapshots overwrite a semantic baseline", () => {
+    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(true, 99));
+    expect(isSessionWorking(useSessionsStore.getState().sessions.get(SESSION_A))).toBe(false);
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        sdk: {
+          isStreaming: true,
+          isIdle: false,
+          isCompacting: false,
+          isRetrying: false,
+          retryAttempt: 0,
+          isBashRunning: false,
+        },
+      }),
+    );
     expect(isSessionWorking(useSessionsStore.getState().sessions.get(SESSION_A))).toBe(true);
   });
 
-  it("applies same-sequence unavailable and transitioning transport facts", () => {
-    const store = useSessionsStore.getState();
-    const available = runtimeState(true, 4);
-    store.applyRuntimeState(SESSION_A, available);
-    const repeated = available.snapshot!;
-
-    store.applyRuntimeState(SESSION_A, {
-      ...available,
-      availability: "unavailable",
-      reason: "lease expired",
-      snapshot: repeated,
-    });
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.availability).toBe("unavailable");
-    expect(isSessionWorking(useSessionsStore.getState().sessions.get(SESSION_A))).toBe(false);
-
-    store.applyRuntimeState(SESSION_A, {
-      ...available,
-      availability: "transitioning",
-      snapshot: repeated,
-    });
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.availability).toBe("transitioning");
-  });
-
-  it("commits transition records and their terminal snapshot in one store notification", () => {
-    const notifications: Array<{ availability: string | undefined; blocks: number }> = [];
-    const unsubscribe = useSessionsStore.subscribe((state) => {
-      const session = state.sessions.get(SESSION_A);
-      notifications.push({
-        availability: session?.availability,
-        blocks: session?.transcript.blocks.length ?? 0,
-      });
-    });
-    const terminal = runtimeState(true, 2);
-
-    useSessionsStore
-      .getState()
-      .applyTransitionBatch(
-        SESSION_A,
-        [{ type: "event", event: { type: "agent_start" } }],
-        terminal,
-      );
-    unsubscribe();
-
-    expect(notifications).toHaveLength(1);
-    expect(notifications[0]).toMatchObject({ availability: "available" });
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.runtimeSnapshot).toEqual(
-      terminal.snapshot,
-    );
-  });
-
-  it("derives availability and direct getter selectors from the snapshot", () => {
-    const store = useSessionsStore.getState();
-    store.applyRuntimeState(SESSION_A, runtimeState(true));
-    const running = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(running?.availability).toBe("available");
-    expect(isSessionWorking(running)).toBe(true);
-    expect(running?.runningSince).toBeDefined();
-    store.applyRuntimeState(SESSION_A, runtimeState(false, 2, "unavailable"));
-    const unavailable = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(isSessionWorking(unavailable)).toBe(false);
-    expect(unavailable?.runningSince).toBeUndefined();
-  });
-
-  it("does not infer turn completion from transitioning or unavailable transport state", () => {
-    const store = useSessionsStore.getState();
-    store.applyRuntimeState(SESSION_A, runtimeState(true));
-    useSessionsStore.setState((state) => {
-      const sessions = new Map(state.sessions);
-      sessions.set(SESSION_A, { ...sessions.get(SESSION_A)!, turnErrored: true });
-      return { sessions };
-    });
-
-    store.applyRuntimeState(SESSION_A, runtimeState(true, 1, "transitioning"));
-    let session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.unreadStatus).toBeUndefined();
-    expect(session.turnErrored).toBe(true);
-    expect(session.runningSince).toBeUndefined();
-
-    store.applyRuntimeState(SESSION_A, runtimeState(true, 1, "unavailable"));
-    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.unreadStatus).toBeUndefined();
-    expect(session.turnErrored).toBe(true);
-
-    store.applyRuntimeState(SESSION_A, runtimeState(false, 2, "available"));
-    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.unreadStatus).toBe("error");
-    expect(session.turnErrored).toBe(false);
-  });
-
-  it("surfaces replicated capability diagnostics as deduplicated warnings", () => {
-    const state = runtimeState(false);
-    if (state.snapshot) {
-      state.snapshot.catalog.capabilityDiagnostics = ["Decorative capability unavailable"];
-    }
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, state);
-    const next = runtimeState(false, 2);
-    if (next.snapshot) {
-      next.snapshot.catalog.capabilityDiagnostics = ["Decorative capability unavailable"];
-    }
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, next);
-
-    const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
-    expect(toasts).toContainEqual(
-      expect.objectContaining({
-        message: "Decorative capability unavailable",
-        type: "warning",
+  it("orders frames, ignores stale ones, and fences a transport gap rather than guessing", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        sdk: {
+          isStreaming: true,
+          isIdle: false,
+          isCompacting: false,
+          isRetrying: false,
+          retryAttempt: 0,
+          isBashRunning: false,
+        },
       }),
     );
-    expect(
-      toasts.filter((toast) => toast.message === "Decorative capability unavailable"),
-    ).toHaveLength(1);
-  });
-
-  it("does not toast the expected local semantic-theme fallback", () => {
-    const state = runtimeState(false);
-    if (!state.snapshot) throw new Error("missing snapshot");
-    state.snapshot.catalog.capabilityDiagnostics = [
-      "Pi public API cannot install the pi-vis palette globally; extension panels use a local semantic theme.",
-    ];
-
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, state);
-
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.toasts).toEqual([]);
-  });
-
-  it("does not inject an extension edit over a local patch in flight and exposes the conflict", () => {
-    const store = useSessionsStore.getState();
-    store.beginEditorPatch(SESSION_A);
-    const extensionState = runtimeState(false);
-    if (!extensionState.snapshot) throw new Error("missing snapshot");
-    extensionState.snapshot.editor = { revision: 1, text: "extension edit", attachments: [] };
-    store.applyRuntimeState(SESSION_A, extensionState);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection).toBeUndefined();
-
-    const conflictState = runtimeState(false, 2);
-    if (!conflictState.snapshot) throw new Error("missing snapshot");
-    conflictState.snapshot.editor = {
-      revision: 1,
-      text: "extension edit",
-      attachments: [],
-      conflictText: "my newer draft",
-    };
-    store.applyRuntimeState(SESSION_A, conflictState);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorConflict).toEqual({
-      authoritativeText: "extension edit",
-      authoritativeAttachments: [],
-      localText: "my newer draft",
-      localAttachments: [],
-    });
-    store.endEditorPatch(SESSION_A);
-  });
-
-  it("exposes an attachment-only rejected patch as an editor conflict", () => {
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false));
-    const state = runtimeState(false, 2);
-    if (!state.snapshot) throw new Error("missing snapshot");
-    state.snapshot.editor = {
-      revision: 2,
-      text: "extension edit",
-      attachments: [],
-      conflictText: "",
-      conflictAttachments: [{ kind: "file", name: "local-only.txt" }],
-    };
-
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, state);
-
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorConflict).toEqual({
-      authoritativeText: "extension edit",
-      authoritativeAttachments: [],
-      localText: "",
-      localAttachments: [{ kind: "file", name: "local-only.txt" }],
-    });
-  });
-
-  it("preserves a newer local draft and attachments across host generation replacement", () => {
-    const store = useSessionsStore.getState();
-    store.setSessionDraft(SESSION_A, "newer local draft");
-    store.stageEditorAttachments(SESSION_A, [
-      { kind: "file", name: "local.txt", path: "/tmp/local.txt" },
-    ]);
-    const replacement = runtimeState(false);
-    if (!replacement.snapshot) throw new Error("missing snapshot");
-    replacement.snapshot.editor = {
-      revision: 0,
-      text: "",
-      attachments: [],
-      conflictText: "host-retained alternate",
-      conflictAttachments: [{ kind: "file", name: "alternate.txt", path: "/tmp/alternate.txt" }],
-    };
-
-    store.applyRuntimeState(SESSION_A, replacement);
-
+    publishSemantic(SESSION_A, 1, semanticSnapshot(1));
+    expect(isSessionWorking(useSessionsStore.getState().sessions.get(SESSION_A))).toBe(true);
+    publishSemantic(SESSION_A, 4, semanticSnapshot(4));
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.editorInjection).toBeUndefined();
-    expect(session?.editorAttachments).toEqual([
-      { kind: "file", name: "local.txt", path: "/tmp/local.txt" },
-    ]);
-    expect(session?.editorConflict).toEqual({
-      authoritativeText: "",
-      authoritativeAttachments: [],
-      localText: "newer local draft",
-      localAttachments: [{ kind: "file", name: "local.txt", path: "/tmp/local.txt" }],
-      alternateText: "host-retained alternate",
-      alternateAttachments: [{ kind: "file", name: "alternate.txt", path: "/tmp/alternate.txt" }],
-    });
+    expect(session?.authorityProjection?.semantic.state).toBe("synchronizing");
+    expect(isSessionWorking(session)).toBe(false);
   });
 
-  it("retains same-text conflict candidates when their attachments differ", () => {
-    const store = useSessionsStore.getState();
-    store.setSessionDraft(SESSION_A, "same text");
-    store.stageEditorAttachments(SESSION_A, [
-      { kind: "file", name: "renderer.txt", path: "/tmp/renderer.txt" },
-    ]);
-    const replacement = runtimeState(false);
-    if (!replacement.snapshot) throw new Error("missing snapshot");
-    replacement.snapshot.editor = {
-      revision: 1,
-      text: "replacement authority",
-      attachments: [],
-      conflictText: "same text",
-      conflictAttachments: [{ kind: "file", name: "host.txt", path: "/tmp/host.txt" }],
-    };
-
-    store.applyRuntimeState(SESSION_A, replacement);
-
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorConflict).toEqual({
-      authoritativeText: "replacement authority",
-      authoritativeAttachments: [],
-      localText: "same text",
-      localAttachments: [{ kind: "file", name: "renderer.txt", path: "/tmp/renderer.txt" }],
-      alternateText: "same text",
-      alternateAttachments: [{ kind: "file", name: "host.txt", path: "/tmp/host.txt" }],
-    });
+  it("applies availability transport facts without treating them as completed turns", () => {
+    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false, 1, "unavailable"));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.availability).toBe("unavailable");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBeUndefined();
   });
 
-  it("deduplicates alternate conflict candidates by text and attachments", () => {
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false));
-    const state = runtimeState(false, 2);
-    if (!state.snapshot) throw new Error("missing snapshot");
-    state.snapshot.editor = {
-      revision: 2,
-      text: "authority",
-      attachments: [],
-      conflictText: "candidate",
-      conflictAttachments: [{ kind: "file", name: "same.txt" }],
-      alternateConflictText: "candidate",
-      alternateConflictAttachments: [{ kind: "file", name: "same.txt" }],
-      additionalConflictCandidates: [
-        {
-          text: "third",
-          attachments: [{ kind: "file", name: "third.txt" }],
+  it("projects queues and editor conflict candidates from the same terminal frame", () => {
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        queues: {
+          steering: ["steer"],
+          followUp: ["follow"],
+          steeringIntentIds: ["steer-id"],
+          followUpIntentIds: ["follow-id"],
         },
-      ],
-    };
-
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, state);
-
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorConflict).toEqual({
-      authoritativeText: "authority",
-      authoritativeAttachments: [],
-      localText: "candidate",
-      localAttachments: [{ kind: "file", name: "same.txt" }],
-      alternateText: "third",
-      alternateAttachments: [{ kind: "file", name: "third.txt" }],
-    });
-  });
-
-  it("binds picker continuations to the runtime that opened them", () => {
-    const store = useSessionsStore.getState();
-    store.applyRuntimeState(SESSION_A, runtimeState(false));
-    store.openPicker(SESSION_A, { kind: "model" });
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.pendingPicker).toMatchObject({
-      kind: "model",
-      expectedHostInstanceId: "host-1",
-      expectedSessionEpoch: 1,
-    });
-  });
-
-  it("replaces queued messages from each snapshot", () => {
-    const store = useSessionsStore.getState();
-    const first = runtimeState(true);
-    if (first.snapshot) {
-      first.snapshot.steering = ["first"];
-      first.snapshot.followUp = ["later"];
-    }
-    store.applyRuntimeState(SESSION_A, first);
-    const next = runtimeState(true, 2);
-    if (next.snapshot) {
-      next.snapshot.steering = ["replacement"];
-    }
-    store.applyRuntimeState(SESSION_A, next);
-    expect(
-      useSessionsStore
-        .getState()
-        .sessions.get(SESSION_A)
-        ?.queuedMessages?.steering.map((m) => m.text),
-    ).toEqual(["replacement"]);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.queuedMessages?.followUp).toEqual(
-      [],
+        editor: {
+          revision: 3,
+          text: "authoritative",
+          attachments: [],
+          conflictText: "local",
+          conflictAttachments: [{ kind: "file", name: "draft.txt" }],
+        },
+      }),
     );
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.queuedMessages).toMatchObject({
+      steering: [{ text: "steer", intentId: "steer-id" }],
+      followUp: [{ text: "follow", intentId: "follow-id" }],
+    });
+    expect(session?.editorConflict).toMatchObject({
+      authoritativeText: "authoritative",
+      localText: "local",
+    });
   });
 
-  it("gives a queued prompt exactly one visible owner across snapshot and echo ordering", () => {
-    const store = useSessionsStore.getState();
-    const queued = runtimeState(true);
-    if (!queued.snapshot) throw new Error("missing snapshot");
-    queued.snapshot.steering = ["prefix steer me"];
-    queued.snapshot.steeringIntentIds = ["intent-steer"];
-    store.applyRuntimeState(SESSION_A, queued);
-    expect(
-      useSessionsStore.getState().sessions.get(SESSION_A)?.queuedMessages?.steering,
-    ).toHaveLength(1);
-
-    store.addUserMessage(SESSION_A, "steer me", undefined, {
-      registerEcho: true,
-      afterUserMessageSequence: 0,
-      intentId: "intent-steer",
-    });
-    let session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.transcript.blocks).toHaveLength(1);
-    expect(session.queuedMessages).toBeUndefined();
-
-    const stillQueued = runtimeState(true, 2);
-    if (!stillQueued.snapshot) throw new Error("missing snapshot");
-    stillQueued.snapshot.steering = ["prefix steer me"];
-    stillQueued.snapshot.steeringIntentIds = ["intent-steer"];
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, stillQueued);
-    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.transcript.blocks).toHaveLength(1);
-    expect(session.queuedMessages).toBeUndefined();
-
-    useSessionsStore.getState().applyEvent(SESSION_A, {
-      type: "message_start",
-      message: { role: "user", content: "rewritten steer me" },
-      queueIntentId: "intent-steer",
-    });
-    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.transcript.blocks).toHaveLength(1);
-    expect(session.transcript.pendingEchoes).toEqual([]);
-    expect(session.queuedMessages).toBeUndefined();
-  });
-
-  it("transfers a queued projection when the authoritative echo beats the submit response", () => {
-    const store = useSessionsStore.getState();
-    const queued = runtimeState(true);
-    if (!queued.snapshot) throw new Error("missing snapshot");
-    queued.snapshot.steering = ["transformed fast echo"];
-    queued.snapshot.steeringIntentIds = ["intent-fast"];
-    store.applyRuntimeState(SESSION_A, queued);
-
-    store.applyEvent(SESSION_A, {
-      type: "message_start",
-      message: { role: "user", content: "delivered fast echo" },
-      queueIntentId: "intent-fast",
-    });
-    let session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.transcript.blocks).toHaveLength(1);
-    expect(session.queuedMessages).toBeUndefined();
-
-    store.addUserMessage(SESSION_A, "fast echo", undefined, {
-      registerEcho: true,
-      afterUserMessageSequence: 0,
-      intentId: "intent-fast",
-    });
-    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.transcript.blocks).toHaveLength(1);
-    expect(session.transcript.pendingEchoes).toEqual([]);
-    expect(session.queuedMessages).toBeUndefined();
-  });
-
-  it("reconciles repeated identical queued prompts one-for-one across delivery", () => {
-    const store = useSessionsStore.getState();
-    const queued = runtimeState(true);
-    if (!queued.snapshot) throw new Error("missing snapshot");
-    queued.snapshot.steering = ["transformed one", "transformed two"];
-    queued.snapshot.steeringIntentIds = ["intent-repeat-1", "intent-repeat-2"];
-    store.applyRuntimeState(SESSION_A, queued);
-
-    store.addUserMessage(SESSION_A, "repeat", undefined, {
-      registerEcho: true,
-      afterUserMessageSequence: 0,
-      intentId: "intent-repeat-1",
-    });
-    let session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.transcript.blocks).toHaveLength(1);
-    expect(session.queuedMessages?.steering.map((message) => message.text)).toEqual([
-      "transformed two",
-    ]);
-
-    store.applyEvent(SESSION_A, {
-      type: "message_start",
-      message: { role: "user", content: "delivered transformed one" },
-      queueIntentId: "intent-repeat-1",
-    });
-    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.transcript.blocks).toHaveLength(1);
-    expect(session.queuedMessages?.steering.map((message) => message.text)).toEqual([
-      "transformed two",
-    ]);
-
-    // A second response captured before the first echo must not reuse that
-    // already-consumed echo as its own projection.
-    store.addUserMessage(SESSION_A, "repeat", undefined, {
-      registerEcho: true,
-      afterUserMessageSequence: 0,
-      intentId: "intent-repeat-2",
-    });
-    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.transcript.blocks).toHaveLength(2);
-    expect(session.queuedMessages).toBeUndefined();
-
-    store.applyEvent(SESSION_A, {
-      type: "message_start",
-      message: { role: "user", content: "delivered transformed two" },
-      queueIntentId: "intent-repeat-2",
-    });
-    session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.transcript.blocks).toHaveLength(2);
-    expect(session.transcript.pendingEchoes).toEqual([]);
-  });
-
-  it("lets only one concurrent identical response claim an echo that arrived first", () => {
-    const store = useSessionsStore.getState();
-    const queued = runtimeState(true);
-    if (!queued.snapshot) throw new Error("missing snapshot");
-    queued.snapshot.steering = ["external same one", "external same two"];
-    queued.snapshot.steeringIntentIds = ["intent-same-1", "intent-same-2"];
-    store.applyRuntimeState(SESSION_A, queued);
-    store.applyEvent(SESSION_A, {
-      type: "message_start",
-      message: { role: "user", content: "delivered first same" },
-      queueIntentId: "intent-same-1",
-    });
-
-    store.addUserMessage(SESSION_A, "same", undefined, {
-      registerEcho: true,
-      afterUserMessageSequence: 0,
-      intentId: "intent-same-1",
-    });
-    store.addUserMessage(SESSION_A, "same", undefined, {
-      registerEcho: true,
-      afterUserMessageSequence: 0,
-      intentId: "intent-same-2",
-    });
-
-    const session = useSessionsStore.getState().sessions.get(SESSION_A)!;
-    expect(session.transcript.blocks).toHaveLength(2);
-    expect(session.transcript.pendingEchoes).toEqual([
-      expect.objectContaining({ intentId: "intent-same-2", content: "same" }),
-    ]);
-    expect(session.queuedMessages).toBeUndefined();
-  });
-
-  it("preserves live transcript scrollback when compaction arrives through the store", () => {
-    const store = useSessionsStore.getState();
-    for (let index = 0; index < 250; index += 1) {
-      store.addUserMessage(SESSION_A, `message-${index}`, undefined, { registerEcho: false });
-    }
-    const before = useSessionsStore
+  it("keeps a queued prompt under exactly one visible owner after its authoritative echo", () => {
+    useSessionsStore
       .getState()
-      .sessions.get(SESSION_A)!
-      .transcript.blocks.map((block) => block.id);
+      .addUserMessage(SESSION_A, "queued", undefined, { registerEcho: true, intentId: "intent-1" });
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        queues: {
+          steering: ["queued"],
+          followUp: [],
+          steeringIntentIds: ["intent-1"],
+          followUpIntentIds: [],
+        },
+      }),
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.queuedMessages).toBeUndefined();
+  });
 
-    store.applyEvent(SESSION_A, {
-      type: "compaction_end",
-      result: { summary: "summary" },
+  it("retains local draft candidates when a successor baseline replaces the host", () => {
+    useSessionsStore.getState().setSessionDraft(SESSION_A, "newer local draft");
+    const successor = semanticSnapshot(1, {
+      owner: { hostInstanceId: "host-2", sessionEpoch: 2 },
+      editor: { revision: 1, text: "host draft", attachments: [] },
     });
-
-    const transcript = useSessionsStore.getState().sessions.get(SESSION_A)!.transcript;
-    const after = allTranscriptBlocks(transcript);
-    expect(after.slice(0, -1).map((block) => block.id)).toEqual(before);
-    expect(after.at(-1)?.type).toBe("compaction");
-    expect(transcript.blocks).toHaveLength(1);
+    installAuthority(SESSION_A, successor);
+    expect(useSessionsStore.getState().sessionDrafts.get(SESSION_A)).toBe("newer local draft");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection?.text).toBe(
+      "host draft",
+    );
   });
 });
 
@@ -1090,9 +797,22 @@ describe("createSession(title) and addUserMessage self-labeling", () => {
     );
   });
 
-  it.skip("addUserMessage does NOT overwrite a sessionName set by pi or the user", () => {
+  it("addUserMessage does NOT overwrite an authority-confirmed session name", () => {
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
-    useSessionsStore.getState().setSessionName(SESSION_A, "Renamed by user");
+    installAuthority();
+    const snapshot = semanticSnapshot(2);
+    publishSemantic(SESSION_A, 2, snapshot, [
+      {
+        type: "intent_outcome",
+        outcome: {
+          intentId: "rename",
+          owner: snapshot.owner,
+          kind: "rename",
+          state: "completed",
+          result: { name: "Renamed by user" },
+        },
+      },
+    ]);
     useSessionsStore.getState().addUserMessage(SESSION_A, "first prompt");
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe(
       "Renamed by user",
@@ -1120,29 +840,25 @@ describe("sessions store - extension UI clear payloads", () => {
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
   });
 
-  it("does not let compatibility setStatus mutate the semantic catalog", () => {
-    useSessionsStore.getState().addUiRequest(SESSION_A, {
-      type: "extension_ui_request",
-      id: "s1",
-      method: "setStatus",
-      statusKey: "plan",
-      statusText: "plan active",
-    });
+  it("installs and clears status presentation through extension baselines", () => {
+    const active = authorityAttach();
+    active.baseline.extensionUi.statuses = { plan: "plan active" };
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, active);
     expect(
-      useSessionsStore.getState().sessions.get(SESSION_A)?.statusSegments.get("plan"),
-    ).toBeUndefined();
-
-    useSessionsStore.getState().addUiRequest(SESSION_A, {
-      type: "extension_ui_request",
-      id: "s2",
-      method: "setStatus",
-      statusKey: "plan",
-      // statusText intentionally omitted: this is how a clear arrives on
-      // the wire. The store must treat absent ⇒ delete, not set-undefined.
-    });
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.statusSegments.has("plan")).toBe(
-      false,
+      useSessionsStore.getState().sessions.get(SESSION_A)?.authorityProjection?.extensionUiBaseline
+        ?.statuses,
+    ).toEqual({ plan: "plan active" });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.statusSegments.get("plan")).toBe(
+      "plan active",
     );
+
+    const cleared = authorityAttach();
+    cleared.baseline.publicationHighWatermark = 1;
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, cleared);
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.authorityProjection?.extensionUiBaseline
+        ?.statuses,
+    ).toEqual({});
   });
 
   it("setStatus clearing a non-existent key is a no-op (no throw, no stray entries)", () => {
@@ -1155,26 +871,28 @@ describe("sessions store - extension UI clear payloads", () => {
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.statusSegments.size).toBe(0);
   });
 
-  it("does not let compatibility setWidget mutate the semantic catalog", () => {
-    useSessionsStore.getState().addUiRequest(SESSION_A, {
-      type: "extension_ui_request",
-      id: "w1",
-      method: "setWidget",
-      widgetKey: "plan",
-      widgetLines: ["Plan mode: planning", "Produce a <proposed_plan> block."],
-    });
+  it("installs and clears widget presentation through extension baselines", () => {
+    const active = authorityAttach();
+    active.baseline.extensionUi.widgets = {
+      plan: ["Plan mode: planning", "Produce a <proposed_plan> block."],
+    };
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, active);
     expect(
-      useSessionsStore.getState().sessions.get(SESSION_A)?.widgets.get("plan"),
-    ).toBeUndefined();
+      useSessionsStore.getState().sessions.get(SESSION_A)?.authorityProjection?.extensionUiBaseline
+        ?.widgets.plan,
+    ).toEqual(["Plan mode: planning", "Produce a <proposed_plan> block."]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.widgets.get("plan")).toEqual([
+      "Plan mode: planning",
+      "Produce a <proposed_plan> block.",
+    ]);
 
-    useSessionsStore.getState().addUiRequest(SESSION_A, {
-      type: "extension_ui_request",
-      id: "w2",
-      method: "setWidget",
-      widgetKey: "plan",
-      // widgetLines intentionally omitted: clear-on-undefined contract.
-    });
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.widgets.has("plan")).toBe(false);
+    const cleared = authorityAttach();
+    cleared.baseline.publicationHighWatermark = 1;
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, cleared);
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.authorityProjection?.extensionUiBaseline
+        ?.widgets,
+    ).toEqual({});
   });
 
   it("setWidget clearing a non-existent key is a no-op (no throw, no stray entries)", () => {
@@ -1632,710 +1350,85 @@ describe("sessions store - shouldShowWorkingIndicator", () => {
  * guarded by `modelInitialized` so it runs at most once per session no matter
  * how many times the SessionHeader remounts (every tab switch remounts it).
  */
-describe.skip("sessions store - bootstrapModelState (model/thinking invariants)", () => {
-  let restoreCreateSession: () => void;
-  let setModelCalls: Array<{ sessionId: string; modelId: string }>;
-  let setThinkingCalls: Array<{ sessionId: string; level: string }>;
-  // Per-session pi-side current model so get_state / get_available_models
-  // reflect earlier set_model calls (mirrors real pi switching the model).
-  let piModel: Map<string, string>;
-  // Per-session pi-side thinking level so get_state reflects an earlier
-  // set_thinking_level — including pi clamping the level down to what the
-  // active model supports (real pi does this server-side).
-  let piThinking: Map<string, string>;
-
-  type Cmd = { type: string; modelId?: string; level?: string };
-  type Payload = { sessionId: string; command: Cmd };
-
-  // model-y stands in for a model that does NOT support "xhigh": pi clamps a
-  // requested "xhigh" down to "high" for it. model-x supports every level.
-  function clampLevel(modelId: string, level: string): string {
-    return modelId === "openrouter/model-y" && level === "xhigh" ? "high" : level;
-  }
-
-  function makeInvoke() {
-    return vi.fn(async (_channel: string, payload: Payload) => {
-      const { sessionId, command } = payload;
-      switch (command.type) {
-        case "get_available_models":
-          return {
-            success: true,
-            data: {
-              models: [
-                { id: "openrouter/model-x", provider: "openrouter" },
-                { id: "openrouter/model-y", provider: "openrouter" },
-              ],
-              currentModelId: piModel.get(sessionId) ?? "openrouter/model-x",
-            },
-          };
-        case "set_model":
-          piModel.set(sessionId, command.modelId as string);
-          setModelCalls.push({ sessionId, modelId: command.modelId as string });
-          return { success: true };
-        case "get_state":
-          return {
-            success: true,
-            data: {
-              model: { id: piModel.get(sessionId) ?? "openrouter/model-x" },
-              thinkingLevel: piThinking.get(sessionId) ?? "off",
-              sessionId,
-            },
-          };
-        case "set_thinking_level": {
-          setThinkingCalls.push({ sessionId, level: command.level as string });
-          // Mirror real pi: the applied level may be clamped to what the
-          // active model supports. A later get_state reads back the clamped
-          // value, which is what applyThinkingLevel reconciles against.
-          const active = piModel.get(sessionId) ?? "openrouter/model-x";
-          piThinking.set(sessionId, clampLevel(active, command.level as string));
-          return { success: true };
-        }
-        default:
-          return { success: true, data: {} };
-      }
-    });
-  }
-
-  beforeEach(() => {
-    setModelCalls = [];
-    setThinkingCalls = [];
-    piModel = new Map();
-    piThinking = new Map();
-    vi.stubGlobal("window", { pivis: { invoke: makeInvoke() } });
-    useSettingsStore.setState({
-      settings: {
-        ...useSettingsStore.getState().settings,
-        lastUsedModel: null,
-        lastUsedThinkingLevel: null,
-      },
-      // applyThinkingLevel persists last-used on success; the real `update`
-      // touches `document` (unavailable in the node test env), so stub it.
-      update: vi.fn(async () => {}) as unknown as () => Promise<void>,
-    });
-    useSessionsStore.setState({
-      sessions: new Map(),
-      activeSessionId: null,
-      workspaces: new Map(),
-      activeWorkspacePath: null,
-    });
-    restoreCreateSession = installLiveCreateSession();
-  });
-
-  afterEach(() => {
-    restoreCreateSession();
-    vi.unstubAllGlobals();
-  });
-
-  const setLastUsedModel = (modelId: string) =>
-    useSettingsStore.setState({
-      settings: {
-        ...useSettingsStore.getState().settings,
-        lastUsedModel: { provider: "openrouter", modelId },
-      },
-    });
-
-  it("a brand-new session starts un-initialized", () => {
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.modelInitialized).toBe(false);
-  });
-
-  it("applies the global last-used model preference once for a new session", async () => {
-    setLastUsedModel("openrouter/model-y");
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-
-    expect(setModelCalls).toEqual([{ sessionId: SESSION_A, modelId: "openrouter/model-y" }]);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-y",
-    );
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.modelInitialized).toBe(true);
-  });
-
-  it("does not overwrite available models with [] when get_available_models resolves success:false", async () => {
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    const existingModels = [{ id: "openrouter/model-x", provider: "openrouter" }];
-    useSessionsStore.getState().setAvailableModels(SESSION_A, existingModels);
-    vi.stubGlobal("window", {
-      pivis: {
-        invoke: vi.fn(async () => ({ success: false, error: "host not ready" })),
-      },
-    });
-
-    const models = await useSessionsStore.getState().refreshAvailableModels(SESSION_A);
-
-    expect(models).toEqual(existingModels);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.availableModels).toEqual(
-      existingModels,
-    );
-  });
-
-  it("does not optimistically set the last-used model when bootstrap set_model resolves success:false", async () => {
-    setLastUsedModel("openrouter/model-y");
-    vi.stubGlobal("window", {
-      pivis: {
-        invoke: vi.fn(async (_channel: string, payload: Payload) => {
-          const { sessionId, command } = payload;
-          switch (command.type) {
-            case "get_available_models":
-              return {
-                success: true,
-                data: {
-                  models: [
-                    { id: "openrouter/model-x", provider: "openrouter" },
-                    { id: "openrouter/model-y", provider: "openrouter" },
-                  ],
-                },
-              };
-            case "set_model":
-              setModelCalls.push({ sessionId, modelId: command.modelId as string });
-              return { success: false, error: "rejected" };
-            case "get_state":
-              return {
-                success: true,
-                data: {
-                  model: { id: "openrouter/model-x", provider: "openrouter" },
-                  thinkingLevel: "off",
-                  sessionId,
-                },
-              };
-            default:
-              return { success: true, data: {} };
-          }
-        }),
-      },
-    });
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-
-    expect(setModelCalls).toEqual([{ sessionId: SESSION_A, modelId: "openrouter/model-y" }]);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-x",
-    );
-  });
-
-  it("is a no-op on re-invocation — a remount cannot re-apply the preference", async () => {
-    setLastUsedModel("openrouter/model-y");
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-    const callsAfterFirst = setModelCalls.length;
-
-    // Simulate the SessionHeader remounting (every tab switch) firing it again.
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-
-    expect(setModelCalls.length).toBe(callsAfterFirst);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-y",
-    );
-  });
-
-  it("switching away, changing the global preference, and returning does NOT change the first session's model", async () => {
-    // Session A is created and bootstrapped while no preference is set, so it
-    // keeps pi's default (model-x).
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-x",
-    );
-    expect(setModelCalls).toEqual([]);
-
-    // The user opens session B and picks model-y there — which writes the
-    // GLOBAL last-used preference.
-    useSessionsStore.getState().createSession(SESSION_B, WORKSPACE);
-    setLastUsedModel("openrouter/model-y");
-    await useSessionsStore.getState().bootstrapModelState(SESSION_B);
-    expect(useSessionsStore.getState().sessions.get(SESSION_B)?.currentModel).toBe(
-      "openrouter/model-y",
-    );
-
-    // Switching back to A remounts A's header → re-invokes bootstrap. A must
-    // be untouched: no set_model to A, and its model is still model-x.
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-    expect(setModelCalls.some((c) => c.sessionId === SESSION_A)).toBe(false);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-x",
-    );
-  });
-
-  it("never applies the global preference to a resumed session", async () => {
-    setLastUsedModel("openrouter/model-y");
-    // Resumed session: created WITH a file → resumed=true.
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-
-    expect(setModelCalls).toEqual([]);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-x",
-    );
-  });
-
-  it("applies the global last-used thinking level once for a new session", async () => {
-    useSettingsStore.setState({
-      settings: {
-        ...useSettingsStore.getState().settings,
-        lastUsedThinkingLevel: "high",
-      },
-    });
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-
-    expect(setThinkingCalls).toEqual([{ sessionId: SESSION_A, level: "high" }]);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("high");
-
-    // Remount: no second set_thinking_level.
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-    expect(setThinkingCalls).toEqual([{ sessionId: SESSION_A, level: "high" }]);
-  });
-
-  it("seeds thinking level from pi (no preference) without sending set_thinking_level", async () => {
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-    expect(setThinkingCalls).toEqual([]);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("off");
-  });
-
-  // The bug: the global preference can pair a model from one session with a
-  // thinking level from another (e.g. last-used model = model-y, which doesn't
-  // support "xhigh", while last-used level = "xhigh"). On a new session the
-  // bootstrap applies the preferred model first, then the preferred level — and
-  // must reconcile the level with what pi actually applied (its clamp) rather
-  // than blindly showing the requested level. This is the same reconciliation
-  // the header does when you pick a level directly.
-  it("clamps the preferred thinking level to what the chosen model supports", async () => {
-    setLastUsedModel("openrouter/model-y");
-    useSettingsStore.setState({
-      settings: {
-        ...useSettingsStore.getState().settings,
-        lastUsedThinkingLevel: "xhigh",
-      },
-    });
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-
-    // We asked pi for xhigh…
-    expect(setThinkingCalls).toEqual([{ sessionId: SESSION_A, level: "xhigh" }]);
-    // …but model-y clamps it to high, and the store reflects the clamped value.
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-y",
-    );
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("high");
-  });
-});
-
-/**
- * `applyModelChange` / `applyThinkingLevel` are the single mutation paths for
- * the model / thinking dropdowns. They update the store optimistically (so the
- * dropdown shows the requested value immediately — invariant #1's "queued
- * change about to be sent") but MUST revert to the prior value if pi rejects
- * the change, so the dropdown never lingers on something not actually in
- * effect. The global last-used preference is persisted only on success.
- */
-describe.skip("sessions store - applyModelChange / applyThinkingLevel (revert on failure)", () => {
-  let restoreCreateSession: () => void;
-  let updateSpy: ReturnType<typeof vi.fn>;
-
-  type Cmd = { type: string };
-  type Payload = { sessionId: string; command: Cmd };
-
-  function stubInvoke(impl: (channel: string, payload: Payload) => Promise<unknown>) {
-    vi.stubGlobal("window", { pivis: { invoke: vi.fn(impl) } });
-  }
-
+describe("sessions store - authority model and thinking intents", () => {
+  const MODEL_X = { id: "openrouter/model-x", provider: "openrouter" } as ModelInfo;
   const MODEL_Y = { id: "openrouter/model-y", provider: "openrouter" } as ModelInfo;
 
   beforeEach(() => {
-    // Override settings-store's `update` with a spy so we can assert exactly
-    // when the global last-used preference is (and isn't) persisted.
-    updateSpy = vi.fn(async () => {});
-    useSettingsStore.setState({ update: updateSpy as unknown as () => Promise<void> });
     useSessionsStore.setState({
       sessions: new Map(),
       activeSessionId: null,
       workspaces: new Map(),
       activeWorkspacePath: null,
     });
-    restoreCreateSession = installLiveCreateSession();
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    useSessionsStore.getState().setCurrentModel(SESSION_A, "openrouter/model-x");
-    useSessionsStore.getState().setThinkingLevel(SESSION_A, "low");
-  });
-
-  afterEach(() => {
-    restoreCreateSession();
-    vi.unstubAllGlobals();
-  });
-
-  it("applyModelChange commits the model and persists last-used on success", async () => {
-    stubInvoke(async () => ({ success: true, data: {} }));
-    const res = await useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y);
-    expect(res.ok).toBe(true);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-y",
-    );
-    expect(updateSpy).toHaveBeenCalledWith({
-      lastUsedModel: { provider: "openrouter", modelId: "openrouter/model-y" },
-    });
-  });
-
-  it("applyModelChange refreshes stats so context window updates after success", async () => {
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "get_session_stats") {
-        return {
-          success: true,
-          data: {
-            sessionId: SESSION_A,
-            contextUsage: { tokens: 272_000, contextWindow: 1_000_000, percent: 27.2 },
-          },
-        };
-      }
-      return { success: true, data: {} };
-    });
-
-    const res = await useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y);
-
-    expect(res.ok).toBe(true);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.stats?.contextUsage).toEqual({
-      tokens: 272_000,
-      contextWindow: 1_000_000,
-      percent: 27.2,
-    });
-  });
-
-  it("applyModelChange ignores stale stats when a newer model switch lands first", async () => {
-    useSessionsStore.getState().setStats(SESSION_A, {
-      sessionId: SESSION_A,
-      contextUsage: { tokens: 10, contextWindow: 100, percent: 10 },
-    });
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "get_session_stats") {
-        useSessionsStore.getState().setCurrentModel(SESSION_A, "newer-model", "newer");
-        return {
-          success: true,
-          data: {
-            sessionId: SESSION_A,
-            contextUsage: { tokens: 272_000, contextWindow: 1_000_000, percent: 27.2 },
-          },
-        };
-      }
-      return { success: true, data: {} };
-    });
-
-    const res = await useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y);
-
-    expect(res.ok).toBe(true);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.stats?.contextUsage).toEqual({
-      tokens: 10,
-      contextWindow: 100,
-      percent: 10,
-    });
-  });
-
-  it("applyModelChange reverts to the prior model when pi returns success:false", async () => {
-    stubInvoke(async (_c, p) =>
-      p.command.type === "set_model"
-        ? { success: false, error: "nope" }
-        : { success: true, data: {} },
-    );
-    const res = await useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y);
-    expect(res.ok).toBe(false);
-    expect(res.error).toContain("nope");
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-x",
-    );
-    expect(updateSpy).not.toHaveBeenCalled();
-  });
-
-  it("applyModelChange reverts when the IPC throws", async () => {
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "set_model") throw new Error("boom");
-      return { success: true, data: {} };
-    });
-    const res = await useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y);
-    expect(res.ok).toBe(false);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-x",
-    );
-  });
-
-  it("applyModelChange does NOT clobber a newer model that landed during a failed switch", async () => {
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "set_model") {
-        // A concurrent change lands while set_model is in flight.
-        useSessionsStore.getState().setCurrentModel(SESSION_A, "openrouter/model-z");
-        throw new Error("boom");
-      }
-      return { success: true, data: {} };
-    });
-    await useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y);
-    // Revert is skipped because our optimistic value was already superseded.
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(
-      "openrouter/model-z",
-    );
-  });
-
-  it("applyThinkingLevel commits and reports the clamped level pi applied", async () => {
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "get_state") return { success: true, data: { thinkingLevel: "off" } };
-      return { success: true, data: {} };
-    });
-    const res = await useSessionsStore.getState().applyThinkingLevel(SESSION_A, "high");
-    expect(res.ok).toBe(true);
-    expect(res.clampedTo).toBe("off");
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("off");
-    expect(updateSpy).toHaveBeenCalledWith({ lastUsedThinkingLevel: "high" });
-  });
-
-  it("applyThinkingLevel still reports clamping if pi's event reconciles before get_state returns", async () => {
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "get_state") {
-        useSessionsStore.getState().applyEvent(SESSION_A, {
-          type: "thinking_level_changed",
-          level: "off",
-        });
-        return { success: true, data: { thinkingLevel: "off" } };
-      }
-      return { success: true, data: {} };
-    });
-
-    const res = await useSessionsStore.getState().applyThinkingLevel(SESSION_A, "high");
-
-    expect(res.ok).toBe(true);
-    expect(res.clampedTo).toBe("off");
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("off");
-    expect(updateSpy).toHaveBeenCalledWith({ lastUsedThinkingLevel: "high" });
-  });
-
-  it("applyThinkingLevel reverts to the prior level on failure and does not persist", async () => {
-    stubInvoke(async (_c, p) =>
-      p.command.type === "set_thinking_level"
-        ? { success: false, error: "no" }
-        : { success: true, data: {} },
-    );
-    const res = await useSessionsStore.getState().applyThinkingLevel(SESSION_A, "high");
-    expect(res.ok).toBe(false);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.thinkingLevel).toBe("low");
-    expect(updateSpy).not.toHaveBeenCalled();
-  });
-
-  it("applyModelChange does NOT clobber a same-id/different-provider switch that landed during a failed switch", async () => {
-    // Two providers offer the same id. The user picks the groq copy, then a
-    // concurrent switch to the together copy lands while groq's set_model is
-    // in flight — and groq's RPC then fails. The id-only revert guard would
-    // (wrongly) restore the provider, stomping the in-flight together switch;
-    // the provider-aware guard must leave it intact.
-    useSessionsStore.getState().setCurrentModel(SESSION_A, "llama-4", "groq");
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "set_model") {
-        useSessionsStore.getState().setCurrentModel(SESSION_A, "llama-4", "together");
-        throw new Error("boom");
-      }
-      return { success: true, data: {} };
-    });
-    const GROQ = { id: "llama-4", provider: "groq" } as ModelInfo;
-    await useSessionsStore.getState().applyModelChange(SESSION_A, GROQ);
-    const s = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(s?.currentModel).toBe("llama-4");
-    expect(s?.currentProvider).toBe("together");
-  });
-
-  it("applyModelChange reconciles the provider with pi's get_state on success", async () => {
-    // pi normalizes the provider string on its side. The store must adopt pi's
-    // authoritative value so the highlight and the persisted last-used
-    // preference stay honest (and the next bootstrap's exact match works).
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "get_state") {
-        return { success: true, data: { model: { id: "llama-4", provider: "Groq" } } };
-      }
-      return { success: true, data: {} };
-    });
-    const res = await useSessionsStore
-      .getState()
-      .applyModelChange(SESSION_A, { id: "llama-4", provider: "groq" } as ModelInfo);
-    expect(res.ok).toBe(true);
-    const s = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(s?.currentProvider).toBe("Groq");
-    expect(updateSpy).toHaveBeenCalledWith({
-      lastUsedModel: { provider: "Groq", modelId: "llama-4" },
-    });
-  });
-
-  it("applyModelChange does NOT clobber a known provider when get_state omits it", async () => {
-    // If get_state returns a non-string provider, the optimistic provider must
-    // be kept — clobbering it with undefined would re-introduce ambiguous
-    // multi-highlight when duplicate same-id entries exist.
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "get_state")
-        return { success: true, data: { model: { id: "llama-4" } } };
-      return { success: true, data: {} };
-    });
-    const res = await useSessionsStore
-      .getState()
-      .applyModelChange(SESSION_A, { id: "llama-4", provider: "groq" } as ModelInfo);
-    expect(res.ok).toBe(true);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentProvider).toBe("groq");
-  });
-
-  it("applyModelChange does NOT persist lastUsedModel when superseded during reconciliation", async () => {
-    // A's set_model succeeds; during A's get_state reconciliation round-trip,
-    // switch B lands (overwrites the store). A must NOT persist its now-stale
-    // model to lastUsedModel — that would leak the superseded model into the
-    // next new session's default. The get_state round-trip is what makes this
-    // ordering reachable (it yields control before the persist).
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "get_state") {
-        // B lands while A's get_state is in flight.
-        useSessionsStore.getState().setCurrentModel(SESSION_A, "other-model", "other");
-        return { success: true, data: { model: { id: "other-model", provider: "other" } } };
-      }
-      return { success: true, data: {} };
-    });
-    const res = await useSessionsStore
-      .getState()
-      .applyModelChange(SESSION_A, { id: "llama-4", provider: "groq" } as ModelInfo);
-    expect(res.ok).toBe(true);
-    // A was superseded — its stale values must not leak into lastUsedModel.
-    expect(updateSpy).not.toHaveBeenCalled();
-    // B's switch survived.
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe("other-model");
-  });
-
-  it("applyModelChange does NOT persist lastUsedModel when superseded AND get_state throws", async () => {
-    // Same race as above, but get_state rejects. The catch path must STILL
-    // detect the supersession and skip the persist (a naive catch that left
-    // shouldPersist=true would leak the stale model into the next session).
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "get_state") {
-        useSessionsStore.getState().setCurrentModel(SESSION_A, "other-model", "other");
-        throw new Error("get_state boom");
-      }
-      return { success: true, data: {} };
-    });
-    const res = await useSessionsStore
-      .getState()
-      .applyModelChange(SESSION_A, { id: "llama-4", provider: "groq" } as ModelInfo);
-    expect(res.ok).toBe(true);
-    expect(updateSpy).not.toHaveBeenCalled();
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe("other-model");
-  });
-
-  it("applyModelChange persists lastUsedModel when get_state throws but the switch still holds", async () => {
-    // get_state fails, but no supersession occurred — the optimistic model is
-    // still in effect, so the preference SHOULD persist (best-effort, using
-    // the resolved provider since pi never got to confirm a normalized one).
-    stubInvoke(async (_c, p) => {
-      if (p.command.type === "get_state") throw new Error("get_state boom");
-      return { success: true, data: {} };
-    });
-    const res = await useSessionsStore
-      .getState()
-      .applyModelChange(SESSION_A, { id: "llama-4", provider: "groq" } as ModelInfo);
-    expect(res.ok).toBe(true);
-    expect(updateSpy).toHaveBeenCalledWith({
-      lastUsedModel: { provider: "groq", modelId: "llama-4" },
-    });
-  });
-});
-
-/**
- * Multi-provider disambiguation: the same model `id` can be offered by
- * several providers. The last-used preference is provider-scoped
- * (`settings.lastUsedModel = { provider, modelId }`), so bootstrap must
- * activate the user's actual last-used provider — not whichever same-id
- * copy happens to sort first in pi's list — and record that provider in the
- * store so the dropdown highlights only the right row.
- */
-describe.skip("sessions store - multi-provider same-id disambiguation", () => {
-  let restoreCreateSession: () => void;
-  type Cmd = { type: string; modelId?: string | undefined; provider?: string | undefined };
-  type Payload = { sessionId: string; command: Cmd };
-  let setModelCalls: Array<{
-    sessionId: string;
-    provider?: string | undefined;
-    modelId?: string | undefined;
-  }>;
-
-  beforeEach(() => {
-    setModelCalls = [];
-    vi.stubGlobal("window", {
-      pivis: {
-        invoke: vi.fn(async (_channel: string, payload: Payload) => {
-          const { command } = payload;
-          switch (command.type) {
-            case "get_available_models":
-              return {
-                success: true,
-                data: {
-                  // Same id under two providers; `together` is listed first.
-                  models: [
-                    { id: "llama-4", provider: "together" },
-                    { id: "llama-4", provider: "groq" },
-                  ],
-                },
-              };
-            case "set_model":
-              setModelCalls.push({
-                sessionId: payload.sessionId,
-                provider: command.provider,
-                modelId: command.modelId,
-              });
-              return { success: true };
-            case "get_state":
-              return { success: true, data: { thinkingLevel: "off" } };
-            default:
-              return { success: true, data: {} };
-          }
-        }),
-      },
-    });
+    installAuthority();
     useSettingsStore.setState({
       settings: {
         ...useSettingsStore.getState().settings,
         lastUsedModel: null,
         lastUsedThinkingLevel: null,
       },
+      update: vi.fn(async () => {}) as never,
     });
-    useSessionsStore.setState({
-      sessions: new Map(),
-      activeSessionId: null,
-      workspaces: new Map(),
-      activeWorkspacePath: null,
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("applies a new-session model preference once, but only the confirming frame selects it", async () => {
+    useSettingsStore.setState({
+      settings: {
+        ...useSettingsStore.getState().settings,
+        lastUsedModel: { provider: MODEL_Y.provider!, modelId: MODEL_Y.id },
+      },
     });
-    restoreCreateSession = installLiveCreateSession();
+    const invoke = vi.fn(
+      async (channel: string, payload: { queryId?: string; query?: { type: string } }) => {
+        if (channel === "session.query")
+          return {
+            queryId: payload.queryId,
+            owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+            queryType: payload.query!.type,
+            response: { success: true, data: { models: [MODEL_X, MODEL_Y] } },
+          };
+        return {
+          status: "admitted",
+          intentId: "model-pref",
+          owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        };
+      },
+    );
+    vi.stubGlobal("window", { pivis: { invoke } });
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+    expect(invoke).toHaveBeenCalledWith(
+      "session.dispatchIntent",
+      expect.objectContaining({
+        intent: { kind: "setModel", provider: "openrouter", modelId: "openrouter/model-y" },
+      }),
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe("model-old");
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { model: MODEL_Y }));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.currentModel).toBe(MODEL_Y.id);
+    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
+    expect(
+      invoke.mock.calls.filter(([channel]) => channel === "session.dispatchIntent"),
+    ).toHaveLength(1);
   });
 
-  afterEach(() => {
-    restoreCreateSession();
-    vi.unstubAllGlobals();
-  });
-
-  it("bootstrap activates the last-used PROVIDER, not whichever copy sorts first", async () => {
+  it("does not guess between duplicate provider model ids", async () => {
     useSettingsStore.setState({
       settings: {
         ...useSettingsStore.getState().settings,
         lastUsedModel: { provider: "groq", modelId: "llama-4" },
       },
     });
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-
-    expect(setModelCalls).toEqual([{ sessionId: SESSION_A, provider: "groq", modelId: "llama-4" }]);
-    const s = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(s?.currentModel).toBe("llama-4");
-    expect(s?.currentProvider).toBe("groq");
-  });
-
-  it("does NOT silently swap providers when the last-used provider's copy is gone but another same-id copy remains", async () => {
-    // The user's last-used was llama-4/groq, but groq is no longer offered —
-    // only llama-4/together and llama-4/openrouter remain. With multiple
-    // same-id copies and no provider-precise match, bootstrap must refuse to
-    // guess (no set_model) and fall through to pi's reported current model
-    // rather than silently switching the user's subscription.
-    vi.stubGlobal("window", {
-      pivis: {
-        invoke: vi.fn(async (_channel: string, payload: { command: { type: string } }) => {
-          switch (payload.command.type) {
-            case "get_available_models":
-              return {
+    const invoke = vi.fn(
+      async (channel: string, payload: { queryId?: string; query?: { type: string } }) =>
+        channel === "session.query"
+          ? {
+              queryId: payload.queryId,
+              owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+              queryType: payload.query!.type,
+              response: {
                 success: true,
                 data: {
                   models: [
@@ -2343,86 +1436,71 @@ describe.skip("sessions store - multi-provider same-id disambiguation", () => {
                     { id: "llama-4", provider: "openrouter" },
                   ],
                 },
-              };
-            case "get_state":
-              return { success: true, data: { thinkingLevel: "off" } };
-            default:
-              return { success: true, data: {} };
-          }
-        }),
-      },
-    });
-    useSettingsStore.setState({
-      settings: {
-        ...useSettingsStore.getState().settings,
-        lastUsedModel: { provider: "groq", modelId: "llama-4" },
-      },
-    });
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+              },
+            }
+          : {
+              status: "admitted",
+              intentId: "unexpected",
+              owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+            },
+    );
+    vi.stubGlobal("window", { pivis: { invoke } });
     await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-
-    // No preference-driven set_model was sent.
-    expect(setModelCalls).toEqual([]);
-    // And no model was pinned into the store (falls through cleanly).
-    const s = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(s?.currentModel).toBeUndefined();
-    expect(s?.currentProvider).toBeUndefined();
+    expect(invoke.mock.calls.some(([channel]) => channel === "session.dispatchIntent")).toBe(false);
   });
 
-  it("preserves the matched provider when get_state omits it (no clobber)", async () => {
-    // Step 1 matches the last-used groq copy and sets currentProvider="groq".
-    // Step 2's get_state returns the model id WITHOUT a provider (legacy pi
-    // shape). It must NOT clobber the known provider with undefined, or the
-    // dropdown would fall back to id-only matching and highlight the wrong
-    // (first) same-id copy.
+  it("keeps model and thinking canonical values unchanged for rejected or unknown receipts", async () => {
     vi.stubGlobal("window", {
       pivis: {
-        invoke: vi.fn(async (_channel: string, payload: { command: { type: string } }) => {
-          switch (payload.command.type) {
-            case "get_available_models":
-              return {
-                success: true,
-                data: {
-                  models: [
-                    { id: "llama-4", provider: "together" },
-                    { id: "llama-4", provider: "groq" },
-                  ],
-                },
-              };
-            case "get_state":
-              return { success: true, data: { thinkingLevel: "off", model: { id: "llama-4" } } };
-            default:
-              return { success: true, data: {} };
-          }
-        }),
+        invoke: vi.fn(async () => ({
+          status: "not_admitted",
+          reason: "rejected",
+          intentId: "no",
+          owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        })),
       },
     });
-    useSettingsStore.setState({
-      settings: {
-        ...useSettingsStore.getState().settings,
-        lastUsedModel: { provider: "groq", modelId: "llama-4" },
+    await expect(
+      useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y),
+    ).resolves.toMatchObject({ ok: false });
+    await expect(
+      useSessionsStore.getState().applyThinkingLevel(SESSION_A, "high"),
+    ).resolves.toMatchObject({ ok: false });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      currentModel: "model-old",
+      thinkingLevel: "low",
+    });
+  });
+
+  it("keeps admitted intent receipts non-optimistic and projects Pi's clamped terminal values", async () => {
+    vi.stubGlobal("window", {
+      pivis: {
+        invoke: vi.fn(async () => ({
+          status: "admitted",
+          intentId: "yes",
+          owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        })),
       },
     });
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    await useSessionsStore.getState().bootstrapModelState(SESSION_A);
-    const s2 = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(s2?.currentModel).toBe("llama-4");
-    expect(s2?.currentProvider).toBe("groq");
+    await expect(useSessionsStore.getState().applyModelChange(SESSION_A, MODEL_Y)).resolves.toEqual(
+      { ok: true },
+    );
+    await expect(
+      useSessionsStore.getState().applyThinkingLevel(SESSION_A, "xhigh"),
+    ).resolves.toEqual({ ok: true });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      currentModel: "model-old",
+      thinkingLevel: "low",
+    });
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { model: MODEL_Y, thinkingLevel: "high" }));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      currentModel: MODEL_Y.id,
+      currentProvider: MODEL_Y.provider,
+      thinkingLevel: "high",
+    });
   });
 });
 
-/**
- * Tests for the WorktreeBar's three-state segmented control. The bar's
- * `worktreeMode` ("none" | "create" | "attach") replaced the old
- * boolean `worktreeCreate`; `worktreeAttachPath` is the path input for
- * "attach" mode. Both setters clear `worktreeError` so a stale failure
- * from a prior mode doesn't linger after the user switches segments
- * (mirrors how the old `setWorktreeCreate` did).
- *
- * `clearWorktreeIntent` resets the whole pre-send state — it's called
- * on a successful attach/create so the bar doesn't reappear later
- * (e.g. after `/new`, `/fork`, `/clone`).
- */
 describe("sessions store - worktree mode / attach path", () => {
   beforeEach(() => {
     useSessionsStore.setState({
@@ -3314,7 +2392,7 @@ describe("sessions store - unified TUI panel reducer", () => {
   });
 });
 
-describe.skip("sessions store - historical cache notices", () => {
+describe("sessions store - historical cache notices", () => {
   const invokeMock = vi.fn();
   const originalWindow = (globalThis as { window?: unknown }).window;
 
@@ -3327,22 +2405,32 @@ describe.skip("sessions store - historical cache notices", () => {
       diffComments: new Map(),
     });
     invokeMock.mockReset();
-    invokeMock.mockResolvedValue({
-      success: true,
-      data: {
-        notices: [
-          {
-            type: "cache_miss_notice",
-            noticeId: "cache-miss-history",
-            afterEntryId: "assistant-1",
-            missedTokens: 25_000,
-            missedCost: 0.12,
-            idleMs: 0,
-            modelChanged: false,
+    invokeMock.mockImplementation(
+      async (channel: string, payload: { queryId?: string; query?: { type: string } }) => {
+        if (channel !== "session.query") return {};
+        return {
+          queryId: payload.queryId,
+          owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+          queryType: payload.query?.type,
+          response: {
+            success: true,
+            data: {
+              notices: [
+                {
+                  type: "cache_miss_notice",
+                  noticeId: "cache-miss-history",
+                  afterEntryId: "assistant-1",
+                  missedTokens: 25_000,
+                  missedCost: 0.12,
+                  idleMs: 0,
+                  modelChanged: false,
+                },
+              ],
+            },
           },
-        ],
+        };
       },
-    });
+    );
     (globalThis as { window: unknown }).window = {
       pivis: { invoke: invokeMock, on: vi.fn(() => () => {}) },
     };
@@ -3366,8 +2454,7 @@ describe.skip("sessions store - historical cache notices", () => {
     ]);
     expect(invokeMock).not.toHaveBeenCalled();
 
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false));
-    useSessionsStore.getState().setSessionStatus(SESSION_A, "ready");
+    installAuthority();
 
     await vi.waitFor(() => {
       const session = useSessionsStore.getState().sessions.get(SESSION_A);
@@ -3376,12 +2463,11 @@ describe.skip("sessions store - historical cache notices", () => {
       ).toEqual(["assistant-1", "cache-miss-history", "user-2"]);
     });
     expect(invokeMock).toHaveBeenCalledWith(
-      "session.sendCommand",
+      "session.query",
       expect.objectContaining({
         sessionId: SESSION_A,
-        command: { type: "get_cache_miss_notices" },
-        expectedHostInstanceId: "host-1",
-        expectedSessionEpoch: 1,
+        query: { type: "get_cache_miss_notices" },
+        expectedOwner: { hostInstanceId: "host-1", sessionEpoch: 1 },
       }),
     );
   });
@@ -3642,7 +2728,7 @@ describe("sessions store - queue restoration", () => {
 // the TUI editor can restore on a guard bail. Runs under a node env, so we
 // stand up a minimal window.pivis.
 
-describe.skip("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () => {
+describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () => {
   const invokeMock = vi.fn();
   const originalWindow = (globalThis as { window?: unknown }).window;
 
@@ -3655,22 +2741,17 @@ describe.skip("sessions store - unified TUI submit (handleUnifiedSubmitRequest)"
       diffComments: new Map(),
     });
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-    // Unified submission is host-authoritative and requires the identity from
-    // an available runtime snapshot.
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false));
-    useSessionsStore.getState().setSessionStatus(SESSION_A, "ready");
+    // Unified submission requires both available transport and an authority baseline.
+    installAuthority();
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (channel: string, payload?: unknown) => {
       if (channel === "session.claimUnifiedSubmit") return claimedUnified();
-      if (channel === "session.submit") {
-        const submission = (payload as { submission: { intentId: string; editorRevision: number } })
-          .submission;
+      if (channel === "session.dispatchIntent") {
+        const envelope = payload as { intentId: string };
         return {
-          intentId: submission.intentId,
-          hostInstanceId: "host-1",
-          sessionEpoch: 1,
-          editorRevision: submission.editorRevision,
-          disposition: "consumed" as const,
+          status: "admitted" as const,
+          intentId: envelope.intentId,
+          owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
         };
       }
       return { success: true };
@@ -3703,11 +2784,12 @@ describe.skip("sessions store - unified TUI submit (handleUnifiedSubmitRequest)"
         c[0] === "session.sendCommand" &&
         (c[1] as { command?: { type?: string } }).command?.type === t,
     );
-  const sentSubmission = () =>
-    invokeMock.mock.calls.find((c) => c[0] === "session.submit")?.[1] as
+  const sentSubmission = () => {
+    const envelope = invokeMock.mock.calls.find((c) => c[0] === "session.dispatchIntent")?.[1] as
       | {
-          submission: {
-            intentId: string;
+          intentId: string;
+          intent: {
+            kind: string;
             editorRevision: number;
             text: string;
             surface: string;
@@ -3715,6 +2797,10 @@ describe.skip("sessions store - unified TUI submit (handleUnifiedSubmitRequest)"
           };
         }
       | undefined;
+    return envelope && envelope.intent.kind === "submit"
+      ? { submission: { intentId: envelope.intentId, ...envelope.intent } }
+      : undefined;
+  };
 
   it("does not replay a unified action when main reports an existing execution claim", async () => {
     invokeMock.mockResolvedValueOnce({ claimed: false });
@@ -3872,6 +2958,7 @@ describe.skip("sessions store - unified TUI submit (handleUnifiedSubmitRequest)"
   });
 
   it("a send-prompt with no model bails + toasts (no-model guard parity)", async () => {
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { model: null }));
     await useSessionsStore
       .getState()
       .handleUnifiedSubmitRequest(SESSION_A, "id2", "hello", 0, "intent-id2", "host-1", 1);
@@ -3889,15 +2976,13 @@ describe.skip("sessions store - unified TUI submit (handleUnifiedSubmitRequest)"
   it("a valid prompt waits for host consumption before adding an echo and replying ok:true", async () => {
     useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
     let resolveSubmission!: (result: {
+      status: "admitted";
       intentId: string;
-      hostInstanceId: string;
-      sessionEpoch: number;
-      editorRevision: number;
-      disposition: "consumed";
+      owner: { hostInstanceId: string; sessionEpoch: number };
     }) => void;
     invokeMock.mockImplementation((channel: string) => {
       if (channel === "session.claimUnifiedSubmit") return Promise.resolve(claimedUnified());
-      if (channel === "session.submit") {
+      if (channel === "session.dispatchIntent") {
         return new Promise((resolve) => {
           resolveSubmission = resolve;
         });
@@ -3917,11 +3002,9 @@ describe.skip("sessions store - unified TUI submit (handleUnifiedSubmitRequest)"
     expect(submission.intentId).toBe("intent-id3");
     expect(submission.editorRevision).toBe(41);
     resolveSubmission({
+      status: "admitted",
       intentId: submission.intentId,
-      hostInstanceId: "host-1",
-      sessionEpoch: 1,
-      editorRevision: submission.editorRevision,
-      disposition: "consumed",
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
     });
     await request;
 
@@ -3933,17 +3016,15 @@ describe.skip("sessions store - unified TUI submit (handleUnifiedSubmitRequest)"
     let now = 1_000;
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
     let resolveSubmission!: (result: {
+      status: "admitted";
       intentId: string;
-      hostInstanceId: string;
-      sessionEpoch: number;
-      editorRevision: number;
-      disposition: "consumed";
+      owner: { hostInstanceId: string; sessionEpoch: number };
     }) => void;
     invokeMock.mockImplementation((channel: string) => {
       if (channel === "session.claimUnifiedSubmit") {
         return Promise.resolve({ claimed: true, claimId: "expiring-claim", expiresAt: 1_010 });
       }
-      if (channel === "session.submit") {
+      if (channel === "session.dispatchIntent") {
         return new Promise((resolve) => {
           resolveSubmission = resolve;
         });
@@ -3965,11 +3046,9 @@ describe.skip("sessions store - unified TUI submit (handleUnifiedSubmitRequest)"
     await vi.waitFor(() => expect(sentSubmission()).toBeDefined());
     now = 1_020;
     resolveSubmission({
+      status: "admitted",
       intentId: "intent-expiring",
-      hostInstanceId: "host-1",
-      sessionEpoch: 1,
-      editorRevision: 9,
-      disposition: "consumed",
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
     });
     await pending;
 
@@ -4025,16 +3104,13 @@ describe.skip("sessions store - unified TUI submit (handleUnifiedSubmitRequest)"
     useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
     invokeMock.mockImplementation(async (channel: string, payload?: unknown) => {
       if (channel === "session.claimUnifiedSubmit") return claimedUnified();
-      if (channel === "session.submit") {
-        const submission = (payload as { submission: { intentId: string; editorRevision: number } })
-          .submission;
+      if (channel === "session.dispatchIntent") {
+        const envelope = payload as { intentId: string };
         return {
-          intentId: submission.intentId,
-          hostInstanceId: "host-1",
-          sessionEpoch: 1,
-          editorRevision: submission.editorRevision,
-          disposition: "rejected" as const,
-          message: "provider unavailable",
+          status: "not_admitted" as const,
+          reason: "provider unavailable",
+          intentId: envelope.intentId,
+          owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
         };
       }
       return { success: true };
@@ -4242,7 +3318,7 @@ describe("sessions store - adoptSessionFileAndHydrate", () => {
 // terminal SessionStatus, rejected/failed prompt send) and never gets stuck
 // true; and that abortSession is a no-op when idle + rejection-safe.
 
-describe.skip("sessions store - host-authoritative escape", () => {
+describe("sessions store - host-authoritative escape", () => {
   const invokeMock = vi.fn();
   beforeEach(() => {
     useSessionsStore.setState({
@@ -4263,14 +3339,16 @@ describe.skip("sessions store - host-authoritative escape", () => {
   });
 
   it("binds escape to the currently available host and epoch", () => {
-    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false));
+    installAuthority();
     useSessionsStore.getState().abortSession(SESSION_A);
-    expect(invokeMock).toHaveBeenCalledWith("session.escape", {
-      sessionId: SESSION_A,
-      requestId: expect.any(String),
-      expectedHostInstanceId: "host-1",
-      expectedSessionEpoch: 1,
-    });
+    expect(invokeMock).toHaveBeenCalledWith(
+      "session.dispatchIntent",
+      expect.objectContaining({
+        sessionId: SESSION_A,
+        expectedOwner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        intent: { kind: "interrupt" },
+      }),
+    );
   });
 });
 
@@ -4398,9 +3476,10 @@ function semanticPublication(
   transportSequence: number,
   snapshot: SemanticSnapshot,
   records: AuthorityRecord[] = [],
+  sessionId: SessionId = SESSION_A,
 ): RendererPublication {
   return {
-    sessionId: SESSION_A,
+    sessionId,
     rendererGeneration: 0,
     publicationSequence: transportSequence - 1,
     plane: "semantic",
