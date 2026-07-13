@@ -1,13 +1,23 @@
 import type { SessionId } from "@shared/ids.js";
 import { type PiRpcCommand, commandPolicy } from "@shared/pi-protocol/commands.js";
-import type { AgentSessionSnapshot } from "@shared/pi-protocol/runtime-state.js";
+import type {
+  AgentSessionSnapshot,
+  AuthorityAttachResponse,
+  IntentEnvelope,
+  IntentOutcome,
+  OperationJournalRecord,
+  RendererPublication,
+  SemanticSnapshot,
+  SessionIntent,
+  SessionQuery,
+} from "@shared/pi-protocol/runtime-state.js";
 import type { SearchId, SearchTargetId, SessionSearchResult } from "@shared/session-search.js";
 /**
  * Stubs window.pivis for standalone browser preview (not running in Electron).
  *
- * Acts as a miniature fake-pi: seeds a demo session at boot and answers
- * session.sendCommand with canned responses, including a streamed agent
- * response for prompts so transcript/composer/status behavior can be
+ * Acts as a miniature fake-pi: seeds a demo session at boot and answers the
+ * owner-bound query/intent APIs with canned responses, including a streamed
+ * agent response for prompts so transcript/composer/status behavior can be
  * exercised in a plain browser via `npm run dev:renderer`.
  */
 import { useSessionsStore } from "./stores/sessions-store.js";
@@ -21,15 +31,26 @@ const DEMO_NON_REASONING_MODEL = "claude-fable-5";
 // in the browser-only preview. Mirrors what the real `pi` binary does in
 // memory between `set_thinking_level` / `get_state` calls.
 let currentModelId = DEMO_MODEL;
+let currentModelProvider = "openrouter";
 let currentThinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" = "off";
 let customEntryRendererAvailable = true;
 let customEntryRendererVersion = 1;
 
 const PREVIEW_HOST_ID = "00000000-0000-4000-8000-000000000001";
-const previewRuntime = new Map<
-  SessionId,
-  { isStreaming: boolean; sessionEpoch: number; snapshotSequence: number }
->();
+type PreviewRuntime = {
+  isStreaming: boolean;
+  sessionEpoch: number;
+  snapshotSequence: number;
+  transportSequence: number;
+  publicationSequence: number;
+  journalSequence: number;
+  rendererGeneration?: number;
+  recentOutcomes: IntentOutcome[];
+  operationJournal: OperationJournalRecord[];
+  intentPayloads: Map<string, string>;
+};
+
+const previewRuntime = new Map<SessionId, PreviewRuntime>();
 
 type Listener = (payload: unknown) => void;
 const listeners = new Map<string, Set<Listener>>();
@@ -97,14 +118,15 @@ const previewHooks = {
     customEntryRendererAvailable = available;
     customEntryRendererVersion = version;
     const activeId = useSessionsStore.getState().activeSessionId ?? DEMO_SESSION_ID;
-    const runtime = previewRuntime.get(activeId) ?? {
-      isStreaming: false,
-      sessionEpoch: 0,
-      snapshotSequence: 0,
-    };
+    const runtime = runtimeFor(activeId);
     runtime.sessionEpoch++;
     runtime.snapshotSequence = 0;
-    previewRuntime.set(activeId, runtime);
+    runtime.transportSequence = 1;
+    runtime.publicationSequence = 0;
+    runtime.journalSequence = 0;
+    runtime.recentOutcomes = [];
+    runtime.operationJournal = [];
+    runtime.intentPayloads.clear();
     useSessionsStore.getState().setSessionStatus(activeId, "starting");
     emitRuntimeState(activeId, runtime.isStreaming);
     useSessionsStore.getState().setSessionStatus(activeId, "ready");
@@ -120,6 +142,83 @@ function emit(channel: string, payload: unknown): void {
   const subs = listeners.get(channel);
   if (!subs) return;
   for (const cb of subs) cb(payload);
+}
+
+function runtimeFor(sessionId: SessionId): PreviewRuntime {
+  let runtime = previewRuntime.get(sessionId);
+  if (!runtime) {
+    runtime = {
+      isStreaming: false,
+      sessionEpoch: 0,
+      snapshotSequence: 0,
+      transportSequence: 1,
+      publicationSequence: 0,
+      journalSequence: 0,
+      recentOutcomes: [],
+      operationJournal: [],
+      intentPayloads: new Map(),
+    };
+    previewRuntime.set(sessionId, runtime);
+  }
+  return runtime;
+}
+
+function semanticSnapshot(sessionId: SessionId): SemanticSnapshot {
+  const runtime = runtimeFor(sessionId);
+  return {
+    owner: { hostInstanceId: PREVIEW_HOST_ID, sessionEpoch: runtime.sessionEpoch },
+    snapshotSequence: Math.max(1, runtime.snapshotSequence),
+    capturedAt: Date.now(),
+    sdk: {
+      isStreaming: runtime.isStreaming,
+      isIdle: !runtime.isStreaming,
+      isCompacting: false,
+      isRetrying: false,
+      retryAttempt: 0,
+      isBashRunning: false,
+    },
+    activity: {},
+    queues: { steering: [], followUp: [], steeringIntentIds: [], followUpIntentIds: [] },
+    custody: [],
+    editor: { revision: 0, text: "", attachments: [] },
+    activeIntents: [],
+    recentIntentOutcomes: runtime.recentOutcomes,
+    recentObservedOperations: [],
+    operationJournalLowWatermark: runtime.operationJournal[0]?.sequence ?? 0,
+    operationJournalHighWatermark: runtime.journalSequence,
+    operationJournalTruncated: false,
+    model: { id: currentModelId, provider: currentModelProvider },
+    thinkingLevel: currentThinkingLevel,
+    catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
+  };
+}
+
+function publishIntentOutcome(sessionId: SessionId, outcome: IntentOutcome): void {
+  const runtime = runtimeFor(sessionId);
+  runtime.snapshotSequence++;
+  runtime.transportSequence++;
+  runtime.journalSequence++;
+  runtime.recentOutcomes = [...runtime.recentOutcomes.slice(-19), outcome];
+  runtime.operationJournal = [
+    ...runtime.operationJournal.slice(-99),
+    { type: "intent_outcome", sequence: runtime.journalSequence, outcome },
+  ];
+  const snapshot = semanticSnapshot(sessionId);
+  const publication: RendererPublication = {
+    sessionId,
+    rendererGeneration: runtime.rendererGeneration ?? 0,
+    publicationSequence: ++runtime.publicationSequence,
+    plane: "semantic",
+    owner: snapshot.owner,
+    payload: {
+      owner: snapshot.owner,
+      transportSequence: runtime.transportSequence,
+      frameId: `preview-frame-${runtime.transportSequence}`,
+      records: [{ type: "intent_outcome", outcome }],
+      terminalSnapshot: snapshot,
+    },
+  };
+  emit("session.publication", publication);
 }
 
 // Faithful mimic of the real host's fullRender(true)-on-resize: the host
@@ -151,14 +250,9 @@ function emitEvent(event: Record<string, unknown>): void {
 }
 
 function emitRuntimeState(sessionId: SessionId, isStreaming: boolean): void {
-  const runtime = previewRuntime.get(sessionId) ?? {
-    isStreaming: false,
-    sessionEpoch: 0,
-    snapshotSequence: 0,
-  };
+  const runtime = runtimeFor(sessionId);
   runtime.isStreaming = isStreaming;
   runtime.snapshotSequence++;
-  previewRuntime.set(sessionId, runtime);
   const snapshot: AgentSessionSnapshot = {
     hostInstanceId: PREVIEW_HOST_ID,
     sessionEpoch: runtime.sessionEpoch,
@@ -170,7 +264,7 @@ function emitRuntimeState(sessionId: SessionId, isStreaming: boolean): void {
     isRetrying: false,
     retryAttempt: 0,
     isBashRunning: false,
-    model: { id: currentModelId, provider: "openrouter" },
+    model: { id: currentModelId, provider: currentModelProvider },
     thinkingLevel: currentThinkingLevel,
     sessionId,
     pendingMessageCount: 0,
@@ -488,11 +582,10 @@ async function streamPromptResponse(message: string): Promise<void> {
   emitRuntimeState(sessionId, false);
 }
 
-// ── Command handling ─────────────────────────────────────────────────────
+// ── Preview query/intent behavior ────────────────────────────────────────
 
-async function handleSendCommand(req: unknown): Promise<unknown> {
-  const { command } = req as { sessionId: SessionId; command: Record<string, unknown> };
-  const type = command.type as string;
+async function handlePreviewRequest(command: Record<string, unknown>): Promise<unknown> {
+  const type = String(command.type);
 
   switch (type) {
     case "prompt": {
@@ -726,6 +819,213 @@ async function handleSendCommand(req: unknown): Promise<unknown> {
   }
 }
 
+function currentOwner(sessionId: SessionId) {
+  const runtime = runtimeFor(sessionId);
+  return { hostInstanceId: PREVIEW_HOST_ID, sessionEpoch: runtime.sessionEpoch };
+}
+
+function hasCurrentOwner(
+  sessionId: SessionId,
+  owner: { hostInstanceId: string; sessionEpoch: number },
+): boolean {
+  const current = currentOwner(sessionId);
+  return (
+    owner.hostInstanceId === current.hostInstanceId && owner.sessionEpoch === current.sessionEpoch
+  );
+}
+
+async function handleQuery(envelope: {
+  sessionId: SessionId;
+  queryId: string;
+  expectedOwner: { hostInstanceId: string; sessionEpoch: number };
+  query: SessionQuery;
+}): Promise<unknown> {
+  if (!hasCurrentOwner(envelope.sessionId, envelope.expectedOwner)) {
+    throw new Error("Preview query owner is stale");
+  }
+  return {
+    queryId: envelope.queryId,
+    owner: currentOwner(envelope.sessionId),
+    queryType: envelope.query.type,
+    response: await handlePreviewRequest(envelope.query as unknown as Record<string, unknown>),
+  };
+}
+
+type PreviewIntentEnvelope = IntentEnvelope & { sessionId: SessionId };
+
+function outcomeFor(
+  envelope: PreviewIntentEnvelope,
+  state: IntentOutcome["state"],
+  error?: string,
+): IntentOutcome {
+  const base = {
+    intentId: envelope.intentId,
+    owner: currentOwner(envelope.sessionId),
+    state,
+    ...(error ? { error } : {}),
+  };
+  const intent = envelope.intent;
+  switch (intent.kind) {
+    case "interrupt":
+      return {
+        ...base,
+        kind: "interrupt",
+        result: { target: "streaming", interrupted: state === "completed" },
+      };
+    case "submit":
+      return {
+        ...base,
+        kind: "submit",
+        result: {
+          disposition: state === "completed" ? "completed" : "outcome_unknown",
+          editorRevision: intent.editorRevision,
+        },
+      };
+    case "compact":
+      return { ...base, kind: "compact", result: {} };
+    case "invokeCommand":
+      return { ...base, kind: "invokeCommand", result: { commandType: "preview" } };
+    case "runBash":
+      return { ...base, kind: "runBash", result: { started: state === "completed" } };
+    case "navigate":
+      return { ...base, kind: "navigate", result: { targetId: intent.targetId } };
+    case "setModel":
+      return {
+        ...base,
+        kind: "setModel",
+        result: { provider: intent.provider, modelId: intent.modelId },
+      };
+    case "setThinking":
+      return { ...base, kind: "setThinking", result: { level: intent.level } };
+    case "rename":
+      return { ...base, kind: "rename", result: { name: intent.name } };
+    case "reload":
+      return { ...base, kind: "reload", result: {} };
+  }
+}
+
+async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
+  let state: IntentOutcome["state"] = "completed";
+  let error: string | undefined;
+  try {
+    const intent: SessionIntent = envelope.intent;
+    switch (intent.kind) {
+      case "interrupt":
+        previewHooks.abortCalls++;
+        cancelPreviewStream();
+        emit("session.events", { sessionId: envelope.sessionId, events: [{ type: "agent_end" }] });
+        emitRuntimeState(envelope.sessionId, false);
+        break;
+      case "submit":
+        await streamPromptResponse(intent.text);
+        break;
+      case "compact":
+        await sleep(100);
+        break;
+      case "invokeCommand":
+        await sleep(50);
+        break;
+      case "runBash":
+        await handlePreviewRequest({ type: "bash", command: intent.command });
+        break;
+      case "navigate":
+        await handlePreviewRequest({ type: "navigate_tree", targetId: intent.targetId });
+        break;
+      case "setModel":
+        currentModelProvider = intent.provider;
+        await handlePreviewRequest({ type: "set_model", modelId: intent.modelId });
+        emitRuntimeState(envelope.sessionId, false);
+        break;
+      case "setThinking":
+        await handlePreviewRequest({ type: "set_thinking_level", level: intent.level });
+        emitRuntimeState(envelope.sessionId, false);
+        break;
+      case "rename":
+        emitEvent({ type: "session_info_changed", name: intent.name });
+        break;
+      case "reload":
+        await sleep(50);
+        break;
+    }
+  } catch (caught) {
+    state = "failed";
+    error = caught instanceof Error ? caught.message : String(caught);
+  }
+  publishIntentOutcome(envelope.sessionId, outcomeFor(envelope, state, error));
+}
+
+function dispatchIntent(envelope: PreviewIntentEnvelope): unknown {
+  if (!hasCurrentOwner(envelope.sessionId, envelope.expectedOwner)) {
+    return { status: "not_admitted", intentId: envelope.intentId, reason: "stale_owner" };
+  }
+  const runtime = runtimeFor(envelope.sessionId);
+  const fingerprint = JSON.stringify(envelope.intent);
+  const existing = runtime.intentPayloads.get(envelope.intentId);
+  if (existing !== undefined) {
+    return existing === fingerprint
+      ? {
+          status: "duplicate",
+          intentId: envelope.intentId,
+          owner: currentOwner(envelope.sessionId),
+        }
+      : {
+          status: "not_admitted",
+          intentId: envelope.intentId,
+          reason: "invalid",
+          invalidReason: "payload_conflict",
+        };
+  }
+  runtime.intentPayloads.set(envelope.intentId, fingerprint);
+  // A receipt confirms only dispatch admission. The terminal outcome is emitted
+  // on a later authority frame; receipt resolution never updates projection state.
+  setTimeout(() => void settleIntent(envelope), 0);
+  return {
+    status: "admitted",
+    intentId: envelope.intentId,
+    owner: currentOwner(envelope.sessionId),
+  };
+}
+
+function authorityAttach(
+  sessionId: SessionId,
+  rendererGeneration: number,
+): AuthorityAttachResponse {
+  const runtime = runtimeFor(sessionId);
+  runtime.rendererGeneration = rendererGeneration;
+  runtime.snapshotSequence = Math.max(1, runtime.snapshotSequence);
+  const snapshot = semanticSnapshot(sessionId);
+  const cursor = {
+    ...snapshot.owner,
+    transportSequence: runtime.transportSequence,
+    snapshotSequence: snapshot.snapshotSequence,
+  };
+  return {
+    baseline: {
+      sessionId,
+      rendererGeneration,
+      owner: snapshot.owner,
+      semantic: { sync: { state: "following", cursor }, snapshot },
+      operationJournal: runtime.operationJournal,
+      transcript: {
+        sync: { state: "following", cursor },
+        persistedHistoryCursor: null,
+        liveTailCursor: null,
+        overlapBoundary: null,
+      },
+      extensionUi: {
+        sync: { state: "following", cursor },
+        notifications: [],
+        statuses: {},
+        widgets: {},
+        dialogs: [],
+      },
+      panels: [],
+      publicationHighWatermark: runtime.publicationSequence,
+    },
+    replay: [],
+  };
+}
+
 const settingsState = {
   piBinaryPath: null as string | null,
   piEnv: {} as Record<string, string>,
@@ -946,6 +1246,31 @@ const stub = {
           snapshot: session?.runtimeSnapshot,
         };
       }
+      case "session.authorityAttach": {
+        const { sessionId, rendererGeneration } = req as {
+          sessionId: SessionId;
+          rendererGeneration: number;
+        };
+        return authorityAttach(sessionId, rendererGeneration);
+      }
+      case "session.query":
+        return handleQuery(req as Parameters<typeof handleQuery>[0]);
+      case "session.dispatchIntent":
+        return dispatchIntent(req as PreviewIntentEnvelope);
+      case "session.submit": {
+        const { sessionId, submission } = req as {
+          sessionId: SessionId;
+          submission: { intentId: string; editorRevision: number; text: string };
+        };
+        void streamPromptResponse(submission.text);
+        return {
+          intentId: submission.intentId,
+          hostInstanceId: PREVIEW_HOST_ID,
+          sessionEpoch: runtimeFor(sessionId).sessionEpoch,
+          editorRevision: submission.editorRevision,
+          disposition: "consumed",
+        };
+      }
       case "session.prepareClose":
         return { reviewToken: `preview-close-${Date.now()}`, checkpoint: {} };
       case "session.cancelClose":
@@ -1018,26 +1343,6 @@ const stub = {
       case "worktree.pickDirectory":
         // Stub: pretend the user picked a sibling worktree.
         return "/Users/me/code/my-repo-worktrees/swift-otter";
-      case "session.sendCommand": {
-        const request = req as {
-          requestId: string;
-          intentId?: string;
-          command: PiRpcCommand;
-          expectedHostInstanceId: string;
-          expectedSessionEpoch: number;
-        };
-        const raw = (await handleSendCommand(req)) as Record<string, unknown>;
-        return {
-          ...raw,
-          requestId: request.requestId,
-          ...(request.intentId ? { intentId: request.intentId } : {}),
-          commandType: request.command.type,
-          commandClass: commandPolicy(request.command).class,
-          hostInstanceId: request.expectedHostInstanceId,
-          sessionEpoch: request.expectedSessionEpoch,
-          disposition: "completed",
-        };
-      }
       case "session.escape": {
         const { sessionId, requestId } = req as { sessionId: SessionId; requestId: string };
         previewHooks.abortCalls++;
