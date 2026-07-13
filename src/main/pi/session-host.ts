@@ -213,6 +213,8 @@ export interface SessionHostEvents {
     kind: string;
     targetFile?: string;
   }) => void;
+  /** A pathless host discovered its newly-created session file before extension binding. */
+  initialSessionFile: (sessionFile: string) => void;
   transportGap: (expected: number, received: number) => void;
   controlSilence: () => void;
   submissionDisposition: (result: SubmissionResult) => void;
@@ -288,6 +290,7 @@ type HostWireMessage =
       kind: string;
       targetFile?: string;
     }
+  | { type: "initial_session_file"; sessionFile: string }
   | { type: "fatal_transition_error"; message: string };
 
 // biome-ignore lint/suspicious/noUnsafeDeclarationMerging: typed EventEmitter
@@ -1058,6 +1061,17 @@ export class SessionHost extends EventEmitter {
         break;
       }
 
+      case "initial_session_file": {
+        const discovered = z.object({ sessionFile: z.string().min(1) }).safeParse(msg);
+        if (discovered.success) {
+          (this.emit as (...args: unknown[]) => boolean)(
+            "initialSessionFile",
+            discovered.data.sessionFile,
+          );
+        }
+        break;
+      }
+
       case "authority_frame": {
         const frame = AuthorityFrameSchema.safeParse(msg.frame);
         if (!frame.success) {
@@ -1199,7 +1213,8 @@ export class SessionHost extends EventEmitter {
           transitionId: string;
           allowed: boolean;
           reason?: string;
-        },
+        }
+      | { type: "initial_session_file_permit"; allowed: boolean; reason?: string },
   ): void {
     if (this.proc.exitCode !== null || this.proc.killed || !this.proc.connected) return;
     try {
@@ -1422,6 +1437,15 @@ export class SessionHost extends EventEmitter {
     });
   }
 
+  /** Permit a pathless host to bind extensions only after main holds its file lock. */
+  sendInitialSessionFilePermit(allowed: boolean, reason?: string): void {
+    this.sendToHost({
+      type: "initial_session_file_permit",
+      allowed,
+      ...(reason !== undefined ? { reason } : {}),
+    });
+  }
+
   sendRendererDetached(rendererGeneration: number): void {
     if (!this.proc.connected) return;
     this.proc.send({ type: "renderer_detached", rendererGeneration });
@@ -1618,6 +1642,7 @@ export interface SessionHost {
       targetFile?: string;
     }) => void,
   ): this;
+  on(event: "initialSessionFile", listener: (sessionFile: string) => void): this;
   on(event: "transportGap", listener: (expected: number, received: number) => void): this;
   on(event: "controlSilence", listener: () => void): this;
   on(event: "submissionDisposition", listener: (result: SubmissionResult) => void): this;
@@ -1665,6 +1690,7 @@ export interface SessionHost {
       targetFile?: string;
     },
   ): boolean;
+  emit(event: "initialSessionFile", sessionFile: string): boolean;
   emit(event: "transportGap", expected: number, received: number): boolean;
   emit(event: "controlSilence"): boolean;
   emit(event: "submissionDisposition", result: SubmissionResult): boolean;

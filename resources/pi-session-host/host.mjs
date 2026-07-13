@@ -75,6 +75,24 @@ const hostInstanceId = crypto.randomUUID();
 let transportSequence = 0;
 const activeEpoch = 0;
 const transitionPermitWaiters = new Map();
+let initialSessionFilePermit = null;
+
+function requestInitialSessionFilePermit(sessionFile) {
+  if (initialSessionFilePermit) return initialSessionFilePermit.promise;
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  const timer = setTimeout(() => {
+    if (initialSessionFilePermit?.promise !== promise) return;
+    initialSessionFilePermit = null;
+    resolve({ allowed: false, reason: "initial session-file lock permit lost" });
+  }, 5_000);
+  timer.unref?.();
+  initialSessionFilePermit = { promise, resolve, timer };
+  send({ type: "initial_session_file", sessionFile });
+  return promise;
+}
 
 function requestMainTransitionPermit(request) {
   const transitionId = request?.transitionId;
@@ -505,6 +523,16 @@ async function handleInit(msg) {
 
     session = runtime.session;
 
+    // A new SessionManager chooses the path, so main cannot reserve it until
+    // the runtime reports it. Do that before binding extensions: their hooks
+    // are mutable work and must never run while another Pi-Vis owns the file.
+    if (!sessionFile && typeof session.sessionFile === "string" && session.sessionFile.length > 0) {
+      const permit = await requestInitialSessionFilePermit(session.sessionFile);
+      if (!permit.allowed) {
+        throw new Error(`Session file lock contention prevented activation: ${permit.reason}`);
+      }
+    }
+
     // Fail fast if this pi version does not expose the SDK surface the bridge
     // relies on, instead of crashing later.
     assertHostCapabilities(session, runtime);
@@ -732,6 +760,18 @@ process.on("message", async (msg) => {
         waiter.resolve({
           allowed: msg.allowed === true,
           reason: typeof msg.reason === "string" ? msg.reason : "transition denied",
+        });
+        break;
+      }
+
+      case "initial_session_file_permit": {
+        const waiter = initialSessionFilePermit;
+        if (!waiter) break;
+        clearTimeout(waiter.timer);
+        initialSessionFilePermit = null;
+        waiter.resolve({
+          allowed: msg.allowed === true,
+          reason: typeof msg.reason === "string" ? msg.reason : "initial session-file lock denied",
         });
         break;
       }

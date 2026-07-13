@@ -127,6 +127,8 @@ export interface SessionRecord {
         successorLocked: boolean;
       }
     | undefined;
+  /** Serializes a pathless host's discovered-file reservation before binding. */
+  _initialSessionFileReservation?: Promise<void> | undefined;
   _activating?: boolean | undefined;
   _activationDone?: Promise<void> | undefined;
   _resolveActivationDone?: (() => void) | undefined;
@@ -631,6 +633,20 @@ export class SessionRegistry {
         (error) =>
           proc.sendTransitionPermit(
             request.transitionId,
+            false,
+            error instanceof Error ? error.message : String(error),
+          ),
+      );
+    });
+    proc.on("initialSessionFile", (sessionFile) => {
+      if (!current()) return;
+      // The child waits for this reply before its initial extension binding.
+      // A contention denial is intentionally fatal startup admission, not a
+      // best-effort warning after mutable extension work has begun.
+      void this.permitInitialSessionFile(record, proc, sessionFile).then(
+        () => proc.sendInitialSessionFilePermit(true),
+        (error) =>
+          proc.sendInitialSessionFilePermit(
             false,
             error instanceof Error ? error.message : String(error),
           ),
@@ -3199,14 +3215,15 @@ export class SessionRegistry {
 
   noteSessionFile(sessionId: SessionId, sessionFile: string): void {
     const record = this.sessions.get(sessionId);
-    if (!record || record.sessionFile) return;
+    if (!record) return;
     const resolved = path.resolve(sessionFile);
-    if (this.byFile.has(resolved)) return;
-    // A live host may only discover a new file while its transition permit
-    // already holds that exact successor lock.
+    // Never accept a child-reported file that differs from the held primary
+    // lock, including after an initial reservation has already adopted a path.
     if (record._hasLock && record._lockPath !== resolved) {
       throw new Error("A held session lock cannot silently move to a discovered file");
     }
+    if (record.sessionFile) return;
+    if (this.byFile.has(resolved)) return;
     record.sessionFile = sessionFile;
     this.byFile.set(resolved, sessionId);
   }
@@ -3278,6 +3295,66 @@ export class SessionRegistry {
     record._hasLock = false;
     record._lockPath = undefined;
     record._transitionLock = undefined;
+    // A failed/retired activation must not retain a rejected reservation and
+    // block a later activation from attempting to acquire its file anew.
+    record._initialSessionFileReservation = undefined;
+  }
+
+  private async permitInitialSessionFile(
+    record: SessionRecord,
+    proc: SessionHost,
+    sessionFile: string,
+  ): Promise<void> {
+    const target = path.resolve(sessionFile);
+    const prior = record._initialSessionFileReservation;
+    if (prior) return prior;
+    const reservation = (async () => {
+      if (
+        this.sessions.get(record.sessionId) !== record ||
+        record.proc !== proc ||
+        record._dead ||
+        record._closing
+      ) {
+        throw new Error("Session lifecycle rejected initial session-file lock");
+      }
+      if (record.sessionFile) {
+        if (
+          path.resolve(record.sessionFile) !== target ||
+          !record._hasLock ||
+          record._lockPath !== target
+        ) {
+          throw new Error("Initial session file does not match the held advisory lock");
+        }
+        return;
+      }
+      const occupied = this.byFile.get(target);
+      if (occupied && occupied !== record.sessionId)
+        throw new Error("Target session file is already active");
+      try {
+        await this.lockPath(record, target);
+      } catch (error) {
+        throw new Error(
+          `Session file lock contention prevented activation: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      // Closing can race proper-lockfile's async acquisition. Do not leave a
+      // lock behind for a record that no longer owns a live host.
+      if (
+        this.sessions.get(record.sessionId) !== record ||
+        record.proc !== proc ||
+        record._dead ||
+        record._closing
+      ) {
+        this.unlockPath(target);
+        throw new Error("Session lifecycle changed while reserving initial session file");
+      }
+      record._hasLock = true;
+      record._lockPath = target;
+      record.sessionFile = target;
+      this.byFile.set(target, record.sessionId);
+    })();
+    record._initialSessionFileReservation = reservation;
+    return reservation;
   }
 
   private async permitTransition(

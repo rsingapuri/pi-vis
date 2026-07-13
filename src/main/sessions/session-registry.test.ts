@@ -19,6 +19,7 @@ function harness(
     failStartupAt?: number[];
     configureFake?: (fake: FakeHostProcess, spawnIndex: number) => void;
     unifiedClaimTimeoutMs?: number;
+    initialSessionFile?: string;
   } = {},
 ) {
   const runtimeStates: unknown[] = [];
@@ -30,6 +31,8 @@ function harness(
   const uiAcknowledgements: unknown[] = [];
   const panelEvents: unknown[] = [];
   const submissions: unknown[] = [];
+  const readyLocks: boolean[] = [];
+  const availableRuntimeLocks: boolean[] = [];
   const fakes: FakeHostProcess[] = [];
   const spawnArgs: string[][] = [];
   const spawnCwds: Array<string | undefined> = [];
@@ -44,6 +47,23 @@ function harness(
     fakes.push(fake);
     fake.on("message", (message) => {
       if ((message as { type?: string }).type !== "init") return;
+      if (options.initialSessionFile) {
+        const readyAfterPermit = (permit: { type?: string; allowed?: boolean }) => {
+          if (permit.type !== "initial_session_file_permit") return;
+          fake.off("message", readyAfterPermit);
+          queueMicrotask(() => {
+            if (permit.allowed) fake.emitReady("0.80.6");
+            else fake.emitError("initial session-file lock denied");
+          });
+        };
+        fake.on("message", readyAfterPermit);
+        // SessionRegistry attaches host listeners immediately after
+        // construction, before the real child can finish runtime creation.
+        queueMicrotask(() => {
+          fake.emitWire({ type: "initial_session_file", sessionFile: options.initialSessionFile });
+        });
+        return;
+      }
       queueMicrotask(() => {
         if (options.failStartupAt?.includes(spawnIndex)) fake.emitError("direct host unavailable");
         else fake.emitReady("0.80.6");
@@ -54,10 +74,17 @@ function harness(
   const registry = new SessionRegistry(
     (_sid, event) => events.push(event),
     (...args) => uiRequests.push(args),
-    (...args) => statuses.push(args),
+    (sid, status, ...rest) => {
+      statuses.push([sid, status, ...rest]);
+      if (status === "ready") readyLocks.push(registry.getSession(sid)?._hasLock === true);
+    },
     (...args) => panelEvents.push(args),
     (...args) => unifiedRequests.push(args),
-    (_sid, state) => runtimeStates.push(state),
+    (sid, state) => {
+      runtimeStates.push(state);
+      if (state.availability === "available")
+        availableRuntimeLocks.push(registry.getSession(sid)?._hasLock === true);
+    },
     (...args) => submissions.push(args),
     (...args) => restorations.push(args),
     (...args) => uiAcknowledgements.push(args),
@@ -79,6 +106,8 @@ function harness(
     uiRequests,
     uiAcknowledgements,
     panelEvents,
+    readyLocks,
+    availableRuntimeLocks,
     fakes,
     spawnArgs,
     spawnCwds,
@@ -358,6 +387,59 @@ describe("SessionRegistry direct AgentSession authority", () => {
     expect(h.registry.getSession(id)?.status).toBe("failed");
     expect(h.registry.getSession(id)?.proc).toBeUndefined();
     h.registry.stopAll();
+  });
+
+  it("reserves a pathless child-discovered file before available/ready publication and rejects a competing registry", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pivis-initial-lock-"));
+    const sessionFile = path.join(dir, "new.jsonl");
+    await writeFile(sessionFile, "");
+    const first = harness({ initialSessionFile: sessionFile });
+    const firstId = first.registry.openSession(dir);
+    let second: ReturnType<typeof harness> | undefined;
+    let secondId: SessionId | undefined;
+    try {
+      await first.registry.activateSession(firstId, "/tmp/pi", {});
+
+      expect(first.registry.getSession(firstId)).toMatchObject({
+        sessionFile: path.resolve(sessionFile),
+        _lockPath: path.resolve(sessionFile),
+        _hasLock: true,
+        status: "ready",
+      });
+      expect(first.availableRuntimeLocks.length).toBeGreaterThan(0);
+      expect(first.availableRuntimeLocks.every(Boolean)).toBe(true);
+      expect(first.readyLocks).toEqual([true]);
+      expect(
+        first.fakes[0]!.sent.find((message) => message.type === "initial_session_file_permit"),
+      ).toMatchObject({ allowed: true });
+
+      second = harness({ initialSessionFile: sessionFile });
+      secondId = second.registry.openSession(dir);
+      await expect(second.registry.activateSession(secondId, "/tmp/pi", {})).rejects.toThrow(
+        "initial session-file lock denied",
+      );
+      expect(second.readyLocks).toEqual([]);
+      expect(second.availableRuntimeLocks).toEqual([]);
+      expect(
+        second.fakes[0]!.sent.find((message) => message.type === "initial_session_file_permit"),
+      ).toMatchObject({ allowed: false });
+
+      // The rejected reservation is cleared by activation rollback. Once the
+      // owner releases its lock, this same registry record may retry cleanly.
+      first.registry.stopAll();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await second.registry.activateSession(secondId, "/tmp/pi", {});
+      expect(second.registry.getSession(secondId)).toMatchObject({
+        _hasLock: true,
+        _lockPath: path.resolve(sessionFile),
+        status: "ready",
+      });
+    } finally {
+      first.registry.stopAll();
+      second?.registry.stopAll();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("keeps the predecessor lock when a permitted successor rolls back", async () => {

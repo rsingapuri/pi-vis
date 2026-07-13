@@ -90,6 +90,17 @@ describe("SessionHost", () => {
     vi.useRealTimers();
   });
 
+  it("forwards a pathless session-file lock request and replies with a permit", () => {
+    const discovered = vi.fn();
+    host.on("initialSessionFile", discovered);
+
+    fake.emitWire({ type: "initial_session_file", sessionFile: "/tmp/new-session.jsonl" });
+
+    expect(discovered).toHaveBeenCalledWith("/tmp/new-session.jsonl");
+    host.sendInitialSessionFilePermit(true);
+    expect(fake.sent).toContainEqual({ type: "initial_session_file_permit", allowed: true });
+  });
+
   it("validates opaque authority frames and requests a serialized attach baseline", async () => {
     fake.emitReady("0.80.6");
     await host.waitForReady();
