@@ -997,11 +997,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           });
         };
         const deps = {
-          dispatch: (
-            sid: SessionId,
-            intent: SessionIntent,
-            intentId?: string,
-          ) => {
+          dispatch: (sid: SessionId, intent: SessionIntent, intentId?: string) => {
             const observation = intentObservation(sid);
             if (!observation)
               return Promise.reject(new InputNotConsumedError("Runtime snapshot is unavailable"));

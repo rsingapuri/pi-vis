@@ -80,7 +80,8 @@ function publishIntentOutcome(envelope: IntentEnvelope): void {
   const sessionId = envelope.sessionId as SessionId;
   const projection = useSessionsStore.getState().sessions.get(sessionId)?.authorityProjection;
   const prior = projection?.authoritativeSnapshot;
-  const cursor = projection?.semantic.state === "following" ? projection.semantic.cursor : undefined;
+  const cursor =
+    projection?.semantic.state === "following" ? projection.semantic.cursor : undefined;
   if (!prior || !cursor) throw new Error("intent outcome requires following authority");
   const base = {
     intentId: envelope.intentId,
@@ -106,7 +107,8 @@ function publishIntentOutcome(envelope: IntentEnvelope): void {
       outcome = { ...base, kind: envelope.intent.kind } as IntentOutcome;
   }
   const currentAttachments =
-    useSessionsStore.getState().sessions.get(sessionId)?.editorAttachments ?? prior.editor.attachments;
+    useSessionsStore.getState().sessions.get(sessionId)?.editorAttachments ??
+    prior.editor.attachments;
   const snapshot = {
     ...prior,
     snapshotSequence: prior.snapshotSequence + 1,
