@@ -1855,21 +1855,35 @@ const buildSessionsStore = (
   },
 
   applyAuthorityPublication: (publication) => {
-    set((state) => {
-      const sessionId = publication.sessionId as SessionId;
-      const current = state.sessions.get(sessionId);
-      if (!current) return {};
-      const authorityProjection = reduceAuthorityPublication(
-        current.authorityProjection ?? createRendererAuthorityState(),
-        publication,
-      );
-      if (authorityProjection === current.authorityProjection) return {};
-      const sessions = new Map(state.sessions);
-      sessions.set(sessionId, {
-        ...applyAuthoritySemanticProjection(current, authorityProjection),
-        authorityProjection,
+    const sessionId = publication.sessionId as SessionId;
+    const events =
+      publication.plane === "semantic"
+        ? publication.payload.records.flatMap((record) =>
+            record.type === "event" ? [record.event] : [],
+          )
+        : [];
+    // Transcript records and the complete resulting semantic snapshot are one
+    // renderer commit. The transcript remains presentation-only, but cannot
+    // visually race the cursor that names its semantic boundary.
+    let accepted = false;
+    runAtomically(() => {
+      set((state) => {
+        const current = state.sessions.get(sessionId);
+        if (!current) return {};
+        const authorityProjection = reduceAuthorityPublication(
+          current.authorityProjection ?? createRendererAuthorityState(),
+          publication,
+        );
+        if (authorityProjection === current.authorityProjection) return {};
+        accepted = true;
+        const sessions = new Map(state.sessions);
+        sessions.set(sessionId, {
+          ...applyAuthoritySemanticProjection(current, authorityProjection),
+          authorityProjection,
+        });
+        return { sessions };
       });
-      return { sessions };
+      if (accepted && events.length > 0) get().applyEvents(sessionId, events);
     });
   },
 
