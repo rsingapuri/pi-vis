@@ -1328,7 +1328,12 @@ export function createStateAuthority({
     const payloadBytes = intentPayloadBytes(intent);
     const payloadLimit = Math.max(1, Number(dispatchedIntentPayloadBytes) || 1);
     if (payloadBytes > payloadLimit) {
-      return Promise.resolve({ status: "not_admitted", intentId, reason: "payload_too_large" });
+      return Promise.resolve({
+        status: "not_admitted",
+        intentId,
+        reason: "invalid",
+        invalidReason: "payload_too_large",
+      });
     }
     // A digest retains duplicate protection without retaining payload/image bytes.
     const fingerprint = crypto
@@ -1358,7 +1363,12 @@ export function createStateAuthority({
       dispatchedIntentTruncated = true;
     }
     if (dispatchedIntents.size >= intentCapacity) {
-      return Promise.resolve({ status: "not_admitted", intentId, reason: "capacity" });
+      return Promise.resolve({
+        status: "not_admitted",
+        intentId,
+        reason: "invalid",
+        invalidReason: "capacity",
+      });
     }
     const entry = {
       intentId,
