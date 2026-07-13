@@ -15,6 +15,9 @@ export function createStateAuthority({
   // is migrated, so this authority can be introduced without splitting an
   // existing host epoch.
   sendFrame = null,
+  // Presentation traffic is deliberately independent of semantic frames.
+  // It is opaque to main and is the sole sequenced route for transcript/UI.
+  sendPresentation = null,
   operationJournalCapacity = 128,
   recentOutcomeCapacity = 64,
   getCatalog = () => ({}),
@@ -33,6 +36,17 @@ export function createStateAuthority({
   // unrelated transcript/UI/panel traffic, so its global sequence cannot be
   // used as a semantic-plane cursor.
   let semanticTransportSequence = 0;
+  const presentationTransportSequence = {
+    transcript: 1,
+    extensionUi: 1,
+    panel: 1,
+  };
+  const transcriptPresentation = {
+    persistedHistoryCursor: initialSession.sessionFile ?? null,
+    liveTailCursor: null,
+    overlapBoundary: initialSession.sessionFile ? `persisted:${initialSession.sessionFile}` : null,
+    currentStreamingMessage: undefined,
+  };
   let stopped = false;
   // `actualCompaction` is the compatibility projection of the observed
   // lifecycle below. It is deliberately not a guess that events are complete.
@@ -548,7 +562,8 @@ export function createStateAuthority({
   function authorityRecords(records) {
     const owner = semanticOwner();
     return records.flatMap((recordValue) => {
-      if (recordValue?.type === "event") return [{ type: "event", event: recordValue.event }];
+      // Pi events are transcript presentation records. Keeping them out of
+      // semantic frames prevents a legacy/event path from implying liveness.
       if (recordValue?.type === "intent_outcome" && recordValue.outcome) {
         return [{ type: "intent_outcome", outcome: structuredClone(recordValue.outcome) }];
       }
@@ -1279,6 +1294,58 @@ export function createStateAuthority({
     void schedule("custody", drainCustody);
   }
 
+  function presentationCursor(plane) {
+    const transportSequence = ++presentationTransportSequence[plane];
+    return {
+      ...semanticOwner(),
+      transportSequence,
+      snapshotSequence: Math.max(1, snapshotSequence),
+    };
+  }
+
+  function publishTranscript(entries) {
+    if (typeof sendPresentation !== "function") return;
+    const cursor = presentationCursor("transcript");
+    transcriptPresentation.liveTailCursor = String(cursor.transportSequence);
+    const event = entries[entries.length - 1];
+    if (event?.type === "message_start" || event?.type === "message_update") {
+      transcriptPresentation.currentStreamingMessage = structuredClone(event.message ?? event);
+    } else if (event?.type === "message_end") {
+      transcriptPresentation.currentStreamingMessage = undefined;
+    }
+    sendPresentation({
+      plane: "transcript",
+      owner: semanticOwner(),
+      payload: {
+        kind: "delta",
+        cursor,
+        liveTailCursor: transcriptPresentation.liveTailCursor,
+        entries: structuredClone(entries),
+      },
+    });
+  }
+
+  function publishExtensionUi(request) {
+    if (typeof sendPresentation !== "function") return;
+    const cursor = presentationCursor("extensionUi");
+    sendPresentation({
+      plane: "extensionUi",
+      owner: semanticOwner(),
+      payload: { kind: "request", cursor, request: structuredClone(request) },
+    });
+  }
+
+  function publishPanel(payload) {
+    if (typeof sendPresentation !== "function") return;
+    const cursor = presentationCursor("panel");
+    const owner = semanticOwner();
+    const resolved =
+      typeof payload === "function"
+        ? payload(structuredClone(cursor), structuredClone(owner))
+        : { ...payload, cursor };
+    sendPresentation({ plane: "panel", owner, payload: resolved });
+  }
+
   function observeEvent(event) {
     let publishedEvent = event;
     if (event?.type === "message_start" && event.message?.role === "user") {
@@ -1355,7 +1422,11 @@ export function createStateAuthority({
       }
     }
     actualCompaction = compactionBarrierOpen();
-    return commitSemanticFrame([{ type: "event", event: publishedEvent }]);
+    // The semantic commit retains only semantic facts. The original event is
+    // published exactly once on the transcript plane with its own cursor.
+    const frame = commitSemanticFrame([]);
+    publishTranscript([publishedEvent]);
+    return frame;
   }
 
   function restoreCustody(items, message) {
@@ -1744,6 +1815,16 @@ export function createStateAuthority({
         transportSequence: semanticTransportSequence,
         snapshotSequence: semantic.snapshotSequence,
       };
+      const transcriptCursor = {
+        ...owner,
+        transportSequence: presentationTransportSequence.transcript,
+        snapshotSequence: semantic.snapshotSequence,
+      };
+      const extensionUiCursor = {
+        ...owner,
+        transportSequence: presentationTransportSequence.extensionUi,
+        snapshotSequence: semantic.snapshotSequence,
+      };
       const catalog = semantic.catalog;
       const journal = operationJournal
         .filter((entry) => entry.kind === "compaction")
@@ -1791,13 +1872,20 @@ export function createStateAuthority({
         semantic: { sync: { state: "following", cursor }, snapshot: semantic },
         operationJournal: journal,
         transcript: {
-          sync: { state: "following", cursor: { ...cursor } },
-          persistedHistoryCursor: session.sessionFile ?? null,
-          liveTailCursor: null,
-          overlapBoundary: null,
+          sync: { state: "following", cursor: transcriptCursor },
+          persistedHistoryCursor: transcriptPresentation.persistedHistoryCursor,
+          liveTailCursor: transcriptPresentation.liveTailCursor,
+          overlapBoundary: transcriptPresentation.overlapBoundary,
+          ...(transcriptPresentation.currentStreamingMessage !== undefined
+            ? {
+                currentStreamingMessage: structuredClone(
+                  transcriptPresentation.currentStreamingMessage,
+                ),
+              }
+            : {}),
         },
         extensionUi: {
-          sync: { state: "following", cursor: { ...cursor } },
+          sync: { state: "following", cursor: extensionUiCursor },
           notifications: catalog.notifications ?? [],
           statuses: catalog.statuses ?? {},
           widgets: catalog.widgets ?? {},
@@ -1932,6 +2020,8 @@ export function createStateAuthority({
     requestAuthorityAttach,
     semanticSnapshot,
     observeEvent,
+    publishExtensionUi,
+    publishPanel,
     submit,
     dispatchIntent,
     beginCompactionInvocation,

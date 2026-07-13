@@ -148,6 +148,7 @@ export function setupCommandBridge({
   // serializes these only after prior ingress commits.
   authorityPresentation = {},
   sendFrame = null,
+  sendPresentation = null,
   // Main owns target validation and advisory locks. The child uses this only
   // after freezing its serialized semantic ingress.
   // Unit-level bridge consumers without a parent transport retain the legacy
@@ -187,6 +188,7 @@ export function setupCommandBridge({
     initialSession: session,
     sendControl,
     sendFrame,
+    sendPresentation,
     sendRecord: (record) => {
       if (record.type === "event") send({ type: "event", event: record.event });
       else if (record.type === "submission")

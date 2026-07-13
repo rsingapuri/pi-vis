@@ -157,6 +157,40 @@ describe("RendererPublicationRouter", () => {
     );
   });
 
+  it("keeps an unrelated plane following after a transcript source gap", async () => {
+    const delivered: RendererPublication[] = [];
+    const router = new RendererPublicationRouter("session" as SessionId, (item) =>
+      delivered.push(item),
+    );
+    router.setExpectedOwner(owner());
+    const current = baseline(owner(), 1);
+    current.transcript.sync = {
+      state: "following",
+      cursor: { ...owner(), transportSequence: 1, snapshotSequence: 1 },
+    };
+    await router.attach(1, async () => current);
+
+    router.route({
+      plane: "transcript",
+      owner: owner(),
+      payload: {
+        kind: "delta",
+        cursor: { ...owner(), transportSequence: 3, snapshotSequence: 1 },
+        liveTailCursor: "3",
+        entries: [],
+      },
+    });
+    const semanticAccepted = router.route({
+      plane: "semantic",
+      owner: owner(),
+      payload: frame(owner(), 2),
+    });
+
+    expect(router.synchronizing).toBe(true);
+    expect(semanticAccepted).toBe(true);
+    expect(delivered.map((item) => item.plane)).toEqual(["transcript", "semantic"]);
+  });
+
   it("bounds attach buffering and retries from a fresh baseline after overflow", async () => {
     const router = new RendererPublicationRouter("session" as SessionId, () => {}, {
       maxBufferedPublications: 1,

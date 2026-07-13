@@ -4,6 +4,7 @@ import {
   CacheMissNoticeEventSchema,
   type KnownPiEvent,
   type PiEvent,
+  PiEventSchema,
 } from "@shared/pi-protocol/events.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
 import type { PanelEvent } from "@shared/pi-protocol/panel-events.js";
@@ -1853,9 +1854,45 @@ const buildSessionsStore = (
       if (authorityProjection === current.authorityProjection) return {};
       following = authorityProjection.semantic.state === "following";
       const sessions = new Map(state.sessions);
+      const extension = authorityProjection.extensionUiBaseline;
+      const authorityPanels = [...authorityProjection.panels.values()];
+      const customPanel = authorityPanels.find((panel) => !panel.baseline.unified);
+      const unifiedPanel = authorityPanels.find((panel) => panel.baseline.unified);
       sessions.set(sessionId, {
         ...applyAuthoritySemanticProjection(current, authorityProjection),
         authorityProjection,
+        panel: customPanel
+          ? {
+              id: customPanel.baseline.panelId,
+              overlay: customPanel.baseline.overlay,
+              hostInstanceId: customPanel.baseline.owner.hostInstanceId,
+              sessionEpoch: customPanel.baseline.owner.sessionEpoch,
+              buffer: [...customPanel.ansi],
+            }
+          : undefined,
+        unifiedPanel: unifiedPanel
+          ? {
+              id: unifiedPanel.baseline.panelId,
+              hostInstanceId: unifiedPanel.baseline.owner.hostInstanceId,
+              sessionEpoch: unifiedPanel.baseline.owner.sessionEpoch,
+              buffer: [...unifiedPanel.ansi],
+            }
+          : undefined,
+        ...(extension
+          ? {
+              pendingDialogs: extension.dialogs
+                .filter((dialog) => dialog.inputPending && !dialog.acknowledged)
+                .map((dialog) => dialog.request),
+              statusSegments: new Map(Object.entries(extension.statuses)),
+              widgets: new Map(
+                Object.entries(extension.widgets).map(([key, lines]) => [key, [...lines]]),
+              ),
+              toasts: extension.notifications.map((notification) => ({
+                ...notification,
+                createdAt: Date.now(),
+              })),
+            }
+          : {}),
       });
       return { sessions };
     });
@@ -1866,15 +1903,19 @@ const buildSessionsStore = (
 
   applyAuthorityPublication: (publication) => {
     const sessionId = publication.sessionId as SessionId;
+    // Transcript is a separate presentation plane. Semantic frames intentionally
+    // carry no Pi event records, so no event can become a liveness authority.
     const events =
-      publication.plane === "semantic"
-        ? publication.payload.records.flatMap((record) =>
-            record.type === "event" ? [record.event] : [],
-          )
+      publication.plane === "transcript" && publication.payload.kind === "delta"
+        ? publication.payload.entries.flatMap((entry) => {
+            const parsed = PiEventSchema.safeParse(entry);
+            return parsed.success ? [parsed.data] : [];
+          })
         : [];
-    // Transcript records and the complete resulting semantic snapshot are one
-    // renderer commit. The transcript remains presentation-only, but cannot
-    // visually race the cursor that names its semantic boundary.
+    const uiRequest =
+      publication.plane === "extensionUi" && publication.payload.kind === "request"
+        ? publication.payload.request
+        : undefined;
     let accepted = false;
     runAtomically(() => {
       set((state) => {
@@ -1887,13 +1928,34 @@ const buildSessionsStore = (
         if (authorityProjection === current.authorityProjection) return {};
         accepted = true;
         const sessions = new Map(state.sessions);
+        const authorityPanels = [...authorityProjection.panels.values()];
+        const customPanel = authorityPanels.find((panel) => !panel.baseline.unified);
+        const unifiedPanel = authorityPanels.find((panel) => panel.baseline.unified);
         sessions.set(sessionId, {
           ...applyAuthoritySemanticProjection(current, authorityProjection),
           authorityProjection,
+          panel: customPanel
+            ? {
+                id: customPanel.baseline.panelId,
+                overlay: customPanel.baseline.overlay,
+                hostInstanceId: customPanel.baseline.owner.hostInstanceId,
+                sessionEpoch: customPanel.baseline.owner.sessionEpoch,
+                buffer: [...customPanel.ansi],
+              }
+            : undefined,
+          unifiedPanel: unifiedPanel
+            ? {
+                id: unifiedPanel.baseline.panelId,
+                hostInstanceId: unifiedPanel.baseline.owner.hostInstanceId,
+                sessionEpoch: unifiedPanel.baseline.owner.sessionEpoch,
+                buffer: [...unifiedPanel.ansi],
+              }
+            : undefined,
         });
         return { sessions };
       });
       if (accepted && events.length > 0) get().applyEvents(sessionId, events);
+      if (accepted && uiRequest) get().addUiRequest(sessionId, uiRequest);
     });
   },
 

@@ -676,6 +676,12 @@ export class SessionRegistry {
         payload: frame,
       });
     });
+    proc.on("authorityPublication", (publication) => {
+      if (!current()) return;
+      // Per-plane source continuity belongs to the child. Main only fences
+      // owner identity and assigns renderer publication sequence.
+      this.routeAuthorityPublication(record.sessionId, publication);
+    });
     proc.on("transitionBatch", (batch) => {
       if (!current()) return;
       const allowInitial =

@@ -389,6 +389,12 @@ export function App(): React.ReactElement {
   // Subscribe to IPC events
   useEffect(() => {
     const unsubEvent = window.pivis.on("session.events", ({ sessionId, events }) => {
+      const projection = useSessionsStore
+        .getState()
+        .sessions.get(sessionId as SessionId)?.authorityProjection;
+      // A legacy arrival is diagnostic only after a sequenced transcript plane
+      // exists; it can never restore that plane to following.
+      if (projection?.transcript.state === "following") return;
       applyEvents(sessionId as SessionId, events);
     });
 
@@ -403,6 +409,10 @@ export function App(): React.ReactElement {
     });
 
     const unsubUiReq = window.pivis.on("session.uiRequest", ({ sessionId, request }) => {
+      const projection = useSessionsStore
+        .getState()
+        .sessions.get(sessionId as SessionId)?.authorityProjection;
+      if (projection?.extensionUi.state === "following") return;
       addUiRequest(sessionId as SessionId, request);
     });
     const unsubUiAck = window.pivis.on("session.uiAcknowledged", ({ sessionId, operationId }) => {
@@ -463,6 +473,12 @@ export function App(): React.ReactElement {
     );
 
     const unsubPanel = window.pivis.on("session.panelEvent", ({ sessionId, event }) => {
+      const projection = useSessionsStore
+        .getState()
+        .sessions.get(sessionId as SessionId)?.authorityProjection;
+      const panelKey = "panelId" in event ? `panel:${event.panelId}` : undefined;
+      // A legacy ANSI/event cannot make a sequenced panel following again.
+      if (panelKey ? projection?.panels.has(panelKey) : projection?.panels.size) return;
       handlePanelEvent(sessionId as SessionId, event);
     });
 

@@ -127,6 +127,10 @@ function sendControl(payload) {
 }
 
 function sendUiRequest(req) {
+  // Extension UI has one canonical presentation route once authority exists.
+  // The compatibility message remains available to older renderers but is not
+  // used to restore a following authority projection.
+  runtimeAuthority?.publishExtensionUi?.(req);
   send(req);
 }
 
@@ -156,6 +160,14 @@ const panelBridge = {
       rows: 0,
     });
     const baseline = panelReconstruction.open(panelId);
+    runtimeAuthority?.publishPanel?.({
+      kind: "reset",
+      panelKey: `panel:${panelId}`,
+      renderRevision: baseline.revision,
+      panelId,
+      overlay,
+      unified: unified === true,
+    });
     send({
       type: "panel_open",
       panelId,
@@ -172,8 +184,15 @@ const panelBridge = {
     // an unbounded leak for the life of the host process.
     const panel = panels.get(panelId);
     if (panel) {
+      panelReconstruction.write(panelId, data);
       // ANSI deltas are not a keyframe and are never retained as one. A fresh
       // xterm is rebuilt solely by the forced pi-tui repaint below.
+      runtimeAuthority?.publishPanel?.({
+        kind: "ansi_delta",
+        panelKey: `panel:${panelId}`,
+        data,
+        renderRevision: panelReconstruction.baseline(panelId)?.revision ?? 0,
+      });
       send({ type: "panel_data", panelId, data });
     }
   },
@@ -181,6 +200,7 @@ const panelBridge = {
   closePanel(panelId) {
     const p = panels.get(panelId);
     if (p) {
+      runtimeAuthority?.publishPanel?.({ kind: "close", panelKey: `panel:${panelId}` });
       send({ type: "panel_close", panelId });
       panelReconstruction.close(panelId);
       panels.delete(panelId);
@@ -292,6 +312,11 @@ const panelBridge = {
     // reconstructable keyframe. The renderer acks only after applying all
     // preceding bytes, which fences input until that point.
     const baseline = panelReconstruction.requireRepaint(panelId);
+    runtimeAuthority?.publishPanel?.({
+      kind: "repaint_required",
+      panelKey: `panel:${panelId}`,
+      reason: "repaint_required",
+    });
     send({ type: "panel_data", panelId, data: "\u001bc" });
     p.resizeHandler?.(cols, rows, true);
     send({ type: "panel_repaint", panelId, revision: baseline.revision });
@@ -548,6 +573,7 @@ async function handleInit(msg) {
       // Frames are opaque semantic commits. `send` envelopes the child frame
       // without re-emitting its records/snapshot on compatibility channels.
       sendFrame: (frame) => send({ type: "authority_frame", frame }),
+      sendPresentation: (publication) => send({ type: "authority_publication", publication }),
       authorityPresentation: {
         dialogs: (rendererGeneration) =>
           dialogResolver?.pendingSnapshot?.(rendererGeneration) ?? [],
@@ -773,6 +799,30 @@ process.on("message", async (msg) => {
 
       case "panel_repaint_ack": {
         const result = panelBridge.acknowledgeRepaint(msg.panelId, msg.revision);
+        if (result.acknowledged) {
+          const panel = panels.get(msg.panelId);
+          const keyframe = panelReconstruction.keyframe(msg.panelId);
+          if (panel && keyframe) {
+            runtimeAuthority?.publishPanel?.((cursor, owner) => ({
+              kind: "keyframe",
+              cursor,
+              panel: {
+                panelKey: `panel:${msg.panelId}`,
+                panelId: msg.panelId,
+                owner,
+                sync: { state: "following", cursor },
+                overlay: panel.overlay === true,
+                unified: panel.unified === true,
+                inputAcknowledgedThrough: panel.inputSequence,
+                keyframe: {
+                  kind: "keyframe",
+                  ansi: keyframe.ansi,
+                  renderRevision: keyframe.revision,
+                },
+              },
+            }));
+          }
+        }
         send({ type: "response", id: msg.id, success: true, data: result });
         break;
       }

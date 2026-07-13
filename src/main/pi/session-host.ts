@@ -33,6 +33,8 @@ import {
   AuthorityAttachBaselineSchema,
   type AuthorityFrame,
   AuthorityFrameSchema,
+  type AuthorityPresentationPublication,
+  AuthorityPresentationPublicationSchema,
   type EscapeResult,
   HostEnvelopeSchema,
   type LifecyclePermitOperation,
@@ -222,6 +224,8 @@ export interface SessionHostEvents {
   intentOutcome: (outcome: unknown) => void;
   /** Opaque validated child semantic commit; main does not reduce it. */
   authorityFrame: (frame: AuthorityFrame) => void;
+  /** Opaque child presentation publication with an independent plane cursor. */
+  authorityPublication: (publication: AuthorityPresentationPublication) => void;
   unresponsive: () => void;
 }
 
@@ -273,6 +277,7 @@ type HostWireMessage =
   | { type: "submission_disposition"; result: SubmissionResult }
   | { type: "intent_outcome"; outcome: unknown }
   | { type: "authority_frame"; frame: unknown }
+  | { type: "authority_publication"; publication: unknown }
   | { type: "queue_restoration"; restorationId: string; [key: string]: unknown }
   | { type: "ui_ack"; operationId: string }
   | { type: "renderer_cancelled"; rendererGeneration: number }
@@ -1069,6 +1074,24 @@ export class SessionHost extends EventEmitter {
         break;
       }
 
+      case "authority_publication": {
+        const publication = AuthorityPresentationPublicationSchema.safeParse(msg.publication);
+        if (!publication.success) {
+          this.emitError(
+            new Error(`Invalid authority presentation publication: ${publication.error.message}`),
+          );
+          return;
+        }
+        if (
+          publication.data.owner.hostInstanceId !== this.hostInstanceId ||
+          publication.data.owner.sessionEpoch !== this.sessionEpoch
+        ) {
+          return;
+        }
+        this.emit("authorityPublication", publication.data);
+        break;
+      }
+
       case "queue_restoration": {
         this.emit("queueRestoration", msg);
         break;
@@ -1621,6 +1644,10 @@ export interface SessionHost {
   on(event: "submissionDisposition", listener: (result: SubmissionResult) => void): this;
   on(event: "intentOutcome", listener: (outcome: unknown) => void): this;
   on(event: "authorityFrame", listener: (frame: AuthorityFrame) => void): this;
+  on(
+    event: "authorityPublication",
+    listener: (publication: AuthorityPresentationPublication) => void,
+  ): this;
   on(event: "queueRestoration", listener: (payload: unknown) => void): this;
   on(event: "uiAcknowledged", listener: (operationId: string) => void): this;
   on(event: "lifecycleUiLease", listener: (active: boolean) => void): this;
@@ -1664,6 +1691,7 @@ export interface SessionHost {
   emit(event: "submissionDisposition", result: SubmissionResult): boolean;
   emit(event: "intentOutcome", outcome: unknown): boolean;
   emit(event: "authorityFrame", frame: AuthorityFrame): boolean;
+  emit(event: "authorityPublication", publication: AuthorityPresentationPublication): boolean;
   emit(event: "queueRestoration", payload: unknown): boolean;
   emit(event: "uiAcknowledged", operationId: string): boolean;
   emit(event: "lifecycleUiLease", active: boolean): boolean;

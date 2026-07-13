@@ -82,6 +82,9 @@ export class RendererPublicationRouter {
   private rendererGeneration: number | undefined;
   private nextPublicationSequence = 1;
   private state: "detached" | "attaching" | "following" | "synchronizing" = "detached";
+  /** A discontinuity fences its named plane only; semantic traffic must not
+   * make a repainting panel (or vice versa) look current. */
+  private readonly synchronizingPlanes = new Set<Plane>();
   private buffer: BufferedPublication[] = [];
   private overflowed = false;
   private readonly lastTransportSequence = new Map<Plane, number>();
@@ -100,11 +103,13 @@ export class RendererPublicationRouter {
     if (sameOwner(this.expectedOwner, owner)) return;
     this.expectedOwner = structuredClone(owner);
     this.lastTransportSequence.clear();
+    this.synchronizingPlanes.clear();
+    // Owner replacement itself requires a new all-plane baseline.
     if (this.state === "following") this.state = "synchronizing";
   }
 
   get synchronizing(): boolean {
-    return this.state === "synchronizing";
+    return this.state === "synchronizing" || this.synchronizingPlanes.size > 0;
   }
 
   route(publication: AuthorityPublication): boolean {
@@ -119,7 +124,7 @@ export class RendererPublicationRouter {
       if (sourceSequence !== previous + 1) {
         // Preserve the opaque frame so the renderer can name the discontinuity
         // at its cursor, but never let the router call the plane following.
-        this.state = "synchronizing";
+        this.synchronizingPlanes.add(publication.plane);
         const routed: RendererPublication = {
           sessionId: this.sessionId,
           rendererGeneration: this.rendererGeneration,
@@ -147,7 +152,12 @@ export class RendererPublicationRouter {
       return true;
     }
     if (this.state !== "following") return false;
-
+    // Keep routing unrelated following planes. A fenced plane's newer records
+    // are harmless diagnostics in the renderer and cannot repair its gap.
+    if (this.synchronizingPlanes.has(publication.plane)) {
+      this.emit(routed);
+      return true;
+    }
     this.lastTransportSequence.set(publication.plane, sourceSequence);
     this.emit(routed);
     return true;
@@ -205,6 +215,7 @@ export class RendererPublicationRouter {
         this.buffer = [];
         this.overflowed = false;
         this.lastTransportSequence.clear();
+        this.synchronizingPlanes.clear();
         continue;
       }
 
@@ -220,6 +231,7 @@ export class RendererPublicationRouter {
         this.lastTransportSequence.set(entry.publication.plane, entry.transportSequence);
       }
       this.buffer = [];
+      this.synchronizingPlanes.clear();
       this.state = "following";
       return { baseline, replay: replay.map(({ publication }) => publication) };
     }

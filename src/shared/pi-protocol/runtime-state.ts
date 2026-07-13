@@ -1382,6 +1382,8 @@ export const TranscriptPublicationPayloadSchema = z.discriminatedUnion("kind", [
 export type TranscriptPublicationPayload = z.infer<typeof TranscriptPublicationPayloadSchema>;
 
 export const ExtensionUiPublicationPayloadSchema = z.discriminatedUnion("kind", [
+  // Every extension surface mutation (dialog, notification, status, widget)
+  // is carried as its original request on this sequenced presentation plane.
   z
     .object({
       kind: z.literal("request"),
@@ -1400,6 +1402,24 @@ export const ExtensionUiPublicationPayloadSchema = z.discriminatedUnion("kind", 
 export type ExtensionUiPublicationPayload = z.infer<typeof ExtensionUiPublicationPayloadSchema>;
 
 export const PanelPublicationPayloadSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("reset"),
+      cursor: AuthorityCursorSchema,
+      panelKey: NonEmptyIdSchema,
+      renderRevision: NonNegativeIntegerSchema,
+      panelId: NonNegativeIntegerSchema.optional(),
+      overlay: z.boolean().optional(),
+      unified: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("close"),
+      cursor: AuthorityCursorSchema,
+      panelKey: NonEmptyIdSchema,
+    })
+    .strict(),
   z
     .object({
       kind: z.literal("ansi_delta"),
@@ -1426,6 +1446,41 @@ export const PanelPublicationPayloadSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 export type PanelPublicationPayload = z.infer<typeof PanelPublicationPayloadSchema>;
+
+/** Child publication before main assigns renderer generation/sequence. */
+export const AuthorityPresentationPublicationSchema = z.discriminatedUnion("plane", [
+  z
+    .object({
+      plane: z.literal("semantic"),
+      owner: RuntimeIdentitySchema,
+      payload: AuthorityFrameSchema,
+    })
+    .strict(),
+  z
+    .object({
+      plane: z.literal("transcript"),
+      owner: RuntimeIdentitySchema,
+      payload: TranscriptPublicationPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      plane: z.literal("extensionUi"),
+      owner: RuntimeIdentitySchema,
+      payload: ExtensionUiPublicationPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      plane: z.literal("panel"),
+      owner: RuntimeIdentitySchema,
+      payload: PanelPublicationPayloadSchema,
+    })
+    .strict(),
+]);
+export type AuthorityPresentationPublication = z.infer<
+  typeof AuthorityPresentationPublicationSchema
+>;
 
 export const RendererPublicationSchema = z
   .discriminatedUnion("plane", [

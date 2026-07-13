@@ -261,6 +261,102 @@ describe("authority reducer", () => {
     expect(state.panels.get("panel-a")?.inputEnabled).toBe(false);
   });
 
+  it("reconstructs a pending extension dialog from its sequenced UI plane", () => {
+    const attached = reduceAuthorityAttach(createRendererAuthorityState(), baseline());
+    const state = reduceAuthorityPublication(attached, {
+      sessionId: "session-a",
+      rendererGeneration: 7,
+      publicationSequence: 11,
+      plane: "extensionUi",
+      owner,
+      payload: {
+        kind: "request",
+        cursor: { ...owner, transportSequence: 2, snapshotSequence: 2 },
+        request: {
+          type: "extension_ui_request",
+          id: "dialog-1",
+          operationId: "dialog-1",
+          method: "confirm",
+          title: "Reload?",
+        },
+      },
+    });
+
+    expect(state.extensionUi.state).toBe("following");
+    expect(state.extensionUiBaseline?.dialogs).toMatchObject([
+      { request: { id: "dialog-1" }, inputPending: true, acknowledged: false },
+    ]);
+  });
+
+  it("marks only a transcript source gap synchronizing", () => {
+    const attached = reduceAuthorityAttach(createRendererAuthorityState(), baseline());
+    const state = reduceAuthorityPublication(attached, {
+      sessionId: "session-a",
+      rendererGeneration: 7,
+      publicationSequence: 11,
+      plane: "transcript",
+      owner,
+      payload: {
+        kind: "delta",
+        cursor: { ...owner, transportSequence: 3, snapshotSequence: 2 },
+        liveTailCursor: "3",
+        entries: [],
+      },
+    });
+
+    expect(state.transcript).toMatchObject({
+      state: "synchronizing",
+      reason: "transcript_transport_gap",
+    });
+    expect(state.semantic.state).toBe("following");
+    expect(state.extensionUi.state).toBe("following");
+  });
+
+  it("keeps a panel fenced through repaint and follows only the acknowledged keyframe", () => {
+    const attached = reduceAuthorityAttach(createRendererAuthorityState(), baseline());
+    const repaint = reduceAuthorityPublication(attached, {
+      sessionId: "session-a",
+      rendererGeneration: 7,
+      publicationSequence: 11,
+      plane: "panel",
+      owner,
+      payload: {
+        kind: "repaint_required",
+        cursor: { ...owner, transportSequence: 2, snapshotSequence: 2 },
+        panelKey: "panel-a",
+        reason: "repaint_required",
+      },
+    });
+    const state = reduceAuthorityPublication(repaint, {
+      sessionId: "session-a",
+      rendererGeneration: 7,
+      publicationSequence: 12,
+      plane: "panel",
+      owner,
+      payload: {
+        kind: "keyframe",
+        cursor: { ...owner, transportSequence: 3, snapshotSequence: 3 },
+        panel: {
+          panelKey: "panel-a",
+          panelId: 1,
+          owner,
+          sync: {
+            state: "following",
+            cursor: { ...owner, transportSequence: 3, snapshotSequence: 3 },
+          },
+          overlay: true,
+          unified: false,
+          inputAcknowledgedThrough: 0,
+          keyframe: { kind: "keyframe", ansi: "repaint", renderRevision: 2 },
+        },
+      },
+    });
+
+    expect(repaint.panels.get("panel-a")?.inputEnabled).toBe(false);
+    expect(state.panels.get("panel-a")?.inputEnabled).toBe(true);
+    expect(state.panels.get("panel-a")?.ansi).toEqual(["repaint"]);
+  });
+
   it("does not mutate Maps from the prior projection", () => {
     const attached = reduceAuthorityAttach(createRendererAuthorityState(), baseline());
     const state = reduceAuthorityPublication(attached, {

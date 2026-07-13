@@ -294,6 +294,12 @@ function reduceTranscript(
   if (!isFollowingFor(state.transcript, publication.owner)) return state;
   const cursor = publication.payload.cursor;
   if (cursor.transportSequence <= state.transcript.cursor.transportSequence) return state;
+  if (cursor.transportSequence !== state.transcript.cursor.transportSequence + 1) {
+    return {
+      ...state,
+      transcript: synchronizing(state.transcript.cursor, "transcript_transport_gap"),
+    };
+  }
   if (publication.payload.kind === "reset_required") {
     return {
       ...state,
@@ -317,6 +323,12 @@ function reduceExtensionUi(
   if (!isFollowingFor(state.extensionUi, publication.owner)) return state;
   const cursor = publication.payload.cursor;
   if (cursor.transportSequence <= state.extensionUi.cursor.transportSequence) return state;
+  if (cursor.transportSequence !== state.extensionUi.cursor.transportSequence + 1) {
+    return {
+      ...state,
+      extensionUi: synchronizing(state.extensionUi.cursor, "extension_ui_transport_gap"),
+    };
+  }
   if (publication.payload.kind === "baseline_required") {
     return {
       ...state,
@@ -324,19 +336,43 @@ function reduceExtensionUi(
     };
   }
   const baseline = state.extensionUiBaseline
-    ? {
-        ...state.extensionUiBaseline,
-        sync: { state: "following" as const, cursor },
-        dialogs: [
-          ...state.extensionUiBaseline.dialogs,
-          {
-            request: publication.payload.request,
+    ? (() => {
+        const request = publication.payload.request;
+        const next = {
+          ...state.extensionUiBaseline,
+          sync: { state: "following" as const, cursor },
+          notifications: [...state.extensionUiBaseline.notifications],
+          statuses: { ...state.extensionUiBaseline.statuses },
+          widgets: Object.fromEntries(
+            Object.entries(state.extensionUiBaseline.widgets).map(([key, lines]) => [
+              key,
+              [...lines],
+            ]),
+          ),
+          dialogs: [...state.extensionUiBaseline.dialogs],
+        };
+        if (request.method === "notify") {
+          next.notifications.push({
+            id: request.id,
+            message: request.message,
+            ...(request.notifyType ? { type: request.notifyType } : {}),
+          });
+        } else if (request.method === "setStatus") {
+          if (request.statusText === undefined) delete next.statuses[request.statusKey];
+          else next.statuses[request.statusKey] = request.statusText;
+        } else if (request.method === "setWidget") {
+          if (request.widgetLines === undefined) delete next.widgets[request.widgetKey];
+          else next.widgets[request.widgetKey] = [...request.widgetLines];
+        } else if (["select", "confirm", "input", "editor"].includes(request.method)) {
+          next.dialogs.push({
+            request,
             rendererGeneration: state.rendererGeneration ?? 0,
             inputPending: true,
             acknowledged: false,
-          },
-        ],
-      }
+          });
+        }
+        return next;
+      })()
     : undefined;
   return { ...state, extensionUi: { state: "following", cursor }, extensionUiBaseline: baseline };
 }
@@ -359,14 +395,42 @@ function reducePanel(
     });
     return { ...state, panels };
   }
+  if (!existing && payload.kind === "reset" && payload.panelId !== undefined) {
+    const baseline: PanelPresentationBaseline = {
+      panelKey: key,
+      panelId: payload.panelId,
+      owner: publication.owner,
+      sync: synchronizing(payload.cursor, "panel_reset"),
+      overlay: payload.overlay === true,
+      unified: payload.unified === true,
+      inputAcknowledgedThrough: 0,
+      keyframe: { kind: "repaint_required", renderRevision: payload.renderRevision },
+    };
+    const panels = new Map(state.panels);
+    panels.set(key, { baseline, sync: baseline.sync, ansi: [], inputEnabled: false });
+    return { ...state, panels };
+  }
   if (!existing || !isFollowingFor(existing.sync, publication.owner)) return state;
   const cursor = payload.cursor;
   if (cursor.transportSequence <= existing.sync.cursor.transportSequence) return state;
   const panels = new Map(state.panels);
-  if (payload.kind === "repaint_required") {
+  if (cursor.transportSequence !== existing.sync.cursor.transportSequence + 1) {
     panels.set(key, {
       ...existing,
-      sync: synchronizing(existing.sync.cursor, payload.reason),
+      sync: synchronizing(existing.sync.cursor, "panel_transport_gap"),
+      inputEnabled: false,
+    });
+    return { ...state, panels };
+  }
+  if (payload.kind === "close") {
+    panels.delete(key);
+  } else if (payload.kind === "reset" || payload.kind === "repaint_required") {
+    panels.set(key, {
+      ...existing,
+      sync: synchronizing(
+        existing.sync.cursor,
+        payload.kind === "reset" ? "panel_reset" : payload.reason,
+      ),
       inputEnabled: false,
     });
   } else {
