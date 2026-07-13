@@ -42,3 +42,18 @@ npx vitest run src/renderer/src/stores/sessions-store.test.ts
 Vitest covers TypeScript source, host `.mjs` units, test harness units, and deterministic child-process protocol tests. Playwright E2E builds a fresh production app; renderer tests run against the preview stub. Normal Electron E2E includes delayed history activation/retry, claimed-unified watchdog review with exactly-one dispatch, process-level streaming/queue/compaction/bash ESC cancellation, and a fake-host seam where the first authoritative user echo precedes the submit response so Composer echo deduplication is exercised in the real IPC ordering. `tests/fixtures/fake-pi.mjs` is retained for executable version and update tests, while `fake-host-process.mjs` drives the SDK-host wire protocol without a real pi install. `real-sdk-host-smoke.spec.mts` runs automatically when a real Pi binary is installed and pins compatibility to Pi 0.80.6. Its no-network cases use isolated agent/session directories to gate first-use diagnostics, real extension submission, expected empty-session compaction failure, Composer clearing, and post-command host liveness. Its successful-compaction case starts a test-owned OpenAI-compatible server bound to `127.0.0.1`, installs an isolated custom model, completes deterministic turns, and requires one summarization request, `Context compacted`, and a persisted JSONL compaction entry. It never treats dispatch, clearing, or a surfaced failure as success. Its opt-in `PIVIS_REAL_USER_HOST_SMOKE=1` case loads the developer's actual global/project extensions without making model calls. Provider-spending and real-panel suites remain opt-in where documented.
 
 Worktree commands use `scripts/ensure-worktree-dev.mjs` to reuse a compatible sibling `node_modules`; caches are worktree-local. E2E uses isolated settings/session directories and defaults to one worker.
+
+## Proposed authority-frame migration verification
+
+The authority-frame work in [ADR 0002](decisions/0002-authority-frames-and-plane-synchronization.md) is not represented as already covered by the compatibility suites above. Before each production migration slice, add deterministic fault tests for the real child, main router, and renderer reducer that prove:
+
+- a following plane is exact only through its named cursor; a frame in flight never becomes a claim of present-time equality;
+- dropped, reordered, duplicate, and bounded-buffer-overflow publications enter `synchronizing` and recover only through baseline plus contiguous replay;
+- attach racing a transition cannot omit a boundary or let predecessor data mutate the successor;
+- detached compaction/operations recover current state plus journal records, with explicit truncation low/high-watermark behavior;
+- same-owner duplicate intents invoke Pi once, conflicting IDs reject, and post-dispatch loss remains non-replayable `outcome_unknown`;
+- getter/event disagreement keeps the conservative barrier, including compaction retry waits;
+- transcript, extension UI, and panel planes synchronize independently; panel input stays fenced until keyframe or acknowledged repaint;
+- lock contention fails mutable activation and child loss never synthesizes terminal operation success.
+
+Run the shadow reducer against the compatibility projection during the migration and assert only explicitly bridged baselines agree. Documentation-only changes do not execute these tests; implementation changes must run the relevant focused suites and the full release gate before the ADR can move beyond proposed.

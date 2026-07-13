@@ -12,6 +12,14 @@ The unified editor uses the same contract. Its host→renderer submit request an
 
 `/reload` has its own request and intent ids plus explicit `not_executed`, `completed`, or `outcome_unknown` settlement. A completed response names the acknowledged successor identity; Composer resynchronizes exactly that successor before clearing. It is refused while the authoritative snapshot is non-idle. `/tree` navigation uses the host's public in-memory tree API and is likewise protected from mid-turn mutation. `/share` carries the Composer/unified runtime identity and an export intent through its main-owned `gh` flow, so its `export_html` command cannot rebind after delayed auth work.
 
+## Authority-frame intent migration
+
+[ADR 0002](../decisions/0002-authority-frames-and-plane-synchronization.md) changes the target meaning of mutation dispatch without claiming that IPC can make Pi state instantaneous. In the target, every mutation is an owner-bound stable intent recorded by the child before possible Pi dispatch. The renderer may include the cursor it observed, but stale observation is context rather than a universal rejection rule; the child evaluates current authority state, while compare-and-set editor operations still require the exact revision.
+
+An IPC receipt is only `admitted`, `duplicate`, `not_admitted`, or `delivery_unknown`. It is not command completion and components must not update canonical state from it. The child publishes typed completed/rejected/cancelled/failed/`outcome_unknown` outcomes in atomic authority frames. A same-owner duplicate with identical payload executes at most once; a reused ID with different payload is rejected. A possibly dispatched mutation whose settlement is lost becomes review-only `outcome_unknown` and is never automatically replayed after owner replacement.
+
+The current `session.submit` dispositions and `session.sendCommand` settlements below remain the compatibility contract during phased migration. Existing intent requirements for effectful/replacement commands do not mean idempotent mutations have already moved to the target universal-intent protocol. Bridge legacy and frame paths only at an explicit authority baseline; do not merge a promise response, transcript event, and snapshot into a purportedly single current state.
+
 ## Command admission and settlement
 
 Every renderer-originated non-text command carries a request id and the complete runtime identity that produced it. Effectful and replacement commands also carry an intent id. `SessionRegistry` is the sole admission authority and returns one of three correlated settlements:

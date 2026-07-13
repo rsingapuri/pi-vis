@@ -4,6 +4,10 @@ This matrix is exhaustive for `PiRpcCommandSchema`. The executable source of tru
 
 All renderer rows require `(requestId, expectedHostInstanceId, expectedSessionEpoch)`. **Intent** means an additional intent id is mandatory and post-dispatch transport loss becomes `outcome_unknown` review custody. Text rows never use `session.sendCommand`.
 
+### Authority-frame migration status
+
+This table documents the deployed policy/settlement compatibility contract. Under the proposed [authority-frame ADR](../decisions/0002-authority-frames-and-plane-synchronization.md), every mutation row—not only rows marked **Intent**—will receive a stable child-recorded intent and terminal outcome in an atomic authority frame. Read-only rows remain classified queries with an explicit retry policy. Until that migration is complete, the table's current intent markings and correlated IPC settlements remain authoritative; neither a receipt nor a returned promise is completion evidence, and no mixed legacy/frame state may be treated as one cursor.
+
 | Commands | Class | Reachable surface | Settlement / outcome evidence |
 |---|---|---|---|
 | `prompt`, `steer`, `follow_up` | effectful, submission-only | Composer, unified editor, extensions | `session.submit` dispositions; host admission and queue custody tests |
