@@ -5,6 +5,8 @@ import type {
   AgentSessionSnapshot,
   AuthorityAttachResponse,
   AuthorityRecord,
+  IntentEnvelope,
+  IntentOutcome,
   RendererPublication,
   RuntimeStateUpdate,
   SemanticSnapshot,
@@ -72,6 +74,48 @@ function publishSemantic(
     .applyAuthorityPublication(
       semanticPublication(transportSequence, snapshot, records, sessionId),
     );
+}
+
+function publishIntentOutcome(envelope: IntentEnvelope): void {
+  const sessionId = envelope.sessionId as SessionId;
+  const projection = useSessionsStore.getState().sessions.get(sessionId)?.authorityProjection;
+  const prior = projection?.authoritativeSnapshot;
+  const cursor = projection?.semantic.state === "following" ? projection.semantic.cursor : undefined;
+  if (!prior || !cursor) throw new Error("intent outcome requires following authority");
+  const base = {
+    intentId: envelope.intentId,
+    owner: envelope.expectedOwner,
+    state: "completed" as const,
+  };
+  let outcome: IntentOutcome;
+  switch (envelope.intent.kind) {
+    case "submit":
+      outcome = {
+        ...base,
+        kind: "submit",
+        result: { disposition: "completed", editorRevision: envelope.intent.editorRevision },
+      };
+      break;
+    case "invokeCommand":
+      outcome = { ...base, kind: "invokeCommand", result: {} };
+      break;
+    case "runBash":
+      outcome = { ...base, kind: "runBash", result: { started: true } };
+      break;
+    default:
+      outcome = { ...base, kind: envelope.intent.kind } as IntentOutcome;
+  }
+  const currentAttachments =
+    useSessionsStore.getState().sessions.get(sessionId)?.editorAttachments ?? prior.editor.attachments;
+  const snapshot = {
+    ...prior,
+    snapshotSequence: prior.snapshotSequence + 1,
+    editor: { ...prior.editor, attachments: currentAttachments },
+    recentIntentOutcomes: [...prior.recentIntentOutcomes, outcome],
+  };
+  publishSemantic(sessionId, cursor.transportSequence + 1, snapshot, [
+    { type: "intent_outcome", outcome },
+  ]);
 }
 
 function loadedHistory(payload: unknown, history: unknown[]) {
@@ -2747,7 +2791,8 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     invokeMock.mockImplementation(async (channel: string, payload?: unknown) => {
       if (channel === "session.claimUnifiedSubmit") return claimedUnified();
       if (channel === "session.dispatchIntent") {
-        const envelope = payload as { intentId: string };
+        const envelope = payload as IntentEnvelope;
+        queueMicrotask(() => publishIntentOutcome(envelope));
         return {
           status: "admitted" as const,
           intentId: envelope.intentId,
@@ -2779,11 +2824,22 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
       | undefined;
   };
   const sentCommandType = (t: string) =>
-    invokeMock.mock.calls.some(
-      (c) =>
-        c[0] === "session.sendCommand" &&
-        (c[1] as { command?: { type?: string } }).command?.type === t,
-    );
+    invokeMock.mock.calls.some((call) => {
+      if (call[0] === "session.query") {
+        return (call[1] as { query?: { type?: string } }).query?.type === t;
+      }
+      if (call[0] !== "session.dispatchIntent") return false;
+      const kind = (call[1] as { intent?: { kind?: string } }).intent?.kind;
+      return (
+        (t === "prompt" && kind === "submit") ||
+        (t === "bash" && kind === "runBash") ||
+        (t === "invokeCommand" && kind === "invokeCommand")
+      );
+    });
+  const sentIntent = () =>
+    invokeMock.mock.calls.find((call) => call[0] === "session.dispatchIntent")?.[1] as
+      | IntentEnvelope
+      | undefined;
   const sentSubmission = () => {
     const envelope = invokeMock.mock.calls.find((c) => c[0] === "session.dispatchIntent")?.[1] as
       | {
@@ -2850,7 +2906,7 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
         1,
       );
 
-    expect(sentCommandType("prompt")).toBe(false);
+    expect(sentCommandType("prompt")).toBe(true);
     expect(sentSubmission()?.submission).toMatchObject({
       text: expect.stringContaining("### User comments on the code"),
       surface: "unified",
@@ -2899,12 +2955,10 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
         1,
       );
 
-    expect(sentSubmission()?.submission).toMatchObject({
+    expect(sentIntent()?.intent).toMatchObject({
+      kind: "invokeCommand",
       text: "/widget-on",
-      surface: "unified",
     });
-    expect(sentSubmission()?.submission.text).not.toContain("User comments");
-    expect(sentSubmission()?.submission.images).toEqual([]);
     expect(lastUnifiedResponse()).toMatchObject({ id: "id-slash-comments", ok: true });
     expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toHaveLength(1);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toHaveLength(2);
@@ -2994,18 +3048,20 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
       .getState()
       .handleUnifiedSubmitRequest(SESSION_A, "id3", "hello world", 41, "intent-id3", "host-1", 1);
     await vi.waitFor(() => expect(sentSubmission()).toBeDefined());
-    expect(sentCommandType("prompt")).toBe(false);
+    expect(sentCommandType("prompt")).toBe(true);
     // There is no pre-custody optimistic transcript bubble.
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.blocks).toEqual([]);
 
     const submission = sentSubmission()!.submission;
     expect(submission.intentId).toBe("intent-id3");
     expect(submission.editorRevision).toBe(41);
+    const envelope = sentIntent()!;
     resolveSubmission({
       status: "admitted",
       intentId: submission.intentId,
       owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
     });
+    publishIntentOutcome(envelope);
     await request;
 
     expect(lastUnifiedResponse()).toMatchObject({ id: "id3", ok: true });
@@ -3061,11 +3117,13 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     let now = 2_000;
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
     let resolveCommand!: (result: unknown) => void;
-    invokeMock.mockImplementation((channel: string) => {
+    let queryPayload: { queryId: string; query: { type: string } } | undefined;
+    invokeMock.mockImplementation((channel: string, payload?: unknown) => {
       if (channel === "session.claimUnifiedSubmit") {
         return Promise.resolve({ claimed: true, claimId: "fork-claim", expiresAt: 2_010 });
       }
-      if (channel === "session.sendCommand") {
+      if (channel === "session.query") {
+        queryPayload = payload as { queryId: string; query: { type: string } };
         return new Promise((resolve) => {
           resolveCommand = resolve;
         });
@@ -3087,9 +3145,14 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     await vi.waitFor(() => expect(sentCommandType("get_fork_messages")).toBe(true));
     now = 2_020;
     resolveCommand({
-      success: true,
-      disposition: "completed",
-      data: { messages: [{ entryId: "entry-1", text: "fork me" }] },
+      queryId: queryPayload!.queryId,
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+      queryType: "get_fork_messages",
+      response: {
+        success: true,
+        command: "get_fork_messages",
+        data: { messages: [{ entryId: "entry-1", text: "fork me" }] },
+      },
     });
     await pending;
 
@@ -3108,7 +3171,7 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
         const envelope = payload as { intentId: string };
         return {
           status: "not_admitted" as const,
-          reason: "provider unavailable",
+          reason: "invalid",
           intentId: envelope.intentId,
           owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
         };
@@ -3120,16 +3183,19 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
       .getState()
       .handleUnifiedSubmitRequest(SESSION_A, "id-fail", "hello", 0, "intent-fail", "host-1", 1);
 
-    expect(sentCommandType("prompt")).toBe(false);
+    expect(sentCommandType("prompt")).toBe(true);
     expect(sentSubmission()?.submission.text).toBe("hello");
     expect(lastUnifiedResponse()).toMatchObject({
       id: "id-fail",
       ok: false,
       bailed: true,
-      error: "provider unavailable",
+      error: "Intent was not admitted: invalid",
     });
     const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
-    expect(toasts.at(-1)).toMatchObject({ type: "error", message: "provider unavailable" });
+    expect(toasts.at(-1)).toMatchObject({
+      type: "warning",
+      message: "Intent was not admitted: invalid",
+    });
   });
 
   it("a bash command (!prefix) bypasses the no-model guard and dispatches", async () => {
@@ -3594,7 +3660,7 @@ describe("sessions store - authority intent projection", () => {
     expect(session?.statusSegments.size).toBe(0);
   });
 
-  it("commits every compatibility semantic field from one frame", () => {
+  it("commits semantic fields atomically without leaking extension-plane catalog values", () => {
     useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());
     const next = semanticSnapshot(2, {
       sdk: {
@@ -3636,8 +3702,8 @@ describe("sessions store - authority intent projection", () => {
       sessionTitle: "Authority title",
     });
     expect(session?.queuedMessages?.steering[0]?.text).toBe("steer");
-    expect(session?.statusSegments.get("mode")).toBe("busy");
-    expect(session?.widgets.get("widget")).toEqual(["line"]);
+    expect(session?.statusSegments.get("mode")).toBeUndefined();
+    expect(session?.widgets.get("widget")).toBeUndefined();
     expect(isSessionWorking(session)).toBe(true);
   });
 

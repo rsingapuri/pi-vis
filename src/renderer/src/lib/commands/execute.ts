@@ -38,7 +38,7 @@ export interface ExecuteDeps {
   dispatch?: (
     sessionId: SessionId,
     intent: SessionIntent,
-    intentId?: ReturnType<typeof crypto.randomUUID>,
+    intentId?: string,
   ) => Promise<IntentReceipt>;
   /** Read-only host operations are owner-bound queries. */
   query?: (sessionId: SessionId, query: SessionQuery) => Promise<SessionQueryResult>;
@@ -49,6 +49,8 @@ export interface ExecuteDeps {
     owner: RuntimeIdentity,
   ) => Promise<IntentOutcome>;
   getIntentObservation?: (sessionId: SessionId) => IntentObservation | undefined;
+  /** Unified-TUI ingress supplies its main-assigned stable intent ID here. */
+  createIntentId?: (() => string) | undefined;
   uiSurface?: "composer" | "unified" | undefined;
   invoke: <T = unknown>(
     channel: string,
@@ -129,7 +131,7 @@ async function dispatchAndAwait(
     deps.addToast(sessionId, message, "warning");
     throw new InputNotConsumedError(message);
   }
-  const intentId = crypto.randomUUID();
+  const intentId = deps.createIntentId?.() ?? crypto.randomUUID();
   let receipt: IntentReceipt;
   try {
     if (!deps.dispatch || !deps.awaitIntentOutcome)

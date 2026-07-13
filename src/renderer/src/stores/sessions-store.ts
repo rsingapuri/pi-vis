@@ -12,10 +12,14 @@ import { ModelInfoSchema } from "@shared/pi-protocol/responses.js";
 import type {
   AgentSessionSnapshot,
   AuthorityAttachResponse,
+  IntentOutcome,
   RendererPublication,
+  RuntimeIdentity,
   RuntimeRecord,
   RuntimeStateUpdate,
   SemanticSnapshot,
+  SessionIntent,
+  SessionQuery,
   SubmissionResult,
 } from "@shared/pi-protocol/runtime-state.js";
 import type { ThinkingLevel } from "@shared/pi-protocol/thinking.js";
@@ -799,6 +803,14 @@ function applyAuthoritySemanticProjection(
   authorityProjection: RendererAuthorityState,
 ): SessionViewState {
   const snapshot = authorityProjection.authoritativeSnapshot;
+  const extensionBaseline =
+    authorityProjection.extensionUi.state === "following"
+      ? authorityProjection.extensionUiBaseline
+      : undefined;
+  const extensionPresentation = {
+    statusSegments: new Map(Object.entries(extensionBaseline?.statuses ?? {})),
+    widgets: new Map(Object.entries(extensionBaseline?.widgets ?? {})),
+  };
   if (authorityProjection.semantic.state !== "following" || !snapshot) {
     // A retained frame is explicitly diagnostic while fenced. Do not leave a
     // compatibility field looking current and accidentally re-enable a control.
@@ -812,8 +824,7 @@ function applyAuthoritySemanticProjection(
       sessionTitle: undefined,
       runningSince: undefined,
       queuedMessages: undefined,
-      statusSegments: new Map(),
-      widgets: new Map(),
+      ...extensionPresentation,
       editorInjection: undefined,
     };
   }
@@ -876,8 +887,7 @@ function applyAuthoritySemanticProjection(
       snapshot.queues.followUpIntentIds,
       current.transcript.pendingEchoes,
     ),
-    statusSegments: new Map(Object.entries(snapshot.catalog.statuses)),
-    widgets: new Map(Object.entries(snapshot.catalog.widgets)),
+    ...extensionPresentation,
     sessionTitle: snapshot.catalog.title,
   };
 }
@@ -2244,13 +2254,7 @@ const buildSessionsStore = (
         ...result,
       });
     };
-    if (
-      !session ||
-      session.hostInstanceId !== hostInstanceId ||
-      session.sessionEpoch !== sessionEpoch ||
-      session.availability !== "available" ||
-      !claimCurrent()
-    ) {
+    if (!session || !claimCurrent()) {
       void respond({
         ok: false,
         bailed: true,
@@ -2349,7 +2353,91 @@ const buildSessionsStore = (
     // Build the same deps the React Composer builds, but from store state (the
     // TUI path has no attachments/worktree pre-send block). executeAction + the
     // store actions it calls fire the optimistic bubble, draft clear, etc.
+    const intentObservation = (sid: SessionId) => {
+      if (!claimCurrent()) return undefined;
+      const current = get().sessions.get(sid);
+      const observation = current ? authorityObservation(current) : undefined;
+      if (!observation) return undefined;
+      return {
+        ...observation,
+        editorRevision,
+        userMessageSequence: current?.transcript.userMessageSequence ?? 0,
+      };
+    };
+    const awaitIntentOutcome = (
+      sid: SessionId,
+      intentId: string,
+      owner: RuntimeIdentity,
+    ): Promise<IntentOutcome> => {
+      const findOutcome = (): IntentOutcome | undefined =>
+        get()
+          .sessions.get(sid)
+          ?.authorityProjection?.authoritativeSnapshot?.recentIntentOutcomes.find(
+            (outcome) =>
+              outcome.intentId === intentId &&
+              outcome.owner.hostInstanceId === owner.hostInstanceId &&
+              outcome.owner.sessionEpoch === owner.sessionEpoch,
+          );
+      const immediate = findOutcome();
+      if (immediate) return Promise.resolve(immediate);
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (operation: () => void) => {
+          if (settled) return;
+          settled = true;
+          globalThis.clearTimeout(expiryTimer);
+          unsubscribe();
+          operation();
+        };
+        const unsubscribe = useSessionsStore.subscribe(() => {
+          const outcome = findOutcome();
+          if (outcome) {
+            finish(() => resolve(outcome));
+            return;
+          }
+          const current = get().sessions.get(sid);
+          const projection = current?.authorityProjection;
+          if (
+            !claimCurrent() ||
+            projection?.semantic.state !== "following" ||
+            projection.semantic.cursor.hostInstanceId !== owner.hostInstanceId ||
+            projection.semantic.cursor.sessionEpoch !== owner.sessionEpoch
+          ) {
+            finish(() =>
+              reject(new InputNotConsumedError("Intent authority became unavailable")),
+            );
+          }
+        });
+        const expiryTimer = globalThis.setTimeout(
+          () =>
+            finish(() =>
+              reject(new InputNotConsumedError("Unified action claim expired before settlement")),
+            ),
+          Math.max(0, claim.expiresAt - Date.now() + 1),
+        );
+      });
+    };
+
     const deps = {
+      dispatch: (
+        sid: SessionId,
+        intent: SessionIntent,
+        intentId?: string,
+      ) => {
+        ensureClaimCurrent();
+        const observation = intentObservation(sid);
+        if (!observation) throw new InputNotConsumedError("Session runtime is unavailable");
+        return dispatchSessionIntent(sid, intent, observation, intentId);
+      },
+      query: (sid: SessionId, query: SessionQuery) => {
+        ensureClaimCurrent();
+        const observation = intentObservation(sid);
+        if (!observation) throw new InputNotConsumedError("Session runtime is unavailable");
+        return querySession(sid, query, observation);
+      },
+      awaitIntentOutcome,
+      getIntentObservation: intentObservation,
+      createIntentId: () => submissionIntentId,
       invoke: async <T = unknown>(channel: string, payload: unknown) => {
         ensureClaimCurrent();
         const result = (await window.pivis.invoke(

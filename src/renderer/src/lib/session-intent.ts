@@ -20,7 +20,7 @@ export function dispatchSessionIntent(
   sessionId: SessionId,
   intent: SessionIntent,
   observation: AuthorityObservation,
-  intentId = crypto.randomUUID(),
+  intentId: string = crypto.randomUUID(),
 ): Promise<IntentReceipt> {
   const envelope: IntentEnvelope = {
     sessionId,

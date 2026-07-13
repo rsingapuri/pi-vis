@@ -1000,7 +1000,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           dispatch: (
             sid: SessionId,
             intent: SessionIntent,
-            intentId?: ReturnType<typeof crypto.randomUUID>,
+            intentId?: string,
           ) => {
             const observation = intentObservation(sid);
             if (!observation)
