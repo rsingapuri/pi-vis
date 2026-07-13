@@ -94,6 +94,8 @@ function baseline(highWatermark = 10): AuthorityAttachResponse {
           keyframe: { kind: "keyframe", ansi: "initial", renderRevision: 1 },
         },
       ],
+      restorations: [],
+
       publicationHighWatermark: highWatermark,
     },
     replay: [],

@@ -737,7 +737,6 @@ export class SessionRegistry {
       if (typeof restorationId !== "string" || record._restorations.has(restorationId)) return;
       record._restorations.set(restorationId, structuredClone(payload));
       this.onQueueRestoration(record.sessionId, payload);
-      proc.acknowledgeRestoration(restorationId);
     });
     proc.on("rendererCancelled", (generation) => {
       if (!current()) return;
@@ -936,7 +935,6 @@ export class SessionRegistry {
       } else if (item.type === "queue_restoration") {
         if (!record._restorations.has(item.restorationId)) {
           record._restorations.set(item.restorationId, structuredClone(item));
-          record.proc?.acknowledgeRestoration(item.restorationId);
         }
       }
       // Escape results are already correlated to their request. Keeping them in
@@ -1244,15 +1242,39 @@ export class SessionRegistry {
       // synthesized success/end outcome. Its payload remains opaque to main.
       const restorationId = `ambiguous-intent:${owner.hostInstanceId}:${owner.sessionEpoch}:${retained.envelope.intentId}`;
       if (record._restorations.has(restorationId)) continue;
-      const restoration: RuntimeRecord & { type: "queue_restoration" } = {
-        type: "queue_restoration",
-        restorationId,
-        steering: [],
-        followUp: [],
-        originalAttachments: [],
-        commandDescription: `Intent ${retained.envelope.intentId} has outcome_unknown because its owning host failed: ${reason}`,
-        requiresReview: true,
-      };
+      const intent = retained.envelope.intent;
+      // An admitted submit may have crossed Pi before the child dies. Its
+      // original envelope is the only lossless custody source: never replace
+      // it with a generic command marker or attempt a successor replay.
+      const restoration: RuntimeRecord & { type: "queue_restoration" } =
+        intent.kind === "submit"
+          ? {
+              type: "queue_restoration",
+              restorationId,
+              ...reviewQueues({
+                intentId: retained.envelope.intentId,
+                expectedHostId: owner.hostInstanceId,
+                expectedEpoch: owner.sessionEpoch,
+                editorRevision: intent.editorRevision,
+                text: intent.text,
+                images: structuredClone(intent.images),
+                requestedMode: intent.requestedMode,
+                surface: intent.surface,
+              }),
+              originalAttachments: [
+                { intentId: retained.envelope.intentId, images: structuredClone(intent.images) },
+              ],
+              requiresReview: true,
+            }
+          : {
+              type: "queue_restoration",
+              restorationId,
+              steering: [],
+              followUp: [],
+              originalAttachments: [],
+              commandDescription: `Intent ${retained.envelope.intentId} has outcome_unknown because its owning host failed: ${reason}`,
+              requiresReview: true,
+            };
       record._restorations.set(restorationId, structuredClone(restoration));
       this.onQueueRestoration(record.sessionId, restoration);
       // Keep the entry as a tombstone. A successor is never allowed to replay
@@ -1938,6 +1960,14 @@ export class SessionRegistry {
       // Main remains opaque to intent semantics. It only releases transport
       // escrow when this owner supplies a terminal record for this intent.
       this.settleDispatchEscrowFromFrame(record, publication.payload);
+      // Keep an acknowledgement mirror for frame-only custody. This does not
+      // acknowledge or reinterpret it: the child keeps the authoritative copy
+      // until the renderer explicitly dismisses this restoration.
+      for (const item of publication.payload.records) {
+        if (item.type === "queue_restoration" && !record._restorations.has(item.restorationId)) {
+          record._restorations.set(item.restorationId, structuredClone(item));
+        }
+      }
     }
     return router.route(publication);
   }
@@ -1966,7 +1996,17 @@ export class SessionRegistry {
       hostInstanceId: proc.hostInstanceId,
       sessionEpoch: proc.sessionEpoch,
     });
-    return router.attach(generation, () => proc.requestAuthorityAttach!(generation));
+    const response = await router.attach(generation, () =>
+      proc.requestAuthorityAttach!(generation),
+    );
+    // Frames emitted while detached are intentionally not routed, so seed the
+    // main acknowledgement mirror from the child-serialized baseline. This is
+    // not a delivery acknowledgement; the child retains every item until the
+    // renderer later calls acknowledgeRestoration.
+    for (const restoration of response.baseline.restorations) {
+      record._restorations.set(restoration.restorationId, structuredClone(restoration));
+    }
+    return response;
   }
 
   private authorityRouter(record: SessionRecord): RendererPublicationRouter {
@@ -2073,6 +2113,9 @@ export class SessionRegistry {
     this.markActivationVisitInteracted(record);
     const acknowledged = record._restorations.delete(restorationId);
     if (acknowledged) {
+      // Main mirrors child-owned restoration custody for legacy delivery, but
+      // only an explicit renderer acknowledgement may retire the child copy.
+      record.proc?.acknowledgeRestoration(restorationId);
       const ambiguousIntentPrefix = "ambiguous-submission:";
       if (restorationId.startsWith(ambiguousIntentPrefix)) {
         record._retainedIntents.delete(restorationId.slice(ambiguousIntentPrefix.length));

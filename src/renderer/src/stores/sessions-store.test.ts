@@ -2619,7 +2619,7 @@ describe("sessions store - queue restoration", () => {
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toHaveLength(1);
   });
 
-  it("acknowledges an empty custody marker without showing an empty review card", async () => {
+  it("retains an empty custody marker until the user explicitly acknowledges it", () => {
     const invoke = vi.fn(async () => ({ acknowledged: true }));
     vi.stubGlobal("window", { pivis: { invoke } });
     useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
@@ -2633,14 +2633,10 @@ describe("sessions store - queue restoration", () => {
       originalAttachments: [{ intentId: "empty-intent", images: [] }],
     });
 
-    await vi.waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("session.acknowledgeRestoration", {
-        sessionId: SESSION_A,
-        restorationId: "restore-empty",
-      }),
-    );
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.queueRestorations).toBeUndefined();
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.toasts).toEqual([]);
+    expect(invoke).not.toHaveBeenCalledWith("session.acknowledgeRestoration", expect.anything());
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.queueRestorations).toEqual([
+      expect.objectContaining({ restorationId: "restore-empty" }),
+    ]);
   });
 
   it("transfers cleared optimistic ownership to the restoration review", () => {
@@ -3534,6 +3530,8 @@ function authorityAttach(snapshot = semanticSnapshot(1)): AuthorityAttachRespons
         dialogs: [],
       },
       panels: [],
+      restorations: [],
+
       publicationHighWatermark: 0,
     },
     replay: [],
@@ -3575,6 +3573,31 @@ describe("sessions store - authority intent projection", () => {
   });
 
   afterEach(() => vi.unstubAllGlobals());
+
+  it("installs attach restoration atomically and retains byte-identical attachments", () => {
+    const attach = authorityAttach();
+    const image = { mimeType: "image/png", data: "AAEC/frozen" };
+    attach.baseline.restorations = [
+      {
+        type: "queue_restoration",
+        restorationId: "detached-custody",
+        steering: [],
+        followUp: ["review exact text"],
+        originalAttachments: [{ intentId: "intent-image", images: [image] }],
+        requiresReview: true,
+      },
+    ];
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, attach);
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.authorityProjection?.semantic.state).toBe("following");
+    expect(session.queueRestorations).toEqual([
+      expect.objectContaining({
+        restorationId: "detached-custody",
+        originalAttachments: [{ intentId: "intent-image", images: [image] }],
+      }),
+    ]);
+  });
 
   it("does not mutate canonical model state when an intent receipt arrives before its frame", async () => {
     useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());

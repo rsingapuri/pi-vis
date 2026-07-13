@@ -180,6 +180,8 @@ beforeEach(() => {
         dialogs: [],
       },
       panels: [],
+      restorations: [],
+
       publicationHighWatermark: 0,
     },
     replay: [],

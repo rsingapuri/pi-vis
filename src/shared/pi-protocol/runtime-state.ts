@@ -269,15 +269,11 @@ export const AgentSessionSnapshotSchema = z.object({
 });
 export type AgentSessionSnapshot = z.infer<typeof AgentSessionSnapshotSchema>;
 
-export const RuntimeRecordSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("event"), event: PiEventSchema }),
-  z.object({ type: z.literal("ui"), request: ExtensionUiRequestSchema }),
-  z.object({ type: z.literal("panel"), event: PanelEventSchema }),
-  z.object({ type: z.literal("submission"), result: SubmissionResultSchema }),
-  z.object({ type: z.literal("escape"), result: EscapeResultSchema }),
-  // clearQueue() payloads are held for review; attachment bytes are retained
-  // with their original submission intent so restoration is lossless.
-  z.object({
+// clearQueue() payloads are held for review; attachment bytes are retained
+// with their original submission intent so restoration is lossless. This is
+// also an authority record: it must survive frame routing and attach baselines.
+export const QueueRestorationRecordSchema = z
+  .object({
     type: z.literal("queue_restoration"),
     restorationId: z.string(),
     steering: z.array(z.string()),
@@ -288,7 +284,17 @@ export const RuntimeRecordSchema = z.discriminatedUnion("type", [
     /** Present for an ambiguous effectful command that has no replayable queue payload. */
     commandDescription: z.string().optional(),
     requiresReview: z.literal(true),
-  }),
+  })
+  .strict();
+export type QueueRestorationRecord = z.infer<typeof QueueRestorationRecordSchema>;
+
+export const RuntimeRecordSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("event"), event: PiEventSchema }),
+  z.object({ type: z.literal("ui"), request: ExtensionUiRequestSchema }),
+  z.object({ type: z.literal("panel"), event: PanelEventSchema }),
+  z.object({ type: z.literal("submission"), result: SubmissionResultSchema }),
+  z.object({ type: z.literal("escape"), result: EscapeResultSchema }),
+  QueueRestorationRecordSchema,
 ]);
 export type RuntimeRecord = z.infer<typeof RuntimeRecordSchema>;
 
@@ -1070,6 +1076,7 @@ export const AuthorityRecordSchema = z.discriminatedUnion("type", [
       custody: CustodyProjectionSchema,
     })
     .strict(),
+  QueueRestorationRecordSchema,
   z
     .object({
       type: z.literal("anomaly"),
@@ -1111,7 +1118,9 @@ export const AuthorityFrameSchema = z
               ? record.record.owner
               : record.type === "custody"
                 ? record.custody.owner
-                : record.owner;
+                : record.type === "queue_restoration"
+                  ? frame.owner
+                  : record.owner;
       if (
         owner.hostInstanceId !== frame.owner.hostInstanceId ||
         owner.sessionEpoch !== frame.owner.sessionEpoch
@@ -1255,6 +1264,8 @@ export const AuthorityAttachBaselineSchema = z
     owner: RuntimeIdentitySchema,
     semantic: SemanticPresentationBaselineSchema,
     operationJournal: z.array(OperationJournalRecordSchema),
+    /** Unacknowledged review custody is baseline state, not a lossy event. */
+    restorations: z.array(QueueRestorationRecordSchema),
     transcript: TranscriptPresentationBaselineSchema,
     extensionUi: ExtensionUiPresentationBaselineSchema,
     panels: z.array(PanelPresentationBaselineSchema),

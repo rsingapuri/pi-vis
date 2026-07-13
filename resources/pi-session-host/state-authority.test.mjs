@@ -91,6 +91,46 @@ afterEach(() => {
 });
 
 describe("state authority", () => {
+  it("keeps ESC restoration in authority frames and detached attach baselines until acknowledgement", async () => {
+    const sendFrame = vi.fn();
+    const { authority, session } = setup(
+      {
+        isStreaming: true,
+        isIdle: false,
+        getSteeringMessages: vi.fn(() => ["queued bytes"]),
+        clearQueue: vi.fn(() => ({ steering: ["queued bytes"], followUp: [] })),
+      },
+      { sendFrame },
+    );
+    const image = { mimeType: "image/png", data: "AAEC/frozen" };
+    await authority.submit(
+      makeRequest("esc-restoration", {
+        text: "queued bytes",
+        requestedMode: "steer",
+        images: [image],
+      }),
+    );
+    await authority.requestEscape("esc");
+
+    const frame = sendFrame.mock.calls
+      .map(([value]) => value)
+      .find((value) => value.records.some((record) => record.type === "queue_restoration"));
+    expect(frame.records).toContainEqual(
+      expect.objectContaining({
+        type: "queue_restoration",
+        steering: ["queued bytes"],
+        originalAttachments: [{ intentId: "esc-restoration", images: [image] }],
+      }),
+    );
+    const detached = await authority.requestAuthorityAttach(4);
+    expect(detached.restorations).toContainEqual(
+      expect.objectContaining({ restorationId: expect.any(String), steering: ["queued bytes"] }),
+    );
+    authority.acknowledgeRestoration(detached.restorations[0].restorationId);
+    expect((await authority.requestAuthorityAttach(5)).restorations).toEqual([]);
+    expect(session.prompt).toHaveBeenCalledTimes(1);
+  });
+
   it("rechecks lifecycle admission on the serialized child queue after a race", async () => {
     const { authority, session } = setup(
       {},

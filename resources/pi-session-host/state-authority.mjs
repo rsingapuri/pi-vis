@@ -567,6 +567,9 @@ export function createStateAuthority({
       if (recordValue?.type === "intent_outcome" && recordValue.outcome) {
         return [{ type: "intent_outcome", outcome: structuredClone(recordValue.outcome) }];
       }
+      // Review custody is semantic evidence. Do not filter it out of the frame:
+      // detached renderers recover these same retained entries from attach.
+      if (recordValue?.type === "queue_restoration") return [structuredClone(recordValue)];
       return [];
     });
   }
@@ -1871,6 +1874,10 @@ export function createStateAuthority({
         owner,
         semantic: { sync: { state: "following", cursor }, snapshot: semantic },
         operationJournal: journal,
+        // A restoration is retained until the renderer explicitly acknowledges
+        // it. Attach therefore carries the durable child-owned custody, even
+        // when its original frame was emitted while no renderer was attached.
+        restorations: [...restorations.values()].map((item) => structuredClone(item)),
         transcript: {
           sync: { state: "following", cursor: transcriptCursor },
           persistedHistoryCursor: transcriptPresentation.persistedHistoryCursor,

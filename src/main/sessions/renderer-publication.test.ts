@@ -60,6 +60,8 @@ function baseline(
       dialogs: [],
     },
     panels: [],
+    restorations: [],
+
     publicationHighWatermark: highWatermark,
   } as unknown as AuthorityAttachBaseline;
 }
@@ -105,6 +107,8 @@ describe("RendererPublicationRouter", () => {
     expect(response.baseline).toMatchObject({
       sessionId: "session",
       rendererGeneration: 4,
+      restorations: [],
+
       publicationHighWatermark: 0,
     });
     expect(response.replay).toHaveLength(1);

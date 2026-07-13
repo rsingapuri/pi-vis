@@ -54,6 +54,8 @@ function authorityBaseline(fake: FakeHostProcess, generation = 1) {
       dialogs: [],
     },
     panels: [],
+    restorations: [],
+
     publicationHighWatermark: 0,
   };
 }

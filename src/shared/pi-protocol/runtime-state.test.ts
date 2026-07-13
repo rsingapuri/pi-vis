@@ -71,6 +71,8 @@ function baseline(overrides: Record<string, unknown> = {}) {
       dialogs: [],
     },
     panels: [],
+    restorations: [],
+
     publicationHighWatermark: 20,
     ...overrides,
   };

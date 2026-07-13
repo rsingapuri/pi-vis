@@ -1020,6 +1020,8 @@ function authorityAttach(
         dialogs: [],
       },
       panels: [],
+      restorations: [],
+
       publicationHighWatermark: runtime.publicationSequence,
     },
     replay: [],

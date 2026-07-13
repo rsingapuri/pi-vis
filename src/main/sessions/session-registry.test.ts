@@ -616,6 +616,69 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
+  it("escrows an admitted envelope submit with byte-identical review custody and never replays it", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+    const images = [{ type: "image" as const, mimeType: "image/png", data: "AAEC/frozen" }];
+    const pending = h.registry.dispatchIntent({
+      sessionId: id,
+      intentId: "lost-envelope-submit",
+      rendererGeneration: record._rendererGeneration,
+      expectedOwner: { hostInstanceId, sessionEpoch },
+      intent: {
+        kind: "submit",
+        editorRevision: 7,
+        text: "retain exactly this text",
+        images,
+        requestedMode: "steer",
+        surface: "composer",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(h.fakes[0]!.sent.some((message) => message.type === "dispatch_intent")).toBe(true),
+    );
+    h.fakes[0]!.emitExit(1);
+    await expect(pending).resolves.toMatchObject({ status: "delivery_unknown" });
+    expect(h.restorations).toContainEqual([
+      id,
+      expect.objectContaining({
+        restorationId: `ambiguous-intent:${hostInstanceId}:${sessionEpoch}:lost-envelope-submit`,
+        steering: ["retain exactly this text"],
+        followUp: [],
+        originalAttachments: [{ intentId: "lost-envelope-submit", images }],
+      }),
+    ]);
+    await vi.waitFor(() => expect(h.fakes).toHaveLength(2));
+    expect(h.fakes[1]!.sent.filter((message) => message.type === "dispatch_intent")).toHaveLength(
+      0,
+    );
+    h.registry.stopAll();
+  });
+
+  it("forwards restoration acknowledgement to the child exactly once", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    record._restorations.set("child-custody", {
+      type: "queue_restoration",
+      restorationId: "child-custody",
+    });
+
+    expect(h.registry.acknowledgeRestoration(id, "child-custody")).toBe(true);
+    expect(h.registry.acknowledgeRestoration(id, "child-custody")).toBe(false);
+    expect(
+      h.fakes[0]!.sent.filter(
+        (message) =>
+          message.type === "restoration_ack" && message.restorationId === "child-custody",
+      ),
+    ).toHaveLength(1);
+    h.registry.stopAll();
+  });
+
   it("retains admitted dispatch escrow across duplicate receipts until a terminal authority frame", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");

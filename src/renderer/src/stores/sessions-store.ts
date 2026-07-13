@@ -799,6 +799,35 @@ function queuedMessagesFromSnapshot(
   return queuedMessages;
 }
 
+function appendQueueRestorations(
+  current: SessionViewState,
+  restorations: ReadonlyArray<{
+    restorationId: string;
+    steering: string[];
+    followUp: string[];
+    originalAttachments: Array<{ intentId: string; images: unknown[] }>;
+    clearedIntentIds?: string[] | undefined;
+    commandDescription?: string | undefined;
+  }>,
+): SessionViewState {
+  let next = current;
+  for (const restoration of restorations) {
+    if (next.queueRestorations?.some((item) => item.restorationId === restoration.restorationId))
+      continue;
+    const transcript = restoration.clearedIntentIds?.length
+      ? retirePendingUserEchoesByIntent(next.transcript, restoration.clearedIntentIds)
+      : next.transcript;
+    // Keep original image objects as review custody; never convert or drop
+    // them while applying a semantic frame or attach baseline.
+    next = {
+      ...next,
+      transcript,
+      queueRestorations: [...(next.queueRestorations ?? []), structuredClone(restoration)],
+    };
+  }
+  return next;
+}
+
 function applyAuthoritySemanticProjection(
   current: SessionViewState,
   authorityProjection: RendererAuthorityState,
@@ -1863,13 +1892,27 @@ const buildSessionsStore = (
       );
       if (authorityProjection === current.authorityProjection) return {};
       following = authorityProjection.semantic.state === "following";
+      const restorations = [
+        ...response.baseline.restorations,
+        ...response.replay.flatMap((publication) =>
+          publication.plane === "semantic"
+            ? publication.payload.records.filter(
+                (record): record is Extract<typeof record, { type: "queue_restoration" }> =>
+                  record.type === "queue_restoration",
+              )
+            : [],
+        ),
+      ];
       const sessions = new Map(state.sessions);
       const extension = authorityProjection.extensionUiBaseline;
       const authorityPanels = [...authorityProjection.panels.values()];
       const customPanel = authorityPanels.find((panel) => !panel.baseline.unified);
       const unifiedPanel = authorityPanels.find((panel) => panel.baseline.unified);
       sessions.set(sessionId, {
-        ...applyAuthoritySemanticProjection(current, authorityProjection),
+        ...appendQueueRestorations(
+          applyAuthoritySemanticProjection(current, authorityProjection),
+          restorations,
+        ),
         authorityProjection,
         panel: customPanel
           ? {
@@ -1926,6 +1969,16 @@ const buildSessionsStore = (
       publication.plane === "extensionUi" && publication.payload.kind === "request"
         ? publication.payload.request
         : undefined;
+    const restorations =
+      publication.plane === "semantic"
+        ? publication.payload.records.filter(
+            (record): record is Extract<typeof record, { type: "queue_restoration" }> =>
+              record.type === "queue_restoration",
+          )
+        : [];
+    // Transcript records and the complete resulting semantic snapshot are one
+    // renderer commit. The transcript remains presentation-only, but cannot
+    // visually race the cursor that names its semantic boundary.
     let accepted = false;
     runAtomically(() => {
       set((state) => {
@@ -1964,7 +2017,10 @@ const buildSessionsStore = (
         const customPanel = authorityPanels.find((panel) => !panel.baseline.unified);
         const unifiedPanel = authorityPanels.find((panel) => panel.baseline.unified);
         sessions.set(sessionId, {
-          ...applyAuthoritySemanticProjection(current, authorityProjection),
+          ...appendQueueRestorations(
+            applyAuthoritySemanticProjection(current, authorityProjection),
+            restorations,
+          ),
           authorityProjection,
           panel: customPanel
             ? {
@@ -2043,16 +2099,9 @@ const buildSessionsStore = (
       (item) => item.images.length > 0,
     );
     const hasCommandReview = !!restoration.commandDescription?.trim();
-    // A zero-payload custody marker gives the user nothing to review. Retire it
-    // through the same main acknowledgement instead of rendering an alarming,
-    // empty recovery card that can only be dismissed.
-    if (!hasRecoverableText && !hasRecoverableAttachments && !hasCommandReview) {
-      void window.pivis.invoke("session.acknowledgeRestoration", {
-        sessionId,
-        restorationId: restoration.restorationId,
-      });
-      return;
-    }
+    // Every restoration remains child-owned until an explicit dismissal. Even
+    // an empty marker can name destructive custody and must not be silently
+    // acknowledged while a renderer is attaching or detached.
     const session = get().sessions.get(sessionId);
     if (
       !session ||
