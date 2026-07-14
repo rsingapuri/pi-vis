@@ -351,9 +351,33 @@ const panelBridge = {
       kind: "repaint_required",
       panelKey: `panel:${panelId}`,
       reason: "repaint_required",
+      renderRevision: baseline.revision,
     });
     send({ type: "panel_data", panelId, data: "\u001bc" });
     p.resizeHandler?.(cols, rows, true);
+    const keyframe = panelReconstruction.keyframe(panelId);
+    if (keyframe) {
+      runtimeAuthority?.publishPanel?.((cursor, owner) => ({
+        kind: "keyframe",
+        cursor,
+        panel: {
+          panelKey: `panel:${panelId}`,
+          panelId,
+          owner,
+          sync: { state: "synchronizing", lastCursor: cursor, reason: "repaint_ack_pending" },
+          overlay: p.overlay === true,
+          unified: p.unified === true,
+          mode: p.mode ?? (p.unified === true ? "content" : "viewport"),
+          inputAcknowledgedThrough: p.inputSequence,
+          keyframe: {
+            kind: "keyframe",
+            ansi: keyframe.ansi,
+            renderRevision: keyframe.revision,
+          },
+        },
+      }));
+    }
+    // Compatibility marker for renderers without a panel authority projection.
     send({ type: "panel_repaint", panelId, revision: baseline.revision });
   },
 

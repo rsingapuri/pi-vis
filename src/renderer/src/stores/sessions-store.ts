@@ -220,6 +220,11 @@ export interface SessionViewState {
         authority?: boolean;
         inputEnabled?: boolean;
         renderRevision?: number;
+        /** Complete authority keyframe rendered and awaiting acknowledgement. */
+        keyframeReady?: boolean;
+        outputSequence?: number;
+        outputKind?: "keyframe" | "delta" | "reset";
+        outputAnsi?: string;
         syncState?: "following" | "synchronizing" | "unavailable";
       }
     | undefined;
@@ -244,6 +249,11 @@ export interface SessionViewState {
         authority?: boolean;
         inputEnabled?: boolean;
         renderRevision?: number;
+        /** Complete authority keyframe rendered and awaiting acknowledgement. */
+        keyframeReady?: boolean;
+        outputSequence?: number;
+        outputKind?: "keyframe" | "delta" | "reset";
+        outputAnsi?: string;
         syncState?: "following" | "synchronizing" | "unavailable";
       }
     | undefined;
@@ -1934,6 +1944,14 @@ const buildSessionsStore = (
               authority: true,
               inputEnabled: customPanel.inputEnabled,
               renderRevision: customPanel.baseline.keyframe.renderRevision,
+              keyframeReady: customPanel.baseline.keyframe.kind === "keyframe",
+              ...(customPanel.output
+                ? {
+                    outputSequence: customPanel.output.sequence,
+                    outputKind: customPanel.output.kind,
+                    outputAnsi: customPanel.output.ansi,
+                  }
+                : {}),
               syncState: customPanel.sync.state,
             }
           : undefined,
@@ -1947,6 +1965,14 @@ const buildSessionsStore = (
               authority: true,
               inputEnabled: unifiedPanel.inputEnabled,
               renderRevision: unifiedPanel.baseline.keyframe.renderRevision,
+              keyframeReady: unifiedPanel.baseline.keyframe.kind === "keyframe",
+              ...(unifiedPanel.output
+                ? {
+                    outputSequence: unifiedPanel.output.sequence,
+                    outputKind: unifiedPanel.output.kind,
+                    outputAnsi: unifiedPanel.output.ansi,
+                  }
+                : {}),
               syncState: unifiedPanel.sync.state,
             }
           : undefined,
@@ -2052,6 +2078,14 @@ const buildSessionsStore = (
                 authority: true,
                 inputEnabled: customPanel.inputEnabled,
                 renderRevision: customPanel.baseline.keyframe.renderRevision,
+                keyframeReady: customPanel.baseline.keyframe.kind === "keyframe",
+                ...(customPanel.output
+                  ? {
+                      outputSequence: customPanel.output.sequence,
+                      outputKind: customPanel.output.kind,
+                      outputAnsi: customPanel.output.ansi,
+                    }
+                  : {}),
                 syncState: customPanel.sync.state,
               }
             : undefined,
@@ -2065,6 +2099,14 @@ const buildSessionsStore = (
                 authority: true,
                 inputEnabled: unifiedPanel.inputEnabled,
                 renderRevision: unifiedPanel.baseline.keyframe.renderRevision,
+                keyframeReady: unifiedPanel.baseline.keyframe.kind === "keyframe",
+                ...(unifiedPanel.output
+                  ? {
+                      outputSequence: unifiedPanel.output.sequence,
+                      outputKind: unifiedPanel.output.kind,
+                      outputAnsi: unifiedPanel.output.ansi,
+                    }
+                  : {}),
                 syncState: unifiedPanel.sync.state,
               }
             : undefined,

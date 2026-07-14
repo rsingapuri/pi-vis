@@ -257,6 +257,7 @@ describe("authority reducer", () => {
         cursor: { ...owner, transportSequence: 2, snapshotSequence: 2 },
         panelKey: "panel-a",
         reason: "repaint_required",
+        renderRevision: 2,
       },
     };
 
@@ -331,9 +332,10 @@ describe("authority reducer", () => {
         cursor: { ...owner, transportSequence: 2, snapshotSequence: 2 },
         panelKey: "panel-a",
         reason: "repaint_required",
+        renderRevision: 2,
       },
     });
-    const state = reduceAuthorityPublication(repaint, {
+    const pendingAck = reduceAuthorityPublication(repaint, {
       sessionId: "session-a",
       rendererGeneration: 7,
       publicationSequence: 12,
@@ -347,8 +349,34 @@ describe("authority reducer", () => {
           panelId: 1,
           owner,
           sync: {
+            state: "synchronizing",
+            lastCursor: { ...owner, transportSequence: 3, snapshotSequence: 3 },
+            reason: "repaint_ack_pending",
+          },
+          overlay: true,
+          unified: false,
+          mode: "viewport",
+          inputAcknowledgedThrough: 0,
+          keyframe: { kind: "keyframe", ansi: "repaint", renderRevision: 2 },
+        },
+      },
+    });
+    const state = reduceAuthorityPublication(pendingAck, {
+      sessionId: "session-a",
+      rendererGeneration: 7,
+      publicationSequence: 13,
+      plane: "panel",
+      owner,
+      payload: {
+        kind: "keyframe",
+        cursor: { ...owner, transportSequence: 4, snapshotSequence: 4 },
+        panel: {
+          panelKey: "panel-a",
+          panelId: 1,
+          owner,
+          sync: {
             state: "following",
-            cursor: { ...owner, transportSequence: 3, snapshotSequence: 3 },
+            cursor: { ...owner, transportSequence: 4, snapshotSequence: 4 },
           },
           overlay: true,
           unified: false,
@@ -360,6 +388,8 @@ describe("authority reducer", () => {
     });
 
     expect(repaint.panels.get("panel-a")?.inputEnabled).toBe(false);
+    expect(pendingAck.panels.get("panel-a")?.inputEnabled).toBe(false);
+    expect(pendingAck.panels.get("panel-a")?.ansi).toEqual(["repaint"]);
     expect(state.panels.get("panel-a")?.inputEnabled).toBe(true);
     expect(state.panels.get("panel-a")?.ansi).toEqual(["repaint"]);
   });

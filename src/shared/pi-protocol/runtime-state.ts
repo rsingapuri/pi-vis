@@ -1411,6 +1411,7 @@ export const PanelPublicationPayloadSchema = z.discriminatedUnion("kind", [
       cursor: AuthorityCursorSchema,
       panelKey: NonEmptyIdSchema,
       reason: NonEmptyIdSchema,
+      renderRevision: NonNegativeIntegerSchema,
     })
     .strict(),
   z

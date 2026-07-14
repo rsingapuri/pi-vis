@@ -79,9 +79,16 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     authority?: boolean;
     inputEnabled?: boolean;
     renderRevision?: number;
+    keyframeReady?: boolean;
+    outputSequence?: number;
+    outputKind?: "keyframe" | "delta" | "reset";
+    outputAnsi?: string;
     syncState?: "following" | "synchronizing" | "unavailable";
   } | null>(null);
-  const renderedBufferRef = useRef<readonly string[]>([]);
+  const renderedOutputSequenceRef = useRef<number | null>(null);
+  const renderedKeyframeRevisionRef = useRef<number | null>(null);
+  const authorityAckRef = useRef<string | null>(null);
+  const syncRef = useRef<(() => void) | null>(null);
   const { panel } = useSessionsStore((s) => s.sessions.get(sessionId)) ?? {};
   // Claim ESC while a custom panel is open so the panel keeps parity with
   // terminal pi: Escape belongs to the extension surface, not to global abort.
@@ -108,18 +115,64 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
   useEffect(() => {
     const term = termRef.current;
     if (!term || !panel) return;
-    const prior = renderedBufferRef.current;
-    const next = panel.buffer;
-    const shared = prior.length <= next.length && prior.every((chunk, i) => chunk === next[i]);
-    if (!shared) {
-      term.reset();
-      term.clear();
-      for (const chunk of next) term.write(chunk);
-    } else {
-      for (const chunk of next.slice(prior.length)) term.write(chunk);
+    const outputSequence = panel.outputSequence;
+    if (
+      outputSequence !== undefined &&
+      renderedOutputSequenceRef.current !== outputSequence &&
+      panel.outputKind
+    ) {
+      if (panel.outputKind === "reset") {
+        term.reset();
+        term.clear();
+        renderedKeyframeRevisionRef.current = null;
+      } else if (panel.outputKind === "keyframe") {
+        if (renderedKeyframeRevisionRef.current !== panel.renderRevision) {
+          term.reset();
+          term.clear();
+          term.write(panel.outputAnsi ?? "");
+          renderedKeyframeRevisionRef.current = panel.renderRevision ?? null;
+        }
+      } else {
+        term.write(panel.outputAnsi ?? "");
+      }
+      renderedOutputSequenceRef.current = outputSequence;
     }
-    renderedBufferRef.current = next;
-  }, [panel]);
+    const ackKey = `${panel.hostInstanceId}:${panel.sessionEpoch}:${panel.id}:${panel.renderRevision ?? 0}`;
+    const shouldAcknowledge =
+      panel.authority === true &&
+      panel.syncState === "synchronizing" &&
+      panel.keyframeReady === true &&
+      authorityAckRef.current !== ackKey;
+    if (shouldAcknowledge) authorityAckRef.current = ackKey;
+    term.write("", () => {
+      syncRef.current?.();
+      if (!shouldAcknowledge) return;
+      const active = panelRef.current;
+      if (
+        !active ||
+        active.hostInstanceId !== panel.hostInstanceId ||
+        active.sessionEpoch !== panel.sessionEpoch ||
+        active.id !== panel.id ||
+        active.renderRevision !== panel.renderRevision
+      )
+        return;
+      void window.pivis
+        .invoke("session.panelRepaintAck", {
+          sessionId,
+          expectedHostInstanceId: panel.hostInstanceId,
+          expectedSessionEpoch: panel.sessionEpoch,
+          panelId: panel.id,
+          revision: panel.renderRevision ?? 0,
+        })
+        .then((result) => {
+          if (!result.acknowledged && authorityAckRef.current === ackKey)
+            authorityAckRef.current = null;
+        })
+        .catch(() => {
+          if (authorityAckRef.current === ackKey) authorityAckRef.current = null;
+        });
+    });
+  }, [panel, sessionId]);
 
   // ── Manual height override (drag the top handle) ──
   // The effective height fraction is: the in-flight drag value (set while the
@@ -152,7 +205,6 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
 
   // Re-run the sizing pass when the mode flips (overlay shown/hidden). The
   // lifecycle effect is keyed on panelId only, so it doesn't re-fire here.
-  const syncRef = useRef<(() => void) | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: panelMode is the trigger; the body deliberately only re-runs the current sync
   useEffect(() => {
     syncRef.current?.();
@@ -305,13 +357,22 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     // (fires after xterm parses the bytes) so the first sizing pass reads the
     // real content height, not a not-yet-parsed buffer.
     for (const chunk of currentPanel.buffer) term.write(chunk);
-    renderedBufferRef.current = currentPanel.buffer;
+    renderedOutputSequenceRef.current = currentPanel.outputSequence ?? null;
+    renderedKeyframeRevisionRef.current =
+      currentPanel.outputKind === "keyframe" ? (currentPanel.renderRevision ?? null) : null;
     term.write("", () => {
       if (disposed) return;
       sizer.scheduleSync();
       // An attach may carry a retained forced-repaint keyframe. Its following
       // authority publication, not this acknowledgement, enables input.
-      if (currentPanel.authority && !currentPanel.inputEnabled && currentPanel.buffer.length > 0) {
+      const ackKey = `${currentPanel.hostInstanceId}:${currentPanel.sessionEpoch}:${currentPanel.id}:${currentPanel.renderRevision ?? 0}`;
+      if (
+        currentPanel.authority &&
+        currentPanel.syncState === "synchronizing" &&
+        currentPanel.keyframeReady &&
+        authorityAckRef.current !== ackKey
+      ) {
+        authorityAckRef.current = ackKey;
         void window.pivis
           .invoke("session.panelRepaintAck", {
             sessionId,
@@ -320,7 +381,13 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
             panelId: currentPanel.id,
             revision: currentPanel.renderRevision ?? 0,
           })
-          .catch(() => {});
+          .then((result) => {
+            if (!result.acknowledged && authorityAckRef.current === ackKey)
+              authorityAckRef.current = null;
+          })
+          .catch(() => {
+            if (authorityAckRef.current === ackKey) authorityAckRef.current = null;
+          });
       }
     });
 
@@ -337,7 +404,11 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
           if (!disposed) sizer.scheduleSync();
         });
       }
-      if (event.type === "panel_repaint" && event.panelId === currentPanel.id) {
+      if (
+        !activePanel.authority &&
+        event.type === "panel_repaint" &&
+        event.panelId === currentPanel.id
+      ) {
         repaintAcknowledged = false;
         repaintRevision = event.revision;
         // `panel_repaint` is ordered after all reset/repaint bytes. Wait for

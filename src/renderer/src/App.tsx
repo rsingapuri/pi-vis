@@ -42,11 +42,21 @@ import { useUpdatesStore } from "./stores/updates-store.js";
 import "./App.css";
 
 function authorityNeedsBaseline(projection: RendererAuthorityState | undefined): boolean {
+  const expectedPanelReconstruction = new Set([
+    "panel_reset",
+    "repaint_required",
+    "repaint_ack_pending",
+  ]);
   return (
     projection?.semantic.state !== "following" ||
     projection?.transcript.state !== "following" ||
     projection?.extensionUi.state !== "following" ||
-    [...(projection?.panels.values() ?? [])].some((panel) => panel.sync.state !== "following")
+    [...(projection?.panels.values() ?? [])].some(
+      (panel) =>
+        panel.sync.state === "unavailable" ||
+        (panel.sync.state === "synchronizing" &&
+          !expectedPanelReconstruction.has(panel.sync.reason)),
+    )
   );
 }
 

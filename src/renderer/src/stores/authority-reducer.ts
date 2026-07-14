@@ -21,7 +21,17 @@ import type {
 export interface AuthorityPanelProjection {
   baseline: PanelPresentationBaseline;
   sync: PlaneSync;
+  /** Bounded replay segment used only to seed a newly mounted terminal. */
   ansi: readonly string[];
+  /** Latest accepted render operation; mounted terminals consume this incrementally. */
+  output?:
+    | {
+        kind: "keyframe" | "delta" | "reset";
+        sequence: number;
+        renderRevision: number;
+        ansi: string;
+      }
+    | undefined;
   inputEnabled: boolean;
 }
 
@@ -181,6 +191,16 @@ function installBaseline(
       baseline: panel,
       sync: panel.sync,
       ansi: panel.keyframe.kind === "keyframe" ? [panel.keyframe.ansi] : [],
+      ...(panel.keyframe.kind === "keyframe" && cursorOf(panel.sync)
+        ? {
+            output: {
+              kind: "keyframe" as const,
+              sequence: cursorOf(panel.sync)!.transportSequence,
+              renderRevision: panel.keyframe.renderRevision,
+              ansi: panel.keyframe.ansi,
+            },
+          }
+        : {}),
       inputEnabled: panelInputEnabled(panel),
     });
   }
@@ -377,6 +397,26 @@ function reduceExtensionUi(
   return { ...state, extensionUi: { state: "following", cursor }, extensionUiBaseline: baseline };
 }
 
+const AUTHORITY_PANEL_BUFFER_MAX_CHARS = 512 * 1024;
+
+function appendAuthorityPanelAnsi(
+  buffer: readonly string[],
+  data: string,
+  unified: boolean,
+): readonly string[] {
+  const hardClearAt = unified ? data.lastIndexOf("\x1b[2J") : -1;
+  const next = hardClearAt >= 0 ? [data.slice(hardClearAt)] : [...buffer, data];
+  let total = next.reduce((sum, chunk) => sum + chunk.length, 0);
+  while (next.length > 1 && total > AUTHORITY_PANEL_BUFFER_MAX_CHARS) {
+    total -= next.shift()?.length ?? 0;
+  }
+  const onlyChunk = next[0];
+  if (next.length === 1 && onlyChunk && total > AUTHORITY_PANEL_BUFFER_MAX_CHARS) {
+    next[0] = onlyChunk.slice(-AUTHORITY_PANEL_BUFFER_MAX_CHARS);
+  }
+  return next;
+}
+
 function reducePanel(
   state: RendererAuthorityState,
   publication: Extract<RendererPublication, { plane: "panel" }>,
@@ -388,11 +428,12 @@ function reducePanel(
     if (!sameOwner(payload.panel.owner, publication.owner) || !existing) return state;
     const priorCursor = cursorOf(existing.sync);
     const cursor = payload.cursor;
+    const panelCursor = cursorOf(payload.panel.sync);
     if (
       !priorCursor ||
+      !panelCursor ||
       cursor.transportSequence !== priorCursor.transportSequence + 1 ||
-      payload.panel.sync.state !== "following" ||
-      payload.panel.sync.cursor.transportSequence !== cursor.transportSequence
+      panelCursor.transportSequence !== cursor.transportSequence
     ) {
       return synchronizeAuthorityPlane(state, "panel", "panel_keyframe_gap", key);
     }
@@ -401,6 +442,16 @@ function reducePanel(
       baseline: payload.panel,
       sync: payload.panel.sync,
       ansi: payload.panel.keyframe.kind === "keyframe" ? [payload.panel.keyframe.ansi] : [],
+      ...(payload.panel.keyframe.kind === "keyframe"
+        ? {
+            output: {
+              kind: "keyframe" as const,
+              sequence: cursor.transportSequence,
+              renderRevision: payload.panel.keyframe.renderRevision,
+              ansi: payload.panel.keyframe.ansi,
+            },
+          }
+        : {}),
       inputEnabled: panelInputEnabled(payload.panel),
     });
     return { ...state, panels };
@@ -418,7 +469,18 @@ function reducePanel(
       keyframe: { kind: "repaint_required", renderRevision: payload.renderRevision },
     };
     const panels = new Map(state.panels);
-    panels.set(key, { baseline, sync: baseline.sync, ansi: [], inputEnabled: false });
+    panels.set(key, {
+      baseline,
+      sync: baseline.sync,
+      ansi: [],
+      output: {
+        kind: "reset",
+        sequence: payload.cursor.transportSequence,
+        renderRevision: payload.renderRevision,
+        ansi: "",
+      },
+      inputEnabled: false,
+    });
     return { ...state, panels };
   }
   if (!existing || !sameOwner(existing.baseline.owner, publication.owner)) return state;
@@ -443,22 +505,31 @@ function reducePanel(
   if (payload.kind === "close") {
     panels.delete(key);
   } else if (payload.kind === "reset" || payload.kind === "repaint_required") {
-    const baseline =
-      payload.kind === "reset"
-        ? {
-            ...existing.baseline,
-            ...(payload.panelId !== undefined ? { panelId: payload.panelId } : {}),
-            ...(payload.overlay !== undefined ? { overlay: payload.overlay } : {}),
-            ...(payload.unified !== undefined ? { unified: payload.unified } : {}),
-            ...(payload.mode !== undefined ? { mode: payload.mode } : {}),
-            keyframe: { kind: "repaint_required" as const, renderRevision: payload.renderRevision },
-          }
-        : existing.baseline;
+    const baseline = {
+      ...existing.baseline,
+      ...(payload.kind === "reset" && payload.panelId !== undefined
+        ? { panelId: payload.panelId }
+        : {}),
+      ...(payload.kind === "reset" && payload.overlay !== undefined
+        ? { overlay: payload.overlay }
+        : {}),
+      ...(payload.kind === "reset" && payload.unified !== undefined
+        ? { unified: payload.unified }
+        : {}),
+      ...(payload.kind === "reset" && payload.mode !== undefined ? { mode: payload.mode } : {}),
+      keyframe: { kind: "repaint_required" as const, renderRevision: payload.renderRevision },
+    };
     panels.set(key, {
       ...existing,
       baseline,
       sync: synchronizing(cursor, payload.kind === "reset" ? "panel_reset" : payload.reason),
       ansi: [],
+      output: {
+        kind: "reset",
+        sequence: cursor.transportSequence,
+        renderRevision: payload.renderRevision,
+        ansi: "",
+      },
       inputEnabled: false,
     });
   } else if (payload.kind === "mode") {
@@ -474,7 +545,13 @@ function reducePanel(
     panels.set(key, {
       ...existing,
       sync: { state: "following", cursor },
-      ansi: [...existing.ansi, payload.data],
+      ansi: appendAuthorityPanelAnsi(existing.ansi, payload.data, existing.baseline.unified),
+      output: {
+        kind: "delta",
+        sequence: cursor.transportSequence,
+        renderRevision: payload.renderRevision,
+        ansi: payload.data,
+      },
     });
   }
   return { ...state, panels };

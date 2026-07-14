@@ -65,9 +65,15 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
     authority?: boolean;
     inputEnabled?: boolean;
     renderRevision?: number;
+    keyframeReady?: boolean;
+    outputSequence?: number;
+    outputKind?: "keyframe" | "delta" | "reset";
+    outputAnsi?: string;
     syncState?: "following" | "synchronizing" | "unavailable";
   } | null>(null);
-  const renderedBufferRef = useRef<readonly string[]>([]);
+  const renderedOutputSequenceRef = useRef<number | null>(null);
+  const renderedKeyframeRevisionRef = useRef<number | null>(null);
+  const authorityAckRef = useRef<string | null>(null);
   // The current sizing pass, exposed by the lifecycle effect so the mode-change
   // effect below can re-run it without taking sync's deps.
   const syncRef = useRef<(() => void) | null>(null);
@@ -88,18 +94,64 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
   useEffect(() => {
     const term = termRef.current;
     if (!term || !unifiedPanel) return;
-    const prior = renderedBufferRef.current;
-    const next = unifiedPanel.buffer;
-    const shared = prior.length <= next.length && prior.every((chunk, i) => chunk === next[i]);
-    if (!shared) {
-      term.reset();
-      term.clear();
-      for (const chunk of next) term.write(chunk);
-    } else {
-      for (const chunk of next.slice(prior.length)) term.write(chunk);
+    const outputSequence = unifiedPanel.outputSequence;
+    if (
+      outputSequence !== undefined &&
+      renderedOutputSequenceRef.current !== outputSequence &&
+      unifiedPanel.outputKind
+    ) {
+      if (unifiedPanel.outputKind === "reset") {
+        term.reset();
+        term.clear();
+        renderedKeyframeRevisionRef.current = null;
+      } else if (unifiedPanel.outputKind === "keyframe") {
+        if (renderedKeyframeRevisionRef.current !== unifiedPanel.renderRevision) {
+          term.reset();
+          term.clear();
+          term.write(unifiedPanel.outputAnsi ?? "");
+          renderedKeyframeRevisionRef.current = unifiedPanel.renderRevision ?? null;
+        }
+      } else {
+        term.write(unifiedPanel.outputAnsi ?? "");
+      }
+      renderedOutputSequenceRef.current = outputSequence;
     }
-    renderedBufferRef.current = next;
-  }, [unifiedPanel]);
+    const ackKey = `${unifiedPanel.hostInstanceId}:${unifiedPanel.sessionEpoch}:${unifiedPanel.id}:${unifiedPanel.renderRevision ?? 0}`;
+    const shouldAcknowledge =
+      unifiedPanel.authority === true &&
+      unifiedPanel.syncState === "synchronizing" &&
+      unifiedPanel.keyframeReady === true &&
+      authorityAckRef.current !== ackKey;
+    if (shouldAcknowledge) authorityAckRef.current = ackKey;
+    term.write("", () => {
+      syncRef.current?.();
+      if (!shouldAcknowledge) return;
+      const active = panelRef.current;
+      if (
+        !active ||
+        active.hostInstanceId !== unifiedPanel.hostInstanceId ||
+        active.sessionEpoch !== unifiedPanel.sessionEpoch ||
+        active.id !== unifiedPanel.id ||
+        active.renderRevision !== unifiedPanel.renderRevision
+      )
+        return;
+      void window.pivis
+        .invoke("session.panelRepaintAck", {
+          sessionId,
+          expectedHostInstanceId: unifiedPanel.hostInstanceId,
+          expectedSessionEpoch: unifiedPanel.sessionEpoch,
+          panelId: unifiedPanel.id,
+          revision: unifiedPanel.renderRevision ?? 0,
+        })
+        .then((result) => {
+          if (!result.acknowledged && authorityAckRef.current === ackKey)
+            authorityAckRef.current = null;
+        })
+        .catch(() => {
+          if (authorityAckRef.current === ackKey) authorityAckRef.current = null;
+        });
+    });
+  }, [sessionId, unifiedPanel]);
 
   // ESC parity with the real TUI: whatever ESC does in pi's terminal, it must
   // do here too. pi's precedence is overlay-close > autocomplete-close >
@@ -240,11 +292,20 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
     // the first resize report still carries force:true, so the host immediately
     // replaces the replay with an authoritative complete repaint.
     for (const chunk of currentPanel.buffer) term.write(chunk);
-    renderedBufferRef.current = currentPanel.buffer;
+    renderedOutputSequenceRef.current = currentPanel.outputSequence ?? null;
+    renderedKeyframeRevisionRef.current =
+      currentPanel.outputKind === "keyframe" ? (currentPanel.renderRevision ?? null) : null;
     term.write("", () => {
       if (disposed) return;
       sizer.scheduleSync();
-      if (currentPanel.authority && !currentPanel.inputEnabled && currentPanel.buffer.length > 0) {
+      const ackKey = `${currentPanel.hostInstanceId}:${currentPanel.sessionEpoch}:${currentPanel.id}:${currentPanel.renderRevision ?? 0}`;
+      if (
+        currentPanel.authority &&
+        currentPanel.syncState === "synchronizing" &&
+        currentPanel.keyframeReady &&
+        authorityAckRef.current !== ackKey
+      ) {
+        authorityAckRef.current = ackKey;
         void window.pivis
           .invoke("session.panelRepaintAck", {
             sessionId,
@@ -253,7 +314,13 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
             panelId: currentPanel.id,
             revision: currentPanel.renderRevision ?? 0,
           })
-          .catch(() => {});
+          .then((result) => {
+            if (!result.acknowledged && authorityAckRef.current === ackKey)
+              authorityAckRef.current = null;
+          })
+          .catch(() => {
+            if (authorityAckRef.current === ackKey) authorityAckRef.current = null;
+          });
       }
     });
 
@@ -269,7 +336,11 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
           if (!disposed) sizer.scheduleSync();
         });
       }
-      if (event.type === "panel_repaint" && event.panelId === currentPanel.id) {
+      if (
+        !activePanel.authority &&
+        event.type === "panel_repaint" &&
+        event.panelId === currentPanel.id
+      ) {
         repaintAcknowledged = false;
         repaintRevision = event.revision;
         term.write("", () => {

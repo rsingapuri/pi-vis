@@ -222,12 +222,14 @@ function publishPanel(payload) {
   });
 }
 
-function panelBaseline(cursor, ansi = `${KITTY_HANDSHAKE}${panelFramebuffer}`) {
+function panelBaseline(cursor, ansi = `${KITTY_HANDSHAKE}${panelFramebuffer}`, following = true) {
   return {
     panelKey: `panel:${PANEL_ID}`,
     panelId: PANEL_ID,
     owner: authorityOwner(),
-    sync: { state: "following", cursor },
+    sync: following
+      ? { state: "following", cursor }
+      : { state: "synchronizing", lastCursor: cursor, reason: "repaint_ack_pending" },
     overlay: false,
     unified: true,
     mode: "content",
@@ -250,9 +252,9 @@ function publishPanelReset() {
   });
 }
 
-function publishPanelKeyframe() {
+function publishPanelKeyframe(following = true) {
   const cursor = presentationCursor("panel");
-  publishPanel({ kind: "keyframe", cursor, panel: panelBaseline(cursor) });
+  publishPanel({ kind: "keyframe", cursor, panel: panelBaseline(cursor, undefined, following) });
 }
 
 function publishPanelData(data) {
@@ -564,7 +566,7 @@ function requestPanelRepaint() {
   // would turn the first post-remount terminal reply into an unrecoverable gap.
   panelRepaintAcknowledgedRevision = 0;
   publishPanelReset();
-  publishPanelKeyframe();
+  publishPanelKeyframe(false);
   // The mounted xterm acknowledges only after it has applied the reset. Delay
   // one turn so panel_open has committed and UnifiedTuiHost has subscribed.
   setTimeout(() => {
@@ -740,12 +742,18 @@ function closeCustomPanel() {
 
 function openCustomPanel(uiSurface) {
   if (uiSurface === "unified") {
-    send({ type: "panel_mode", panelId: PANEL_ID, mode: "viewport" });
-    send({
-      type: "panel_data",
-      panelId: PANEL_ID,
-      data: `\x1b[2J\x1b[H${["Unified custom panel", "opened from the unified editor"].join("\n")}\n`,
+    const modeCursor = presentationCursor("panel");
+    publishPanel({
+      kind: "mode",
+      cursor: modeCursor,
+      panelKey: `panel:${PANEL_ID}`,
+      mode: "viewport",
     });
+    const data = `\x1b[2J\x1b[H${["Unified custom panel", "opened from the unified editor"].join("\n")}\n`;
+    publishPanelData(data);
+    // Compatibility-only copies for renderers without authority projections.
+    send({ type: "panel_mode", panelId: PANEL_ID, mode: "viewport" });
+    send({ type: "panel_data", panelId: PANEL_ID, data });
     return;
   }
 
@@ -757,9 +765,8 @@ function openCustomPanel(uiSurface) {
   publishCustomPanelReset();
   publishCustomPanelKeyframe();
   publishCustomPanelData(customPanelFramebuffer);
-  // Authority publications are canonical state, but mounted xterms consume
-  // their live stream through this compatibility event. Delay one turn so a
-  // reset-created CustomPanelHost has installed its subscription.
+  // Compatibility copy for renderers that have not installed the authority
+  // projection. Delay one turn so their CustomPanelHost can subscribe.
   setTimeout(() => {
     if (customPanelOpen)
       send({ type: "panel_data", panelId: CUSTOM_PANEL_ID, data: customPanelFramebuffer });
@@ -891,13 +898,12 @@ process.on("message", (msg) => {
         if (panelOpen && msg?.panelId === PANEL_ID && msg?.revision === panelRenderRevision) {
           panelRepaintAcknowledgedRevision = panelRenderRevision;
           reply(msg.id, true, { acknowledged: true });
-          // The final authority keyframe already contains the complete kitty
-          // handshake + framebuffer. Re-send just the control handshake after
-          // the renderer's repaint acknowledgement so xterm's reply is not
-          // dropped by its input fence.
+          publishPanelKeyframe(true);
+          // Re-send the control handshake through the accepted authority plane
+          // after the following keyframe enables terminal replies.
           setTimeout(() => {
             if (panelOpen && panelRepaintAcknowledgedRevision === panelRenderRevision)
-              send({ type: "panel_data", panelId: PANEL_ID, data: KITTY_HANDSHAKE });
+              publishPanelData(KITTY_HANDSHAKE);
           }, 50).unref?.();
         } else {
           reply(msg.id, true, { acknowledged: false });

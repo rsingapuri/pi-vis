@@ -277,7 +277,13 @@ function publishPanel(event) {
       ? { kind: "close", cursor, panelKey }
       : event.type === "panel_data"
         ? { kind: "ansi_delta", cursor, panelKey, data: event.data ?? "", renderRevision: 0 }
-        : { kind: "repaint_required", cursor, panelKey, reason: "fixture_repaint" };
+        : {
+            kind: "repaint_required",
+            cursor,
+            panelKey,
+            reason: "fixture_repaint",
+            renderRevision: event.revision ?? 0,
+          };
   send({
     type: "authority_publication",
     publication: { plane: "panel", owner: authorityOwner(), payload },

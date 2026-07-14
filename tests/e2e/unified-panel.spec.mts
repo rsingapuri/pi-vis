@@ -135,7 +135,7 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
       //    emits a release CSI-u after each press (kitty flag 2); strip them so
       //    the assertion targets the press bytes the user intended.
       await panel.locator(".xterm").click();
-      await window.keyboard.type("xyz");
+      await window.keyboard.insertText("xyz");
       await expect
         .poll(
           () =>
