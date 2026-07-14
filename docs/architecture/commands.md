@@ -14,7 +14,7 @@ The unified editor uses the same contract. Its host→renderer submit request an
 
 ## Authority-frame intent migration
 
-[ADR 0002](../decisions/0002-authority-frames-and-plane-synchronization.md) changes the target meaning of mutation dispatch without claiming that IPC can make Pi state instantaneous. In the target, every mutation is an owner-bound stable intent recorded by the child before possible Pi dispatch. The renderer may include the cursor it observed, but stale observation is context rather than a universal rejection rule; the child evaluates current authority state, while compare-and-set editor operations still require the exact revision.
+[ADR 0003](../decisions/0003-authority-frames-and-plane-synchronization.md) changes the target meaning of mutation dispatch without claiming that IPC can make Pi state instantaneous. In the target, every mutation is an owner-bound stable intent recorded by the child before possible Pi dispatch. The renderer may include the cursor it observed, but stale observation is context rather than a universal rejection rule; the child evaluates current authority state, while compare-and-set editor operations still require the exact revision.
 
 An IPC receipt is only `admitted`, `duplicate`, `not_admitted`, or `delivery_unknown`. It is not command completion and components must not update canonical state from it. The child publishes typed completed/rejected/cancelled/failed/`outcome_unknown` outcomes in atomic authority frames. A same-owner duplicate with identical payload executes at most once; a reused ID with different payload is rejected. A possibly dispatched mutation whose settlement is lost becomes review-only `outcome_unknown` and is never automatically replayed after owner replacement.
 

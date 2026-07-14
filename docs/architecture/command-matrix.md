@@ -6,7 +6,7 @@ All renderer rows require `(requestId, expectedHostInstanceId, expectedSessionEp
 
 ### Authority-frame migration status
 
-This table documents the deployed policy/settlement compatibility contract. Under the proposed [authority-frame ADR](../decisions/0002-authority-frames-and-plane-synchronization.md), every mutation row—not only rows marked **Intent**—will receive a stable child-recorded intent and terminal outcome in an atomic authority frame. Read-only rows remain classified queries with an explicit retry policy. Until that migration is complete, the table's current intent markings and correlated IPC settlements remain authoritative; neither a receipt nor a returned promise is completion evidence, and no mixed legacy/frame state may be treated as one cursor.
+This table documents the deployed policy/settlement compatibility contract. Under the proposed [authority-frame ADR](../decisions/0003-authority-frames-and-plane-synchronization.md), every mutation row—not only rows marked **Intent**—will receive a stable child-recorded intent and terminal outcome in an atomic authority frame. Read-only rows remain classified queries with an explicit retry policy. Until that migration is complete, the table's current intent markings and correlated IPC settlements remain authoritative; neither a receipt nor a returned promise is completion evidence, and no mixed legacy/frame state may be treated as one cursor.
 
 | Commands | Class | Reachable surface | Settlement / outcome evidence |
 |---|---|---|---|

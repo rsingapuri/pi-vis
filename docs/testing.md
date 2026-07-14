@@ -45,7 +45,7 @@ Worktree commands use `scripts/ensure-worktree-dev.mjs` to reuse a compatible si
 
 ## Proposed authority-frame migration verification
 
-The authority-frame work in [ADR 0002](decisions/0002-authority-frames-and-plane-synchronization.md) is not represented as already covered by the compatibility suites above. Before each production migration slice, add deterministic fault tests for the real child, main router, and renderer reducer that prove:
+The authority-frame work in [ADR 0003](decisions/0003-authority-frames-and-plane-synchronization.md) is not represented as already covered by the compatibility suites above. Before each production migration slice, add deterministic fault tests for the real child, main router, and renderer reducer that prove:
 
 - a following plane is exact only through its named cursor; a frame in flight never becomes a claim of present-time equality;
 - dropped, reordered, duplicate, and bounded-buffer-overflow publications enter `synchronizing` and recover only through baseline plus contiguous replay;

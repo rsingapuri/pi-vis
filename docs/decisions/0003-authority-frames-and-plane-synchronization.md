@@ -1,4 +1,4 @@
-# 0002: Authority frames and per-plane synchronization
+# 0003: Authority frames and per-plane synchronization
 
 ## Status
 
