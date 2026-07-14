@@ -43,6 +43,7 @@ type PreviewRuntime = {
   sessionEpoch: number;
   snapshotSequence: number;
   transportSequence: number;
+  panelTransportSequence: number;
   publicationSequence: number;
   journalSequence: number;
   rendererGeneration?: number;
@@ -84,30 +85,26 @@ const previewHooks = {
   /** Open a unified panel on demand for focus-ownership regression tests. */
   openUnifiedPanel(): void {
     const activeId = useSessionsStore.getState().activeSessionId ?? DEMO_SESSION_ID;
-    emit("session.panelEvent", {
-      sessionId: activeId,
-      event: { type: "panel_open", panelId: 2, overlay: false, unified: true },
+    emitPreviewPanelEvent(activeId, {
+      type: "panel_open",
+      panelId: 2,
+      overlay: false,
+      unified: true,
     });
-    emit("session.panelEvent", {
-      sessionId: activeId,
-      event: {
-        type: "panel_data",
-        panelId: 2,
-        data: "\x1b[2J\x1b[H▸ Focus-safe panel\r\n  ready",
-      },
+    emitPreviewPanelEvent(activeId, {
+      type: "panel_data",
+      panelId: 2,
+      data: "\x1b[2J\x1b[H▸ Focus-safe panel\r\n  ready",
     });
   },
   /** Emit a differential update without replacing the current unified frame. */
   emitUnifiedPanelUpdate(): void {
     const rec = panelFrames.get(2);
     if (!rec) return;
-    emit("session.panelEvent", {
-      sessionId: rec.sessionId,
-      event: {
-        type: "panel_data",
-        panelId: 2,
-        data: "\x1b[?2026h\x1b[s\x1b[H\x1b[2K▸ panel update\x1b[u\x1b[?2026l",
-      },
+    emitPreviewPanelEvent(rec.sessionId, {
+      type: "panel_data",
+      panelId: 2,
+      data: "\x1b[?2026h\x1b[s\x1b[H\x1b[2K▸ panel update\x1b[u\x1b[?2026l",
     });
   },
   /** Begin a fake turn on the active session. */
@@ -139,6 +136,7 @@ const previewHooks = {
     runtime.sessionEpoch++;
     runtime.snapshotSequence = 0;
     runtime.transportSequence = 1;
+    runtime.panelTransportSequence = 0;
     runtime.publicationSequence = 0;
     runtime.journalSequence = 0;
     runtime.recentOutcomes = [];
@@ -172,6 +170,7 @@ function runtimeFor(sessionId: SessionId): PreviewRuntime {
       sessionEpoch: 0,
       snapshotSequence: 0,
       transportSequence: 1,
+      panelTransportSequence: 0,
       publicationSequence: 0,
       journalSequence: 0,
       steering: [],
@@ -279,8 +278,129 @@ function publishIntentOutcome(sessionId: SessionId, outcome: IntentOutcome): voi
 // scrollback and never recovers — a stub-only artifact that cannot happen
 // against a real host (which clears scrollback every resize).
 type PanelFrame = string | ((rows: number) => string);
+type PreviewPanelState = {
+  sessionId: SessionId;
+  panelId: number;
+  overlay: boolean;
+  unified: boolean;
+  mode: "content" | "viewport";
+  revision: number;
+  ansi: string;
+  following: boolean;
+};
 const panelFrames = new Map<number, { sessionId: unknown; frame: PanelFrame }>();
 const panelRepaintRevisions = new Map<number, number>();
+const previewPanels = new Map<string, PreviewPanelState>();
+
+function previewPanelKey(sessionId: SessionId, panelId: number): string {
+  return `${sessionId}:${panelId}`;
+}
+
+function publishPreviewPanel(sessionId: SessionId, payload: Record<string, unknown>): void {
+  const runtime = runtimeFor(sessionId);
+  const cursor = {
+    ...currentOwner(sessionId),
+    transportSequence: ++runtime.panelTransportSequence,
+    snapshotSequence: Math.max(1, runtime.snapshotSequence),
+  };
+  emit("session.publication", {
+    sessionId,
+    rendererGeneration: runtime.rendererGeneration ?? 0,
+    publicationSequence: ++runtime.publicationSequence,
+    plane: "panel",
+    owner: currentOwner(sessionId),
+    payload: { ...payload, cursor },
+  } as unknown as RendererPublication);
+}
+
+function resetPreviewPanelAuthority(sessionId: SessionId, panelId: number): void {
+  const panel = previewPanels.get(previewPanelKey(sessionId, panelId));
+  if (!panel) return;
+  panel.revision++;
+  panel.ansi = "";
+  panel.following = false;
+  publishPreviewPanel(sessionId, {
+    kind: "reset",
+    panelKey: `panel:${panelId}`,
+    panelId,
+    overlay: panel.overlay,
+    unified: panel.unified,
+    mode: panel.mode,
+    renderRevision: panel.revision,
+  });
+}
+
+function emitPreviewPanelEvent(sessionIdValue: unknown, event: Record<string, unknown>): void {
+  emit("session.panelEvent", { sessionId: sessionIdValue, event });
+  if (typeof sessionIdValue !== "string" || typeof event.panelId !== "number") return;
+  const sessionId = sessionIdValue as SessionId;
+  const panelId = event.panelId;
+  const key = previewPanelKey(sessionId, panelId);
+  if (event.type === "panel_open") {
+    const panel: PreviewPanelState = {
+      sessionId,
+      panelId,
+      overlay: event.overlay === true,
+      unified: event.unified === true,
+      mode: event.unified === true ? "content" : "viewport",
+      revision: 0,
+      ansi: "",
+      following: false,
+    };
+    previewPanels.set(key, panel);
+    resetPreviewPanelAuthority(sessionId, panelId);
+    return;
+  }
+  const panel = previewPanels.get(key);
+  if (!panel) return;
+  if (event.type === "panel_close") {
+    publishPreviewPanel(sessionId, { kind: "close", panelKey: `panel:${panelId}` });
+    previewPanels.delete(key);
+    return;
+  }
+  if (event.type === "panel_mode" && (event.mode === "content" || event.mode === "viewport")) {
+    panel.mode = event.mode;
+    publishPreviewPanel(sessionId, {
+      kind: "mode",
+      panelKey: `panel:${panelId}`,
+      mode: panel.mode,
+    });
+    return;
+  }
+  if (event.type !== "panel_data" || typeof event.data !== "string") return;
+  const hardClearAt = event.data.lastIndexOf("\x1b[2J");
+  panel.ansi = hardClearAt >= 0 ? event.data.slice(hardClearAt) : `${panel.ansi}${event.data}`;
+  if (!panel.following) {
+    panel.following = true;
+    const runtime = runtimeFor(sessionId);
+    const cursor = {
+      ...currentOwner(sessionId),
+      transportSequence: runtime.panelTransportSequence + 1,
+      snapshotSequence: Math.max(1, runtime.snapshotSequence),
+    };
+    publishPreviewPanel(sessionId, {
+      kind: "keyframe",
+      panel: {
+        panelKey: `panel:${panelId}`,
+        panelId,
+        owner: currentOwner(sessionId),
+        sync: { state: "following", cursor },
+        overlay: panel.overlay,
+        unified: panel.unified,
+        mode: panel.mode,
+        inputAcknowledgedThrough: 0,
+        keyframe: { kind: "keyframe", ansi: panel.ansi, renderRevision: panel.revision },
+      },
+    });
+    return;
+  }
+  publishPreviewPanel(sessionId, {
+    kind: "ansi_delta",
+    panelKey: `panel:${panelId}`,
+    data: event.data,
+    renderRevision: panel.revision,
+  });
+}
 function registerPanelFrame(sessionId: unknown, panelId: number, frame: PanelFrame): void {
   panelFrames.set(panelId, { sessionId, frame });
 }
@@ -299,7 +419,11 @@ function emitEvent(event: Record<string, unknown>): void {
   emit("session.events", { sessionId, events: [event] });
 }
 
-function emitRuntimeState(sessionId: SessionId, isStreaming: boolean): void {
+function emitRuntimeState(
+  sessionId: SessionId,
+  isStreaming: boolean,
+  publishAuthority = true,
+): void {
   const runtime = runtimeFor(sessionId);
   runtime.isStreaming = isStreaming;
   runtime.snapshotSequence++;
@@ -341,7 +465,7 @@ function emitRuntimeState(sessionId: SessionId, isStreaming: boolean): void {
   // well as emitting so first-render command surfaces have an identity.
   useSessionsStore.getState().applyRuntimeState(sessionId, state);
   emit("session.runtimeState", { sessionId, state });
-  publishSemanticState(sessionId);
+  if (publishAuthority) publishSemanticState(sessionId);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -987,11 +1111,11 @@ async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
       case "setModel":
         currentModelProvider = intent.provider;
         await handlePreviewRequest({ type: "set_model", modelId: intent.modelId });
-        emitRuntimeState(envelope.sessionId, false);
+        emitRuntimeState(envelope.sessionId, false, false);
         break;
       case "setThinking":
         await handlePreviewRequest({ type: "set_thinking_level", level: intent.level });
-        emitRuntimeState(envelope.sessionId, false);
+        emitRuntimeState(envelope.sessionId, false, false);
         break;
       case "rename":
         emitEvent({ type: "session_info_changed", name: intent.name });
@@ -1055,6 +1179,28 @@ function authorityAttach(
     transportSequence: runtime.transportSequence,
     snapshotSequence: snapshot.snapshotSequence,
   };
+  const panelCursor = {
+    ...snapshot.owner,
+    transportSequence: runtime.panelTransportSequence,
+    snapshotSequence: snapshot.snapshotSequence,
+  };
+  const panels = [...previewPanels.values()]
+    .filter((panel) => panel.sessionId === sessionId && panel.following)
+    .map((panel) => ({
+      panelKey: `panel:${panel.panelId}`,
+      panelId: panel.panelId,
+      owner: snapshot.owner,
+      sync: { state: "following" as const, cursor: panelCursor },
+      overlay: panel.overlay,
+      unified: panel.unified,
+      mode: panel.mode,
+      inputAcknowledgedThrough: 0,
+      keyframe: {
+        kind: "keyframe" as const,
+        ansi: panel.ansi,
+        renderRevision: panel.revision,
+      },
+    }));
   return {
     baseline: {
       sessionId,
@@ -1075,7 +1221,7 @@ function authorityAttach(
         widgets: {},
         dialogs: [],
       },
-      panels: [],
+      panels,
       restorations: [],
 
       publicationHighWatermark: runtime.publicationSequence,
@@ -1442,30 +1588,42 @@ const stub = {
         const rec = panelId !== undefined ? panelFrames.get(panelId) : undefined;
         if (rec && panelId !== undefined) {
           const activePanelId = panelId;
+          if (force === true && typeof rec.sessionId === "string")
+            resetPreviewPanelAuthority(rec.sessionId as SessionId, activePanelId);
           setTimeout(() => {
             // A force resize = a freshly-(re)mounted xterm with no negotiated
             // modes. Mirror the real host's renegotiate(): re-push the kitty
             // handshake BEFORE the frame so xterm answers it (the replay buffer
             // trimmed the open-time push at the frame's hard clear).
             if (force === true) {
-              emit("session.panelEvent", {
-                sessionId: rec.sessionId,
-                event: { type: "panel_data", panelId: activePanelId, data: KITTY_HANDSHAKE },
+              emitPreviewPanelEvent(rec.sessionId, {
+                type: "panel_data",
+                panelId: activePanelId,
+                data: KITTY_HANDSHAKE,
               });
             }
             const frame =
               typeof rec.frame === "function" ? rec.frame(Math.max(1, rows ?? 24)) : rec.frame;
-            emit("session.panelEvent", {
-              sessionId: rec.sessionId,
-              event: { type: "panel_data", panelId: activePanelId, data: frame },
+            emitPreviewPanelEvent(rec.sessionId, {
+              type: "panel_data",
+              panelId: activePanelId,
+              data: frame,
             });
             if (force === true) {
               const revision = (panelRepaintRevisions.get(activePanelId) ?? 0) + 1;
               panelRepaintRevisions.set(activePanelId, revision);
-              emit("session.panelEvent", {
-                sessionId: rec.sessionId,
-                event: { type: "panel_repaint", panelId: activePanelId, revision },
+              emitPreviewPanelEvent(rec.sessionId, {
+                type: "panel_repaint",
+                panelId: activePanelId,
+                revision,
               });
+              setTimeout(() => {
+                emitPreviewPanelEvent(rec.sessionId, {
+                  type: "panel_data",
+                  panelId: activePanelId,
+                  data: KITTY_HANDSHAKE,
+                });
+              }, 50);
             }
           }, 0);
         }
@@ -1480,9 +1638,10 @@ const stub = {
           // The first query reply was emitted while input was fenced. Mirror
           // the real/fake host remount handshake by querying again after ack.
           setTimeout(() => {
-            emit("session.panelEvent", {
-              sessionId: rec.sessionId,
-              event: { type: "panel_data", panelId, data: KITTY_HANDSHAKE },
+            emitPreviewPanelEvent(rec.sessionId, {
+              type: "panel_data",
+              panelId,
+              data: KITTY_HANDSHAKE,
             });
           }, 0);
         }
@@ -1844,9 +2003,11 @@ function startUnifiedPanelPreview(): void {
     // for the seeded id would hit a non-active session and the panel would
     // never render (hasUnifiedPanel reads the active session).
     const activeId = useSessionsStore.getState().activeSessionId ?? DEMO_SESSION_ID;
-    emit("session.panelEvent", {
-      sessionId: activeId,
-      event: { type: "panel_open", panelId: PANEL_ID, overlay: false, unified: true },
+    emitPreviewPanelEvent(activeId, {
+      type: "panel_open",
+      panelId: PANEL_ID,
+      overlay: false,
+      unified: true,
     });
     // Push the Kitty keyboard handshake the way the real host does in
     // HostTerminal.start(). xterm 6.1 — served here with
@@ -1854,13 +2015,15 @@ function startUnifiedPanelPreview(): void {
     // modified keys as CSI-u. This lets the render suite prove the xterm-6.1
     // behavior in isolation from host logic. (Re-pushed on force resize in the
     // session.panelResize case above, mirroring the host's renegotiate().)
-    emit("session.panelEvent", {
-      sessionId: activeId,
-      event: { type: "panel_data", panelId: PANEL_ID, data: KITTY_HANDSHAKE },
+    emitPreviewPanelEvent(activeId, {
+      type: "panel_data",
+      panelId: PANEL_ID,
+      data: KITTY_HANDSHAKE,
     });
-    emit("session.panelEvent", {
-      sessionId: activeId,
-      event: { type: "panel_data", panelId: PANEL_ID, data: initialFrame },
+    emitPreviewPanelEvent(activeId, {
+      type: "panel_data",
+      panelId: PANEL_ID,
+      data: initialFrame,
     });
     registerPanelFrame(
       activeId,
@@ -1870,14 +2033,12 @@ function startUnifiedPanelPreview(): void {
     if (overlay) {
       // Show a pi-tui overlay: switch to viewport mode, then paint a small box.
       const box = fullFrame(["┌─ inspect ─┐", "│ agent-01  │", "└───────────┘"]);
-      emit("session.panelEvent", {
-        sessionId: activeId,
-        event: { type: "panel_mode", panelId: PANEL_ID, mode: "viewport" },
+      emitPreviewPanelEvent(activeId, {
+        type: "panel_mode",
+        panelId: PANEL_ID,
+        mode: "viewport",
       });
-      emit("session.panelEvent", {
-        sessionId: activeId,
-        event: { type: "panel_data", panelId: PANEL_ID, data: box },
-      });
+      emitPreviewPanelEvent(activeId, { type: "panel_data", panelId: PANEL_ID, data: box });
       registerPanelFrame(activeId, PANEL_ID, box);
     }
   }, 600);
@@ -1924,14 +2085,13 @@ function startCustomPanelPreview(): void {
   const data = `\x1b[2J\x1b[H${box.join("\r\n")}\r\n`;
   setTimeout(() => {
     const activeId = useSessionsStore.getState().activeSessionId ?? DEMO_SESSION_ID;
-    emit("session.panelEvent", {
-      sessionId: activeId,
-      event: { type: "panel_open", panelId: PANEL_ID, overlay: true, unified: false },
+    emitPreviewPanelEvent(activeId, {
+      type: "panel_open",
+      panelId: PANEL_ID,
+      overlay: true,
+      unified: false,
     });
-    emit("session.panelEvent", {
-      sessionId: activeId,
-      event: { type: "panel_data", panelId: PANEL_ID, data },
-    });
+    emitPreviewPanelEvent(activeId, { type: "panel_data", panelId: PANEL_ID, data });
     registerPanelFrame(activeId, PANEL_ID, data);
   }, 600);
 }
