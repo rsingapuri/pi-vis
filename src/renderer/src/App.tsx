@@ -65,6 +65,7 @@ export function App(): React.ReactElement {
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
   const liveSessionIdsKey = useSessionsStore((s) => [...s.sessions.keys()].join("\u0000"));
   const setSessionStatus = useSessionsStore((s) => s.setSessionStatus);
+  const applyRuntimeState = useSessionsStore((s) => s.applyRuntimeState);
   const applyEvents = useSessionsStore((s) => s.applyEvents);
   const applyAuthorityAttach = useSessionsStore((s) => s.applyAuthorityAttach);
   const applyAuthorityPublication = useSessionsStore((s) => s.applyAuthorityPublication);
@@ -463,6 +464,11 @@ export function App(): React.ReactElement {
 
     const unsubRuntime = window.pivis.on("session.runtimeState", ({ sessionId, state }) => {
       const sid = sessionId as SessionId;
+      const current = useSessionsStore.getState().sessions.get(sid);
+      // Availability is a main-owned transport fact. Apply transitions, but do
+      // not churn renderer session objects for every compatibility heartbeat;
+      // semantic snapshots arrive exclusively through authority frames.
+      if (current?.availability !== state.availability) applyRuntimeState(sid, state);
       if (state.availability === "available") {
         const session = useSessionsStore.getState().sessions.get(sid);
         const projection = session?.authorityProjection;
@@ -680,6 +686,7 @@ export function App(): React.ReactElement {
     };
   }, [
     applyEvents,
+    applyRuntimeState,
     applyAuthorityPublication,
     attachSessionAuthority,
     markAuthorityUnavailable,

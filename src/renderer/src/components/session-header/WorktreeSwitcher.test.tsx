@@ -14,6 +14,24 @@ const sessionId = "worktree-switcher-session" as SessionId;
 
 type Invoke = (channel: string, args?: unknown) => Promise<unknown>;
 
+function authorityProjection(
+  isIdle: boolean,
+  state: "following" | "synchronizing" = "following",
+): SessionViewState["authorityProjection"] {
+  const owner = { hostInstanceId: "host-worktree-switcher", sessionEpoch: 1 };
+  const cursor = { ...owner, transportSequence: 1, snapshotSequence: 1 };
+  return {
+    semantic:
+      state === "following"
+        ? { state: "following", cursor }
+        : { state: "synchronizing", lastCursor: cursor, reason: "test_gap" },
+    authoritativeSnapshot: {
+      owner,
+      sdk: { isIdle },
+    },
+  } as SessionViewState["authorityProjection"];
+}
+
 function setSession(overrides: Partial<SessionViewState> = {}): void {
   const session = {
     sessionId,
@@ -22,6 +40,7 @@ function setSession(overrides: Partial<SessionViewState> = {}): void {
     status: "ready",
     availability: "available",
     runtimeSnapshot: { isIdle: true },
+    authorityProjection: authorityProjection(true),
     transcript: createTranscriptState(),
     hasTreeHistory: true,
     hostInstanceId: "host-worktree-switcher",
@@ -174,6 +193,24 @@ describe("WorktreeSwitcher", () => {
     expect(container.querySelector(".worktree-switcher__helper")).toBeNull();
     unmount();
   });
+
+  it.each([
+    ["reports active work", authorityProjection(false)],
+    ["is fenced", authorityProjection(true, "synchronizing")],
+  ])(
+    "does not let a compatibility-idle snapshot override authority that %s",
+    (_label, projection) => {
+      setSession({ authorityProjection: projection });
+      const { container, unmount } = mount(<WorktreeSwitcher sessionId={sessionId} />);
+      click(container.querySelector("[data-testid='worktree-switcher-trigger']")!);
+
+      expect(buttonWithText(container, "Create & switch").disabled).toBe(true);
+      expect(container.querySelector(".worktree-switcher__blocked")?.textContent).toContain(
+        "Wait for the current turn to finish.",
+      );
+      unmount();
+    },
+  );
 
   it("creates from the current checkout without accepting a renderer-selected base", async () => {
     setSession();

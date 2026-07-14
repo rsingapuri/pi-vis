@@ -3,7 +3,7 @@ import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { runWorktreeOperation } from "../../lib/worktree-operation.js";
-import { useSessionsStore } from "../../stores/sessions-store.js";
+import { authoritySnapshotFor, useSessionsStore } from "../../stores/sessions-store.js";
 import { FadeText } from "../common/FadeText.js";
 import { WorktreeAttachField } from "../common/WorktreeAttachField.js";
 import { IconBranch, IconChevronDown, IconCopy } from "../common/icons.js";
@@ -82,10 +82,11 @@ export function WorktreeSwitcher({
           : ""
       }`
     : "Workspace checkout";
+  const authoritySnapshot = authoritySnapshotFor(session);
   const runtimeCanApply =
     session.status === "ready" &&
     session.availability === "available" &&
-    session.runtimeSnapshot?.isIdle === true &&
+    authoritySnapshot?.sdk.isIdle === true &&
     !session.worktreeCreating;
   const canApply = runtimeCanApply && (mode === "create" || !!session.worktreeAttachPath?.trim());
   const blockedReason = session.worktreeCreating
@@ -94,7 +95,7 @@ export function WorktreeSwitcher({
       ? "Wait for the session to be ready."
       : session.availability !== "available"
         ? "Session runtime is unavailable."
-        : session.runtimeSnapshot?.isIdle !== true
+        : authoritySnapshot?.sdk.isIdle !== true
           ? "Wait for the current turn to finish."
           : null;
 

@@ -798,6 +798,33 @@ async function runSubmission(submission) {
   }
 }
 
+function lifecyclePermit(kind) {
+  const activeIntent = [...authorityIntents.values()].some((entry) => !entry.outcome);
+  const childWork =
+    runtimeStreaming ||
+    runtimeCompacting ||
+    runtimeRetrying ||
+    runtimeNavigation ||
+    runtimeBash ||
+    runtimeEditorPending ||
+    activeOperations.size > 0;
+  if (childWork || activeIntent || steeringQueue.length > 0 || followUpQueue.length > 0) {
+    return { allowed: false, reason: "active" };
+  }
+  const presentationActive =
+    editorText.length > 0 ||
+    editorAttachments.length > 0 ||
+    pendingDialogs.size > 0 ||
+    openPanels.size > 0 ||
+    catalog.notifications.length > 0 ||
+    Object.keys(catalog.statuses).length > 0 ||
+    Object.keys(catalog.widgets).length > 0;
+  if (kind === "activation_visit_release" && presentationActive) {
+    return { allowed: false, reason: "presentation_active" };
+  }
+  return { allowed: true, reason: "allowed" };
+}
+
 function stateData() {
   return {
     model: currentModel(),
@@ -1480,6 +1507,9 @@ async function handleMessage(message) {
     }
     case "authority_attach":
       reply(message.id, true, authorityAttach(message.rendererGeneration));
+      break;
+    case "lifecycle_permit":
+      reply(message.id, true, lifecyclePermit(message.operation));
       break;
     case "dispatch_intent":
       reply(message.id, true, dispatchAuthorityIntent(message.envelope));

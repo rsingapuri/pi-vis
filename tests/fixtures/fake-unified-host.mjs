@@ -812,6 +812,26 @@ process.on("message", (msg) => {
       case "authority_attach":
         reply(msg.id, true, authorityAttach(msg.rendererGeneration));
         break;
+      case "lifecycle_permit": {
+        const active =
+          pendingSubmits.size > 0 || [...authorityIntents.values()].some((entry) => !entry.outcome);
+        const presentationActive =
+          editorText.length > 0 ||
+          editorAttachments.length > 0 ||
+          panelOpen ||
+          customPanelOpen ||
+          factoryWidgetActive;
+        reply(
+          msg.id,
+          true,
+          active
+            ? { allowed: false, reason: "active" }
+            : msg.operation === "activation_visit_release" && presentationActive
+              ? { allowed: false, reason: "presentation_active" }
+              : { allowed: true, reason: "allowed" },
+        );
+        break;
+      }
       case "dispatch_intent":
         reply(msg.id, true, dispatchAuthorityIntent(msg.envelope));
         break;
