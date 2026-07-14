@@ -385,7 +385,17 @@ function reducePanel(
   const key = payload.kind === "keyframe" ? payload.panel.panelKey : payload.panelKey;
   const existing = state.panels.get(key);
   if (payload.kind === "keyframe") {
-    if (!sameOwner(payload.panel.owner, publication.owner)) return state;
+    if (!sameOwner(payload.panel.owner, publication.owner) || !existing) return state;
+    const priorCursor = cursorOf(existing.sync);
+    const cursor = payload.cursor;
+    if (
+      !priorCursor ||
+      cursor.transportSequence !== priorCursor.transportSequence + 1 ||
+      payload.panel.sync.state !== "following" ||
+      payload.panel.sync.cursor.transportSequence !== cursor.transportSequence
+    ) {
+      return synchronizeAuthorityPlane(state, "panel", "panel_keyframe_gap", key);
+    }
     const panels = new Map(state.panels);
     panels.set(key, {
       baseline: payload.panel,
@@ -403,6 +413,7 @@ function reducePanel(
       sync: synchronizing(payload.cursor, "panel_reset"),
       overlay: payload.overlay === true,
       unified: payload.unified === true,
+      mode: payload.mode ?? (payload.unified === true ? "content" : "viewport"),
       inputAcknowledgedThrough: 0,
       keyframe: { kind: "repaint_required", renderRevision: payload.renderRevision },
     };
@@ -410,28 +421,54 @@ function reducePanel(
     panels.set(key, { baseline, sync: baseline.sync, ansi: [], inputEnabled: false });
     return { ...state, panels };
   }
-  if (!existing || !isFollowingFor(existing.sync, publication.owner)) return state;
+  if (!existing || !sameOwner(existing.baseline.owner, publication.owner)) return state;
   const cursor = payload.cursor;
-  if (cursor.transportSequence <= existing.sync.cursor.transportSequence) return state;
+  const priorCursor = cursorOf(existing.sync);
+  if (!priorCursor || cursor.transportSequence <= priorCursor.transportSequence) return state;
   const panels = new Map(state.panels);
-  if (cursor.transportSequence !== existing.sync.cursor.transportSequence + 1) {
+  if (cursor.transportSequence !== priorCursor.transportSequence + 1) {
     panels.set(key, {
       ...existing,
-      sync: synchronizing(existing.sync.cursor, "panel_transport_gap"),
+      sync: synchronizing(priorCursor, "panel_transport_gap"),
       inputEnabled: false,
     });
+    return { ...state, panels };
+  }
+  // ANSI bytes can only extend a current keyframe. Control records continue
+  // advancing a fenced panel so a following keyframe has a contiguous cursor.
+  if (payload.kind === "ansi_delta" && !isFollowingFor(existing.sync, publication.owner)) {
+    panels.set(key, { ...existing, sync: synchronizing(cursor, "panel_keyframe_required") });
     return { ...state, panels };
   }
   if (payload.kind === "close") {
     panels.delete(key);
   } else if (payload.kind === "reset" || payload.kind === "repaint_required") {
+    const baseline =
+      payload.kind === "reset"
+        ? {
+            ...existing.baseline,
+            ...(payload.panelId !== undefined ? { panelId: payload.panelId } : {}),
+            ...(payload.overlay !== undefined ? { overlay: payload.overlay } : {}),
+            ...(payload.unified !== undefined ? { unified: payload.unified } : {}),
+            ...(payload.mode !== undefined ? { mode: payload.mode } : {}),
+            keyframe: { kind: "repaint_required" as const, renderRevision: payload.renderRevision },
+          }
+        : existing.baseline;
     panels.set(key, {
       ...existing,
-      sync: synchronizing(
-        existing.sync.cursor,
-        payload.kind === "reset" ? "panel_reset" : payload.reason,
-      ),
+      baseline,
+      sync: synchronizing(cursor, payload.kind === "reset" ? "panel_reset" : payload.reason),
+      ansi: [],
       inputEnabled: false,
+    });
+  } else if (payload.kind === "mode") {
+    panels.set(key, {
+      ...existing,
+      baseline: { ...existing.baseline, mode: payload.mode },
+      sync:
+        existing.sync.state === "following"
+          ? { state: "following", cursor }
+          : synchronizing(cursor, existing.sync.reason),
     });
   } else {
     panels.set(key, {

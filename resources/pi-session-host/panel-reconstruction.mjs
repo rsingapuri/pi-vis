@@ -6,7 +6,7 @@ export function createPanelReconstruction() {
   const panels = new Map();
 
   function open(panelId) {
-    const panel = { revision: 1, acknowledgedRevision: 0, repaintAnsi: "" };
+    const panel = { revision: 1, acknowledgedRevision: 0, repaintAnsi: undefined };
     panels.set(panelId, panel);
     return baseline(panelId);
   }
@@ -29,26 +29,30 @@ export function createPanelReconstruction() {
     if (!panel) return undefined;
     panel.revision += 1;
     // Retain only bytes produced by this one forced full repaint, never an
-    // unbounded terminal history.
+    // unbounded terminal history. This capture is discarded at acknowledgement;
+    // a later remount must force and capture a fresh reconstruction.
     panel.repaintAnsi = "";
     return baseline(panelId);
   }
 
   function write(panelId, data) {
     const panel = panels.get(panelId);
-    if (panel) panel.repaintAnsi += data;
+    if (panel?.repaintAnsi !== undefined) panel.repaintAnsi += data;
   }
 
   function keyframe(panelId) {
     const panel = panels.get(panelId);
-    if (!panel || panel.acknowledgedRevision !== panel.revision) return undefined;
+    if (!panel || panel.repaintAnsi === undefined) return undefined;
     return { ansi: panel.repaintAnsi, revision: panel.revision };
   }
 
   function acknowledge(panelId, revision) {
     const panel = panels.get(panelId);
-    if (!panel || revision !== panel.revision) return false;
+    if (!panel || revision !== panel.revision || panel.repaintAnsi === undefined) return false;
     panel.acknowledgedRevision = revision;
+    // A published authority keyframe is now the renderer's reconstruction;
+    // retaining its ANSI here would leak one full terminal per open panel.
+    panel.repaintAnsi = undefined;
     return true;
   }
 

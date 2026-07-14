@@ -1174,18 +1174,13 @@ export const PanelPresentationBaselineSchema = z
     sync: PlaneSyncSchema,
     overlay: z.boolean(),
     unified: z.boolean(),
+    /** The host-owned pi-tui layout mode. */
+    mode: z.enum(["content", "viewport"]),
     inputAcknowledgedThrough: NonNegativeIntegerSchema,
     keyframe: PanelKeyframeSchema,
   })
   .strict()
   .superRefine((panel, ctx) => {
-    if (panel.keyframe.kind === "keyframe" && panel.sync.state !== "following") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["sync"],
-        message: "a keyframed panel must be following before input is enabled",
-      });
-    }
     if (panel.keyframe.kind === "repaint_required" && panel.sync.state === "following") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -1384,6 +1379,7 @@ export const PanelPublicationPayloadSchema = z.discriminatedUnion("kind", [
       panelId: NonNegativeIntegerSchema.optional(),
       overlay: z.boolean().optional(),
       unified: z.boolean().optional(),
+      mode: z.enum(["content", "viewport"]).optional(),
     })
     .strict(),
   z
@@ -1415,6 +1411,14 @@ export const PanelPublicationPayloadSchema = z.discriminatedUnion("kind", [
       cursor: AuthorityCursorSchema,
       panelKey: NonEmptyIdSchema,
       reason: NonEmptyIdSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("mode"),
+      cursor: AuthorityCursorSchema,
+      panelKey: NonEmptyIdSchema,
+      mode: z.enum(["content", "viewport"]),
     })
     .strict(),
 ]);

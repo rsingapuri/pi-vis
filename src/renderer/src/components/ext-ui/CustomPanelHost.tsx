@@ -76,7 +76,12 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     sessionEpoch: number;
     buffer: string[];
     mode?: "content" | "viewport";
+    authority?: boolean;
+    inputEnabled?: boolean;
+    renderRevision?: number;
+    syncState?: "following" | "synchronizing" | "unavailable";
   } | null>(null);
+  const renderedBufferRef = useRef<readonly string[]>([]);
   const { panel } = useSessionsStore((s) => s.sessions.get(sessionId)) ?? {};
   // Claim ESC while a custom panel is open so the panel keeps parity with
   // terminal pi: Escape belongs to the extension surface, not to global abort.
@@ -97,6 +102,24 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
   const panelMode = panel?.mode ?? "viewport";
   const modeRef = useRef<"content" | "viewport">("viewport");
   modeRef.current = panelMode;
+
+  // Authority deltas are incrementally rendered from the projection. Legacy
+  // panel_data remains a fallback only until this projection exists.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term || !panel) return;
+    const prior = renderedBufferRef.current;
+    const next = panel.buffer;
+    const shared = prior.length <= next.length && prior.every((chunk, i) => chunk === next[i]);
+    if (!shared) {
+      term.reset();
+      term.clear();
+      for (const chunk of next) term.write(chunk);
+    } else {
+      for (const chunk of next.slice(prior.length)) term.write(chunk);
+    }
+    renderedBufferRef.current = next;
+  }, [panel]);
 
   // ── Manual height override (drag the top handle) ──
   // The effective height fraction is: the in-flight drag value (set while the
@@ -254,6 +277,13 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
       onReportSize: (cols, rows) => {
         const force = forceNextResize;
         forceNextResize = false;
+        const activePanel = panelRef.current ?? currentPanel;
+        if (
+          activePanel.authority &&
+          !force &&
+          (activePanel.syncState !== "following" || !activePanel.inputEnabled)
+        )
+          return;
         void window.pivis
           .invoke("session.panelResize", {
             sessionId,
@@ -274,17 +304,35 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     // session.panelEvent subscription below. Measure in the write CALLBACK
     // (fires after xterm parses the bytes) so the first sizing pass reads the
     // real content height, not a not-yet-parsed buffer.
-    for (const chunk of currentPanel.buffer) {
-      term.write(chunk);
-    }
+    for (const chunk of currentPanel.buffer) term.write(chunk);
+    renderedBufferRef.current = currentPanel.buffer;
     term.write("", () => {
-      if (!disposed) sizer.scheduleSync();
+      if (disposed) return;
+      sizer.scheduleSync();
+      // An attach may carry a retained forced-repaint keyframe. Its following
+      // authority publication, not this acknowledgement, enables input.
+      if (currentPanel.authority && !currentPanel.inputEnabled && currentPanel.buffer.length > 0) {
+        void window.pivis
+          .invoke("session.panelRepaintAck", {
+            sessionId,
+            expectedHostInstanceId: currentPanel.hostInstanceId,
+            expectedSessionEpoch: currentPanel.sessionEpoch,
+            panelId: currentPanel.id,
+            revision: currentPanel.renderRevision ?? 0,
+          })
+          .catch(() => {});
+      }
     });
 
     // ── Listen for new panel data ──
     unsubPanel = window.pivis.on("session.panelEvent", ({ sessionId: eventSid, event }) => {
       if (eventSid !== sessionId) return;
-      if (event.type === "panel_data" && event.panelId === currentPanel.id) {
+      const activePanel = panelRef.current ?? currentPanel;
+      if (
+        !activePanel.authority &&
+        event.type === "panel_data" &&
+        event.panelId === currentPanel.id
+      ) {
         term.write(event.data, () => {
           if (!disposed) sizer.scheduleSync();
         });
@@ -305,7 +353,9 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
               revision: repaintRevision,
             })
             .then((result) => {
-              if (!disposed && result.acknowledged) repaintAcknowledged = true;
+              // Authority panels wait for the sequenced following keyframe.
+              if (!disposed && !(panelRef.current ?? currentPanel).authority && result.acknowledged)
+                repaintAcknowledged = true;
             })
             .catch(() => {});
         });
@@ -317,29 +367,35 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
 
     // ── User keystrokes → panel input IPC ──
     const onDataDispose = term.onData((data) => {
-      if (!repaintAcknowledged) return;
+      const activePanel = panelRef.current ?? currentPanel;
+      const authorityReady =
+        activePanel.authority === true &&
+        activePanel.syncState === "following" &&
+        activePanel.inputEnabled === true &&
+        activePanel.renderRevision !== undefined;
+      if (activePanel.authority ? !authorityReady : !repaintAcknowledged) return;
       const sequence = nextPanelInputSequence(
         sessionId,
-        currentPanel.hostInstanceId,
-        currentPanel.sessionEpoch,
-        currentPanel.id,
+        activePanel.hostInstanceId,
+        activePanel.sessionEpoch,
+        activePanel.id,
       );
       void window.pivis
         .invoke("session.panelInput", {
           sessionId,
-          expectedHostInstanceId: currentPanel.hostInstanceId,
-          expectedSessionEpoch: currentPanel.sessionEpoch,
-          panelId: currentPanel.id,
-          revision: repaintRevision,
+          expectedHostInstanceId: activePanel.hostInstanceId,
+          expectedSessionEpoch: activePanel.sessionEpoch,
+          panelId: activePanel.id,
+          revision: activePanel.authority ? activePanel.renderRevision! : repaintRevision,
           sequence,
           data,
         })
         .then((result) => {
           acknowledgePanelInput(
             sessionId,
-            currentPanel.hostInstanceId,
-            currentPanel.sessionEpoch,
-            currentPanel.id,
+            activePanel.hostInstanceId,
+            activePanel.sessionEpoch,
+            activePanel.id,
             result.acknowledgedThrough,
           );
           if (result.gap) {
@@ -408,7 +464,20 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
         type="button"
         className="custom-panel__close"
         title="Force-close this panel (cancels the extension's request)"
+        disabled={
+          panel.authority &&
+          (panel.syncState !== "following" ||
+            !panel.inputEnabled ||
+            panel.renderRevision === undefined)
+        }
         onClick={() => {
+          if (
+            panel.authority &&
+            (panel.syncState !== "following" ||
+              !panel.inputEnabled ||
+              panel.renderRevision === undefined)
+          )
+            return;
           void window.pivis
             .invoke("session.panelClose", {
               sessionId,

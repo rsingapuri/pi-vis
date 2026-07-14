@@ -15,15 +15,23 @@ describe("panel reconstruction fence", () => {
     expect(panels.acceptsInput(4, 2)).toBe(false);
   });
 
-  it("enables only the acknowledged repaint revision", () => {
+  it("releases an acknowledged capture and captures a fresh later repaint", () => {
     const panels = createPanelReconstruction();
     panels.open(9);
     const repaint = panels.requireRepaint(9);
+    panels.write(9, "first frame");
 
+    expect(panels.keyframe(9)).toEqual({ ansi: "first frame", revision: repaint.revision });
     expect(panels.acknowledge(9, repaint.revision - 1)).toBe(false);
-    expect(panels.acceptsInput(9, repaint.revision)).toBe(false);
     expect(panels.acknowledge(9, repaint.revision)).toBe(true);
     expect(panels.acceptsInput(9, repaint.revision)).toBe(true);
-    expect(panels.acceptsInput(9, repaint.revision - 1)).toBe(false);
+    // The acknowledged frame belongs to the authority publication, not a
+    // retained host framebuffer. A later remount must capture fresh bytes.
+    expect(panels.keyframe(9)).toBeUndefined();
+
+    const later = panels.requireRepaint(9);
+    panels.write(9, "second frame");
+    expect(panels.keyframe(9)).toEqual({ ansi: "second frame", revision: later.revision });
+    expect(panels.acceptsInput(9, repaint.revision)).toBe(false);
   });
 });

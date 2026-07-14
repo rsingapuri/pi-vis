@@ -90,6 +90,7 @@ function baseline(highWatermark = 10): AuthorityAttachResponse {
           sync: { state: "following", cursor },
           overlay: true,
           unified: false,
+          mode: "viewport",
           inputAcknowledgedThrough: 0,
           keyframe: { kind: "keyframe", ansi: "initial", renderRevision: 1 },
         },
@@ -351,6 +352,7 @@ describe("authority reducer", () => {
           },
           overlay: true,
           unified: false,
+          mode: "viewport",
           inputAcknowledgedThrough: 0,
           keyframe: { kind: "keyframe", ansi: "repaint", renderRevision: 2 },
         },
@@ -360,6 +362,26 @@ describe("authority reducer", () => {
     expect(repaint.panels.get("panel-a")?.inputEnabled).toBe(false);
     expect(state.panels.get("panel-a")?.inputEnabled).toBe(true);
     expect(state.panels.get("panel-a")?.ansi).toEqual(["repaint"]);
+  });
+
+  it("uses a sequenced authority mode update", () => {
+    const attached = reduceAuthorityAttach(createRendererAuthorityState(), baseline());
+    const state = reduceAuthorityPublication(attached, {
+      sessionId: "session-a",
+      rendererGeneration: 7,
+      publicationSequence: 11,
+      plane: "panel",
+      owner,
+      payload: {
+        kind: "mode",
+        cursor: { ...owner, transportSequence: 2, snapshotSequence: 2 },
+        panelKey: "panel-a",
+        mode: "content",
+      },
+    });
+
+    expect(state.panels.get("panel-a")?.baseline.mode).toBe("content");
+    expect(state.panels.get("panel-a")?.inputEnabled).toBe(true);
   });
 
   it("does not mutate Maps from the prior projection", () => {

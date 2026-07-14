@@ -19,7 +19,7 @@ The deployed session protocol uses child-owned authority frames.
 - Attach and recovery install a serialized baseline at a publication high-water mark and replay a contiguous buffered tail. A known source-plane cursor gap fences only that plane, but a gap in main's global publication sequence has unknown attribution and fences every plane. Either gap or an overflow requires another baseline.
 - Every mutation receives a stable, owner-bound intent ID recorded before possible Pi dispatch. Receipts describe admission/delivery only; typed outcomes arrive in frames. Ambiguous post-dispatch results are `outcome_unknown` and never replay automatically across replacement.
 - The child retains a bounded operation journal with explicit low/high watermarks and truncation. It records operation observation, outcomes, and anomalies without implying coverage before its low watermark.
-- Panel reconstruction requires a framebuffer keyframe or acknowledged reset/full repaint; panel input is fenced until reconstruction. Unsupported state after host loss is unavailable.
+- Panel reconstruction requires a framebuffer keyframe or acknowledged reset/full repaint; panel input is fenced until reconstruction. Panel baselines and sequenced panel records carry the host-owned `content`/`viewport` mode. A forced-repaint capture is retained only until its acknowledgement publishes a sequenced keyframe, then discarded; a later remount captures a fresh reconstruction. Unsupported state after host loss is unavailable.
 - Replacements require a child ingress freeze, main advisory-lock permit, and one terminal successor frame. Advisory locks prevent accidental competing Pi-Vis ownership only.
 
 ## Consequences

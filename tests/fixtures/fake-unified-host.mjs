@@ -230,6 +230,7 @@ function panelBaseline(cursor, ansi = `${KITTY_HANDSHAKE}${panelFramebuffer}`) {
     sync: { state: "following", cursor },
     overlay: false,
     unified: true,
+    mode: "content",
     inputAcknowledgedThrough: panelInputAcknowledgedThrough,
     keyframe: { kind: "keyframe", ansi, renderRevision: panelRenderRevision },
   };
@@ -245,6 +246,7 @@ function publishPanelReset() {
     panelId: PANEL_ID,
     overlay: false,
     unified: true,
+    mode: "content",
   });
 }
 
@@ -279,6 +281,7 @@ function publishCustomPanelReset() {
     panelId: CUSTOM_PANEL_ID,
     overlay: true,
     unified: false,
+    mode: "viewport",
   });
 }
 
@@ -294,6 +297,7 @@ function publishCustomPanelKeyframe() {
       sync: { state: "following", cursor },
       overlay: true,
       unified: false,
+      mode: "viewport",
       inputAcknowledgedThrough: 0,
       keyframe: {
         kind: "keyframe",
@@ -369,6 +373,7 @@ function authorityAttach(rendererGeneration) {
               sync: { state: "following", cursor: panelCursor },
               overlay: true,
               unified: false,
+              mode: "viewport",
               inputAcknowledgedThrough: 0,
               keyframe: {
                 kind: "keyframe",

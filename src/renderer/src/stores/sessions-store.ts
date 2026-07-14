@@ -216,6 +216,11 @@ export interface SessionViewState {
         sessionEpoch: number;
         buffer: string[];
         mode?: "content" | "viewport";
+        /** True once a sequenced authority panel projection exists. */
+        authority?: boolean;
+        inputEnabled?: boolean;
+        renderRevision?: number;
+        syncState?: "following" | "synchronizing" | "unavailable";
       }
     | undefined;
   /** Persistent unified-TUI panel from a factory `setWidget` — rendered via
@@ -236,6 +241,10 @@ export interface SessionViewState {
         sessionEpoch: number;
         buffer: string[];
         mode?: "content" | "viewport";
+        authority?: boolean;
+        inputEnabled?: boolean;
+        renderRevision?: number;
+        syncState?: "following" | "synchronizing" | "unavailable";
       }
     | undefined;
   /** When a `unifiedPanel` is live, the user can toggle between the
@@ -1921,6 +1930,11 @@ const buildSessionsStore = (
               hostInstanceId: customPanel.baseline.owner.hostInstanceId,
               sessionEpoch: customPanel.baseline.owner.sessionEpoch,
               buffer: [...customPanel.ansi],
+              mode: customPanel.baseline.mode,
+              authority: true,
+              inputEnabled: customPanel.inputEnabled,
+              renderRevision: customPanel.baseline.keyframe.renderRevision,
+              syncState: customPanel.sync.state,
             }
           : undefined,
         unifiedPanel: unifiedPanel
@@ -1929,6 +1943,11 @@ const buildSessionsStore = (
               hostInstanceId: unifiedPanel.baseline.owner.hostInstanceId,
               sessionEpoch: unifiedPanel.baseline.owner.sessionEpoch,
               buffer: [...unifiedPanel.ansi],
+              mode: unifiedPanel.baseline.mode,
+              authority: true,
+              inputEnabled: unifiedPanel.inputEnabled,
+              renderRevision: unifiedPanel.baseline.keyframe.renderRevision,
+              syncState: unifiedPanel.sync.state,
             }
           : undefined,
         ...(extension
@@ -2029,6 +2048,11 @@ const buildSessionsStore = (
                 hostInstanceId: customPanel.baseline.owner.hostInstanceId,
                 sessionEpoch: customPanel.baseline.owner.sessionEpoch,
                 buffer: [...customPanel.ansi],
+                mode: customPanel.baseline.mode,
+                authority: true,
+                inputEnabled: customPanel.inputEnabled,
+                renderRevision: customPanel.baseline.keyframe.renderRevision,
+                syncState: customPanel.sync.state,
               }
             : undefined,
           unifiedPanel: unifiedPanel
@@ -2037,6 +2061,11 @@ const buildSessionsStore = (
                 hostInstanceId: unifiedPanel.baseline.owner.hostInstanceId,
                 sessionEpoch: unifiedPanel.baseline.owner.sessionEpoch,
                 buffer: [...unifiedPanel.ansi],
+                mode: unifiedPanel.baseline.mode,
+                authority: true,
+                inputEnabled: unifiedPanel.inputEnabled,
+                renderRevision: unifiedPanel.baseline.keyframe.renderRevision,
+                syncState: unifiedPanel.sync.state,
               }
             : undefined,
         });
@@ -2243,6 +2272,20 @@ const buildSessionsStore = (
 
   handlePanelEvent: (sessionId, event) => {
     const current = get().sessions.get(sessionId);
+    // Legacy panel events are a bootstrap fallback only. Once a sequenced
+    // authority projection names this panel, it is the exclusive render,
+    // mode, and input source; independently dropped legacy traffic cannot
+    // overwrite it.
+    if (event.type !== "session_warning" && current?.authorityProjection?.panels.size) {
+      const panelId = "panelId" in event ? event.panelId : undefined;
+      const authorityOwnsEvent =
+        panelId === undefined
+          ? true
+          : [...current.authorityProjection.panels.values()].some(
+              (panel) => panel.baseline.panelId === panelId,
+            );
+      if (authorityOwnsEvent) return;
+    }
     if (event.type === "panel_open" || event.type === "panel_close") {
       // A host may reuse a numeric panel id after restart and React may
       // coalesce clear/open renders. Every open is nevertheless a new

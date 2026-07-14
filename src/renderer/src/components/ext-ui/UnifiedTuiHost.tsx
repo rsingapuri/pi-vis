@@ -62,7 +62,12 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
     sessionEpoch: number;
     buffer: string[];
     mode?: "content" | "viewport";
+    authority?: boolean;
+    inputEnabled?: boolean;
+    renderRevision?: number;
+    syncState?: "following" | "synchronizing" | "unavailable";
   } | null>(null);
+  const renderedBufferRef = useRef<readonly string[]>([]);
   // The current sizing pass, exposed by the lifecycle effect so the mode-change
   // effect below can re-run it without taking sync's deps.
   const syncRef = useRef<(() => void) | null>(null);
@@ -79,6 +84,22 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
   const panelSessionEpoch = unifiedPanel?.sessionEpoch;
   const panelMode = unifiedPanel?.mode ?? "content";
   modeRef.current = panelMode;
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term || !unifiedPanel) return;
+    const prior = renderedBufferRef.current;
+    const next = unifiedPanel.buffer;
+    const shared = prior.length <= next.length && prior.every((chunk, i) => chunk === next[i]);
+    if (!shared) {
+      term.reset();
+      term.clear();
+      for (const chunk of next) term.write(chunk);
+    } else {
+      for (const chunk of next.slice(prior.length)) term.write(chunk);
+    }
+    renderedBufferRef.current = next;
+  }, [unifiedPanel]);
 
   // ESC parity with the real TUI: whatever ESC does in pi's terminal, it must
   // do here too. pi's precedence is overlay-close > autocomplete-close >
@@ -190,6 +211,13 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
       onReportSize: (cols, rows) => {
         const force = forceNextResize;
         forceNextResize = false;
+        const activePanel = panelRef.current ?? currentPanel;
+        if (
+          activePanel.authority &&
+          !force &&
+          (activePanel.syncState !== "following" || !activePanel.inputEnabled)
+        )
+          return;
         void window.pivis
           .invoke("session.panelResize", {
             sessionId,
@@ -211,16 +239,32 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
     // the sizer enough content to choose a sane first height for tall panels;
     // the first resize report still carries force:true, so the host immediately
     // replaces the replay with an authoritative complete repaint.
-    for (const chunk of currentPanel.buffer) {
-      term.write(chunk);
-    }
+    for (const chunk of currentPanel.buffer) term.write(chunk);
+    renderedBufferRef.current = currentPanel.buffer;
     term.write("", () => {
-      if (!disposed) sizer.scheduleSync();
+      if (disposed) return;
+      sizer.scheduleSync();
+      if (currentPanel.authority && !currentPanel.inputEnabled && currentPanel.buffer.length > 0) {
+        void window.pivis
+          .invoke("session.panelRepaintAck", {
+            sessionId,
+            expectedHostInstanceId: currentPanel.hostInstanceId,
+            expectedSessionEpoch: currentPanel.sessionEpoch,
+            panelId: currentPanel.id,
+            revision: currentPanel.renderRevision ?? 0,
+          })
+          .catch(() => {});
+      }
     });
 
     unsubPanel = window.pivis.on("session.panelEvent", ({ sessionId: eventSid, event }) => {
       if (eventSid !== sessionId) return;
-      if (event.type === "panel_data" && event.panelId === currentPanel.id) {
+      const activePanel = panelRef.current ?? currentPanel;
+      if (
+        !activePanel.authority &&
+        event.type === "panel_data" &&
+        event.panelId === currentPanel.id
+      ) {
         term.write(event.data, () => {
           if (!disposed) sizer.scheduleSync();
         });
@@ -239,7 +283,8 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
               revision: repaintRevision,
             })
             .then((result) => {
-              if (!disposed && result.acknowledged) repaintAcknowledged = true;
+              if (!disposed && !(panelRef.current ?? currentPanel).authority && result.acknowledged)
+                repaintAcknowledged = true;
             })
             .catch(() => {});
         });
@@ -248,29 +293,35 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
 
     // User keystrokes → host TUI (panelInput is shared with custom() panels).
     const onDataDispose = term.onData((data) => {
-      if (!repaintAcknowledged) return;
+      const activePanel = panelRef.current ?? currentPanel;
+      const authorityReady =
+        activePanel.authority === true &&
+        activePanel.syncState === "following" &&
+        activePanel.inputEnabled === true &&
+        activePanel.renderRevision !== undefined;
+      if (activePanel.authority ? !authorityReady : !repaintAcknowledged) return;
       const sequence = nextPanelInputSequence(
         sessionId,
-        currentPanel.hostInstanceId,
-        currentPanel.sessionEpoch,
-        currentPanel.id,
+        activePanel.hostInstanceId,
+        activePanel.sessionEpoch,
+        activePanel.id,
       );
       void window.pivis
         .invoke("session.panelInput", {
           sessionId,
-          expectedHostInstanceId: currentPanel.hostInstanceId,
-          expectedSessionEpoch: currentPanel.sessionEpoch,
-          panelId: currentPanel.id,
-          revision: repaintRevision,
+          expectedHostInstanceId: activePanel.hostInstanceId,
+          expectedSessionEpoch: activePanel.sessionEpoch,
+          panelId: activePanel.id,
+          revision: activePanel.authority ? activePanel.renderRevision! : repaintRevision,
           sequence,
           data,
         })
         .then((result) => {
           acknowledgePanelInput(
             sessionId,
-            currentPanel.hostInstanceId,
-            currentPanel.sessionEpoch,
-            currentPanel.id,
+            activePanel.hostInstanceId,
+            activePanel.sessionEpoch,
+            activePanel.id,
             result.acknowledgedThrough,
           );
           if (result.gap) {

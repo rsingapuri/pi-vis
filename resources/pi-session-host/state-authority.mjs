@@ -2391,19 +2391,28 @@ export function createStateAuthority({
       };
       const catalog = semantic.catalog;
       const journal = journalRecords(owner);
-      const panels = (presentation.panels?.() ?? []).map((panel) => ({
-        panelKey: `panel:${panel.panelId}`,
-        panelId: panel.panelId,
-        owner,
-        sync: { state: "synchronizing", reason: "repaint_required" },
-        overlay: panel.overlay === true,
-        unified: panel.unified === true,
-        inputAcknowledgedThrough: panel.inputAcknowledgedThrough ?? 0,
-        keyframe: {
-          kind: "repaint_required",
-          renderRevision: panel.baseline?.revision ?? 0,
-        },
-      }));
+      const panels = (presentation.panels?.() ?? []).map((panel) => {
+        const retained = panel.keyframe;
+        const renderRevision = retained?.revision ?? panel.baseline?.revision ?? 0;
+        return {
+          panelKey: `panel:${panel.panelId}`,
+          panelId: panel.panelId,
+          owner,
+          // A retained forced-repaint capture can be sent to an attaching
+          // renderer, but remains fenced until that renderer acknowledges it.
+          sync: {
+            state: "synchronizing",
+            reason: retained ? "repaint_ack_pending" : "repaint_required",
+          },
+          overlay: panel.overlay === true,
+          unified: panel.unified === true,
+          mode: panel.mode ?? (panel.unified === true ? "content" : "viewport"),
+          inputAcknowledgedThrough: panel.inputAcknowledgedThrough ?? 0,
+          keyframe: retained
+            ? { kind: "keyframe", ansi: retained.ansi, renderRevision }
+            : { kind: "repaint_required", renderRevision },
+        };
+      });
       return {
         // Main replaces this local identity with its SessionId while installing
         // the baseline. It is still a non-empty child correlation value.

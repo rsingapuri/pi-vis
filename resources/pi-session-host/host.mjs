@@ -182,6 +182,7 @@ const panelBridge = {
       inputSequence: 0,
       overlay,
       unified: unified === true,
+      mode: unified === true ? "content" : "viewport",
       cols: 0,
       rows: 0,
     });
@@ -193,6 +194,7 @@ const panelBridge = {
       panelId,
       overlay,
       unified: unified === true,
+      mode: unified === true ? "content" : "viewport",
     });
     send({
       type: "panel_open",
@@ -241,6 +243,13 @@ const panelBridge = {
     const panel = panels.get(panelId);
     if (panel) {
       panel.mode = mode;
+      runtimeAuthority?.publishPanel?.({
+        kind: "mode",
+        panelKey: `panel:${panelId}`,
+        mode,
+      });
+      // Compatibility-only fallback for renderers that have not installed an
+      // authority panel projection yet.
       send({ type: "panel_mode", panelId, mode });
     }
   },
@@ -619,6 +628,8 @@ async function handleInit(msg) {
             overlay: panel.overlay,
             unified: panel.unified,
             baseline: panelReconstruction.baseline(panelId),
+            keyframe: panelReconstruction.keyframe(panelId),
+            mode: panel.mode ?? (panel.unified === true ? "content" : "viewport"),
             inputAcknowledgedThrough: panel.inputSequence,
           })),
       },
@@ -846,10 +857,13 @@ process.on("message", async (msg) => {
         break;
 
       case "panel_repaint_ack": {
-        const result = panelBridge.acknowledgeRepaint(msg.panelId, msg.revision);
+        const panel = panels.get(msg.panelId);
+        // Read the bounded capture before acknowledgement releases it. The
+        // following sequenced keyframe is the only authority transition that
+        // enables renderer input.
+        const keyframe = panelReconstruction.keyframe(msg.panelId);
+        const result = { acknowledged: panelReconstruction.acknowledge(msg.panelId, msg.revision) };
         if (result.acknowledged) {
-          const panel = panels.get(msg.panelId);
-          const keyframe = panelReconstruction.keyframe(msg.panelId);
           if (panel && keyframe) {
             runtimeAuthority?.publishPanel?.((cursor, owner) => ({
               kind: "keyframe",
@@ -861,6 +875,7 @@ process.on("message", async (msg) => {
                 sync: { state: "following", cursor },
                 overlay: panel.overlay === true,
                 unified: panel.unified === true,
+                mode: panel.mode ?? (panel.unified === true ? "content" : "viewport"),
                 inputAcknowledgedThrough: panel.inputSequence,
                 keyframe: {
                   kind: "keyframe",
