@@ -15,7 +15,6 @@ export function createPanelReconstruction({ maxRepaintBytes = DEFAULT_MAX_REPAIN
       repaintAnsi: undefined,
       repaintBytes: 0,
       sealed: false,
-      dirtyAfterSeal: false,
       overflowed: false,
     };
     panels.set(panelId, panel);
@@ -42,7 +41,6 @@ export function createPanelReconstruction({ maxRepaintBytes = DEFAULT_MAX_REPAIN
     panel.repaintAnsi = "";
     panel.repaintBytes = 0;
     panel.sealed = false;
-    panel.dirtyAfterSeal = false;
     panel.overflowed = false;
     return baseline(panelId);
   }
@@ -50,12 +48,6 @@ export function createPanelReconstruction({ maxRepaintBytes = DEFAULT_MAX_REPAIN
   function write(panelId, data) {
     const panel = panels.get(panelId);
     if (!panel || panel.repaintAnsi === undefined || panel.overflowed) return;
-    if (panel.sealed) {
-      // The published pending keyframe remains valid for its renderer, but it
-      // is no longer a current attach baseline after subsequent output.
-      panel.dirtyAfterSeal = true;
-      return;
-    }
     const bytes = Buffer.byteLength(data, "utf8");
     if (panel.repaintBytes + bytes > captureLimit) {
       // A truncated ANSI stream is not a keyframe. Discard it and keep input
@@ -77,10 +69,8 @@ export function createPanelReconstruction({ maxRepaintBytes = DEFAULT_MAX_REPAIN
     return pendingKeyframe(panelId);
   }
 
-  /** Current attach keyframe; later deltas invalidate it for a new renderer. */
+  /** Current bounded image, including deltas emitted while ack is in flight. */
   function keyframe(panelId) {
-    const panel = panels.get(panelId);
-    if (!panel || panel.dirtyAfterSeal) return undefined;
     return pendingKeyframe(panelId);
   }
 
@@ -99,7 +89,6 @@ export function createPanelReconstruction({ maxRepaintBytes = DEFAULT_MAX_REPAIN
     panel.repaintAnsi = undefined;
     panel.repaintBytes = 0;
     panel.sealed = false;
-    panel.dirtyAfterSeal = false;
     return true;
   }
 

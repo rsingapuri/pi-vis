@@ -23,12 +23,16 @@ describe("panel reconstruction fence", () => {
 
     expect(panels.keyframe(9)).toBeUndefined();
     expect(panels.seal(9)).toEqual({ ansi: "first frame", revision: repaint.revision });
-    // Ordinary output after the synchronous full repaint cannot grow the
-    // retained reconstruction while acknowledgement is delayed.
-    panels.write(9, "ignored later delta".repeat(100));
-    expect(panels.keyframe(9)).toBeUndefined();
+    // Ordinary output before acknowledgement extends the complete image, but
+    // remains subject to the same hard capture bound.
+    const laterDelta = "bounded later delta".repeat(100);
+    panels.write(9, laterDelta);
+    expect(panels.keyframe(9)).toEqual({
+      ansi: `first frame${laterDelta}`,
+      revision: repaint.revision,
+    });
     expect(panels.pendingKeyframe(9)).toEqual({
-      ansi: "first frame",
+      ansi: `first frame${laterDelta}`,
       revision: repaint.revision,
     });
     expect(panels.acknowledge(9, repaint.revision - 1)).toBe(false);

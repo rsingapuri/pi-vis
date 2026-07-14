@@ -911,6 +911,20 @@ process.on("message", async (msg) => {
           }
         }
         send({ type: "response", id: msg.id, success: true, data: result });
+        if (
+          !result.acknowledged &&
+          panel &&
+          panelReconstruction.baseline(msg.panelId)?.revision === msg.revision &&
+          !panelReconstruction.pendingKeyframe(msg.panelId)
+        ) {
+          // The bounded image overflowed (or was otherwise invalidated). Never
+          // publish a stale following frame; advance the revision and ask the
+          // public TUI renderer for a fresh complete repaint instead.
+          queueMicrotask(() => {
+            if (panels.get(msg.panelId) === panel)
+              panelBridge.resize(msg.panelId, panel.cols, panel.rows, true);
+          });
+        }
         break;
       }
 
