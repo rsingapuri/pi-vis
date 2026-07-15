@@ -10,6 +10,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { act } from "react-dom/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useOverlayStore } from "../../stores/overlay-store.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { Composer } from "./Composer.js";
 
@@ -172,6 +173,16 @@ function setSessionField(patch: Record<string, unknown>, sessionId = SID): void 
   Object.assign(session, patch);
 }
 
+function patchSession(patch: Record<string, unknown>, sessionId = SID): void {
+  act(() => {
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(sessionId, { ...sessions.get(sessionId)!, ...patch });
+      return { sessions };
+    });
+  });
+}
+
 function followingAuthority(modelId = "model") {
   const cursor = { ...OWNER, transportSequence: 1, snapshotSequence: 1 };
   return {
@@ -272,6 +283,7 @@ describe("Composer autocomplete and authority intents", () => {
   let invoke: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    useOverlayStore.setState({ count: 0 });
     useSessionsStore.setState({
       sessions: new Map(),
       activeSessionId: SID,
@@ -598,6 +610,83 @@ describe("Composer autocomplete and authority intents", () => {
     key(composer.textarea(), "Enter");
     await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
     expect(intentCalls(invoke)[0]!.intent).toMatchObject({ kind: "submit", text: "/log" });
+    composer.unmount();
+  });
+
+  it("rebases an empty initial injection to the exact pending draft without stealing focus", async () => {
+    setSessionField({ status: "cold" });
+    useSessionsStore.setState({ newSessionDrafts: new Map([[WORKSPACE, "exact restored draft"]]) });
+    useSessionsStore.getState().injectEditorText(SID, "");
+    patchSession({
+      editorInjection: {
+        ...useSessionsStore.getState().sessions.get(SID)!.editorInjection!,
+        preserveRendererDraft: true,
+      },
+    });
+    const escapeClaim = useOverlayStore.getState()._acquire();
+    const search = document.createElement("input");
+    search.setAttribute("aria-label", "Search sessions");
+    document.body.appendChild(search);
+    search.focus();
+    const composer = mount();
+    await vi.waitFor(() => expect(composer.textarea().value).toBe("exact restored draft"));
+    patchSession({ status: "ready" });
+    await vi.waitFor(() =>
+      expect(
+        invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch"),
+      ).toHaveLength(1),
+    );
+    expect(composer.textarea().value).toBe("exact restored draft");
+    expect(document.activeElement).toBe(search);
+    expect(
+      invoke.mock.calls.filter(([channel]) => channel === "session.dispatchIntent"),
+    ).toHaveLength(0);
+    expect(invoke.mock.calls.filter(([channel]) => channel === "session.submit")).toHaveLength(0);
+    expect(
+      invoke.mock.calls.filter(([channel]) => channel === "session.unifiedSubmit"),
+    ).toHaveLength(0);
+    expect(
+      invoke.mock.calls.find(([channel]) => channel === "session.editorPatch")?.[1],
+    ).toMatchObject({ text: "exact restored draft", attachments: [] });
+
+    search.remove();
+    document.body.focus();
+    useOverlayStore.getState()._release(escapeClaim);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(document.body);
+    expect(document.activeElement).not.toBe(composer.textarea());
+
+    const externalRename = document.createElement("input");
+    externalRename.setAttribute("aria-label", "Rename session");
+    document.body.appendChild(externalRename);
+    externalRename.focus();
+    act(() => useSessionsStore.getState().injectEditorText(SID, "host edit wins"));
+    await vi.waitFor(() => expect(composer.textarea().value).toBe("host edit wins"));
+    expect(document.activeElement).toBe(externalRename);
+    expect(invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch")).toHaveLength(
+      1,
+    );
+    externalRename.remove();
+    composer.unmount();
+  });
+
+  it("honors an ordinary same-owner empty injection instead of reviving command text", async () => {
+    useSessionsStore.setState({ newSessionDrafts: new Map([[WORKSPACE, "/completed-command"]]) });
+    useSessionsStore.getState().injectEditorText(SID, "");
+
+    const composer = mount();
+    await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
+    expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("");
+    expect(invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch")).toHaveLength(
+      0,
+    );
+    composer.unmount();
+  });
+
+  it("autofocuses normally when body owns focus as Composer becomes live", () => {
+    document.body.focus();
+    const composer = mount();
+    expect(document.activeElement).toBe(composer.textarea());
     composer.unmount();
   });
 });

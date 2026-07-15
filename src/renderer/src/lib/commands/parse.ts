@@ -12,11 +12,11 @@
  *      (text === "/session")` check fails, and the unrecognised string
  *      drops to the prompt path. We follow the same fall-through.
  *   3. Discovered: extension / prompt / skill commands from `get_commands`.
- *      A discovered name *shadows* a built-in or unsupported name (so an
- *      extension called "login" overrides our toast). Skills are surfaced
- *      with `commandSource: "skill"` so the executor can mark them
- *      appropriately; the slash is stripped from the text pi sees (pi
- *      expands them itself).
+ *      Built-ins retain precedence, matching autocomplete; discovered commands
+ *      handle non-built-in names, including unsupported TUI-name collisions.
+ *      Skills are surfaced with `commandSource: "skill"` so the executor can
+ *      mark them appropriately; the slash is stripped from the text pi sees
+ *      (pi expands them itself).
  *   4. Default: any other `/x` is sent as a plain prompt — pi's TUI does
  *      the same for unknown slashes (docs explicitly say built-ins are
  *      TUI-only and would not execute if sent via `prompt`).
@@ -67,10 +67,15 @@ export function parseComposerInput(rawText: string, ctx: ParseContext): Composer
   const name = bare.slice(1);
   if (!name) return { kind: "send-prompt", text };
 
-  // ── 2. Discovered (extension / prompt / skill) — wins shadowing ──
-  // A discovered command shadows a built-in or unsupported name (an
-  // extension named "login" overrides the toast). The slash is sent
-  // through; pi routes the bare name to the extension/template/skill.
+  // ── 2. Built-in match — wins over discovered collisions ──────────
+  const builtin = BUILTIN_BY_NAME.get(name);
+  if (builtin) {
+    return matchBuiltin(builtin, rest);
+  }
+
+  // ── 3. Discovered (extension / prompt / skill) ────────────────────
+  // Built-ins above own their names; discovered commands may handle all
+  // remaining names, including unsupported TUI-command collisions.
   const disc = ctx.discovered.get(name);
   if (disc) {
     const commandSource = normalizeCommandSource(disc.source);
@@ -80,13 +85,7 @@ export function parseComposerInput(rawText: string, ctx: ParseContext): Composer
     return { kind: "send-prompt", text };
   }
 
-  // ── 3. Built-in match ─────────────────────────────────────────────
-  const builtin = BUILTIN_BY_NAME.get(name);
-  if (builtin) {
-    return matchBuiltin(builtin, rest);
-  }
-
-  // ── 4. Unsupported TUI command (unless shadowed, already handled) ──
+  // ── 4. Unsupported TUI command ────────────────────────────────────
   if (UNSUPPORTED_TUI_COMMANDS.has(name)) {
     return { kind: "unsupported", name };
   }

@@ -598,20 +598,26 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
       "true",
     );
 
-    // Click "Input" → the native Composer takes the slot, the panel unmounts.
+    // Click "Input" → the native Composer takes the slot. The xterm remains
+    // mounted but hidden so toggling cannot drop its terminal identity/input.
+    const panel = page.locator(".unified-panel");
+    await panel.evaluate((element) => {
+      element.setAttribute("data-render-test-mount", "preserved");
+    });
     await toggle.getByRole("tab", { name: "Input" }).click();
     await expect(page.locator(".composer__textarea")).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator(".unified-panel")).toHaveCount(0);
+    await expect(panel).toBeHidden();
+    await expect(panel).toHaveAttribute("aria-hidden", "true");
+    await expect(panel).toHaveAttribute("data-render-test-mount", "preserved");
     await expect(toggle.getByRole("tab", { name: "Input" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
 
-    // Click "Extension" → back to the unified TUI. The remounted xterm starts
-    // clean and asks the host for a forced repaint, so content returns without
-    // relying on replaying the old ANSI log.
+    // Click "Extension" → the same unified TUI is revealed and refocused.
     await toggle.getByRole("tab", { name: "Extension" }).click();
-    await expect(page.locator(".unified-panel")).toBeVisible({ timeout: 10_000 });
+    await expect(panel).toBeVisible({ timeout: 10_000 });
+    await expect(panel).toHaveAttribute("data-render-test-mount", "preserved");
     await expect(page.locator(".composer__textarea")).toHaveCount(0);
     await expect(page.locator(".unified-panel .xterm-rows")).toContainText("Fleet", {
       timeout: 10_000,

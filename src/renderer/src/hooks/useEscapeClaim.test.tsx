@@ -4,14 +4,14 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 // @vitest-environment jsdom
 import { act } from "react-dom/test-utils";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { hasClaim, useOverlayStore } from "../stores/overlay-store.js";
-import { useEscapeClaim } from "./useEscapeClaim.js";
+import { useEscapeClaim, useRoutedEscapeClaim } from "./useEscapeClaim.js";
 
 let container: HTMLDivElement | null = null;
 
 function reset(): void {
-  useOverlayStore.setState({ count: 0 });
+  useOverlayStore.setState({ count: 0, claims: [] });
 }
 
 afterEach(() => {
@@ -57,6 +57,11 @@ function Harness({ open }: { open: boolean }): React.ReactElement {
   return <div />;
 }
 
+function RoutedHarness({ open, route }: { open: boolean; route: () => void }): React.ReactElement {
+  useRoutedEscapeClaim(open, route);
+  return <div />;
+}
+
 describe("useEscapeClaim — O2 hook wiring", () => {
   it("mounts open -> claims; flip to closed -> releases", () => {
     expect(hasClaim()).toBe(false);
@@ -78,6 +83,28 @@ describe("useEscapeClaim — O2 hook wiring", () => {
     expect(hasClaim()).toBe(false);
     unmount();
     expect(hasClaim()).toBe(false);
+  });
+
+  it("releases a routed claim as soon as its surface becomes hidden", () => {
+    const route = vi.fn();
+    const { rerender } = render(<RoutedHarness open={true} route={route} />);
+    expect(useOverlayStore.getState().claims).toHaveLength(1);
+    rerender(<RoutedHarness open={false} route={route} />);
+    expect(useOverlayStore.getState().claims).toHaveLength(0);
+  });
+
+  it("keeps a routed callback current without reacquiring its ordered claim", () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const { rerender } = render(<RoutedHarness open={true} route={first} />);
+    const token = useOverlayStore.getState().claims[0]!.token;
+    rerender(<RoutedHarness open={true} route={second} />);
+    const claim = useOverlayStore.getState().claims[0]!;
+    expect(useOverlayStore.getState().claims).toHaveLength(1);
+    expect(claim.token).toBe(token);
+    claim.route!();
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledOnce();
   });
 
   it("concurrent instances are ref-counted (two open -> two releases to clear)", () => {

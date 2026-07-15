@@ -10,14 +10,30 @@
 // have flushed yet, silently swallowing the second ESC). DO NOT "simplify"
 // this to useEffect — it reintroduces a 3-press bug.
 
-import { useLayoutEffect } from "react";
-import { useOverlayStore } from "../stores/overlay-store.js";
+import { useLayoutEffect, useRef } from "react";
+import { type EscapeRoute, useOverlayStore } from "../stores/overlay-store.js";
 
 export function useEscapeClaim(open: boolean): void {
   useLayoutEffect(() => {
     if (!open) return;
     const { _acquire, _release } = useOverlayStore.getState();
-    _acquire();
-    return () => _release();
+    const token = _acquire();
+    return () => _release(token);
+  }, [open]);
+}
+
+/**
+ * Claim Escape for a terminal-like surface that must receive the key even when
+ * its DOM input is temporarily fenced. The route stays current without
+ * changing acquisition order on ordinary renders.
+ */
+export function useRoutedEscapeClaim(open: boolean, route: EscapeRoute): void {
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  useLayoutEffect(() => {
+    if (!open) return;
+    const { _acquire, _release } = useOverlayStore.getState();
+    const token = _acquire(() => routeRef.current());
+    return () => _release(token);
   }, [open]);
 }

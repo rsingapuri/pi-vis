@@ -964,6 +964,7 @@ export const SemanticSnapshotSchema = z
     dispatchedIntentTruncated: z.boolean().optional(),
     model: RuntimeModelSchema.nullable(),
     thinkingLevel: ThinkingLevelSchema,
+    sessionName: z.string().optional(),
     catalog: RuntimeCatalogSchema,
   })
   .strict()

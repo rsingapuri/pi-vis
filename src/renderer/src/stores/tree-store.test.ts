@@ -243,6 +243,121 @@ describe("tree-store — open / refresh", () => {
     expect(calls[0]?.payload).toHaveProperty("sessionId", SESSION_A);
   });
 
+  it("accepts a deferred get_tree response after a same-owner semantic cursor advance", async () => {
+    let resolveTree: (value: unknown) => void = () => {};
+    const deferredTree = new Promise<unknown>((resolve) => {
+      resolveTree = resolve;
+    });
+    nextResponse = async (channel) =>
+      channel === "child.transport" ? deferredTree : { success: false };
+
+    const opening = useTreeStore.getState().openTreeForSession(SESSION_A);
+    await Promise.resolve();
+    expect(calls[0]?.payload).toMatchObject({
+      observedCursor: {
+        hostInstanceId: "tree-host",
+        sessionEpoch: 1,
+        transportSequence: 1,
+        snapshotSequence: 1,
+      },
+    });
+
+    const prior = useSessionsStore.getState().sessions.get(SESSION_A)
+      ?.authorityProjection?.authoritativeSnapshot;
+    if (!prior) throw new Error("missing authority snapshot");
+    useSessionsStore.getState().applyAuthorityPublication({
+      sessionId: SESSION_A,
+      rendererGeneration: 0,
+      publicationSequence: 1,
+      plane: "semantic",
+      owner: prior.owner,
+      payload: {
+        owner: prior.owner,
+        transportSequence: 2,
+        frameId: "same-owner-advance",
+        records: [],
+        terminalSnapshot: { ...prior, snapshotSequence: 2 },
+      },
+    } as RendererPublication);
+
+    resolveTree({ success: true, data: { nodes: [], leafId: null } });
+    await opening;
+    expect(useTreeStore.getState().phase).toBe("ready");
+  });
+
+  it("ignores a deferred predecessor response after successor replacement", async () => {
+    let resolveTree: (value: unknown) => void = () => {};
+    const deferredTree = new Promise<unknown>((resolve) => {
+      resolveTree = resolve;
+    });
+    nextResponse = async (channel) =>
+      channel === "child.transport" ? deferredTree : { success: false };
+
+    const opening = useTreeStore.getState().openTreeForSession(SESSION_A);
+    await Promise.resolve();
+
+    const owner = { hostInstanceId: "tree-host-successor", sessionEpoch: 2 };
+    const cursor = { ...owner, transportSequence: 1, snapshotSequence: 1 };
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, {
+      baseline: {
+        sessionId: SESSION_A,
+        rendererGeneration: 0,
+        owner,
+        semantic: {
+          sync: { state: "following", cursor },
+          snapshot: {
+            owner,
+            snapshotSequence: 1,
+            capturedAt: Date.now(),
+            sdk: {
+              isStreaming: false,
+              isIdle: true,
+              isCompacting: false,
+              isRetrying: false,
+              retryAttempt: 0,
+              isBashRunning: false,
+            },
+            activity: {},
+            queues: { steering: [], followUp: [], steeringIntentIds: [], followUpIntentIds: [] },
+            custody: [],
+            editor: { revision: 0, text: "", attachments: [] },
+            activeIntents: [],
+            recentIntentOutcomes: [],
+            recentObservedOperations: [],
+            operationJournalLowWatermark: 0,
+            operationJournalHighWatermark: 0,
+            operationJournalTruncated: false,
+            model: null,
+            thinkingLevel: "off",
+            catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
+          },
+        },
+        operationJournal: [],
+        transcript: {
+          sync: { state: "following", cursor },
+          persistedHistoryCursor: null,
+          liveTailCursor: null,
+          overlapBoundary: null,
+        },
+        extensionUi: {
+          sync: { state: "following", cursor },
+          notifications: [],
+          statuses: {},
+          widgets: {},
+          dialogs: [],
+        },
+        panels: [],
+        restorations: [],
+        publicationHighWatermark: 1,
+      },
+      replay: [],
+    });
+
+    resolveTree({ success: true, data: { nodes: [], leafId: null } });
+    await opening;
+    expect(useTreeStore.getState().phase).toBe("loading");
+  });
+
   it("get_tree capability rejection → phase 'unsupported' with the friendly message (review S2)", async () => {
     // An installed SDK without the public tree capability may return an
     // unknown-command error. Never show that raw string.

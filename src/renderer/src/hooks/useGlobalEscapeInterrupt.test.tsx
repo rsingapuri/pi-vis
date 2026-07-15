@@ -52,7 +52,7 @@ describe("useGlobalEscapeInterrupt", () => {
   let invokeSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    useOverlayStore.setState({ count: 0 });
+    useOverlayStore.setState({ count: 0, claims: [] });
     useSessionsStore.setState({
       sessions: new Map(),
       activeSessionId: null,
@@ -135,7 +135,7 @@ describe("useGlobalEscapeInterrupt", () => {
   });
 
   it("unclaimed ESC always requests a host-authoritative escape", () => {
-    mountHook();
+    const mounted = mountHook();
     const { defaultPrevented, secondListenerCalled } = dispatchKey();
     expect(defaultPrevented).toBe(true);
     expect(secondListenerCalled).toBe(false);
@@ -148,28 +148,95 @@ describe("useGlobalEscapeInterrupt", () => {
         intent: { kind: "interrupt" },
       }),
     );
+    mounted.unmount();
   });
 
-  it("an overlay claim defers ESC", () => {
-    mountHook();
+  it("a normal claim defers ESC to its DOM owner", () => {
+    const mounted = mountHook();
     useOverlayStore.getState()._acquire();
     const { defaultPrevented, secondListenerCalled } = dispatchKey();
     expect(defaultPrevented).toBe(false);
     expect(secondListenerCalled).toBe(true);
     expect(invokeSpy).not.toHaveBeenCalled();
+    mounted.unmount();
   });
 
-  it("modified, composing, non-ESC, and no-active-session keys are ignored", () => {
-    mountHook();
+  it("a routed top claim consumes and invokes its route exactly once", () => {
+    const mounted = mountHook();
+    const route = vi.fn();
+    useOverlayStore.getState()._acquire(route);
+    const { defaultPrevented, secondListenerCalled } = dispatchKey();
+    expect(defaultPrevented).toBe(true);
+    expect(secondListenerCalled).toBe(false);
+    expect(route).toHaveBeenCalledOnce();
+    expect(invokeSpy).not.toHaveBeenCalled();
+    mounted.unmount();
+  });
+
+  it("a normal claim opened over a routed claim defers to DOM", () => {
+    const mounted = mountHook();
+    const route = vi.fn();
+    useOverlayStore.getState()._acquire(route);
+    useOverlayStore.getState()._acquire();
+    const event = dispatchKey();
+    expect(event.defaultPrevented).toBe(false);
+    expect(event.secondListenerCalled).toBe(true);
+    expect(route).not.toHaveBeenCalled();
+    expect(invokeSpy).not.toHaveBeenCalled();
+    mounted.unmount();
+  });
+
+  it("routes once the newer normal claim is released", () => {
+    const mounted = mountHook();
+    const route = vi.fn();
+    useOverlayStore.getState()._acquire(route);
+    const normal = useOverlayStore.getState()._acquire();
+    useOverlayStore.getState()._release(normal);
+    const event = dispatchKey();
+    expect(event.defaultPrevented).toBe(true);
+    expect(route).toHaveBeenCalledOnce();
+    expect(invokeSpy).not.toHaveBeenCalled();
+    mounted.unmount();
+  });
+
+  it("modified and IME Escape ignore even a routed claim", () => {
+    const mounted = mountHook();
+    const route = vi.fn();
+    useOverlayStore.getState()._acquire(route);
     for (const init of [
       { metaKey: true },
       { isComposing: true },
-      { key: "Enter" },
+      { keyCode: 229 },
     ] as KeyboardEventInit[]) {
-      expect(dispatchKey(init).defaultPrevented).toBe(false);
+      const event = dispatchKey(init);
+      expect(event.defaultPrevented).toBe(false);
+      expect(event.secondListenerCalled).toBe(true);
     }
+    expect(route).not.toHaveBeenCalled();
+    expect(invokeSpy).not.toHaveBeenCalled();
+    mounted.unmount();
+  });
+
+  it("a throwing route remains consumed and never becomes a global interrupt", () => {
+    const mounted = mountHook();
+    const route = vi.fn(() => {
+      throw new Error("fenced route");
+    });
+    useOverlayStore.getState()._acquire(route);
+    const event = dispatchKey();
+    expect(event.defaultPrevented).toBe(true);
+    expect(event.secondListenerCalled).toBe(false);
+    expect(route).toHaveBeenCalledOnce();
+    expect(invokeSpy).not.toHaveBeenCalled();
+    mounted.unmount();
+  });
+
+  it("non-ESC and no-active-session keys are ignored", () => {
+    const mounted = mountHook();
+    expect(dispatchKey({ key: "Enter" }).defaultPrevented).toBe(false);
     useSessionsStore.setState({ activeSessionId: null });
     expect(dispatchKey().defaultPrevented).toBe(false);
     expect(invokeSpy).not.toHaveBeenCalled();
+    mounted.unmount();
   });
 });

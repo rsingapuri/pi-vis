@@ -35,15 +35,10 @@ function observationIsCurrent(sessionId: SessionId, observation: TreeObservation
     current.owner.sessionEpoch !== observation.owner.sessionEpoch
   )
     return false;
-  if (!observation.cursor) return true;
-  const cursor = current.cursor;
-  return (
-    !!cursor &&
-    cursor.hostInstanceId === observation.cursor.hostInstanceId &&
-    cursor.sessionEpoch === observation.cursor.sessionEpoch &&
-    cursor.transportSequence === observation.cursor.transportSequence &&
-    cursor.snapshotSequence === observation.cursor.snapshotSequence
-  );
+  // Reads stay valid across same-owner semantic publications. The captured
+  // cursor still travels with the query as its observation context, but only
+  // following authority and owner/epoch replacement fence its response.
+  return true;
 }
 
 // ── Phases / state shape ──────────────────────────────────────────────

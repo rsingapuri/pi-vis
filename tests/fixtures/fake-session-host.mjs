@@ -209,6 +209,7 @@ function semanticSnapshot() {
     dispatchedIntentTruncated: false,
     model: value.model,
     thinkingLevel: value.thinkingLevel,
+    sessionName: value.sessionName,
     catalog: value.catalog,
   };
 }

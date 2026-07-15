@@ -280,6 +280,11 @@ export function createUIContext({
     editorAlternateConflictText = undefined;
     editorAlternateConflictAttachments = [];
     editorAdditionalConflictCandidates = [];
+    if (unifiedTuiState) {
+      unifiedTuiState.editor.setText("");
+      unifiedTuiState.tui.requestRender();
+      maybeDisposeUnifiedTui();
+    }
     for (const pending of pendingSubmits.values()) {
       if (pending.revision === request.editorRevision && pending.text === request.text) {
         pending.accepted = true;
@@ -332,6 +337,7 @@ export function createUIContext({
     if (unifiedTuiState) {
       unifiedTuiState.editor.setText(text);
       unifiedTuiState.tui.requestRender();
+      maybeDisposeUnifiedTui();
     }
     return {
       accepted: true,
@@ -790,23 +796,28 @@ export function createUIContext({
     // ── Widgets ──
     setWidget: (key, content, options) => {
       if (typeof content === "function") {
-        // Factory: store and add to unified TUI layout
+        // Construct first, then replace atomically. A throwing factory must not
+        // strand a blank unified panel or destroy the prior component for the
+        // same key.
         ensureUnifiedTui();
         const { widgetFactories, widgetAbove, widgetBelow, tui, components } = unifiedTuiState;
         const placement = options?.placement || "belowEditor";
-        widgetFactories.set(key, { factory: content, placement });
+        let component;
+        try {
+          component = content(tui, theme);
+        } catch (error) {
+          maybeDisposeUnifiedTui();
+          throw error;
+        }
 
-        // Remove existing component for this key if any
         const existing = components.get(key);
         if (existing) {
           if (existing.placement === "aboveEditor") widgetAbove.removeChild(existing.component);
           else widgetBelow.removeChild(existing.component);
           existing.component.dispose?.();
-          components.delete(key);
         }
 
-        // Create and add new component
-        const component = content(tui, theme);
+        widgetFactories.set(key, { factory: content, placement });
         const container = placement === "aboveEditor" ? widgetAbove : widgetBelow;
         container.addChild(component);
         components.set(key, { component, placement });

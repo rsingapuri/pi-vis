@@ -23,7 +23,7 @@
     "format": "node scripts/ensure-worktree-dev.mjs && biome format --write .",
     "test": "node scripts/ensure-worktree-dev.mjs && vitest run",
     "test:e2e": "npm run build && playwright test -c tests/e2e/playwright.config.mts",
-    "test:e2e:real-pi": "npm run build && playwright test -c tests/e2e/playwright.config.mts real-sdk-host-smoke.spec.mts real-sdk-transcript-lifecycle.spec.mts",
+    "test:e2e:real-pi": "npm run build && playwright test -c tests/e2e/playwright.config.mts real-sdk-host-smoke.spec.mts real-sdk-transcript-lifecycle.spec.mts real-sdk-regressions.spec.mts",
     "test:transcript": "node scripts/ensure-worktree-dev.mjs && vitest run src/renderer/src/stores/transcript.test.ts src/renderer/src/stores/transcript.lifecycle.test.ts src/main/sessions/history-loader.test.ts src/shared/pi-protocol/tool-result.test.ts",
     "test:render": "node scripts/ensure-worktree-dev.mjs && playwright test -c tests/render/playwright.config.mts",
     "test:full": "npm run typecheck && npm run lint && npm test && npm run test:render && npm run test:e2e",

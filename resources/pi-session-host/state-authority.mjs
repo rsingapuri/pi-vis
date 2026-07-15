@@ -929,6 +929,7 @@ export function createStateAuthority({
       dispatchedIntentTruncated: dispatchedIntentBounds().truncated,
       model: value.model,
       thinkingLevel: value.thinkingLevel,
+      sessionName: value.sessionName,
       catalog: value.catalog,
     };
   }

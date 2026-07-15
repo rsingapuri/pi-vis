@@ -4,7 +4,7 @@ import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { AnsiText } from "../../lib/ansi.js";
-import { authoritySnapshotFor, useSessionsStore } from "../../stores/sessions-store.js";
+import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUpdatesStore } from "../../stores/updates-store.js";
 import { FadeText } from "../common/FadeText.js";
@@ -31,12 +31,12 @@ import "./Dock.css";
  */
 export function Dock({ sessionId }: { sessionId: SessionId }): React.ReactElement | null {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
-  const widgets = authoritySnapshotFor(session)?.catalog.widgets;
+  const widgets = session?.widgets;
 
   // Stable ordering: extension widget items by sorted key (left), then the
   // update item (right). A reserved trailing slot for the future
   // Input/Extension toggle keeps its position stable.
-  const widgetKeys = widgets ? Object.keys(widgets).sort() : [];
+  const widgetKeys = widgets ? [...widgets.keys()].sort() : [];
 
   const showUpdate = useShowUpdate();
 
@@ -45,7 +45,7 @@ export function Dock({ sessionId }: { sessionId: SessionId }): React.ReactElemen
   return (
     <div className="dock">
       {widgetKeys.map((key) => {
-        const lines = widgets![key] ?? [];
+        const lines = widgets!.get(key) ?? [];
         if (lines.length === 0) return null;
         return <WidgetItem key={key} lines={lines} />;
       })}

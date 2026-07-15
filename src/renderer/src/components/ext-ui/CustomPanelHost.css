@@ -125,6 +125,11 @@
   padding-block: 0.286rem;
 }
 
+/* Author display declarations override the browser's built-in [hidden] rule. */
+.custom-panel.unified-panel[hidden] {
+  display: none;
+}
+
 /* The unified mount is a direct flex child of the card; keep it at its set
    height (don't stretch) and give it wider horizontal breathing room. */
 .unified-panel .custom-panel__xterm {

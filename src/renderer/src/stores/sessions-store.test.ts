@@ -504,9 +504,9 @@ describe("sessions store - session name from pi", () => {
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
   });
 
-  it("updates sessionName from a completed rename outcome", () => {
+  it("projects sessionName from the semantic snapshot, not a rename outcome", () => {
     installAuthority();
-    const snapshot = semanticSnapshot(2);
+    const snapshot = semanticSnapshot(2, { sessionName: "Refactor config loader" });
     publishSemantic(SESSION_A, 2, snapshot, [
       {
         type: "intent_outcome",
@@ -515,7 +515,7 @@ describe("sessions store - session name from pi", () => {
           owner: snapshot.owner,
           kind: "rename",
           state: "completed",
-          result: { name: "Refactor config loader" },
+          result: { name: "outcome-only name" },
         },
       },
     ]);
@@ -524,35 +524,10 @@ describe("sessions store - session name from pi", () => {
     );
   });
 
-  it("overwrites a prior name with a newer completed rename outcome", () => {
-    installAuthority();
-    const first = semanticSnapshot(2);
-    publishSemantic(SESSION_A, 2, first, [
-      {
-        type: "intent_outcome",
-        outcome: {
-          intentId: "old",
-          owner: first.owner,
-          kind: "rename",
-          state: "completed",
-          result: { name: "Old name" },
-        },
-      },
-    ]);
-    const second = semanticSnapshot(3);
-    publishSemantic(SESSION_A, 3, second, [
-      {
-        type: "intent_outcome",
-        outcome: {
-          intentId: "new",
-          owner: second.owner,
-          kind: "rename",
-          state: "completed",
-          result: { name: "New name" },
-        },
-      },
-    ]);
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe("New name");
+  it("allows a semantic snapshot to clear a prior name", () => {
+    installAuthority(SESSION_A, semanticSnapshot(1, { sessionName: "Old name" }));
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBeUndefined();
   });
 
   it("clears the name when a successor baseline omits it", () => {
@@ -562,35 +537,12 @@ describe("sessions store - session name from pi", () => {
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBeUndefined();
   });
 
-  it("scopes completed rename outcomes to a single session", () => {
+  it("scopes semantic snapshot names to a single session", () => {
     useSessionsStore.getState().createSession(SESSION_B, WORKSPACE);
     installAuthority(SESSION_A);
     installAuthority(SESSION_B);
-    const snapshot = semanticSnapshot(2);
-    publishSemantic(SESSION_A, 2, snapshot, [
-      {
-        type: "intent_outcome",
-        outcome: {
-          intentId: "a",
-          owner: snapshot.owner,
-          kind: "rename",
-          state: "completed",
-          result: { name: "A's name" },
-        },
-      },
-    ]);
-    publishSemantic(SESSION_B, 2, snapshot, [
-      {
-        type: "intent_outcome",
-        outcome: {
-          intentId: "b",
-          owner: snapshot.owner,
-          kind: "rename",
-          state: "completed",
-          result: { name: "B's name" },
-        },
-      },
-    ]);
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { sessionName: "A's name" }));
+    publishSemantic(SESSION_B, 2, semanticSnapshot(2, { sessionName: "B's name" }));
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe("A's name");
     expect(useSessionsStore.getState().sessions.get(SESSION_B)?.sessionName).toBe("B's name");
   });
@@ -860,19 +812,8 @@ describe("createSession(title) and addUserMessage self-labeling", () => {
   it("addUserMessage does NOT overwrite an authority-confirmed session name", () => {
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
     installAuthority();
-    const snapshot = semanticSnapshot(2);
-    publishSemantic(SESSION_A, 2, snapshot, [
-      {
-        type: "intent_outcome",
-        outcome: {
-          intentId: "rename",
-          owner: snapshot.owner,
-          kind: "rename",
-          state: "completed",
-          result: { name: "Renamed by user" },
-        },
-      },
-    ]);
+    const snapshot = semanticSnapshot(2, { sessionName: "Renamed by user" });
+    publishSemantic(SESSION_A, 2, snapshot);
     useSessionsStore.getState().addUserMessage(SESSION_A, "first prompt");
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.sessionName).toBe(
       "Renamed by user",
@@ -919,6 +860,39 @@ describe("sessions store - extension UI clear payloads", () => {
       useSessionsStore.getState().sessions.get(SESSION_A)?.authorityProjection?.extensionUiBaseline
         ?.statuses,
     ).toEqual({});
+  });
+
+  it("retains extension presentation while its plane is synchronizing", () => {
+    const active = authorityAttach();
+    active.baseline.extensionUi.statuses = { plan: "plan active" };
+    active.baseline.extensionUi.widgets = { plan: ["Plan mode"] };
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, active);
+
+    const owner = { hostInstanceId: "host-1", sessionEpoch: 1 };
+    useSessionsStore.getState().applyAuthorityPublication({
+      sessionId: SESSION_A,
+      rendererGeneration: 0,
+      publicationSequence: 1,
+      plane: "extensionUi",
+      owner,
+      payload: {
+        kind: "request",
+        // Skip cursor 2 to fence only the extension UI plane.
+        cursor: { ...owner, transportSequence: 3, snapshotSequence: 1 },
+        request: {
+          type: "extension_ui_request",
+          id: "status-gap",
+          method: "setStatus",
+          statusKey: "plan",
+        },
+      },
+    });
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2));
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.authorityProjection?.extensionUi.state).toBe("synchronizing");
+    expect(session?.statusSegments.get("plan")).toBe("plan active");
+    expect(session?.widgets.get("plan")).toEqual(["Plan mode"]);
   });
 
   it("setStatus clearing a non-existent key is a no-op (no throw, no stray entries)", () => {
@@ -3726,6 +3700,19 @@ describe("sessions store - authority intent projection", () => {
     expect(session?.statusSegments.size).toBe(0);
   });
 
+  it("does not treat same-owner recovery after unavailability as replacement", () => {
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());
+    const before = useSessionsStore.getState().sessions.get(SESSION_A)?.historyGeneration;
+    useSessionsStore.getState().markAuthorityUnavailable(SESSION_A, "transport_lost");
+    const recovered = authorityAttach(semanticSnapshot(2));
+    recovered.baseline.publicationHighWatermark = 1;
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, recovered);
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.historyGeneration).toBe(before);
+    expect(session?.hostInstanceId).toBe("host-1");
+  });
+
   it("commits semantic fields atomically without leaking extension-plane catalog values", () => {
     useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());
     const next = semanticSnapshot(2, {
@@ -3824,7 +3811,7 @@ describe("sessions store - recovered authority-frame regressions", () => {
   });
 
   const namedFrame = (sequence: number, name: string): [SemanticSnapshot, AuthorityRecord[]] => {
-    const snapshot = semanticSnapshot(sequence);
+    const snapshot = semanticSnapshot(sequence, { sessionName: name });
     const records: AuthorityRecord[] = [
       {
         type: "intent_outcome",

@@ -359,6 +359,39 @@ describe("unified TUI: setWidget factory routing", () => {
     expect(below.children).not.toContain(f1.component);
   });
 
+  it("a throwing first factory closes the otherwise-empty unified panel", () => {
+    const h = makeHarness();
+    const error = new Error("factory exploded");
+
+    expect(() =>
+      h.context.setWidget("broken", () => {
+        throw error;
+      }),
+    ).toThrow(error);
+
+    expect(h.tui.stopped).toBe(true);
+    expect(h.panelBridge.closePanel).toHaveBeenCalledWith(
+      h.panelBridge.openPanel.mock.results[0].value,
+    );
+  });
+
+  it("a throwing replacement preserves the prior factory component", () => {
+    const h = makeHarness();
+    const prior = makeFactory("prior");
+    h.context.setWidget("k", prior);
+
+    expect(() =>
+      h.context.setWidget("k", () => {
+        throw new Error("replacement exploded");
+      }),
+    ).toThrow("replacement exploded");
+
+    expect(prior.component.dispose).not.toHaveBeenCalled();
+    expect(h.tui.children[2].children).toContain(prior.component);
+    expect(h.tui.stopped).toBe(false);
+    expect(h.panelBridge.closePanel).not.toHaveBeenCalled();
+  });
+
   it("a static string[] widget still uses the sendToMain path (no unified TUI)", () => {
     const h = makeHarness();
     h.context.setWidget("lines", ["a", "b"], { placement: "belowEditor" });
@@ -426,6 +459,43 @@ describe("unified TUI: setWidget factory routing", () => {
     h.context.setEditorText("");
 
     expect(h.editor.setText).toHaveBeenCalledWith("");
+    expect(tui.stopped).toBe(true);
+    expect(h.panelBridge.closePanel).toHaveBeenCalledWith(panelId);
+  });
+
+  it("accepted slash-command custody clears the unified editor and closes its widgetless TUI", () => {
+    const h = makeHarness();
+    h.context.setWidget("k", makeFactory());
+    const tui = h.tui;
+    const panelId = h.panelBridge.openPanel.mock.results[0].value;
+    h.editor.getExpandedText.mockReturnValue("/finished-command");
+    h.context.setWidget("k", undefined);
+    expect(tui.stopped).toBe(false);
+
+    h.editor.getExpandedText.mockReturnValue("");
+    expect(
+      h.bundle.state.acceptEditorSubmission({ editorRevision: 0, text: "/finished-command" }),
+    ).toBe(true);
+
+    expect(h.editor.setText).toHaveBeenCalledWith("");
+    expect(tui.stopped).toBe(true);
+    expect(h.panelBridge.closePanel).toHaveBeenCalledWith(panelId);
+  });
+
+  it("an accepted renderer patch that clears the final draft closes a widgetless unified TUI", () => {
+    const h = makeHarness();
+    h.context.setWidget("k", makeFactory());
+    const tui = h.tui;
+    const panelId = h.panelBridge.openPanel.mock.results[0].value;
+    h.editor.getExpandedText.mockReturnValue("draft");
+    h.context.setWidget("k", undefined);
+    expect(tui.stopped).toBe(false);
+
+    h.editor.getExpandedText.mockReturnValue("");
+    expect(
+      h.bundle.state.applyEditorPatch({ baseRevision: 0, revision: 1, text: "" }),
+    ).toMatchObject({ accepted: true, revision: 1 });
+
     expect(tui.stopped).toBe(true);
     expect(h.panelBridge.closePanel).toHaveBeenCalledWith(panelId);
   });

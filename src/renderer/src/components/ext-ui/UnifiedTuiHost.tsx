@@ -25,16 +25,25 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import type React from "react";
 import { useEffect, useRef } from "react";
-import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
+import { useRoutedEscapeClaim } from "../../hooks/useEscapeClaim.js";
+import {
+  type PanelInputIdentity,
+  type PendingPanelInput,
+  bufferPanelInput,
+  reconcilePanelInputBuffer,
+  samePanelInputIdentity,
+} from "../../lib/panel-input-buffer.js";
 import {
   acknowledgePanelInput,
   nextPanelInputSequence,
   panelInputGapMessage,
+  resetPanelInputSequenceToAcknowledged,
 } from "../../lib/panel-input-sequence.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { getTheme } from "../../theme/registry.js";
 import { basePanelTerminalOptions, buildXtermTheme } from "../../theme/xterm.js";
+import { type EscapePanelIdentity, routePanelEscape } from "./panel-escape.js";
 import { PANEL_SCROLLBACK_ROWS, createPanelSizer } from "./panel-sizer.js";
 import "@xterm/xterm/css/xterm.css";
 import "./CustomPanelHost.css";
@@ -43,6 +52,7 @@ import "./CustomPanelHost.css";
 
 interface UnifiedTuiHostProps {
   sessionId: SessionId;
+  visible?: boolean;
 }
 
 function resolveMonoFont(): string {
@@ -52,9 +62,13 @@ function resolveMonoFont(): string {
 
 // ─── Component ────────────────────────────────────────────────────────────
 
-export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactElement {
+export function UnifiedTuiHost({
+  sessionId,
+  visible = true,
+}: UnifiedTuiHostProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const termPanelRef = useRef<EscapePanelIdentity | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const panelRef = useRef<{
     id: number;
@@ -74,12 +88,20 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
   const renderedOutputSequenceRef = useRef<number | null>(null);
   const renderedKeyframeRevisionRef = useRef<number | null>(null);
   const authorityAckRef = useRef<string | null>(null);
+  const authorityRepaintRequestRef = useRef<string | null>(null);
+  const dispatchPanelInputRef = useRef<((data: string) => void) | null>(null);
+  const panelInputTailRef = useRef<Promise<void>>(Promise.resolve());
+  const panelInputBlockedRef = useRef<PanelInputIdentity | null>(null);
+  const pendingInputRef = useRef<PendingPanelInput | null>(null);
   // The current sizing pass, exposed by the lifecycle effect so the mode-change
   // effect below can re-run it without taking sync's deps.
   const syncRef = useRef<(() => void) | null>(null);
   // Display mode, read live by sync() without being a rebuild dep (mode flips
   // mid-panel must NOT tear down xterm).
   const modeRef = useRef<"content" | "viewport">("content");
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const focusAfterRevealRef = useRef(false);
   const { unifiedPanel } = useSessionsStore((s) => s.sessions.get(sessionId)) ?? {};
   // Keep panelRef in sync so the lifecycle effect (dep = panelId only) can read
   // the current buffer without taking it as a reactive dep (which would rebuild
@@ -94,6 +116,30 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
   useEffect(() => {
     const term = termRef.current;
     if (!term || !unifiedPanel) return;
+    const repaintKey = `${unifiedPanel.hostInstanceId}:${unifiedPanel.sessionEpoch}:${unifiedPanel.id}`;
+    if (unifiedPanel.syncState === "following") authorityRepaintRequestRef.current = null;
+    if (
+      unifiedPanel.authority === true &&
+      unifiedPanel.syncState === "synchronizing" &&
+      unifiedPanel.keyframeReady === false &&
+      authorityRepaintRequestRef.current !== repaintKey
+    ) {
+      authorityRepaintRequestRef.current = repaintKey;
+      void window.pivis
+        .invoke("session.panelResize", {
+          sessionId,
+          expectedHostInstanceId: unifiedPanel.hostInstanceId,
+          expectedSessionEpoch: unifiedPanel.sessionEpoch,
+          panelId: unifiedPanel.id,
+          cols: term.cols,
+          rows: term.rows,
+          force: true,
+        })
+        .catch(() => {
+          if (authorityRepaintRequestRef.current === repaintKey)
+            authorityRepaintRequestRef.current = null;
+        });
+    }
     const outputSequence = unifiedPanel.outputSequence;
     if (
       outputSequence !== undefined &&
@@ -124,7 +170,7 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
       authorityAckRef.current !== ackKey;
     if (shouldAcknowledge) authorityAckRef.current = ackKey;
     term.write("", () => {
-      syncRef.current?.();
+      if (visibleRef.current) syncRef.current?.();
       if (!shouldAcknowledge) return;
       const active = panelRef.current;
       if (
@@ -151,20 +197,34 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
           if (authorityAckRef.current === ackKey) authorityAckRef.current = null;
         });
     });
+
+    const authorityReady =
+      unifiedPanel.authority === true &&
+      unifiedPanel.syncState === "following" &&
+      unifiedPanel.inputEnabled === true &&
+      unifiedPanel.renderRevision !== undefined;
+    const reconciled = reconcilePanelInputBuffer(
+      {
+        hostInstanceId: unifiedPanel.hostInstanceId,
+        sessionEpoch: unifiedPanel.sessionEpoch,
+        panelId: unifiedPanel.id,
+      },
+      authorityReady,
+      panelInputBlockedRef.current,
+      pendingInputRef.current,
+    );
+    panelInputBlockedRef.current = reconciled.blocked;
+    pendingInputRef.current = reconciled.pending;
+    for (const chunk of reconciled.replay) dispatchPanelInputRef.current?.(chunk);
   }, [sessionId, unifiedPanel]);
 
-  // ESC parity with the real TUI: whatever ESC does in pi's terminal, it must
-  // do here too. pi's precedence is overlay-close > autocomplete-close >
-  // interrupt. The renderer-only global ESC handler supplies the interrupt the
-  // host's base Editor can't (see docs/ui-conventions.md "ESC-to-interrupt"), but that
-  // interrupt must be the LOWEST-priority ESC action — it may fire only when
-  // the host TUI would not otherwise consume the key. An open pi-tui overlay
-  // (the extension's "ESC to close" box) is signalled to us as viewport mode,
-  // so while an overlay is up we CLAIM ESC: the global handler then defers and
-  // the keystroke flows through to the host, which closes the overlay instead
-  // of the agent being aborted mid-stream. In content mode (no overlay) we
-  // stay unclaimed so a streaming ESC still interrupts.
-  useEscapeClaim(panelMode === "viewport");
+  // Viewport mode is a pi-tui overlay. Its Escape must traverse xterm's
+  // onData sequencer rather than defer to a DOM event that may be fenced while
+  // authority reconstruction is in progress. Content mode remains unclaimed
+  // so an ordinary streaming Escape can request the host interrupt.
+  useRoutedEscapeClaim(visible && panelMode === "viewport", () => {
+    routePanelEscape(panelRef.current, termPanelRef.current, termRef.current);
+  });
 
   // Live re-theme: the host emits role-identity ANSI indices, and xterm
   // resolves them against `term.options.theme.extendedAnsi` at paint time, so
@@ -181,10 +241,27 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
   // Re-run the sizing pass when the mode flips (overlay shown/hidden). The
   // lifecycle effect is keyed on panelId only, so it doesn't re-fire here — but
   // viewport↔content needs an immediate re-size, not just on the next frame.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: panelMode is the trigger; the body deliberately only re-runs the current sync
+  const panelInputReady =
+    unifiedPanel?.authority === true &&
+    unifiedPanel.syncState === "following" &&
+    unifiedPanel.inputEnabled === true &&
+    unifiedPanel.renderRevision !== undefined;
   useEffect(() => {
+    // Read the mode explicitly: its value is not otherwise needed, but each
+    // mode transition must trigger this sizing pass.
+    void panelMode;
+    if (!visible) {
+      focusAfterRevealRef.current = true;
+      return;
+    }
     syncRef.current?.();
-  }, [panelMode]);
+    // An explicit Input → Extension reveal focuses only after reconstruction
+    // is acknowledged. Ordinary background publications never steal focus.
+    if (focusAfterRevealRef.current && panelInputReady) {
+      focusAfterRevealRef.current = false;
+      termRef.current?.focus();
+    }
+  }, [panelMode, panelInputReady, visible]);
 
   // One lifecycle effect: build terminal, stream data, handle input, cleanup.
   // Rebuild xterm ONLY when the panel identity changes (NOT on buffer appends).
@@ -195,6 +272,11 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
     if (!container) return;
     const currentPanel = panelRef.current;
     if (!currentPanel) return;
+    // This lifecycle is identity-bound. Never carry blocked or buffered input
+    // into a replacement owner that reuses the numeric panel id.
+    panelInputTailRef.current = Promise.resolve();
+    panelInputBlockedRef.current = null;
+    pendingInputRef.current = null;
 
     let disposed = false;
     let unsubPanel: (() => void) | null = null;
@@ -214,6 +296,11 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
       theme: buildXtermTheme(getTheme(activeColorScheme)),
     });
     termRef.current = term;
+    termPanelRef.current = {
+      id: currentPanel.id,
+      hostInstanceId: currentPanel.hostInstanceId,
+      sessionEpoch: currentPanel.sessionEpoch,
+    };
     const focusBeforeOpen = document.activeElement;
 
     const fitAddon = new FitAddon();
@@ -259,6 +346,10 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
       sessionEl,
       fitAddon,
       getMode: () => modeRef.current,
+      // Above/editor/below need room to converge even when two startup factory
+      // renders race the first size probe. The visible card still hugs measured
+      // content once the complete frame arrives.
+      minimumRows: 6,
       fallbackFontSize: fonts?.code?.sizePx ?? 14,
       onReportSize: (cols, rows) => {
         const force = forceNextResize;
@@ -354,8 +445,31 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
               revision: repaintRevision,
             })
             .then((result) => {
-              if (!disposed && !(panelRef.current ?? currentPanel).authority && result.acknowledged)
-                repaintAcknowledged = true;
+              const active = panelRef.current;
+              if (
+                disposed ||
+                !active ||
+                active.hostInstanceId !== currentPanel.hostInstanceId ||
+                active.sessionEpoch !== currentPanel.sessionEpoch ||
+                active.id !== currentPanel.id ||
+                active.authority ||
+                !result.acknowledged
+              )
+                return;
+              repaintAcknowledged = true;
+              const reconciled = reconcilePanelInputBuffer(
+                {
+                  hostInstanceId: currentPanel.hostInstanceId,
+                  sessionEpoch: currentPanel.sessionEpoch,
+                  panelId: currentPanel.id,
+                },
+                true,
+                panelInputBlockedRef.current,
+                pendingInputRef.current,
+              );
+              panelInputBlockedRef.current = reconciled.blocked;
+              pendingInputRef.current = reconciled.pending;
+              for (const chunk of reconciled.replay) dispatchPanelInputRef.current?.(chunk);
             })
             .catch(() => {});
         });
@@ -363,38 +477,107 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
     });
 
     // User keystrokes → host TUI (panelInput is shared with custom() panels).
-    const onDataDispose = term.onData((data) => {
+    const dispatchPanelInput = (data: string): void => {
       const activePanel = panelRef.current ?? currentPanel;
       const authorityReady =
         activePanel.authority === true &&
         activePanel.syncState === "following" &&
         activePanel.inputEnabled === true &&
         activePanel.renderRevision !== undefined;
-      if (activePanel.authority ? !authorityReady : !repaintAcknowledged) return;
-      const sequence = nextPanelInputSequence(
-        sessionId,
-        activePanel.hostInstanceId,
-        activePanel.sessionEpoch,
-        activePanel.id,
-      );
-      void window.pivis
-        .invoke("session.panelInput", {
-          sessionId,
-          expectedHostInstanceId: activePanel.hostInstanceId,
-          expectedSessionEpoch: activePanel.sessionEpoch,
-          panelId: activePanel.id,
-          revision: activePanel.authority ? activePanel.renderRevision! : repaintRevision,
-          sequence,
-          data,
-        })
-        .then((result) => {
+      const identity = {
+        hostInstanceId: activePanel.hostInstanceId,
+        sessionEpoch: activePanel.sessionEpoch,
+        panelId: activePanel.id,
+      };
+      const bufferInput = (): void => {
+        pendingInputRef.current = bufferPanelInput(pendingInputRef.current, identity, data);
+      };
+      if (activePanel.authority && !authorityReady) {
+        panelInputBlockedRef.current = identity;
+        bufferInput();
+        return;
+      }
+      if (!activePanel.authority && !repaintAcknowledged) {
+        panelInputBlockedRef.current = identity;
+        bufferInput();
+        return;
+      }
+      const target = {
+        ...identity,
+        revision: activePanel.authority ? activePanel.renderRevision! : repaintRevision,
+      };
+      panelInputTailRef.current = panelInputTailRef.current
+        .then(async () => {
+          const latest = panelRef.current;
+          if (
+            !latest ||
+            latest.hostInstanceId !== target.hostInstanceId ||
+            latest.sessionEpoch !== target.sessionEpoch ||
+            latest.id !== target.panelId
+          )
+            return;
+          const blocked = panelInputBlockedRef.current;
+          if (blocked && samePanelInputIdentity(blocked, target)) {
+            bufferInput();
+            return;
+          }
+          if (blocked) {
+            panelInputBlockedRef.current = null;
+            pendingInputRef.current = null;
+          }
+          const sequence = nextPanelInputSequence(
+            sessionId,
+            target.hostInstanceId,
+            target.sessionEpoch,
+            target.panelId,
+          );
+          const result = await window.pivis.invoke("session.panelInput", {
+            sessionId,
+            expectedHostInstanceId: target.hostInstanceId,
+            expectedSessionEpoch: target.sessionEpoch,
+            panelId: target.panelId,
+            revision: target.revision,
+            sequence,
+            data,
+          });
           acknowledgePanelInput(
             sessionId,
-            activePanel.hostInstanceId,
-            activePanel.sessionEpoch,
-            activePanel.id,
+            target.hostInstanceId,
+            target.sessionEpoch,
+            target.panelId,
             result.acknowledgedThrough,
           );
+          const afterInput = panelRef.current;
+          if (
+            !afterInput ||
+            afterInput.hostInstanceId !== target.hostInstanceId ||
+            afterInput.sessionEpoch !== target.sessionEpoch ||
+            afterInput.id !== target.panelId
+          )
+            return;
+          if (result.acknowledgedThrough < sequence && result.repaintRequired) {
+            panelInputBlockedRef.current = identity;
+            resetPanelInputSequenceToAcknowledged(
+              sessionId,
+              target.hostInstanceId,
+              target.sessionEpoch,
+              target.panelId,
+              result.acknowledgedThrough,
+            );
+            bufferInput();
+            const terminal = termRef.current;
+            if (terminal) {
+              void window.pivis.invoke("session.panelResize", {
+                sessionId,
+                expectedHostInstanceId: target.hostInstanceId,
+                expectedSessionEpoch: target.sessionEpoch,
+                panelId: target.panelId,
+                cols: terminal.cols,
+                rows: terminal.rows,
+                force: true,
+              });
+            }
+          }
           if (result.gap) {
             useSessionsStore
               .getState()
@@ -404,19 +587,26 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
         .catch((error) => {
           useSessionsStore.getState().addToast(sessionId, String(error), "error");
         });
-    });
+    };
+    dispatchPanelInputRef.current = dispatchPanelInput;
+    // Preserve complete xterm chunks (user keys, routed Escape, and terminal
+    // protocol replies) in order. Readiness fences IPC allocation inside the
+    // dispatcher; filtering by byte length would discard valid CSI-u keys.
+    const onDataDispose = term.onData(dispatchPanelInput);
 
     // Re-derive sizing when the transcript column resizes (window resize,
     // sidebar collapse, font change) — both cols and the display cap depend on
     // it. The column is never sized BY us, so this can't feed back.
-    const resizeObserver = new ResizeObserver(() => sizer.scheduleSync());
+    const resizeObserver = new ResizeObserver(() => {
+      if (visibleRef.current) sizer.scheduleSync();
+    });
     if (sessionEl) resizeObserver.observe(sessionEl);
 
     // Wait for the render service to measure cell dimensions before the first
     // sizing pass (double rAF: layout + paint).
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (disposed) return;
+        if (disposed || !visibleRef.current) return;
         sizer.sync();
       });
     });
@@ -430,13 +620,33 @@ export function UnifiedTuiHost({ sessionId }: UnifiedTuiHostProps): React.ReactE
       resizeObserver.disconnect();
       sizer.dispose();
       term.dispose();
-      termRef.current = null;
-      fitAddonRef.current = null;
+      if (dispatchPanelInputRef.current === dispatchPanelInput) {
+        dispatchPanelInputRef.current = null;
+      }
+      const pending = pendingInputRef.current;
+      if (
+        pending?.hostInstanceId === currentPanel.hostInstanceId &&
+        pending.sessionEpoch === currentPanel.sessionEpoch &&
+        pending.panelId === currentPanel.id
+      ) {
+        pendingInputRef.current = null;
+      }
+      if (termRef.current === term) {
+        termRef.current = null;
+        termPanelRef.current = null;
+        fitAddonRef.current = null;
+      }
     };
   }, [sessionId, panelId, panelHostInstanceId, panelSessionEpoch]);
 
   return (
-    <div className="custom-panel unified-panel">
+    <div
+      className="custom-panel unified-panel"
+      hidden={!visible}
+      aria-hidden={!visible}
+      data-sync-state={unifiedPanel?.syncState}
+      data-input-enabled={unifiedPanel?.inputEnabled === true ? "true" : "false"}
+    >
       {/* No header/close button: the unified panel is persistent and the
           extension owns its lifecycle (setWidget(key, undefined) → panel_close).
           A modal-style ✕ would contradict that. */}

@@ -160,7 +160,15 @@ export interface SessionViewState {
   sessionTitle?: string | undefined;
   sessionName?: string | undefined;
   commands: SlashCommandInfo[];
-  editorInjection?: { text: string; nonce: number; revision?: number } | undefined;
+  editorInjection?:
+    | {
+        text: string;
+        nonce: number;
+        revision?: number;
+        /** Only a fresh owner baseline may yield to an existing renderer draft. */
+        preserveRendererDraft?: boolean;
+      }
+    | undefined;
   pendingPicker?: PickerRequest | undefined;
   /**
    * Pre-send worktree intent mode (drives the WorktreeBar segmented
@@ -861,14 +869,21 @@ function applyAuthoritySemanticProjection(
   authorityProjection: RendererAuthorityState,
 ): SessionViewState {
   const snapshot = authorityProjection.authoritativeSnapshot;
-  const extensionBaseline =
+  const extensionPresentation =
     authorityProjection.extensionUi.state === "following"
-      ? authorityProjection.extensionUiBaseline
-      : undefined;
-  const extensionPresentation = {
-    statusSegments: new Map(Object.entries(extensionBaseline?.statuses ?? {})),
-    widgets: new Map(Object.entries(extensionBaseline?.widgets ?? {})),
-  };
+      ? {
+          statusSegments: new Map(
+            Object.entries(authorityProjection.extensionUiBaseline?.statuses ?? {}),
+          ),
+          widgets: new Map(Object.entries(authorityProjection.extensionUiBaseline?.widgets ?? {})),
+        }
+      : {
+          // A semantic publication cannot clear a separately fenced extension
+          // UI plane. Retain its last presentation until that plane follows a
+          // baseline that authoritatively replaces it.
+          statusSegments: current.statusSegments,
+          widgets: current.widgets,
+        };
   if (authorityProjection.semantic.state !== "following" || !snapshot) {
     // A retained frame is explicitly diagnostic while fenced. Do not leave a
     // compatibility field looking current and accidentally re-enable a control.
@@ -886,30 +901,15 @@ function applyAuthoritySemanticProjection(
       editorInjection: undefined,
     };
   }
-  const ownerChanged =
-    current.hostInstanceId !== snapshot.owner.hostInstanceId ||
-    current.sessionEpoch !== snapshot.owner.sessionEpoch;
+  const priorOwner =
+    current.authorityProjection?.authoritativeSnapshot?.owner ??
+    current.authorityProjection?.staleDiagnosticSnapshot?.owner;
+  const ownerChanged = priorOwner
+    ? priorOwner.hostInstanceId !== snapshot.owner.hostInstanceId ||
+      priorOwner.sessionEpoch !== snapshot.owner.sessionEpoch
+    : current.hostInstanceId !== snapshot.owner.hostInstanceId ||
+      current.sessionEpoch !== snapshot.owner.sessionEpoch;
   const priorStreaming = authoritySnapshotFor(current)?.sdk.isStreaming === true;
-  const sessionName = [
-    ...(authorityProjection.lastSemanticFrame?.records ?? []),
-    ...snapshot.recentIntentOutcomes.map((outcome) => ({
-      type: "intent_outcome" as const,
-      outcome,
-    })),
-  ].reduce<string | undefined>(
-    (name, record) => {
-      if (
-        record.type === "intent_outcome" &&
-        record.outcome.kind === "rename" &&
-        record.outcome.state === "completed" &&
-        record.outcome.result?.name !== undefined
-      ) {
-        return record.outcome.result.name;
-      }
-      return name;
-    },
-    ownerChanged ? undefined : current.sessionName,
-  );
   // An editor publication changes component state only when it advances the
   // authoritative editor baseline. Replaying the same revision for unrelated
   // semantic work must not reset a controlled textarea while a native key
@@ -925,6 +925,7 @@ function applyAuthoritySemanticProjection(
             text: snapshot.editor.text,
             nonce: ++editorInjectionNonce,
             revision: snapshot.editor.revision,
+            ...(ownerChanged && snapshot.editor.text === "" ? { preserveRendererDraft: true } : {}),
           }
         : current.editorInjection;
 
@@ -938,7 +939,9 @@ function applyAuthoritySemanticProjection(
     currentModel: snapshot.model?.id,
     currentProvider: snapshot.model?.provider,
     thinkingLevel: snapshot.thinkingLevel,
-    sessionName,
+    // The complete semantic snapshot is canonical, including an explicit
+    // clear; rename outcomes are operation evidence, not presentation state.
+    sessionName: snapshot.sessionName,
     editorRevision: snapshot.editor.revision,
     editorAttachments: snapshot.editor.attachments,
     editorConflict: editorConflictFromCandidates(snapshot.editor),

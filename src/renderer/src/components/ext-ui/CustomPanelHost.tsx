@@ -31,16 +31,25 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import type React from "react";
 import { useCallback, useEffect, useRef } from "react";
-import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
+import { useRoutedEscapeClaim } from "../../hooks/useEscapeClaim.js";
+import {
+  type PanelInputIdentity,
+  type PendingPanelInput,
+  bufferPanelInput,
+  reconcilePanelInputBuffer,
+  samePanelInputIdentity,
+} from "../../lib/panel-input-buffer.js";
 import {
   acknowledgePanelInput,
   nextPanelInputSequence,
   panelInputGapMessage,
+  resetPanelInputSequenceToAcknowledged,
 } from "../../lib/panel-input-sequence.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { getTheme } from "../../theme/registry.js";
 import { basePanelTerminalOptions, buildXtermTheme } from "../../theme/xterm.js";
+import { type EscapePanelIdentity, routePanelEscape } from "./panel-escape.js";
 import { DEFAULT_HEIGHT_FRACTION, PANEL_SCROLLBACK_ROWS, createPanelSizer } from "./panel-sizer.js";
 import "@xterm/xterm/css/xterm.css";
 import "./CustomPanelHost.css";
@@ -68,6 +77,7 @@ export const CUSTOM_PANEL_MAX_HEIGHT_FRACTION = 0.9;
 export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const termPanelRef = useRef<EscapePanelIdentity | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const panelRef = useRef<{
     id: number;
@@ -88,11 +98,19 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
   const renderedOutputSequenceRef = useRef<number | null>(null);
   const renderedKeyframeRevisionRef = useRef<number | null>(null);
   const authorityAckRef = useRef<string | null>(null);
+  const authorityRepaintRequestRef = useRef<string | null>(null);
+  const dispatchPanelInputRef = useRef<((data: string) => void) | null>(null);
+  const panelInputTailRef = useRef<Promise<void>>(Promise.resolve());
+  const panelInputBlockedRef = useRef<PanelInputIdentity | null>(null);
+  const pendingInputRef = useRef<PendingPanelInput | null>(null);
   const syncRef = useRef<(() => void) | null>(null);
   const { panel } = useSessionsStore((s) => s.sessions.get(sessionId)) ?? {};
-  // Claim ESC while a custom panel is open so the panel keeps parity with
-  // terminal pi: Escape belongs to the extension surface, not to global abort.
-  useEscapeClaim(!!panel);
+  // A custom panel owns Escape for its entire lifetime. Route the consumed
+  // browser event through xterm so ready panels use their normal onData IPC
+  // path; fenced panels still consume it without allocating a sequence.
+  useRoutedEscapeClaim(!!panel, () => {
+    routePanelEscape(panelRef.current, termPanelRef.current, termRef.current);
+  });
   // Keep panelRef in sync with the latest panel so the lifecycle effect (which
   // depends on panelId only) can read the current panel + its buffer without
   // taking panel/panel.buffer as reactive deps (which would rebuild xterm on
@@ -115,6 +133,30 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
   useEffect(() => {
     const term = termRef.current;
     if (!term || !panel) return;
+    const repaintKey = `${panel.hostInstanceId}:${panel.sessionEpoch}:${panel.id}`;
+    if (panel.syncState === "following") authorityRepaintRequestRef.current = null;
+    if (
+      panel.authority === true &&
+      panel.syncState === "synchronizing" &&
+      panel.keyframeReady === false &&
+      authorityRepaintRequestRef.current !== repaintKey
+    ) {
+      authorityRepaintRequestRef.current = repaintKey;
+      void window.pivis
+        .invoke("session.panelResize", {
+          sessionId,
+          expectedHostInstanceId: panel.hostInstanceId,
+          expectedSessionEpoch: panel.sessionEpoch,
+          panelId: panel.id,
+          cols: term.cols,
+          rows: term.rows,
+          force: true,
+        })
+        .catch(() => {
+          if (authorityRepaintRequestRef.current === repaintKey)
+            authorityRepaintRequestRef.current = null;
+        });
+    }
     const outputSequence = panel.outputSequence;
     if (
       outputSequence !== undefined &&
@@ -172,6 +214,25 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
           if (authorityAckRef.current === ackKey) authorityAckRef.current = null;
         });
     });
+
+    const authorityReady =
+      panel.authority === true &&
+      panel.syncState === "following" &&
+      panel.inputEnabled === true &&
+      panel.renderRevision !== undefined;
+    const reconciled = reconcilePanelInputBuffer(
+      {
+        hostInstanceId: panel.hostInstanceId,
+        sessionEpoch: panel.sessionEpoch,
+        panelId: panel.id,
+      },
+      authorityReady,
+      panelInputBlockedRef.current,
+      pendingInputRef.current,
+    );
+    panelInputBlockedRef.current = reconciled.blocked;
+    pendingInputRef.current = reconciled.pending;
+    for (const chunk of reconciled.replay) dispatchPanelInputRef.current?.(chunk);
   }, [panel, sessionId]);
 
   // ── Manual height override (drag the top handle) ──
@@ -257,6 +318,9 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     if (!container) return;
     const currentPanel = panelRef.current;
     if (!currentPanel) return;
+    panelInputTailRef.current = Promise.resolve();
+    panelInputBlockedRef.current = null;
+    pendingInputRef.current = null;
 
     let disposed = false;
     let unsubPanel: (() => void) | null = null;
@@ -280,6 +344,11 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
       theme: buildXtermTheme(getTheme(activeColorScheme)),
     });
     termRef.current = term;
+    termPanelRef.current = {
+      id: currentPanel.id,
+      hostInstanceId: currentPanel.hostInstanceId,
+      sessionEpoch: currentPanel.sessionEpoch,
+    };
 
     const fitAddon = new FitAddon();
     fitAddonRef.current = fitAddon;
@@ -425,8 +494,31 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
             })
             .then((result) => {
               // Authority panels wait for the sequenced following keyframe.
-              if (!disposed && !(panelRef.current ?? currentPanel).authority && result.acknowledged)
-                repaintAcknowledged = true;
+              const active = panelRef.current;
+              if (
+                disposed ||
+                !active ||
+                active.hostInstanceId !== currentPanel.hostInstanceId ||
+                active.sessionEpoch !== currentPanel.sessionEpoch ||
+                active.id !== currentPanel.id ||
+                active.authority ||
+                !result.acknowledged
+              )
+                return;
+              repaintAcknowledged = true;
+              const reconciled = reconcilePanelInputBuffer(
+                {
+                  hostInstanceId: currentPanel.hostInstanceId,
+                  sessionEpoch: currentPanel.sessionEpoch,
+                  panelId: currentPanel.id,
+                },
+                true,
+                panelInputBlockedRef.current,
+                pendingInputRef.current,
+              );
+              panelInputBlockedRef.current = reconciled.blocked;
+              pendingInputRef.current = reconciled.pending;
+              for (const chunk of reconciled.replay) dispatchPanelInputRef.current?.(chunk);
             })
             .catch(() => {});
         });
@@ -437,38 +529,107 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     });
 
     // ── User keystrokes → panel input IPC ──
-    const onDataDispose = term.onData((data) => {
+    const dispatchPanelInput = (data: string): void => {
       const activePanel = panelRef.current ?? currentPanel;
       const authorityReady =
         activePanel.authority === true &&
         activePanel.syncState === "following" &&
         activePanel.inputEnabled === true &&
         activePanel.renderRevision !== undefined;
-      if (activePanel.authority ? !authorityReady : !repaintAcknowledged) return;
-      const sequence = nextPanelInputSequence(
-        sessionId,
-        activePanel.hostInstanceId,
-        activePanel.sessionEpoch,
-        activePanel.id,
-      );
-      void window.pivis
-        .invoke("session.panelInput", {
-          sessionId,
-          expectedHostInstanceId: activePanel.hostInstanceId,
-          expectedSessionEpoch: activePanel.sessionEpoch,
-          panelId: activePanel.id,
-          revision: activePanel.authority ? activePanel.renderRevision! : repaintRevision,
-          sequence,
-          data,
-        })
-        .then((result) => {
+      const identity = {
+        hostInstanceId: activePanel.hostInstanceId,
+        sessionEpoch: activePanel.sessionEpoch,
+        panelId: activePanel.id,
+      };
+      const bufferInput = (): void => {
+        pendingInputRef.current = bufferPanelInput(pendingInputRef.current, identity, data);
+      };
+      if (activePanel.authority && !authorityReady) {
+        panelInputBlockedRef.current = identity;
+        bufferInput();
+        return;
+      }
+      if (!activePanel.authority && !repaintAcknowledged) {
+        panelInputBlockedRef.current = identity;
+        bufferInput();
+        return;
+      }
+      const target = {
+        ...identity,
+        revision: activePanel.authority ? activePanel.renderRevision! : repaintRevision,
+      };
+      panelInputTailRef.current = panelInputTailRef.current
+        .then(async () => {
+          const latest = panelRef.current;
+          if (
+            !latest ||
+            latest.hostInstanceId !== target.hostInstanceId ||
+            latest.sessionEpoch !== target.sessionEpoch ||
+            latest.id !== target.panelId
+          )
+            return;
+          const blocked = panelInputBlockedRef.current;
+          if (blocked && samePanelInputIdentity(blocked, target)) {
+            bufferInput();
+            return;
+          }
+          if (blocked) {
+            panelInputBlockedRef.current = null;
+            pendingInputRef.current = null;
+          }
+          const sequence = nextPanelInputSequence(
+            sessionId,
+            target.hostInstanceId,
+            target.sessionEpoch,
+            target.panelId,
+          );
+          const result = await window.pivis.invoke("session.panelInput", {
+            sessionId,
+            expectedHostInstanceId: target.hostInstanceId,
+            expectedSessionEpoch: target.sessionEpoch,
+            panelId: target.panelId,
+            revision: target.revision,
+            sequence,
+            data,
+          });
           acknowledgePanelInput(
             sessionId,
-            activePanel.hostInstanceId,
-            activePanel.sessionEpoch,
-            activePanel.id,
+            target.hostInstanceId,
+            target.sessionEpoch,
+            target.panelId,
             result.acknowledgedThrough,
           );
+          const afterInput = panelRef.current;
+          if (
+            !afterInput ||
+            afterInput.hostInstanceId !== target.hostInstanceId ||
+            afterInput.sessionEpoch !== target.sessionEpoch ||
+            afterInput.id !== target.panelId
+          )
+            return;
+          if (result.acknowledgedThrough < sequence && result.repaintRequired) {
+            panelInputBlockedRef.current = identity;
+            resetPanelInputSequenceToAcknowledged(
+              sessionId,
+              target.hostInstanceId,
+              target.sessionEpoch,
+              target.panelId,
+              result.acknowledgedThrough,
+            );
+            bufferInput();
+            const terminal = termRef.current;
+            if (terminal) {
+              void window.pivis.invoke("session.panelResize", {
+                sessionId,
+                expectedHostInstanceId: target.hostInstanceId,
+                expectedSessionEpoch: target.sessionEpoch,
+                panelId: target.panelId,
+                cols: terminal.cols,
+                rows: terminal.rows,
+                force: true,
+              });
+            }
+          }
           if (result.gap) {
             useSessionsStore
               .getState()
@@ -478,7 +639,9 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
         .catch((error) => {
           useSessionsStore.getState().addToast(sessionId, String(error), "error");
         });
-    });
+    };
+    dispatchPanelInputRef.current = dispatchPanelInput;
+    const onDataDispose = term.onData(dispatchPanelInput);
 
     // ── Resize observer ──
     // Re-derive sizing when the transcript column resizes (window resize,
@@ -508,8 +671,13 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
       resizeObserver.disconnect();
       sizer.dispose();
       term.dispose();
-      termRef.current = null;
-      fitAddonRef.current = null;
+      if (dispatchPanelInputRef.current === dispatchPanelInput)
+        dispatchPanelInputRef.current = null;
+      if (termRef.current === term) {
+        termRef.current = null;
+        termPanelRef.current = null;
+        fitAddonRef.current = null;
+      }
     };
   }, [sessionId, panelId, panelHostInstanceId, panelSessionEpoch]); // Full host-bound panel identity; never rebuild on buffer appends
 

@@ -1,31 +1,58 @@
-// Overlay-claim registry: a ref-counted counter of ESC-owning surfaces currently
-// open. The global ESC-to-interrupt handler consults hasClaim() to decide whether
-// to defer (let the open surface handle ESC) or interrupt the agent.
-//
-// INVARIANTS (L2): O1 hasClaim() true iff >=1 surface open; O2 never orphaned
-// (ref-counted, StrictMode-safe); O3 advisory (only the ESC handler reads it).
-//
-// Why a counter, not Set<string>: ids collide when a component mounts more than
-// once (BranchDropdown is reused; SessionHeader has two dropdowns). Each open
-// instance contributes +1, so the count is correct regardless of identity.
+// Ordered Escape-claim registry. Claims are acquired per mounted surface, so
+// duplicate component instances and React StrictMode cleanup stay safe. The
+// count remains reactive for presentation consumers; global keyboard routing
+// gives visible DOM overlays priority, then reads the newest routed claim.
 
 import { create } from "zustand";
 
+export type EscapeRoute = () => void;
+export type EscapeClaimToken = symbol;
+
+interface EscapeClaim {
+  token: EscapeClaimToken;
+  route: EscapeRoute | undefined;
+}
+
 interface OverlayState {
   count: number;
-  /** Acquire a claim. Idempotent-safe via ref-counting. Internal. */
-  _acquire: () => void;
-  /** Release a claim. Clamped at 0 (defense in depth). Internal. */
-  _release: () => void;
+  claims: readonly EscapeClaim[];
+  /** Acquire an ordered normal or routed claim. Internal hook plumbing. */
+  _acquire: (route?: EscapeRoute) => EscapeClaimToken;
+  /** Release this exact acquisition; stale cleanup cannot release a newer claim. */
+  _release: (token: EscapeClaimToken) => void;
 }
 
 export const useOverlayStore = create<OverlayState>((set) => ({
   count: 0,
-  _acquire: () => set((s) => ({ count: s.count + 1 })),
-  _release: () => set((s) => ({ count: Math.max(0, s.count - 1) })),
+  claims: [],
+  _acquire: (route) => {
+    const token = Symbol("escape-claim");
+    set((state) => {
+      const claims = [...state.claims, { token, route }];
+      return { claims, count: claims.length };
+    });
+    return token;
+  },
+  _release: (token) =>
+    set((state) => {
+      const claims = state.claims.filter((claim) => claim.token !== token);
+      return claims.length === state.claims.length ? state : { claims, count: claims.length };
+    }),
 }));
 
 /** Non-reactive read for event handlers (do not subscribe in render). */
 export function hasClaim(): boolean {
   return useOverlayStore.getState().count > 0;
+}
+
+/**
+ * Visible DOM overlays own Escape before terminal-routed surfaces regardless of
+ * mount order. Within either class, the newest surface owns Escape first.
+ */
+export function getTopEscapeClaim(): EscapeClaim | undefined {
+  const claims = useOverlayStore.getState().claims;
+  for (let i = claims.length - 1; i >= 0; i -= 1) {
+    if (claims[i]?.route === undefined) return claims[i];
+  }
+  return claims[claims.length - 1];
 }

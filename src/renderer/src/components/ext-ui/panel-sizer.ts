@@ -78,6 +78,8 @@ export interface PanelSizerOptions {
    *  omits it (content-tracks against the default cap). Must NOT be a rebuild
    *  dep (a drag / settings change re-runs sync without rebuilding xterm). */
   getHeightFraction?: () => number;
+  /** Minimum intrinsic grid rows retained while content frames converge. */
+  minimumRows?: number;
   /** Font size to fall back to before xterm has measured its cell metrics. */
   fallbackFontSize: number;
   /** Push the current grid size to the host (deduped by the sizer). */
@@ -117,6 +119,7 @@ export function createPanelSizer(opts: PanelSizerOptions): PanelSizer {
   const { term, container, panelEl, sessionEl, fitAddon, getMode, fallbackFontSize, onReportSize } =
     opts;
   const heightFraction: () => number = opts.getHeightFraction ?? (() => DEFAULT_HEIGHT_FRACTION);
+  const minimumRows = Math.max(1, Math.floor(opts.minimumRows ?? 1));
 
   let disposed = false;
 
@@ -343,7 +346,7 @@ export function createPanelSizer(opts: PanelSizerOptions): PanelSizer {
     // Intrinsic overflow gets a sentinel. Once that full grid would exceed the
     // DOM-row threshold, switch presentation to xterm's retained, virtualized
     // scrollback instead of clipping or allocating an unbounded viewport.
-    const targetRows = contentRows + 1;
+    const targetRows = Math.max(minimumRows, contentRows + 1);
     if (targetRows > MAX_CONTENT_GRID_ROWS) {
       overflowProbe = null;
       virtualizedIntrinsic = true;

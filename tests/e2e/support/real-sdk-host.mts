@@ -247,6 +247,11 @@ export function createRealSdkFixture(options: RealSdkFixtureOptions = {}): RealS
         .process()
         .stdout?.on("data", (chunk: Buffer) => output.push(`[stdout] ${chunk.toString("utf8")}`));
       const window = await app.firstWindow();
+      window.on("console", (message) => {
+        if (message.type() === "warning" || message.type() === "error") {
+          output.push(`[renderer ${message.type()}] ${message.text()}\n`);
+        }
+      });
       await window.waitForLoadState("domcontentloaded");
       await expect(window.locator(".sidebar, .pi-not-found").first()).toBeVisible({
         timeout: 30_000,

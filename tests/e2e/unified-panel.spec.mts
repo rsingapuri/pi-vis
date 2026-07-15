@@ -356,7 +356,7 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
     }
   });
 
-  test("kitty survives an xterm remount: a session switch re-pushes the handshake and Shift+Enter still works (I6)", async () => {
+  test("kitty survives a hidden Input view without remounting xterm and Shift+Enter still works (I6)", async () => {
     test.setTimeout(120_000);
     const folders = await makeFolders();
     const { app, window } = await launchApp(folders);
@@ -370,24 +370,26 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
       await expect.poll(() => readInput(folders), { timeout: 15_000 }).toMatch(/\x1b\[\?[1-9]\d*u/);
       const firstReplies = (readInput(folders).match(/\x1b\[\?[1-9]\d*u/g) ?? []).length;
 
-      // Switch away to the native composer (unmounts the unified xterm)…
+      // Switch away to the native composer while preserving the xterm node.
+      await panel.evaluate((element) => {
+        element.setAttribute("data-e2e-mount", "preserved");
+      });
       await window.getByRole("tab", { name: "Input" }).click();
       await expect(window.locator(".composer__textarea")).toBeVisible({ timeout: 10_000 });
-      await expect(window.locator(".unified-panel")).toHaveCount(0);
+      await expect(panel).toBeHidden();
+      await expect(panel).toHaveAttribute("data-e2e-mount", "preserved");
 
-      // …and back. The remounted xterm starts clean and reports force:true on its
-      // first resize → the fake host re-pushes the handshake → a SECOND kitty
-      // reply must appear.
+      // …and back. The same xterm survives; a reveal-time resize may repeat
+      // kitty negotiation, but must not replace the DOM identity.
       await window.getByRole("tab", { name: "Extension" }).click();
       await expect(panel).toBeVisible({ timeout: 15_000 });
       await expect(panel.locator(".xterm")).toBeVisible({ timeout: 10_000 });
+      await expect(panel).toHaveAttribute("data-e2e-mount", "preserved");
       await expect
-        .poll(() => (readInput(folders).match(/\x1b\[\?[1-9]\d*u/g) ?? []).length, {
-          timeout: 15_000,
-        })
-        .toBeGreaterThan(firstReplies);
+        .poll(() => (readInput(folders).match(/\x1b\[\?[1-9]\d*u/g) ?? []).length)
+        .toBeGreaterThanOrEqual(firstReplies);
 
-      // Shift+Enter must STILL encode as CSI-u after the remount (I6).
+      // Shift+Enter must STILL encode as CSI-u after the reveal (I6).
       expect(
         stripKittyReleases(readInput(folders)),
         "baseline has no shift+enter yet",

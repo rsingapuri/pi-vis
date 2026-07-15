@@ -1,9 +1,10 @@
 // Global ESC-to-interrupt handler. Mounted ONCE in App.tsx.
 //
 // Precedence (active session), first match wins:
-//   1. hasClaim()  -> DEFER (an overlay/autocomplete owns ESC)
-//   2. interruptible runtime op -> INTERRUPT (main/host routes the abort)
-//   3. else         -> no-op (let ESC reach whatever is focused)
+//   1. newest normal claim -> DEFER (its DOM surface owns ESC)
+//   2. newest routed claim -> consume and route it once to that surface
+//   3. no claim -> INTERRUPT (main/host routes the abort)
+//   4. else -> no-op (let ESC reach whatever is focused)
 //
 // Capture phase + stopImmediatePropagation: preempts React's synthetic
 // onKeyDown on the Composer AND any other capture-phase window ESC listener
@@ -15,7 +16,7 @@
 // active session only.
 
 import { useEffect } from "react";
-import { hasClaim } from "../stores/overlay-store.js";
+import { getTopEscapeClaim, hasClaim } from "../stores/overlay-store.js";
 import { useSessionsStore } from "../stores/sessions-store.js";
 
 export function useGlobalEscapeInterrupt(): void {
@@ -24,7 +25,23 @@ export function useGlobalEscapeInterrupt(): void {
       if (e.key !== "Escape") return;
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return; // G4 bare ESC
       if (e.isComposing || e.keyCode === 229) return; // G4 IME candidate window
-      if (hasClaim()) return; // G1 defer
+      const claim = getTopEscapeClaim();
+      if (claim) {
+        if (!claim.route) return; // G1 normal claims defer to DOM
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        // A route has exclusively consumed this key even if its surface is
+        // fenced, unavailable, or buggy. Never fall through to an interrupt.
+        try {
+          claim.route();
+        } catch {
+          // Routed panels own Escape; a route failure must not become a global abort.
+        }
+        return;
+      }
+      // Defense for tests/external presentation code that sets the reactive
+      // count directly. Real acquisitions always have a token above.
+      if (hasClaim()) return;
       const store = useSessionsStore.getState();
       const sid = store.activeSessionId; // G5
       if (!sid) return;

@@ -240,24 +240,25 @@ describe("parseComposerInput — discovered (extension/prompt/skill)", () => {
     });
   });
 
-  it("discovered shadows a built-in (e.g. extension named 'session')", () => {
-    const action = parseComposerInput("/session", {
-      discovered: disc([["session", "extension"]]),
-    });
-    expect(action).toEqual({
-      kind: "send-prompt",
-      text: "/session",
-      commandSource: "extension",
-    });
+  it.each([
+    [
+      "/compact keep API notes",
+      "compact",
+      { kind: "compact", customInstructions: "keep API notes" },
+    ],
+    ["/tree", "tree", { kind: "open-tree" }],
+    ["/session", "session", { kind: "session-info" }],
+  ])("built-in %s wins over a discovered %s collision", (text, name, expected) => {
+    expect(parseComposerInput(text, { discovered: disc([[name, "extension"]]) })).toEqual(expected);
   });
 
-  it("discovered shadows an unsupported command (extension named 'login')", () => {
-    const action = parseComposerInput("/login", {
-      discovered: disc([["login", "extension"]]),
+  it("a discovered unsupported name runs as the discovered command", () => {
+    const action = parseComposerInput("/import", {
+      discovered: disc([["import", "extension"]]),
     });
     expect(action).toEqual({
       kind: "send-prompt",
-      text: "/login",
+      text: "/import",
       commandSource: "extension",
     });
   });

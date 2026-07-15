@@ -46,6 +46,7 @@ function authorityNeedsBaseline(projection: RendererAuthorityState | undefined):
     "panel_reset",
     "repaint_required",
     "repaint_ack_pending",
+    "panel_keyframe_required",
   ]);
   return (
     projection?.semantic.state !== "following" ||
@@ -92,6 +93,13 @@ export function App(): React.ReactElement {
   const authorityAttachInFlightRef = useRef(new Map<SessionId, Promise<void>>());
   const attachSessionAuthority = useCallback(
     (sessionId: SessionId): Promise<void> => {
+      const projection = useSessionsStore.getState().sessions.get(sessionId)?.authorityProjection;
+      if (
+        projection?.rendererGeneration === RENDERER_GENERATION &&
+        !authorityNeedsBaseline(projection)
+      ) {
+        return Promise.resolve();
+      }
       const pending = authorityAttachInFlightRef.current.get(sessionId);
       if (pending) return pending;
       const operation = (async () => {
@@ -105,7 +113,8 @@ export function App(): React.ReactElement {
             rendererGeneration: RENDERER_GENERATION,
           });
           applyAuthorityAttach(sessionId, response);
-        } catch {
+        } catch (error) {
+          console.warn("Session authority attach failed", error);
           markAuthorityUnavailable(sessionId, "attach_failed");
         }
       })();
@@ -707,13 +716,20 @@ export function App(): React.ReactElement {
     const sessionIds = liveSessionIdsKey
       ? liveSessionIdsKey.split("\u0000").map((id) => id as SessionId)
       : [];
-    // Renderer generation is window-wide. Attach every live session so a
+    // Renderer generation is window-wide. Attach every ready live session so a
     // background dialog/panel cannot remain blocked on the renderer that died.
-    for (const sid of sessionIds) void attachSessionAuthority(sid);
-    const onFocus = () => {
+    // Starting sessions do not have a SessionHost baseline yet; attaching them
+    // here can coalesce the later ready-time request into that doomed attempt.
+    // The statusChanged("ready") path above performs their first attach.
+    const attachReadySessions = (): void => {
+      const sessions = useSessionsStore.getState().sessions;
       for (const sid of sessionIds) {
-        void attachSessionAuthority(sid);
+        if (sessions.get(sid)?.status === "ready") void attachSessionAuthority(sid);
       }
+    };
+    attachReadySessions();
+    const onFocus = () => {
+      attachReadySessions();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
@@ -861,11 +877,13 @@ export function App(): React.ReactElement {
               ) : hasOpenPanel ? (
                 <CustomPanelHost sessionId={activeSessionId} />
               ) : hasUnifiedPanel ? (
-                unifiedPanelHidden ? (
-                  <Composer sessionId={activeSessionId} />
-                ) : (
-                  <UnifiedTuiHost sessionId={activeSessionId} />
-                )
+                <>
+                  {/* Keep xterm mounted while native Input is selected. A
+                      toggle must not force authority repaint reconstruction
+                      and drop the first keys typed on returning to Extension. */}
+                  <UnifiedTuiHost sessionId={activeSessionId} visible={!unifiedPanelHidden} />
+                  {unifiedPanelHidden && <Composer sessionId={activeSessionId} />}
+                </>
               ) : hasPendingPicker ? (
                 <AppPickerHost sessionId={activeSessionId} />
               ) : (

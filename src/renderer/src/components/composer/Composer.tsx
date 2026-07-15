@@ -77,6 +77,16 @@ function nameFromPath(path: string): string {
   return trimmed.split(/[\\/]/).pop() || path;
 }
 
+function mayFocusComposer(textarea: HTMLTextAreaElement): boolean {
+  const active = document.activeElement;
+  return (
+    active === null ||
+    active === document.body ||
+    active === document.documentElement ||
+    active === textarea
+  );
+}
+
 function fileAttachmentsFromEditorText(text: string): FileAttachment[] | null {
   const lines = text
     .split(/\r?\n/)
@@ -165,6 +175,8 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   // it changes (even if the text is identical) so the user can re-inject
   // the same prefix on demand.
   const editorInjectionNonce = session?.editorInjection?.nonce;
+  const editorInjectionMayPreserveDraft = session?.editorInjection?.preserveRendererDraft === true;
+  const processedEditorInjectionRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     replicatedAttachmentsRef.current = serializeComposerAttachments(attachments, fileAttachments);
@@ -409,10 +421,32 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     : true;
   const modelLabel = currentModelInfo?.name ?? semanticSnapshot?.model?.id ?? "This model";
 
-  // Editor injection: a useEffect on the nonce (monotonic) re-picks up the
-  // same text without thrashing on identical payloads.
+  // Editor injection is keyed by its monotonic nonce so a catalog refresh or
+  // other render cannot apply the same host value twice.
   useEffect(() => {
     if (editorInjectionNonce === undefined || editorInjectionText === undefined) return;
+    const injectionKey = `${sessionId}:${editorInjectionNonce}`;
+    if (processedEditorInjectionRef.current === injectionKey) return;
+    processedEditorInjectionRef.current = injectionKey;
+
+    // An initial owner baseline can contain an empty editor injection while a
+    // renderer draft is being restored. Keep that renderer-owned draft and
+    // rebase it to the attached editor exactly once; this is synchronization,
+    // never a submit.
+    const rendererDraft =
+      pendingRef.current && workspacePathRef.current
+        ? useSessionsStore.getState().newSessionDrafts.get(workspacePathRef.current)
+        : useSessionsStore.getState().sessionDrafts.get(sessionId);
+    if (editorInjectionMayPreserveDraft && editorInjectionText === "" && rendererDraft) {
+      textRef.current = rendererDraft;
+      setText(rendererDraft);
+      setSlashIndex(0);
+      synchronizeEditorText(rendererDraft, replicatedAttachmentsRef.current);
+      const textarea = textareaRef.current;
+      if (textarea && mayFocusComposer(textarea)) textarea.focus();
+      return;
+    }
+
     const injectedAction = parseComposerInput(editorInjectionText, { discovered });
     // An extension command may arrive before the refreshed catalog entry.
     // Treat any single-component slash token as command text: Pi does not
@@ -428,6 +462,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       ? undefined
       : fileAttachmentsFromEditorText(editorInjectionText);
     const nextText = injectedFiles ? "" : editorInjectionText;
+    textRef.current = nextText;
     setText(nextText);
     // Mirror the injected text into the per-workspace draft when the session
     // is still pending. Read `pending` from a ref so this effect only fires
@@ -444,14 +479,17 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     );
     setAttachments(restored.images);
     setFileAttachments(injectedFiles ?? restored.files);
-    textareaRef.current?.focus();
+    const textarea = textareaRef.current;
+    if (textarea && mayFocusComposer(textarea)) textarea.focus();
   }, [
     editorInjectionNonce,
     editorInjectionText,
+    editorInjectionMayPreserveDraft,
     discovered,
+    sessionId,
+    synchronizeEditorText,
     setNewSessionDraft,
     setSessionDraft,
-    sessionId,
   ]);
 
   // Focus the composer so the user can type right away on app open, session
@@ -470,20 +508,13 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   // avoids stealing focus from another field the user already moved to.
   const didAutofocusRef = useRef(false);
   useEffect(() => {
-    if (didAutofocusRef.current) return;
-    if (!live) return; // textarea still disabled — focus() would be a no-op
-    // A dialog/dropdown/overlay owns focus and ESC precedence. Never steal
-    // focus merely because the session became live behind that surface.
+    if (didAutofocusRef.current || !live) return;
+    // Live is a one-shot autofocus opportunity. Consume it before inspecting
+    // overlays or focus so closing an overlay later can never steal focus.
+    didAutofocusRef.current = true;
     if (escapeClaimCount > 0) return;
     const el = textareaRef.current;
-    if (!el) return;
-    const active = document.activeElement;
-    const typingElsewhere =
-      active instanceof HTMLElement &&
-      active !== el &&
-      (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable);
-    didAutofocusRef.current = true;
-    if (typingElsewhere) return;
+    if (!el || !mayFocusComposer(el)) return;
     el.focus();
   }, [live, escapeClaimCount]);
 
@@ -1088,7 +1119,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         const completedCommandCanClear =
           finalAction.kind !== "send-prompt" &&
           finalAction.kind !== "unsupported" &&
-          terminalOutcome &&
+          (completion === undefined || terminalOutcome) &&
           originatingComposerStillMounted &&
           localPayloadUnchanged;
         if (acceptedPromptCanClear || completedCommandCanClear) {
