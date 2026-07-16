@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createReadStream } from "node:fs";
+import path from "node:path";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
 import type { TranscriptBlock } from "@shared/ipc-contract.js";
 import { extractToolResult } from "@shared/pi-protocol/tool-result.js";
@@ -23,12 +24,36 @@ type EntryMap = Map<string, Record<string, unknown>>;
  * history supplies the complete on-disk branch so transcript scrollback can
  * reach messages that predate a compaction.
  */
-export function entriesToTranscript(
+export async function entriesToTranscript(
   orderedEntries: Array<Record<string, unknown>>,
-): TranscriptBlock[] {
+): Promise<TranscriptBlock[]> {
   const blocks: TranscriptBlock[] = [];
+  const toolCallsById = new Map<string, TranscriptBlock>();
+  const pushBlock = (block: TranscriptBlock): void => {
+    blocks.push(block);
+    if (block.type === "tool_call") {
+      const toolCallId = (block.data as Record<string, unknown>)["toolCallId"];
+      if (typeof toolCallId === "string") toolCallsById.set(toolCallId, block);
+    }
+  };
+  let processed = 0;
 
   for (const rawEntry of orderedEntries) {
+    processed++;
+    if (processed % 500 === 0) await yieldImmediate();
+
+    // These metadata entries never render, so avoid the comparatively
+    // expensive schema validation for the common no-op path.
+    const rawType = rawEntry["type"];
+    if (
+      rawType === "label" ||
+      rawType === "model_change" ||
+      rawType === "thinking_level_change" ||
+      rawType === "session_info"
+    ) {
+      continue;
+    }
+
     const parsed = SessionEntrySchema.safeParse(rawEntry);
     if (!parsed.success) continue;
     const entry = parsed.data;
@@ -37,7 +62,7 @@ export function entriesToTranscript(
 
     switch (entry.type) {
       case "compaction": {
-        blocks.push({
+        pushBlock({
           id: entry.id,
           type: "compaction",
           data: {
@@ -56,7 +81,7 @@ export function entriesToTranscript(
         // compaction renderer — the user-facing distinction ("you left
         // this branch; here's a recap") isn't worth a new block type or a
         // transcript.ts change just to expose it (review B2 in the plan).
-        blocks.push({
+        pushBlock({
           id: entry.id,
           type: "compaction",
           data: { summary: entry.summary ?? "(empty branch summary)" },
@@ -74,27 +99,17 @@ export function entriesToTranscript(
           const result = extractToolResult(msg);
           // Find the matching tool_call block (created from the preceding assistant message)
           const toolCallId = msg.toolCallId;
-          let matched = false;
-          if (toolCallId) {
-            for (let i = blocks.length - 1; i >= 0; i--) {
-              const b = blocks[i];
-              if (
-                b?.type === "tool_call" &&
-                (b.data as Record<string, unknown>)["toolCallId"] === toolCallId
-              ) {
-                (b.data as Record<string, unknown>)["outputText"] = result.text;
-                (b.data as Record<string, unknown>)["resultDetails"] = result.details;
-                (b.data as Record<string, unknown>)["diff"] = result.diff;
-                (b.data as Record<string, unknown>)["isError"] = msg.isError ?? false;
-                (b.data as Record<string, unknown>)["isStreaming"] = false;
-                matched = true;
-                break;
-              }
-            }
-          }
-          if (!matched) {
+          const matchingBlock = toolCallId ? toolCallsById.get(toolCallId) : undefined;
+          if (matchingBlock) {
+            const data = matchingBlock.data as Record<string, unknown>;
+            data["outputText"] = result.text;
+            data["resultDetails"] = result.details;
+            data["diff"] = result.diff;
+            data["isError"] = msg.isError ?? false;
+            data["isStreaming"] = false;
+          } else {
             // Standalone tool result with no prior toolCall block — create one
-            blocks.push({
+            pushBlock({
               id: entry.id,
               type: "tool_call",
               data: {
@@ -147,7 +162,7 @@ export function entriesToTranscript(
         const hasAssistantText = segments.some((s) => s.content.length > 0);
 
         if (role === "user") {
-          blocks.push({
+          pushBlock({
             id: entry.id,
             type: "user",
             data: {
@@ -167,7 +182,7 @@ export function entriesToTranscript(
           // of a "stream just stopped" is obvious on reload.
           const { isError, message: errorMessage } = detectTurnError(msg);
           if (isError && !hasAssistantText) {
-            blocks.push({
+            pushBlock({
               id: entry.id,
               type: "error",
               data: { message: errorMessage },
@@ -175,21 +190,21 @@ export function entriesToTranscript(
             break;
           }
           if (hasAssistantText) {
-            blocks.push({
+            pushBlock({
               id: entry.id,
               type: "assistant",
               data: { role: "assistant", segments },
             });
           }
           if (isError) {
-            blocks.push({
+            pushBlock({
               id: `${entry.id}-error`,
               type: "error",
               data: { message: errorMessage },
             });
           }
           for (const tc of toolCalls) {
-            blocks.push({
+            pushBlock({
               id: `${entry.id}-tool-${tc.id}`,
               type: "tool_call",
               data: {
@@ -213,7 +228,7 @@ export function entriesToTranscript(
         // `=== true`) so a truthy non-boolean `display` from an extension is
         // handled the same as in the live path.
         if (entry.display && entry.content) {
-          blocks.push({
+          pushBlock({
             id: entry.id,
             type: "custom_message",
             data: { content: entry.content },
@@ -227,7 +242,7 @@ export function entriesToTranscript(
         // the renderer asks the live SDK host to run that pi-tui renderer at
         // the current column width. Entries with no renderer resolve hidden.
         if (typeof entry.customType === "string") {
-          blocks.push({
+          pushBlock({
             id: entry.id,
             type: "custom_entry",
             data: { entryId: entry.id, customType: entry.customType },
@@ -320,14 +335,20 @@ function walkActiveChain(entries: EntryMap): Array<Record<string, unknown>> {
     }
   }
 
-  // Candidate leaves: entries not referenced as parent
-  const leaves = Array.from(entries.values()).filter(
-    (e) => typeof e["id"] === "string" && !hasChild.has(e["id"] as string),
-  );
-
-  // Pick the leaf with highest timestamp. Real pi writes entry-level
-  // timestamps as ISO strings, so accept both shapes here.
-  const leaf = leaves.sort((a, b) => entryTime(b) - entryTime(a))[0];
+  // Pick the candidate leaf with the highest timestamp in one pass. Sorting
+  // every leaf allocated another O(file-size) array and made fork-heavy files
+  // O(leaves log leaves) in one non-yielding main-process step.
+  let leaf: Record<string, unknown> | undefined;
+  let leafTimestamp = Number.NEGATIVE_INFINITY;
+  for (const entry of entries.values()) {
+    const id = entry["id"];
+    if (typeof id !== "string" || hasChild.has(id)) continue;
+    const timestamp = entryTime(entry);
+    if (!leaf || timestamp > leafTimestamp) {
+      leaf = entry;
+      leafTimestamp = timestamp;
+    }
+  }
 
   if (!leaf) return [];
 
@@ -360,35 +381,73 @@ const historyCache = new Map<
   }
 >();
 
-export async function loadHistory(filePath: string): Promise<TranscriptBlock[]> {
-  if (!fs.existsSync(filePath)) return [];
-  const stat = await fs.promises.stat(filePath);
-  const mtimeMs = stat.mtimeMs;
-  const cached = historyCache.get(filePath);
-  if (cached && cached.mtimeMs === mtimeMs && cached.size === stat.size) {
-    // Refresh insertion order so Map acts as a tiny LRU.
-    historyCache.delete(filePath);
-    historyCache.set(filePath, cached);
-    return cached.blocks;
-  }
-  if (cached) historyCache.delete(filePath);
+const inFlightHistoryLoads = new Map<string, Promise<TranscriptBlock[]>>();
 
-  const { header, entries } = await parseEntries(filePath);
-  if (!header) return [];
+export function loadHistory(filePath: string): Promise<TranscriptBlock[]> {
+  const cacheKey = path.resolve(filePath);
+  const inFlight = inFlightHistoryLoads.get(cacheKey);
+  if (inFlight) return inFlight;
 
-  const headerResult = SessionHeaderSchema.safeParse(header);
-  if (!headerResult.success) return [];
+  let cacheEntry:
+    | {
+        mtimeMs: number;
+        size: number;
+        blocks: TranscriptBlock[];
+      }
+    | undefined;
+  const load = (async (): Promise<TranscriptBlock[]> => {
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(cacheKey);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const mtimeMs = stat.mtimeMs;
+    const cached = historyCache.get(cacheKey);
+    if (cached && cached.mtimeMs === mtimeMs && cached.size === stat.size) {
+      // Refresh insertion order so Map acts as a tiny LRU.
+      historyCache.delete(cacheKey);
+      historyCache.set(cacheKey, cached);
+      return cached.blocks;
+    }
+    if (cached) historyCache.delete(cacheKey);
 
-  const chain = walkActiveChain(entries);
-  // Compaction bounds Pi's active model context; it must not erase GUI
-  // scrollback. Convert the complete persisted branch, including messages
-  // before compaction markers.
-  const blocks = entriesToTranscript(chain);
-  historyCache.set(filePath, { mtimeMs, size: stat.size, blocks });
-  while (historyCache.size > MAX_CACHED_HISTORY_FILES) {
-    const oldest = historyCache.keys().next().value;
-    if (oldest === undefined) break;
-    historyCache.delete(oldest);
-  }
-  return blocks;
+    const { header, entries } = await parseEntries(cacheKey);
+    if (!header) return [];
+
+    const headerResult = SessionHeaderSchema.safeParse(header);
+    if (!headerResult.success) return [];
+
+    const chain = walkActiveChain(entries);
+    // Compaction bounds Pi's active model context; it must not erase GUI
+    // scrollback. Convert the complete persisted branch, including messages
+    // before compaction markers.
+    const blocks = await entriesToTranscript(chain);
+    cacheEntry = { mtimeMs, size: stat.size, blocks };
+    return blocks;
+  })();
+
+  // Cache publication happens before in-flight retirement. Otherwise a caller
+  // resumed from the shared raw promise can arrive in the microtask between
+  // deletion and cache insertion and start a duplicate full-file conversion.
+  const managed = load
+    .then((blocks) => {
+      if (cacheEntry) {
+        historyCache.set(cacheKey, cacheEntry);
+        while (historyCache.size > MAX_CACHED_HISTORY_FILES) {
+          const oldest = historyCache.keys().next().value;
+          if (oldest === undefined) break;
+          historyCache.delete(oldest);
+        }
+      }
+      return blocks;
+    })
+    .finally(() => {
+      if (inFlightHistoryLoads.get(cacheKey) === managed) {
+        inFlightHistoryLoads.delete(cacheKey);
+      }
+    });
+  inFlightHistoryLoads.set(cacheKey, managed);
+  return managed;
 }

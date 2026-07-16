@@ -92,6 +92,104 @@ function sessionHasCompaction(path: string, summary: string): boolean {
 test.describe("Real SDK-host smoke", () => {
   test.beforeAll(() => expect(PI_VERSION).toBe(PINNED_PI_VERSION));
 
+  test("shows the first default-model prompt while initial authority attachment settles", async () => {
+    test.setTimeout(120_000);
+    const provider = await createScriptedOpenAIProvider(
+      [
+        {
+          expect: { promptIncludes: "IMMEDIATE-FIRST-PROMPT", compaction: false },
+          response: { type: "text", chunks: ["IMMEDIATE-FIRST-RESPONSE"] },
+        },
+      ],
+      { latency: REAL_SDK_PROVIDER_LATENCY },
+    );
+    const ipcDir = fs.mkdtempSync(join(os.tmpdir(), "pivis-first-attach-"));
+    const ipcLog = join(ipcDir, "ipc.jsonl");
+    fs.writeFileSync(ipcLog, "");
+    const fixture = createRealSdkFixture({
+      providerBaseUrl: provider.baseUrl,
+      ipcInvocationLog: ipcLog,
+      // Hold each main→child baseline request long enough for a prompt event to
+      // enter the router's attach buffer. This deterministically exercises both
+      // cursor-covered transcript replay and renderer replay materialization.
+      faultPlan: {
+        outbound: [{ action: "delay", match: { type: "authority_attach" }, delayMs: 750 }],
+      },
+    });
+    const authorityAttachCount = (): number =>
+      fs
+        .readFileSync(ipcLog, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line) as { channel?: string }];
+          } catch {
+            return [];
+          }
+        })
+        .filter((entry) => entry.channel === "session.authorityAttach").length;
+    const piSettingsPath = join(fixture.dirs.agent, "settings.json");
+    const piSettings = JSON.parse(fs.readFileSync(piSettingsPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    fs.writeFileSync(
+      piSettingsPath,
+      JSON.stringify({
+        ...piSettings,
+        defaultProvider: "pivis-local",
+        defaultModel: "pivis-test-model",
+      }),
+    );
+    let launch: Awaited<ReturnType<typeof fixture.launch>> | undefined;
+    try {
+      launch = await fixture.launch();
+      const textarea = await openNewRealSession(launch.window);
+      await expect.poll(authorityAttachCount, { timeout: 30_000 }).toBeGreaterThan(0);
+      await launch.window.waitForTimeout(1_000);
+      const priorAttachCount = authorityAttachCount();
+      await launch.window.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await expect
+        .poll(authorityAttachCount, { timeout: 30_000 })
+        .toBeGreaterThan(priorAttachCount);
+
+      await textarea.fill("IMMEDIATE-FIRST-PROMPT");
+      await textarea.press("Enter");
+
+      await expect(
+        launch.window
+          .locator(".transcript-block--user")
+          .filter({ hasText: "IMMEDIATE-FIRST-PROMPT" }),
+      ).toHaveCount(1, { timeout: 30_000 });
+      await expect(
+        launch.window.getByText("IMMEDIATE-FIRST-RESPONSE", { exact: true }),
+      ).toBeVisible({ timeout: 60_000 });
+
+      // The failed attach reported by users expires after the assistant reply,
+      // removes the user bubble, and disables the composer at the 10s host RPC
+      // timeout. Keep the real child alive beyond that boundary.
+      await launch.window.waitForTimeout(11_000);
+      await expect(textarea).toBeEnabled();
+      await expect(
+        launch.window
+          .locator(".transcript-block--user")
+          .filter({ hasText: "IMMEDIATE-FIRST-PROMPT" }),
+      ).toHaveCount(1);
+      expect(launch.output.join("")).not.toContain("Host request timeout for authority_attach");
+      provider.assertExhausted();
+    } catch (error) {
+      throw new Error(
+        `${String(error)}\n${await fixture.diagnostics(launch?.window)}\nElectron output:\n${launch?.output.join("") ?? "<not launched>"}`,
+      );
+    } finally {
+      await launch?.close();
+      await provider.close();
+      fixture.cleanup();
+      fs.rmSync(ipcDir, { recursive: true, force: true });
+    }
+  });
+
   test("starts cleanly, executes an extension, and reports empty-session compaction as a domain failure", async () => {
     test.setTimeout(120_000);
     const fixture = createRealSdkFixture({ extensionFiles: [FIXTURE_EXTENSION] });

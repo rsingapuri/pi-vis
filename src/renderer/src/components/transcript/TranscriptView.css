@@ -6,6 +6,15 @@
    the assistant's content runs flush-left.
    ───────────────────────────────────────────────────────────────────── */
 
+.history-loading-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: 0.875em;
+  padding: var(--space-3) 0;
+}
+
 .transcript-view {
   flex: 1;
   overflow-y: auto;
@@ -106,10 +115,14 @@
   display: none;
 }
 
-.transcript-blocks {
+.transcript-blocks,
+.transcript-archive-chunk {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
+}
+
+.transcript-blocks {
   flex: 1;
   /* One uniform, centered reading column shared by every block type
      (assistant text, user bubbles, tool cards, code blocks, thinking).
@@ -120,6 +133,10 @@
   width: 100%;
   max-width: var(--transcript-measure);
   margin-inline: auto;
+}
+
+.transcript-archive-chunk {
+  min-width: 0;
 }
 
 /* ── Block architecture ───────────────────────────────────────────────
@@ -1101,16 +1118,21 @@ button.tool-card__header {
   box-shadow: inset 2px 0 0 var(--danger), var(--elevation-1);
 }
 
-.custom-entry__measure {
+.custom-entry__measurement-box {
   position: absolute;
   visibility: hidden;
   pointer-events: none;
   white-space: pre;
+  padding: var(--space-3) calc(var(--space-8) + var(--space-2)) var(--space-3) var(--space-4);
   font-family: var(--font-code);
   font-size: var(--font-size-code-root);
   font-weight: 400;
   font-style: normal;
   letter-spacing: normal;
+}
+
+.custom-entry__measure {
+  white-space: pre;
 }
 
 .custom-entry__content {

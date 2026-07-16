@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeHostProcess } from "../../../tests/fixtures/fake-host-process.mjs";
 import {
+  HostRequestTransportFencedError,
   HostVersionTooLowError,
   SessionHost,
   __forkOverride,
@@ -163,6 +164,18 @@ describe("SessionHost", () => {
       status: "ready",
       baseline: { rendererGeneration: 3, owner: baseline.owner },
     });
+  });
+
+  it("rejects a pending authority attach immediately when transport fencing starts", async () => {
+    fake.emitReady("0.80.6");
+    await host.waitForReady();
+    fake.autoRespondToStateRequests = false;
+    const attach = host.requestAuthorityAttach(3);
+    fake.transportSequence++;
+    fake.emitWire({ type: "event", event: { type: "agent_start" } });
+
+    await expect(attach).rejects.toBeInstanceOf(HostRequestTransportFencedError);
+    expect(fake.sent.some((message) => message.type === "state_request")).toBe(true);
   });
 
   describe("control silence", () => {

@@ -8,7 +8,7 @@ import type { AgentSessionSnapshot, IntentEnvelope } from "@shared/pi-protocol/r
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeHostProcess } from "../../../tests/fixtures/fake-host-process.mjs";
-import { __forkOverride } from "../pi/session-host.js";
+import { HostRequestTimeoutError, __forkOverride } from "../pi/session-host.js";
 import { type SessionRecord, SessionRegistry } from "./session-registry.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -2600,6 +2600,122 @@ describe("SessionRegistry direct AgentSession authority", () => {
     expect(h.registry.getAll().filter((record) => record.proc)).toHaveLength(11);
     expectDirectHostSpawns(h.spawnArgs, 11);
     h.registry.stopAll();
+  });
+
+  it("returns typed unavailability when attach crosses session disposal", async () => {
+    const h = harness();
+    const missing = "missing-session" as SessionId;
+    await expect(h.registry.rendererAttach(missing, 1)).resolves.toEqual({
+      status: "unavailable",
+      reason: "session_missing",
+    });
+    await expect(h.registry.authorityAttach(missing, 1)).resolves.toEqual({
+      status: "unavailable",
+      reason: "session_missing",
+    });
+    const cold = h.registry.openSession("/tmp/project");
+    await expect(h.registry.rendererAttach(cold, 1)).resolves.toEqual({
+      status: "unavailable",
+      reason: "host_cold",
+    });
+
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    await h.registry.rendererAttach(id, 1);
+    const attaching = h.registry.rendererAttach(id, 2);
+    await vi.waitFor(() =>
+      expect(
+        h.fakes[0]!.sent.some(
+          (message) => message.type === "renderer_detached" && message.rendererGeneration === 1,
+        ),
+      ).toBe(true),
+    );
+
+    h.registry.stopAll();
+    await expect(attaching).resolves.toEqual({
+      status: "unavailable",
+      reason: "runtime_replaced",
+    });
+
+    const duringResync = harness();
+    const resyncId = duringResync.registry.openSession("/tmp/project");
+    await duringResync.registry.activateSession(resyncId, "/tmp/pi", {});
+    const record = duringResync.registry.getSession(resyncId)!;
+    const snapshot = structuredClone(record.snapshot!);
+    let resolveSnapshot: ((value: AgentSessionSnapshot) => void) | undefined;
+    vi.spyOn(record.proc!, "requestSnapshot").mockReturnValue(
+      new Promise<AgentSessionSnapshot>((resolve) => {
+        resolveSnapshot = resolve;
+      }),
+    );
+    const resyncingAttach = duringResync.registry.rendererAttach(resyncId, 1);
+    duringResync.registry.stopAll();
+    resolveSnapshot?.(snapshot);
+    await expect(resyncingAttach).resolves.toEqual({
+      status: "unavailable",
+      reason: "runtime_replaced",
+    });
+
+    const timedOut = harness();
+    const timedOutId = timedOut.registry.openSession("/tmp/project");
+    await timedOut.registry.activateSession(timedOutId, "/tmp/pi", {});
+    vi.spyOn(
+      timedOut.registry.getSession(timedOutId)!.proc!,
+      "requestAuthorityAttach",
+    ).mockRejectedValue(
+      new HostRequestTimeoutError("Host request timeout for authority_attach (id=test)"),
+    );
+    await expect(timedOut.registry.authorityAttach(timedOutId, 1)).resolves.toEqual({
+      status: "unavailable",
+      reason: "host_unresponsive",
+    });
+    timedOut.registry.stopAll();
+
+    const disconnected = harness();
+    const disconnectedId = disconnected.registry.openSession("/tmp/project");
+    await disconnected.registry.activateSession(disconnectedId, "/tmp/pi", {});
+    disconnected.fakes[0]!.connected = false;
+    await expect(disconnected.registry.authorityAttach(disconnectedId, 1)).resolves.toEqual({
+      status: "unavailable",
+      reason: "host_unresponsive",
+    });
+    disconnected.registry.stopAll();
+
+    const generations = harness();
+    const generationId = generations.registry.openSession("/tmp/project");
+    await generations.registry.activateSession(generationId, "/tmp/pi", {});
+    await generations.registry.rendererAttach(generationId, 1);
+    generations.runtimeStates.length = 0;
+    const secondGeneration = generations.registry.rendererAttach(generationId, 2);
+    await vi.waitFor(() =>
+      expect(
+        generations.fakes[0]!.sent.some(
+          (message) => message.type === "renderer_detached" && message.rendererGeneration === 1,
+        ),
+      ).toBe(true),
+    );
+    const thirdGeneration = generations.registry.rendererAttach(generationId, 3);
+    await vi.waitFor(() =>
+      expect(
+        generations.fakes[0]!.sent.some(
+          (message) => message.type === "renderer_detached" && message.rendererGeneration === 2,
+        ),
+      ).toBe(true),
+    );
+    generations.fakes[0]!.emitWire({ type: "renderer_cancelled", rendererGeneration: 2 });
+
+    await expect(secondGeneration).resolves.toEqual({
+      status: "unavailable",
+      reason: "attach_superseded",
+    });
+    await expect(thirdGeneration).resolves.toMatchObject({ status: "attached" });
+    expect(generations.runtimeStates).not.toContainEqual(
+      expect.objectContaining({
+        availability: "unavailable",
+        reason: "Renderer cancellation acknowledgement timed out",
+      }),
+    );
+    generations.registry.stopAll();
   });
 
   it("replays unresolved unified submissions after renderer reattachment", async () => {

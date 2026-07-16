@@ -154,6 +154,40 @@ describe("SessionControls dropdown toggles", () => {
     unmount();
   });
 
+  it("retains labels but disables controls while semantic authority is fenced", () => {
+    setSession();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      const session = sessions.get(sessionId)!;
+      sessions.set(sessionId, {
+        ...session,
+        authorityProjection: {
+          ...session.authorityProjection!,
+          semantic: { state: "unavailable", reason: "test" },
+          authoritativeSnapshot: undefined,
+        },
+      });
+      return { sessions };
+    });
+
+    const { container, unmount } = mount(<SessionControls sessionId={sessionId} />);
+    const modelButton = container.querySelector<HTMLButtonElement>(".session-header__model-btn");
+    const thinkingButton = container.querySelector<HTMLButtonElement>(
+      ".session-header__thinking button",
+    );
+    expect(modelButton?.textContent).toContain("GLM 5");
+    expect(thinkingButton?.textContent).toContain("medium");
+    expect(modelButton?.disabled).toBe(true);
+    expect(thinkingButton?.disabled).toBe(true);
+    modelButton?.click();
+    thinkingButton?.click();
+    expect(
+      (globalThis.window as unknown as { pivis: { invoke: ReturnType<typeof vi.fn> } }).pivis
+        .invoke,
+    ).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it("supports keyboard selection when models are grouped by provider", async () => {
     setSession();
     useSettingsStore.setState({

@@ -1,4 +1,5 @@
 import type { SessionId } from "@shared/ids.js";
+import type { RendererAttachResult } from "@shared/ipc-contract.js";
 import type { AuthorityAttachResponse } from "@shared/pi-protocol/runtime-state.js";
 
 interface InFlightAttach {
@@ -9,7 +10,7 @@ interface InFlightAttach {
 export interface AuthorityAttachRetryOptions {
   sessionExists: (sessionId: SessionId) => boolean;
   needsAttach: (sessionId: SessionId) => boolean;
-  rendererAttach: (sessionId: SessionId) => Promise<unknown>;
+  rendererAttach: (sessionId: SessionId) => Promise<RendererAttachResult>;
   authorityAttach: (sessionId: SessionId) => Promise<AuthorityAttachResponse>;
   onReady: (sessionId: SessionId, response: AuthorityAttachResponse) => void;
   onUnavailable: (sessionId: SessionId) => void;
@@ -67,10 +68,16 @@ export class AuthorityAttachRetry {
 
     attach.promise = (async () => {
       try {
-        await this.options.rendererAttach(sessionId);
+        const rendererResult = await this.options.rendererAttach(sessionId);
         // A close can occur while the first IPC is transitioning. Do not send
-        // the second IPC or schedule work for the now-dead session.
+        // the second IPC or schedule work for the now-dead session. Main also
+        // reports a close/attach race as typed unavailability, never an IPC
+        // exception that Electron logs as a failed handler.
         if (!active()) return;
+        if (rendererResult.status === "unavailable") {
+          scheduleRetry();
+          return;
+        }
         const response = await this.options.authorityAttach(sessionId);
         if (!active()) return;
         if (response.status === "ready") {

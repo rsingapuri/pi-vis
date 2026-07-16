@@ -1447,8 +1447,7 @@ const stub = {
           claimId: `preview-claim-${Date.now()}`,
           expiresAt: Date.now() + 60_000,
         };
-      case "session.runtimeResync":
-      case "session.rendererAttach": {
+      case "session.runtimeResync": {
         const { sessionId } = req as { sessionId: SessionId };
         const session = useSessionsStore.getState().sessions.get(sessionId);
         return {
@@ -1457,6 +1456,20 @@ const stub = {
           sessionEpoch: session?.sessionEpoch,
           receivedAt: Date.now(),
           snapshot: session?.runtimeSnapshot,
+        };
+      }
+      case "session.rendererAttach": {
+        const { sessionId } = req as { sessionId: SessionId };
+        const session = useSessionsStore.getState().sessions.get(sessionId);
+        return {
+          status: "attached",
+          runtime: {
+            availability: session?.runtimeSnapshot ? "available" : "unavailable",
+            hostInstanceId: session?.hostInstanceId,
+            sessionEpoch: session?.sessionEpoch,
+            receivedAt: Date.now(),
+            snapshot: session?.runtimeSnapshot,
+          },
         };
       }
       case "session.authorityAttach": {

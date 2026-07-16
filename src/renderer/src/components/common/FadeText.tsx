@@ -32,6 +32,64 @@ interface FadeTextProps {
 const REVEAL_PX_PER_SECOND = 48;
 const REVEAL_MIN_MS = 450;
 
+type FadeTextMeasurement = {
+  outer: HTMLSpanElement;
+  inner: HTMLSpanElement;
+};
+
+// A large transcript can mount thousands of FadeTexts in one React commit.
+// Measuring and then styling each instance from its own layout effect causes
+// read/write/read layout thrashing over the entire transcript. Queue every
+// instance into one frame, read all widths first, and only then write styles.
+const pendingMeasurements = new Map<HTMLSpanElement, FadeTextMeasurement>();
+let measurementFramePending = false;
+
+function applyMeasurement(outer: HTMLSpanElement, overflow: number): void {
+  if (overflow > 1) {
+    outer.dataset.overflow = "true";
+    outer.style.setProperty("--fade-shift", `${-overflow}px`);
+    const ms = Math.max(REVEAL_MIN_MS, (overflow / REVEAL_PX_PER_SECOND) * 1000);
+    outer.style.setProperty("--fade-dur", `${ms}ms`);
+  } else if (outer.dataset.overflow) {
+    delete outer.dataset.overflow;
+    outer.style.removeProperty("--fade-shift");
+    outer.style.removeProperty("--fade-dur");
+  }
+}
+
+/** Flush the shared read-then-write measurement batch. Exported for a
+ * deterministic regression test; production calls it from one animation frame. */
+export function flushFadeTextMeasurements(): void {
+  measurementFramePending = false;
+  const targets = [...pendingMeasurements.values()];
+  pendingMeasurements.clear();
+
+  // Do not interleave these loops. One style write before the next rect read
+  // would reintroduce the forced-layout cascade this batch exists to prevent.
+  const measured = targets.map(({ outer, inner }) => ({
+    outer,
+    overflow: inner.getBoundingClientRect().width - outer.getBoundingClientRect().width,
+  }));
+  for (const { outer, overflow } of measured) applyMeasurement(outer, overflow);
+}
+
+export function queueFadeTextMeasurement(outer: HTMLSpanElement, inner: HTMLSpanElement): void {
+  pendingMeasurements.set(outer, { outer, inner });
+  if (measurementFramePending) return;
+  measurementFramePending = true;
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(flushFadeTextMeasurements);
+  } else {
+    // Tests/non-browser renderers still get one coalesced measurement without
+    // requiring a ResizeObserver or animation-frame shim.
+    queueMicrotask(flushFadeTextMeasurements);
+  }
+}
+
+function cancelFadeTextMeasurement(outer: HTMLSpanElement): void {
+  pendingMeasurements.delete(outer);
+}
+
 export function FadeText({ children, className, pre = false, head = false, title }: FadeTextProps) {
   const outerRef = useRef<HTMLSpanElement>(null);
   const innerRef = useRef<HTMLSpanElement>(null);
@@ -41,27 +99,13 @@ export function FadeText({ children, className, pre = false, head = false, title
     const inner = innerRef.current;
     if (!outer || !inner) return;
 
-    const measure = () => {
-      // Rect widths are sub-pixel accurate; translateX doesn't change them,
-      // so a mid-glide re-measure (from a container resize) stays correct.
-      const overflow = inner.getBoundingClientRect().width - outer.getBoundingClientRect().width;
-      if (overflow > 1) {
-        outer.dataset.overflow = "true";
-        outer.style.setProperty("--fade-shift", `${-overflow}px`);
-        const ms = Math.max(REVEAL_MIN_MS, (overflow / REVEAL_PX_PER_SECOND) * 1000);
-        outer.style.setProperty("--fade-dur", `${ms}ms`);
-      } else if (outer.dataset.overflow) {
-        delete outer.dataset.overflow;
-        outer.style.removeProperty("--fade-shift");
-        outer.style.removeProperty("--fade-dur");
-      }
-    };
+    const measure = (): void => queueFadeTextMeasurement(outer, inner);
 
-    // jsdom (unit tests) has no ResizeObserver — degrade to a one-shot
-    // measure so the component renders as plain clipped text.
+    // jsdom (unit tests) has no ResizeObserver — degrade to one queued measure
+    // so many instances still preserve the production batching invariant.
     if (typeof ResizeObserver === "undefined") {
       measure();
-      return;
+      return () => cancelFadeTextMeasurement(outer);
     }
 
     // Observing both catches container resizes (outer) and content changes —
@@ -70,7 +114,10 @@ export function FadeText({ children, className, pre = false, head = false, title
     ro.observe(outer);
     ro.observe(inner);
     measure();
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      cancelFadeTextMeasurement(outer);
+    };
   }, []);
 
   return (

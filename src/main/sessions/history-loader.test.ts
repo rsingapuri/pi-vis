@@ -258,6 +258,21 @@ describe("loadHistory complete scrollback and cache", () => {
     expect(blockTexts(blocks).slice(-2)).toEqual(["msg-749", "msg-750"]);
   });
 
+  it("coalesces concurrent and settlement-window loads into one parsed result", async () => {
+    writeEntries(linearUserEntries(1));
+
+    const first = loadHistory(file);
+    const second = loadHistory(file);
+    // A waiter resumed from the shared promise used to run after in-flight
+    // deletion but before cache insertion, opening a one-microtask duplicate
+    // parse window. Re-enter from settlement to pin that ordering.
+    const third = second.then(() => loadHistory(file));
+    const [firstBlocks, secondBlocks, thirdBlocks] = await Promise.all([first, second, third]);
+
+    expect(firstBlocks).toBe(secondBlocks);
+    expect(thirdBlocks).toBe(firstBlocks);
+  });
+
   it("reuses the single-file history cache when file identity is unchanged", async () => {
     writeEntries(linearUserEntries(1));
     const fixedTime = new Date("2024-02-02T00:00:00.000Z");
@@ -382,11 +397,33 @@ describe("loadHistory complete scrollback and cache", () => {
 });
 
 describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
-  it("returns [] for an empty branch (review S3: navigating to root / leafId null)", () => {
-    expect(entriesToTranscript([])).toEqual([]);
+  it("returns [] for an empty branch (review S3: navigating to root / leafId null)", async () => {
+    expect(await entriesToTranscript([])).toEqual([]);
   });
 
-  it("renders branch_summary entries as compaction blocks so the recap actually appears (review B2)", () => {
+  it("yields to the event loop before a large conversion resolves", async () => {
+    const entries = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "message",
+      id: `u${index}`,
+      timestamp: index,
+      message: { role: "user", content: `message-${index}` },
+    }));
+    let resolved = false;
+    const conversion = entriesToTranscript(entries).then((blocks) => {
+      resolved = true;
+      return blocks;
+    });
+
+    await new Promise<void>((resolve) =>
+      setImmediate(() => {
+        expect(resolved).toBe(false);
+        resolve();
+      }),
+    );
+    await expect(conversion).resolves.toHaveLength(5_000);
+  });
+
+  it("renders branch_summary entries as compaction blocks so the recap actually appears (review B2)", async () => {
     // Real pi uses `parentId: null` for the root and serializes the new
     // branch_summary as a sibling of the new active leaf. The bridge (or
     // any future caller) MUST coerce `null` parentId → undefined before
@@ -401,7 +438,7 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
         fromId: "leaf-prev",
       },
     ];
-    const blocks = entriesToTranscript(branch);
+    const blocks = await entriesToTranscript(branch);
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toEqual({
       id: "bs-1",
@@ -410,8 +447,8 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
     });
   });
 
-  it("falls back to a placeholder summary when branch_summary.summary is missing", () => {
-    const blocks = entriesToTranscript([
+  it("falls back to a placeholder summary when branch_summary.summary is missing", async () => {
+    const blocks = await entriesToTranscript([
       { type: "branch_summary", id: "bs-x", timestamp: "2026-01-01T00:00:00Z" },
     ]);
     expect(blocks).toHaveLength(1);
@@ -419,7 +456,7 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
     expect((blocks[0]?.data as { summary: string }).summary).toMatch(/empty branch summary/i);
   });
 
-  it("skips non-rendering meta entries (label/model_change/thinking_level_change/session_info)", () => {
+  it("skips non-rendering meta entries (label/model_change/thinking_level_change/session_info)", async () => {
     const branch = [
       {
         type: "message",
@@ -450,12 +487,12 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
         message: { role: "assistant", content: [{ type: "text", text: "hello!" }] },
       },
     ];
-    const blocks = entriesToTranscript(branch);
+    const blocks = await entriesToTranscript(branch);
     expect(blocks.map((b) => b.type)).toEqual(["user", "assistant"]);
   });
 
-  it("preserves Pi 0.80.4 custom entries for SDK-host rendering", () => {
-    const blocks = entriesToTranscript([
+  it("preserves Pi 0.80.4 custom entries for SDK-host rendering", async () => {
+    const blocks = await entriesToTranscript([
       {
         type: "custom",
         id: "custom-1",
@@ -473,8 +510,8 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
     ]);
   });
 
-  it("uses newline-separated text parts and finalizes the matching tool call", () => {
-    const blocks = entriesToTranscript([
+  it("uses newline-separated text parts and finalizes the matching tool call", async () => {
+    const blocks = await entriesToTranscript([
       {
         type: "message",
         id: "a1",
@@ -511,8 +548,49 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
     });
   });
 
-  it("preserves details.diff for standalone tool results with no preceding tool call", () => {
-    const blocks = entriesToTranscript([
+  it("matches a duplicate toolCallId to the most recent tool call", async () => {
+    const blocks = await entriesToTranscript([
+      {
+        type: "message",
+        id: "a1",
+        timestamp: "t1",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "duplicate", name: "first", arguments: {} }],
+        },
+      },
+      {
+        type: "message",
+        id: "a2",
+        timestamp: "t2",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "duplicate", name: "second", arguments: {} }],
+        },
+      },
+      {
+        type: "message",
+        id: "tr1",
+        timestamp: "t3",
+        message: {
+          role: "toolResult",
+          toolCallId: "duplicate",
+          content: [{ type: "text", text: "latest output" }],
+        },
+      },
+    ]);
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]?.data).toMatchObject({ toolName: "first", isStreaming: true });
+    expect(blocks[1]?.data).toMatchObject({
+      toolName: "second",
+      outputText: "latest output",
+      isStreaming: false,
+    });
+  });
+
+  it("preserves details.diff for standalone tool results with no preceding tool call", async () => {
+    const blocks = await entriesToTranscript([
       {
         type: "message",
         id: "tr1",
@@ -535,7 +613,7 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
     expect(data["resultDetails"]).toEqual({ diff: "-before\n+after" });
   });
 
-  it("renders compaction entries as compaction blocks (pre-compaction trimming is the chain walker's job, not ours)", () => {
+  it("renders compaction entries as compaction blocks (pre-compaction trimming is the chain walker's job, not ours)", async () => {
     // `SessionManager.getBranch()` returns the post-compaction chain —
     // pre-compaction entries are already gone before this helper sees them.
     // We just emit a compaction block for the marker.
@@ -556,7 +634,7 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
         message: { role: "user", content: "after" },
       },
     ];
-    const blocks = entriesToTranscript(branch);
+    const blocks = await entriesToTranscript(branch);
     expect(blocks.map((b) => b.type)).toEqual(["compaction", "user"]);
     expect((blocks[0]?.data as { summary: string }).summary).toBe("compacted earlier");
     expect((blocks[1]?.data as { content: string }).content).toBe("after");

@@ -339,9 +339,12 @@ export function SessionControls({
   const groupModelsByProvider = useSettingsStore((s) => s.settings.groupModelsByProvider);
   const observation = observationForSession(session);
   const semanticSnapshot = session?.authorityProjection?.authoritativeSnapshot;
-  const currentModel = semanticSnapshot?.model?.id;
-  const currentProvider = semanticSnapshot?.model?.provider;
-  const currentThinkingLevel = semanticSnapshot?.thinkingLevel;
+  // Semantic authority still gates every interaction via `observation`, but
+  // retained compatibility fields keep the last-known presentation stable
+  // while a fenced plane awaits its next baseline.
+  const currentModel = semanticSnapshot?.model?.id ?? session?.currentModel;
+  const currentProvider = semanticSnapshot?.model?.provider ?? session?.currentProvider;
+  const currentThinkingLevel = semanticSnapshot?.thinkingLevel ?? session?.thinkingLevel;
   const [pendingModel, setPendingModel] = useState<PendingIntent<ModelInfo> | null>(null);
   const [pendingThinking, setPendingThinking] = useState<PendingIntent<ThinkingLevel> | null>(null);
 

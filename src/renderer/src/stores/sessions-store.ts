@@ -289,6 +289,8 @@ export interface SessionViewState {
   /** Renderer-local transcript ownership generation. Delayed history reads may
    *  apply only while this generation, file, and runtime identity still match. */
   historyGeneration: number;
+  /** True while complete persisted transcript hydration is in progress. */
+  historyHydrating?: boolean | undefined;
   /** True for a brand-new session (created without a session file) that
    *  has not yet sent its first message. Such sessions are hidden from
    *  the sidebar (the "+ New session" button shows as selected instead)
@@ -593,7 +595,12 @@ async function waitForHistoryOwnershipChange(
     };
     const inspect = () => {
       const session = useSessionsStore.getState().sessions.get(sessionId);
-      if (!session || session.status === "failed" || session.status === "exited") {
+      if (
+        !session ||
+        !session.sessionFile ||
+        session.status === "failed" ||
+        session.status === "exited"
+      ) {
         finish(undefined);
         return;
       }
@@ -860,16 +867,11 @@ function applyAuthoritySemanticProjection(
           widgets: current.widgets,
         };
   if (authorityProjection.semantic.state !== "following" || !snapshot) {
-    // A retained frame is explicitly diagnostic while fenced. Do not leave a
-    // compatibility field looking current and accidentally re-enable a control.
+    // A retained frame is explicitly diagnostic while fenced. Retain only
+    // presentation compatibility fields; clear all control/dispatch state.
     return {
       ...current,
       hostInstanceId: undefined,
-      currentModel: undefined,
-      currentProvider: undefined,
-      thinkingLevel: undefined,
-      sessionName: undefined,
-      sessionTitle: undefined,
       runningSince: undefined,
       queuedMessages: undefined,
       ...extensionPresentation,
@@ -1467,6 +1469,7 @@ const buildSessionsStore = (
         // discovered via loadHistory or the native `/tree` viewer.
         hasTreeHistory: false,
         historyGeneration: 0,
+        historyHydrating: false,
         // Bootstrap hasn't run yet — it fires once when the session goes live.
         modelInitialized: false,
       });
@@ -1699,6 +1702,7 @@ const buildSessionsStore = (
       sessions.set(sessionId, {
         ...s,
         transcript,
+        historyHydrating: false,
         historyGeneration: s.historyGeneration + 1,
         hasTreeHistory: s.hasTreeHistory || history.length > 0,
       });
@@ -1931,98 +1935,119 @@ const buildSessionsStore = (
 
   applyAuthorityAttach: (sessionId, response) => {
     if (response.status !== "ready") return;
+    // Main buffers publications while the child serializes its baseline. The
+    // authority reducer advances every plane through that replay, but transcript
+    // payloads must also reach the presentation reducer; otherwise a user
+    // message emitted during attach vanishes while the later assistant delta is
+    // rendered. Parse before the atomic commit and apply only if the transcript
+    // plane accepts the attach.
+    const replayEvents = response.replay.flatMap((publication) =>
+      publication.plane === "transcript" && publication.payload.kind === "delta"
+        ? publication.payload.entries.flatMap((entry) => {
+            const parsed = PiEventSchema.safeParse(entry);
+            return parsed.success ? [parsed.data] : [];
+          })
+        : [],
+    );
     let following = false;
-    set((state) => {
-      const current = state.sessions.get(sessionId);
-      if (!current) return {};
-      const authorityProjection = reduceAuthorityAttach(
-        current.authorityProjection ?? createRendererAuthorityState(),
-        response,
-      );
-      if (authorityProjection === current.authorityProjection) return {};
-      following = authorityProjection.semantic.state === "following";
-      const restorations = [
-        ...response.baseline.restorations,
-        ...response.replay.flatMap((publication) =>
-          publication.plane === "semantic"
-            ? publication.payload.records.filter(
-                (record): record is Extract<typeof record, { type: "queue_restoration" }> =>
-                  record.type === "queue_restoration",
-              )
-            : [],
-        ),
-      ];
-      const sessions = new Map(state.sessions);
-      const extension = authorityProjection.extensionUiBaseline;
-      const authorityPanels = [...authorityProjection.panels.values()];
-      const customPanel = authorityPanels.find((panel) => !panel.baseline.unified);
-      const unifiedPanel = authorityPanels.find((panel) => panel.baseline.unified);
-      sessions.set(sessionId, {
-        ...appendQueueRestorations(
-          applyAuthoritySemanticProjection(current, authorityProjection),
-          restorations,
-        ),
-        authorityProjection,
-        panel: customPanel
-          ? {
-              id: customPanel.baseline.panelId,
-              overlay: customPanel.baseline.overlay,
-              hostInstanceId: customPanel.baseline.owner.hostInstanceId,
-              sessionEpoch: customPanel.baseline.owner.sessionEpoch,
-              buffer: [...customPanel.ansi],
-              mode: customPanel.baseline.mode,
-              authority: true,
-              inputEnabled: customPanel.inputEnabled,
-              renderRevision: customPanel.baseline.keyframe.renderRevision,
-              keyframeReady: customPanel.baseline.keyframe.kind === "keyframe",
-              ...(customPanel.output
-                ? {
-                    outputSequence: customPanel.output.sequence,
-                    outputKind: customPanel.output.kind,
-                    outputAnsi: customPanel.output.ansi,
-                  }
-                : {}),
-              syncState: customPanel.sync.state,
-            }
-          : undefined,
-        unifiedPanel: unifiedPanel
-          ? {
-              id: unifiedPanel.baseline.panelId,
-              hostInstanceId: unifiedPanel.baseline.owner.hostInstanceId,
-              sessionEpoch: unifiedPanel.baseline.owner.sessionEpoch,
-              buffer: [...unifiedPanel.ansi],
-              mode: unifiedPanel.baseline.mode,
-              authority: true,
-              inputEnabled: unifiedPanel.inputEnabled,
-              renderRevision: unifiedPanel.baseline.keyframe.renderRevision,
-              keyframeReady: unifiedPanel.baseline.keyframe.kind === "keyframe",
-              ...(unifiedPanel.output
-                ? {
-                    outputSequence: unifiedPanel.output.sequence,
-                    outputKind: unifiedPanel.output.kind,
-                    outputAnsi: unifiedPanel.output.ansi,
-                  }
-                : {}),
-              syncState: unifiedPanel.sync.state,
-            }
-          : undefined,
-        ...(extension
-          ? {
-              pendingDialogs: extension.dialogs
-                .filter((dialog) => dialog.inputPending && !dialog.acknowledged)
-                .map((dialog) => dialog.request),
-              statusSegments: new Map(Object.entries(extension.statuses)),
-              widgets: new Map(
-                Object.entries(extension.widgets).map(([key, lines]) => [key, [...lines]]),
-              ),
-              toasts: extension.notifications.map((notification) => ({
-                ...notification,
-                createdAt: Date.now(),
-              })),
-            }
-          : {}),
+    let transcriptFollowing = false;
+    runAtomically(() => {
+      set((state) => {
+        const current = state.sessions.get(sessionId);
+        if (!current) return {};
+        const authorityProjection = reduceAuthorityAttach(
+          current.authorityProjection ?? createRendererAuthorityState(),
+          response,
+        );
+        if (authorityProjection === current.authorityProjection) return {};
+        following = authorityProjection.semantic.state === "following";
+        transcriptFollowing = authorityProjection.transcript.state === "following";
+        const restorations = [
+          ...response.baseline.restorations,
+          ...response.replay.flatMap((publication) =>
+            publication.plane === "semantic"
+              ? publication.payload.records.filter(
+                  (record): record is Extract<typeof record, { type: "queue_restoration" }> =>
+                    record.type === "queue_restoration",
+                )
+              : [],
+          ),
+        ];
+        const sessions = new Map(state.sessions);
+        const extension = authorityProjection.extensionUiBaseline;
+        const authorityPanels = [...authorityProjection.panels.values()];
+        const customPanel = authorityPanels.find((panel) => !panel.baseline.unified);
+        const unifiedPanel = authorityPanels.find((panel) => panel.baseline.unified);
+        sessions.set(sessionId, {
+          ...appendQueueRestorations(
+            applyAuthoritySemanticProjection(current, authorityProjection),
+            restorations,
+          ),
+          authorityProjection,
+          panel: customPanel
+            ? {
+                id: customPanel.baseline.panelId,
+                overlay: customPanel.baseline.overlay,
+                hostInstanceId: customPanel.baseline.owner.hostInstanceId,
+                sessionEpoch: customPanel.baseline.owner.sessionEpoch,
+                buffer: [...customPanel.ansi],
+                mode: customPanel.baseline.mode,
+                authority: true,
+                inputEnabled: customPanel.inputEnabled,
+                renderRevision: customPanel.baseline.keyframe.renderRevision,
+                keyframeReady: customPanel.baseline.keyframe.kind === "keyframe",
+                ...(customPanel.output
+                  ? {
+                      outputSequence: customPanel.output.sequence,
+                      outputKind: customPanel.output.kind,
+                      outputAnsi: customPanel.output.ansi,
+                    }
+                  : {}),
+                syncState: customPanel.sync.state,
+              }
+            : undefined,
+          unifiedPanel: unifiedPanel
+            ? {
+                id: unifiedPanel.baseline.panelId,
+                hostInstanceId: unifiedPanel.baseline.owner.hostInstanceId,
+                sessionEpoch: unifiedPanel.baseline.owner.sessionEpoch,
+                buffer: [...unifiedPanel.ansi],
+                mode: unifiedPanel.baseline.mode,
+                authority: true,
+                inputEnabled: unifiedPanel.inputEnabled,
+                renderRevision: unifiedPanel.baseline.keyframe.renderRevision,
+                keyframeReady: unifiedPanel.baseline.keyframe.kind === "keyframe",
+                ...(unifiedPanel.output
+                  ? {
+                      outputSequence: unifiedPanel.output.sequence,
+                      outputKind: unifiedPanel.output.kind,
+                      outputAnsi: unifiedPanel.output.ansi,
+                    }
+                  : {}),
+                syncState: unifiedPanel.sync.state,
+              }
+            : undefined,
+          ...(extension
+            ? {
+                pendingDialogs: extension.dialogs
+                  .filter((dialog) => dialog.inputPending && !dialog.acknowledged)
+                  .map((dialog) => dialog.request),
+                statusSegments: new Map(Object.entries(extension.statuses)),
+                widgets: new Map(
+                  Object.entries(extension.widgets).map(([key, lines]) => [key, [...lines]]),
+                ),
+                toasts: extension.notifications.map((notification) => ({
+                  ...notification,
+                  createdAt: Date.now(),
+                })),
+              }
+            : {}),
+        });
+        return { sessions };
       });
-      return { sessions };
+      if (transcriptFollowing && replayEvents.length > 0) {
+        get().applyEvents(sessionId, replayEvents);
+      }
     });
     if (following && get().sessions.get(sessionId)?.status === "ready") {
       void get().refreshCommands(sessionId);
@@ -3252,6 +3277,7 @@ const buildSessionsStore = (
         transcript: createTranscriptState(),
         hasTreeHistory: false,
         historyGeneration: s.historyGeneration + 1,
+        historyHydrating: false,
         unreadStatus: undefined,
         turnErrored: false,
       };
@@ -3620,13 +3646,22 @@ const buildSessionsStore = (
         // The initial revisioned snapshot remains valid if the session closed
         // before the follow-up query completed.
       }
-      // Persisted history replaces the initial transcript, but renderer attach
-      // and live events can race a large file read. Read only while the session
-      // is idle, require the transcript to remain unchanged for the entire
-      // request, and retry against a newly installed owner instead of applying
-      // a predecessor response.
-      if (sessionFile) {
+      // Persisted hydration is deliberately concurrent with activation: large
+      // JSONL conversion yields in main, and the tab must become interactive
+      // before the complete scrollback has arrived.
+      const hydrate = async (): Promise<void> => {
+        if (!sessionFile) return;
+        set((state) => {
+          const sessions = new Map(state.sessions);
+          const session = sessions.get(sessionId);
+          if (!session) return {};
+          sessions.set(sessionId, { ...session, historyHydrating: true });
+          return { sessions };
+        });
         try {
+          // Renderer attach and live events can race a large file read. Read
+          // only while idle, require the transcript to remain unchanged for the
+          // request, and retry against a newly installed owner.
           let historyCapture = captureHistoryRead(get().sessions.get(sessionId));
           while (historyCapture) {
             const beforeRead = get().sessions.get(sessionId);
@@ -3660,9 +3695,22 @@ const buildSessionsStore = (
           }
         } catch {
           /* stale or unavailable history — fine */
+        } finally {
+          set((state) => {
+            const sessions = new Map(state.sessions);
+            const session = sessions.get(sessionId);
+            if (!session) return {};
+            sessions.set(sessionId, { ...session, historyHydrating: false });
+            return { sessions };
+          });
         }
+      };
+      const hydration = hydrate();
+      if (focus && !(await get().setActiveSession(sessionId))) {
+        await hydration.catch(() => {});
+        return null;
       }
-      if (focus && !(await get().setActiveSession(sessionId))) return null;
+      await hydration;
       return sessionId;
     } catch (err) {
       console.error("Failed to open session:", err);

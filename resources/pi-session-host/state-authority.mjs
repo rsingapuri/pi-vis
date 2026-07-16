@@ -2489,16 +2489,20 @@ export function createStateAuthority({
     return alreadySerialized ? Promise.resolve(admit()) : schedule("ingress", admit);
   }
 
-  // Runs through the same scheduler as mutation ingress. Thus an attach that
-  // races a compaction end or replacement observes the terminal commit, never
-  // an arbitrary interleaving. Presentation planes deliberately use independent
-  // cursors; panels are synchronizing until a forced repaint is acknowledged.
+  // Baseline serialization is a synchronous read barrier over child-owned
+  // state. Do not enqueue it behind mutation ingress: an admitted prompt or a
+  // long-running command may legitimately keep that scheduler occupied while
+  // the renderer still needs a baseline to display its events. JavaScript's
+  // run-to-completion boundary gives the snapshot one coherent point; later
+  // mutations advance source cursors and are replayed by main. Presentation
+  // planes deliberately use independent cursors; panels remain synchronizing
+  // until a forced repaint is acknowledged.
   function requestAuthorityAttach(rendererGeneration, presentation = {}) {
     // Attach must never sit behind a lifecycle transition: main/renderer can
     // retry from the successor publication once it commits.
     if (transition)
       return Promise.resolve({ status: "transitioning", transitionId: transition.transitionId });
-    return schedule("ingress", async () => {
+    return Promise.resolve().then(() => {
       if (transition) return { status: "transitioning", transitionId: transition.transitionId };
       const semantic = semanticSnapshot();
       const owner = semantic.owner;

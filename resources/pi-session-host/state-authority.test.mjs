@@ -1617,6 +1617,31 @@ describe("state authority", () => {
     expect(nextFrame.transportSequence).toBe(3);
   });
 
+  it("serializes an attach without waiting for long-running ingress", async () => {
+    const gate = deferred();
+    const { authority } = setup();
+    const envelope = {
+      intentId: "long-ingress",
+      expectedOwner: { hostInstanceId: "host-1", sessionEpoch: 0 },
+      intent: { kind: "runBash", command: "sleep 60" },
+    };
+    await expect(authority.dispatchIntent(envelope, () => gate.promise)).resolves.toMatchObject({
+      status: "admitted",
+    });
+    await vi.waitFor(() =>
+      expect(authority.semanticSnapshot().activeIntents).toContainEqual(
+        expect.objectContaining({ intentId: "long-ingress", state: "admitted" }),
+      ),
+    );
+
+    const outcome = await Promise.race([
+      authority.requestAuthorityAttach(8),
+      new Promise((resolve) => setTimeout(() => resolve("timed_out"), 100)),
+    ]);
+    gate.resolve({ output: "", exitCode: 0 });
+    expect(outcome).toMatchObject({ status: "ready", baseline: { rendererGeneration: 8 } });
+  });
+
   it("keeps the compaction barrier through retry_wait", async () => {
     const { authority, session } = setup();
     authority.observeEvent({ type: "compaction_start" });

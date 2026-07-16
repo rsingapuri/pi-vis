@@ -1,10 +1,15 @@
 import type { SessionId } from "@shared/ids.js";
+import type { RendererAttachResult } from "@shared/ipc-contract.js";
 import type { AuthorityAttachResponse } from "@shared/pi-protocol/runtime-state.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthorityAttachRetry } from "./authority-attach-retry.js";
 
 const SID = "session-a" as SessionId;
 const transitioning = { status: "transitioning" } as AuthorityAttachResponse;
+const attached = {
+  status: "attached",
+  runtime: { availability: "unavailable", receivedAt: 0 },
+} satisfies RendererAttachResult;
 
 describe("AuthorityAttachRetry", () => {
   afterEach(() => vi.useRealTimers());
@@ -12,7 +17,7 @@ describe("AuthorityAttachRetry", () => {
   it("does not retry after a transitioning attach session is removed", async () => {
     vi.useFakeTimers();
     const sessions = new Set<SessionId>([SID]);
-    const rendererAttach = vi.fn().mockResolvedValue(undefined);
+    const rendererAttach = vi.fn().mockResolvedValue(attached);
     const authorityAttach = vi.fn().mockResolvedValue(transitioning);
     const retry = new AuthorityAttachRetry({
       sessionExists: (sessionId) => sessions.has(sessionId),
@@ -38,11 +43,36 @@ describe("AuthorityAttachRetry", () => {
     expect(authorityAttach).toHaveBeenCalledTimes(1);
   });
 
+  it("retries typed renderer unavailability without issuing authorityAttach", async () => {
+    vi.useFakeTimers();
+    const rendererAttach = vi
+      .fn<() => Promise<RendererAttachResult>>()
+      .mockResolvedValueOnce({ status: "unavailable", reason: "session_closing" })
+      .mockResolvedValue(attached);
+    const authorityAttach = vi.fn().mockResolvedValue(transitioning);
+    const retry = new AuthorityAttachRetry({
+      sessionExists: () => true,
+      needsAttach: () => true,
+      rendererAttach,
+      authorityAttach,
+      onReady: vi.fn(),
+      onUnavailable: vi.fn(),
+    });
+
+    await retry.request(SID);
+    expect(authorityAttach).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(rendererAttach).toHaveBeenCalledTimes(2);
+    expect(authorityAttach).toHaveBeenCalledTimes(1);
+    retry.cancelAll();
+  });
+
   it("does not issue the second attach IPC when removal races rendererAttach", async () => {
-    let resolveRendererAttach: (() => void) | undefined;
+    let resolveRendererAttach: ((result: RendererAttachResult) => void) | undefined;
     const rendererAttach = vi.fn(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise<RendererAttachResult>((resolve) => {
           resolveRendererAttach = resolve;
         }),
     );
@@ -60,7 +90,7 @@ describe("AuthorityAttachRetry", () => {
     const attaching = retry.request(SID);
     sessions.delete(SID);
     retry.cancel(SID);
-    resolveRendererAttach?.();
+    resolveRendererAttach?.(attached);
     await attaching;
 
     expect(rendererAttach).toHaveBeenCalledTimes(1);

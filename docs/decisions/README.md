@@ -36,5 +36,6 @@ Link new ADRs from the relevant `docs/architecture/*.md` file and from `docs/age
 
 - [0001: Worker-backed diff search](0001-worker-backed-diff-search.md)
 - [0002: Workspace session search](0002-workspace-session-search.md) — persisted-JSONL authority, disposable index, exact read-only context, and lifecycle isolation.
-- [0003: Authority frames and per-plane synchronization](0003-authority-frames-and-plane-synchronization.md) — deployed session-runtime, IPC, command, and authority-reducer architecture; amended by 0004.
+- [0003: Authority frames and per-plane synchronization](0003-authority-frames-and-plane-synchronization.md) — deployed session-runtime, IPC, command, and authority-reducer architecture; amended by 0004 and 0005.
 - [0004: Silent reconciliation replaces user review](0004-silent-reconciliation-replaces-user-review.md) — conservative automatic draft recovery and silent tab disposal.
+- [0005: Retain presentation labels across authority fences](0005-retain-presentation-labels-across-authority-fences.md) — stale presentation remains visible while semantic controls are fenced.

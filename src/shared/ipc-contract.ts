@@ -67,6 +67,22 @@ export interface SessionSummary {
 
 export type SessionStatus = "cold" | "starting" | "ready" | "exited" | "failed";
 
+/** Renderer-generation handshake result. Session disappearance is an expected
+ * lifecycle race (for example, attach crossing an unconditional tab close),
+ * never an exceptional IPC failure. */
+export type RendererAttachResult =
+  | { status: "attached"; runtime: RuntimeStateUpdate }
+  | {
+      status: "unavailable";
+      reason:
+        | "session_missing"
+        | "session_closing"
+        | "host_cold"
+        | "host_unresponsive"
+        | "runtime_replaced"
+        | "attach_superseded";
+    };
+
 /** A worktree a session runs in. Persisted in settings.worktrees keyed
  *  by `path` so worktree sessions survive app relaunch. */
 export interface WorktreeIdentity {
@@ -303,7 +319,7 @@ export interface IpcInvokeContract {
   /** Renderer lifecycle handshake. Loss increments generation and cancels blocking host UI. */
   "session.rendererAttach": {
     req: { sessionId: SessionId; rendererGeneration: number };
-    res: RuntimeStateUpdate;
+    res: RendererAttachResult;
   };
   "session.editorPatch": {
     req: {

@@ -1056,8 +1056,8 @@ export function initIpc(win: BrowserWindow): void {
   // branch_summary).
   ipcMain.handle(
     "session.transcriptForEntries",
-    (_evt, args: { sessionId: SessionId; entries: SessionTreeEntry[] }) => {
-      return entriesToTranscript(args.entries);
+    async (_evt, args: { sessionId: SessionId; entries: SessionTreeEntry[] }) => {
+      return await entriesToTranscript(args.entries);
     },
   );
 

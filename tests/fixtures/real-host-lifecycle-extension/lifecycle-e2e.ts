@@ -43,9 +43,16 @@ export default function lifecycleE2E(pi: ExtensionAPI) {
     lineComponent(theme.fg("accent", `E2E custom message: ${String(message.content)}`)),
   );
 
-  pi.registerEntryRenderer<{ label: string }>(CUSTOM_ENTRY_TYPE, (entry, _options, theme) =>
-    lineComponent(theme.fg("success", `E2E persisted entry: ${entry.data?.label ?? "missing"}`)),
-  );
+  pi.registerEntryRenderer<{ label: string }>(CUSTOM_ENTRY_TYPE, (entry, _options, theme) => ({
+    // The renderer may decline a width. Pi-Vis first probes at 80 columns, so
+    // this fixture proves a hidden result is requeried at the measured pane
+    // width rather than becoming permanently invisible.
+    render: (width: number) =>
+      width > 80
+        ? [theme.fg("success", `E2E persisted entry: ${entry.data?.label ?? "missing"}`)]
+        : (undefined as unknown as string[]),
+    invalidate() {},
+  }));
 
   pi.on("input", (event) => {
     if (event.source !== "extension" && event.text.includes(INPUT_MARKER)) {

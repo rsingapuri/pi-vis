@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — amended by [ADR 0004](0004-silent-reconciliation-replaces-user-review.md)
+Accepted — amended by [ADR 0004](0004-silent-reconciliation-replaces-user-review.md) and [ADR 0005](0005-retain-presentation-labels-across-authority-fences.md)
 
 ## Context
 
@@ -35,3 +35,4 @@ Legacy mutation and presentation consumers are prohibited. Renderer and main dis
 - [Command system](../architecture/commands.md)
 - [Testing](../testing.md)
 - [ADR 0004: Silent reconciliation replaces user review](0004-silent-reconciliation-replaces-user-review.md)
+- [ADR 0005: Retain presentation labels across authority fences](0005-retain-presentation-labels-across-authority-fences.md)

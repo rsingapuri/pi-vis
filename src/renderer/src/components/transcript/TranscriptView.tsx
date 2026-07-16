@@ -879,6 +879,89 @@ const CustomMessageBlock = memo(function CustomMessageBlock({
 
 type RenderedEntry = { rendered: boolean; ansi?: string; error?: boolean };
 
+type CustomEntryMeasurement = {
+  host: HTMLDivElement;
+  content?: HTMLPreElement | undefined;
+  measurementBox: HTMLSpanElement;
+  probe: HTMLSpanElement;
+  applyColumns: (columns: number) => void;
+};
+
+// Custom-entry renderers receive terminal columns and are allowed to decline a
+// width. Hidden entries must therefore get one real pane-width query too. Batch
+// every geometry read before any setState callback so a history containing many
+// custom entries cannot recreate per-entry layout thrashing.
+const pendingCustomEntryMeasurements = new Map<HTMLDivElement, CustomEntryMeasurement>();
+let customEntryMeasurementFrame: number | undefined;
+
+function flushCustomEntryMeasurements(): void {
+  customEntryMeasurementFrame = undefined;
+  const targets = [...pendingCustomEntryMeasurements.values()];
+  pendingCustomEntryMeasurements.clear();
+  const measured = targets.flatMap((target) => {
+    const widthElement = target.content ?? target.host.closest<HTMLElement>(".transcript-blocks");
+    const contentWidth = target.content
+      ? target.content.clientWidth
+      : (widthElement?.getBoundingClientRect().width ?? target.host.getBoundingClientRect().width);
+    const style = getComputedStyle(target.content ?? target.measurementBox);
+    const horizontalPadding =
+      (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0);
+    const glyphWidth = target.probe.getBoundingClientRect().width / 10;
+    const availableWidth = Math.max(0, contentWidth - horizontalPadding);
+    if (availableWidth <= 0 || glyphWidth <= 0) return [];
+    return [
+      {
+        applyColumns: target.applyColumns,
+        columns: Math.max(20, Math.min(240, Math.floor(availableWidth / glyphWidth))),
+      },
+    ];
+  });
+  for (const { applyColumns, columns } of measured) applyColumns(columns);
+}
+
+function queueCustomEntryMeasurement(measurement: CustomEntryMeasurement): void {
+  pendingCustomEntryMeasurements.set(measurement.host, measurement);
+  if (customEntryMeasurementFrame !== undefined) return;
+  if (typeof requestAnimationFrame === "function") {
+    customEntryMeasurementFrame = requestAnimationFrame(flushCustomEntryMeasurements);
+  } else {
+    customEntryMeasurementFrame = -1;
+    queueMicrotask(flushCustomEntryMeasurements);
+  }
+}
+
+function cancelCustomEntryMeasurement(host: HTMLDivElement): void {
+  pendingCustomEntryMeasurements.delete(host);
+}
+
+const customEntryResizeCallbacks = new Map<Element, Set<() => void>>();
+let customEntryResizeObserver: ResizeObserver | undefined;
+
+function observeCustomEntryResize(element: Element | null, callback: () => void): () => void {
+  if (!element || typeof ResizeObserver === "undefined") return () => {};
+  customEntryResizeObserver ??= new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      for (const listener of customEntryResizeCallbacks.get(entry.target) ?? []) listener();
+    }
+  });
+  const callbacks = customEntryResizeCallbacks.get(element) ?? new Set<() => void>();
+  callbacks.add(callback);
+  customEntryResizeCallbacks.set(element, callbacks);
+  customEntryResizeObserver.observe(element);
+  return () => {
+    const current = customEntryResizeCallbacks.get(element);
+    current?.delete(callback);
+    if (current && current.size === 0) {
+      customEntryResizeCallbacks.delete(element);
+      customEntryResizeObserver?.unobserve(element);
+    }
+    if (customEntryResizeCallbacks.size === 0) {
+      customEntryResizeObserver?.disconnect();
+      customEntryResizeObserver = undefined;
+    }
+  };
+}
+
 const CustomEntryBlock = memo(function CustomEntryBlock({
   sessionId,
   data,
@@ -906,35 +989,45 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
   const renderedEpochRef = useRef(sessionEpoch);
   const hostRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLPreElement>(null);
+  const measurementBoxRef = useRef<HTMLSpanElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
   const [cols, setCols] = useState(80);
   const [expanded, setExpanded] = useState(false);
   const [rendered, setRendered] = useState<RenderedEntry>();
 
+  const visible = rendered?.rendered === true;
+
   useLayoutEffect(() => {
     const host = hostRef.current;
+    const measurementBox = measurementBoxRef.current;
     const probe = measureRef.current;
-    if (!host || !probe || typeof ResizeObserver === "undefined") return;
-    const measure = (): void => {
-      const content = contentRef.current;
-      const contentStyle = content ? getComputedStyle(content) : undefined;
-      const contentWidth = content?.clientWidth ?? host.getBoundingClientRect().width;
-      const horizontalPadding = contentStyle
-        ? (Number.parseFloat(contentStyle.paddingLeft) || 0) +
-          (Number.parseFloat(contentStyle.paddingRight) || 0)
-        : 0;
-      const glyphWidth = probe.getBoundingClientRect().width / 10;
-      const availableWidth = Math.max(0, contentWidth - horizontalPadding);
-      if (availableWidth <= 0 || glyphWidth <= 0) return;
-      const next = Math.max(20, Math.min(240, Math.floor(availableWidth / glyphWidth)));
-      setCols((current) => (current === next ? current : next));
+    if (!host || !measurementBox || !probe) return;
+    const scheduleMeasure = (): void => {
+      queueCustomEntryMeasurement({
+        host,
+        content: visible ? (contentRef.current ?? undefined) : undefined,
+        measurementBox,
+        probe,
+        applyColumns: (next) => setCols((current) => (current === next ? current : next)),
+      });
     };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(host);
-    observer.observe(probe);
-    return () => observer.disconnect();
-  }, []);
+    // The first real-width query is required even when the 80-column probe was
+    // declined. Shared observation keeps hidden entries width-responsive later
+    // without installing one ResizeObserver per transcript item.
+    scheduleMeasure();
+    const stopFeedObservation = observeCustomEntryResize(
+      host.closest(".transcript-blocks"),
+      scheduleMeasure,
+    );
+    const stopProbeObservation = observeCustomEntryResize(probe, scheduleMeasure);
+    const stopContentObservation = observeCustomEntryResize(contentRef.current, scheduleMeasure);
+    return () => {
+      stopFeedObservation();
+      stopProbeObservation();
+      stopContentObservation();
+      cancelCustomEntryMeasurement(host);
+    };
+  }, [visible]);
 
   useEffect(() => {
     renderedEpochRef.current = sessionEpoch;
@@ -996,32 +1089,35 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
     };
   }, [sessionId, data.entryId, cols, expanded, sessionEpoch, runtime]);
 
-  const visible = rendered?.rendered === true;
   return (
-    <div
-      ref={hostRef}
-      className={`custom-entry${visible ? " custom-entry--visible" : ""}${rendered?.error ? " custom-entry--error" : ""}`}
-    >
-      <span ref={measureRef} className="custom-entry__measure" aria-hidden="true">
-        0000000000
+    <>
+      <span ref={measurementBoxRef} className="custom-entry__measurement-box" aria-hidden="true">
+        <span ref={measureRef} className="custom-entry__measure">
+          0000000000
+        </span>
       </span>
-      {visible && (
-        <>
-          <button
-            type="button"
-            className="custom-entry__toggle icon-btn"
-            aria-label={`${expanded ? "Collapse" : "Expand"} ${data.customType} extension entry`}
-            title={expanded ? "Collapse extension entry" : "Expand extension entry"}
-            onClick={() => preserveScroll(() => setExpanded((value) => !value))}
-          >
-            <IconChevronRight className="custom-entry__chevron" />
-          </button>
-          <pre ref={contentRef} className="custom-entry__content">
-            <AnsiText text={rendered.ansi ?? ""} />
-          </pre>
-        </>
-      )}
-    </div>
+      <div
+        ref={hostRef}
+        className={`custom-entry${visible ? " custom-entry--visible" : ""}${rendered?.error ? " custom-entry--error" : ""}`}
+      >
+        {visible && (
+          <>
+            <button
+              type="button"
+              className="custom-entry__toggle icon-btn"
+              aria-label={`${expanded ? "Collapse" : "Expand"} ${data.customType} extension entry`}
+              title={expanded ? "Collapse extension entry" : "Expand extension entry"}
+              onClick={() => preserveScroll(() => setExpanded((value) => !value))}
+            >
+              <IconChevronRight className="custom-entry__chevron" />
+            </button>
+            <pre ref={contentRef} className="custom-entry__content">
+              <AnsiText text={rendered.ansi ?? ""} />
+            </pre>
+          </>
+        )}
+      </div>
+    </>
   );
 });
 
@@ -1216,6 +1312,7 @@ function TranscriptItemView({
 }
 
 const EMPTY_COMPACT_GROUP_ITEMS: TranscriptRenderItem[] = [];
+const EMPTY_COMPACT_RENDER_ITEMS: CompactRenderItem[] = [];
 
 // The archive/live boundary group keeps its archived portion behind this memo
 // boundary. Live streaming can update the disclosure summary and live items
@@ -1312,13 +1409,92 @@ const CompactTranscriptGroup = memo(function CompactTranscriptGroup({
   );
 });
 
+interface ArchiveScrollSnapshot {
+  scrollHeight: number;
+  scrollTop: number;
+  pinned: boolean;
+}
+
 interface ArchivedTranscriptProps {
   blocks: TypedTranscriptBlock[];
   compactItems: CompactRenderItem[];
   style: TranscriptStyle;
   sessionId: SessionId;
   preserveScroll: (mutate: () => void) => void;
+  capturePrependScroll: () => ArchiveScrollSnapshot | undefined;
+  restorePrependScroll: (snapshot: ArchiveScrollSnapshot) => void;
 }
+
+// Mount complete history cooperatively. This is presentation chunking, not
+// history pagination: every block is already in renderer state and all chunks
+// are mounted automatically. Keeping each commit bounded prevents one large
+// React/DOM/layout task from freezing the renderer.
+const ARCHIVE_RENDER_BATCH_SIZE = 100;
+
+function chunkArchiveItems<T>(items: T[]): T[][] {
+  const chunks: T[][] = [];
+  for (let start = 0; start < items.length; start += ARCHIVE_RENDER_BATCH_SIZE) {
+    chunks.push(items.slice(start, start + ARCHIVE_RENDER_BATCH_SIZE));
+  }
+  return chunks;
+}
+
+const ArchivedVerboseChunk = memo(function ArchivedVerboseChunk({
+  blocks,
+  sessionId,
+  preserveScroll,
+}: {
+  blocks: TypedTranscriptBlock[];
+  sessionId: SessionId;
+  preserveScroll: (mutate: () => void) => void;
+}): React.ReactElement {
+  return (
+    <div className="transcript-archive-chunk">
+      {blocks.map((block) => (
+        <TranscriptItemView
+          key={block.id}
+          sessionId={sessionId}
+          item={{ kind: "block", block }}
+          preserveScroll={preserveScroll}
+        />
+      ))}
+    </div>
+  );
+});
+
+const ArchivedCompactChunk = memo(function ArchivedCompactChunk({
+  items,
+  sessionId,
+  preserveScroll,
+}: {
+  items: CompactRenderItem[];
+  sessionId: SessionId;
+  preserveScroll: (mutate: () => void) => void;
+}): React.ReactElement {
+  return (
+    <div className="transcript-archive-chunk">
+      {items.map((item) =>
+        item.kind === "item" ? (
+          <TranscriptItemView
+            key={renderItemKey(item.item)}
+            sessionId={sessionId}
+            item={item.item}
+            preserveScroll={preserveScroll}
+          />
+        ) : (
+          <CompactTranscriptGroup
+            key={item.key}
+            sessionId={sessionId}
+            items={item.items}
+            summary={item.summary}
+            streaming={item.streaming}
+            preserveScroll={preserveScroll}
+          />
+        ),
+      )}
+    </div>
+  );
+});
 
 // This memo boundary is the archive's streaming-performance invariant. Its
 // derived props change only for history/compaction, so live-tail tokens do not
@@ -1329,37 +1505,66 @@ const ArchivedTranscript = memo(function ArchivedTranscript({
   style,
   sessionId,
   preserveScroll,
+  capturePrependScroll,
+  restorePrependScroll,
 }: ArchivedTranscriptProps): React.ReactElement {
+  const verboseChunks = useMemo(() => chunkArchiveItems(blocks), [blocks]);
+  const compactChunks = useMemo(() => chunkArchiveItems(compactItems), [compactItems]);
+  const chunks = style === "compact" ? compactChunks : verboseChunks;
+  const [visibleStart, setVisibleStart] = useState(() => Math.max(0, chunks.length - 1));
+  const prependSnapshotRef = useRef<ArchiveScrollSnapshot | undefined>(undefined);
+  const effectiveStart = Math.min(visibleStart, chunks.length);
+
+  useEffect(() => {
+    if (effectiveStart === 0) return;
+    const frame = requestAnimationFrame(() => {
+      prependSnapshotRef.current = capturePrependScroll();
+      setVisibleStart((current) => Math.max(0, current - 1));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [capturePrependScroll, effectiveStart]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: visibleStart is the post-commit trigger for a snapshot captured before that state update.
+  useLayoutEffect(() => {
+    const snapshot = prependSnapshotRef.current;
+    if (!snapshot) return;
+    prependSnapshotRef.current = undefined;
+    restorePrependScroll(snapshot);
+  }, [restorePrependScroll, visibleStart]);
+
   return (
     <>
+      {effectiveStart > 0 && (
+        <div className="history-loading-row history-loading-row--earlier" role="status">
+          <Spinner />
+          <span>Loading earlier conversation…</span>
+        </div>
+      )}
       {style === "compact"
-        ? compactItems.map((item) =>
-            item.kind === "item" ? (
-              <TranscriptItemView
-                key={renderItemKey(item.item)}
+        ? compactChunks
+            .slice(effectiveStart)
+            .map((items) => (
+              <ArchivedCompactChunk
+                key={
+                  items[0]?.kind === "item"
+                    ? renderItemKey(items[0].item)
+                    : (items[0]?.key ?? "empty")
+                }
+                items={items}
                 sessionId={sessionId}
-                item={item.item}
                 preserveScroll={preserveScroll}
               />
-            ) : (
-              <CompactTranscriptGroup
-                key={item.key}
+            ))
+        : verboseChunks
+            .slice(effectiveStart)
+            .map((chunkBlocks) => (
+              <ArchivedVerboseChunk
+                key={chunkBlocks[0]?.id ?? "empty"}
+                blocks={chunkBlocks}
                 sessionId={sessionId}
-                items={item.items}
-                summary={item.summary}
-                streaming={item.streaming}
                 preserveScroll={preserveScroll}
               />
-            ),
-          )
-        : blocks.map((block) => (
-            <TranscriptItemView
-              key={block.id}
-              sessionId={sessionId}
-              item={{ kind: "block", block }}
-              preserveScroll={preserveScroll}
-            />
-          ))}
+            ))}
     </>
   );
 });
@@ -1448,17 +1653,58 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     });
   }, []);
 
+  const capturePrependScroll = useCallback((): ArchiveScrollSnapshot | undefined => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    if (pinnedRef.current) return { scrollHeight: 0, scrollTop: 0, pinned: true };
+    return {
+      scrollHeight: el.scrollHeight,
+      scrollTop: el.scrollTop,
+      pinned: false,
+    };
+  }, []);
+
+  const restorePrependScroll = useCallback(
+    (snapshot: ArchiveScrollSnapshot): void => {
+      const el = scrollRef.current;
+      if (!el) return;
+      if (snapshot.pinned) {
+        pinToBottom();
+        return;
+      }
+      // Older archive batches are inserted above the visible content. Preserve
+      // the same reading anchor rather than jumping the viewport upward.
+      const scrollHeight = el.scrollHeight;
+      el.scrollTop = snapshot.scrollTop + (scrollHeight - snapshot.scrollHeight);
+      prevScrollHeightRef.current = scrollHeight;
+      prevClientHeightRef.current = el.clientHeight;
+      prevScrollTopRef.current = el.scrollTop;
+      updateScrollFades();
+    },
+    [pinToBottom, updateScrollFades],
+  );
+
   const transcript = session?.transcript;
   const archivedChunks = transcript?.archivedBlockChunks ?? EMPTY_ARCHIVE_CHUNKS;
   const liveBlocks = transcript?.blocks ?? EMPTY_LIVE_BLOCKS;
   const totalBlockCount = transcript ? transcriptBlockCount(transcript) : 0;
+  const showHistoryLoading = totalBlockCount === 0 && session?.historyHydrating === true;
   // Complete persisted/compacted history stays in immutable archive chunks,
   // while streaming changes only the live tail. Derive archive rendering once
   // per archive change so historical blocks are not revisited for every token.
-  const archivedBlocks = useMemo(() => archivedChunks.flat(), [archivedChunks]);
+  const archivedBlocks = useMemo(
+    () =>
+      archivedChunks.length === 1
+        ? (archivedChunks[0] ?? EMPTY_LIVE_BLOCKS)
+        : archivedChunks.flat(),
+    [archivedChunks],
+  );
   const archivedCompactItems = useMemo(
-    () => buildCompactRenderItems(archivedBlocks, false),
-    [archivedBlocks],
+    () =>
+      transcriptStyle === "compact"
+        ? buildCompactRenderItems(archivedBlocks, false)
+        : EMPTY_COMPACT_RENDER_ITEMS,
+    [archivedBlocks, transcriptStyle],
   );
   // Keep a trailing archive activity group at the stable archive/live boundary.
   // It can absorb leading live activity without flattening or regrouping the
@@ -1477,8 +1723,11 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
   const showWorking = shouldShowWorkingIndicator(session);
 
   const compactRenderItems = useMemo(
-    () => buildCompactRenderItems(liveBlocks, showWorking),
-    [showWorking, liveBlocks],
+    () =>
+      transcriptStyle === "compact"
+        ? buildCompactRenderItems(liveBlocks, showWorking)
+        : EMPTY_COMPACT_RENDER_ITEMS,
+    [showWorking, liveBlocks, transcriptStyle],
   );
   const firstLiveCompactItem = compactRenderItems[0];
   const leadingLiveCompactGroup: CompactGroupRenderItem | undefined =
@@ -1708,11 +1957,14 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     >
       <div className="transcript-blocks" ref={contentRef}>
         <ArchivedTranscript
+          key={`${sessionId}:${session?.historyGeneration ?? 0}:${transcriptStyle}`}
           blocks={archivedBlocks}
           compactItems={archivedCompactPrefix}
           style={transcriptStyle}
           sessionId={sessionId}
           preserveScroll={preserveScroll}
+          capturePrependScroll={capturePrependScroll}
+          restorePrependScroll={restorePrependScroll}
         />
         {transcriptStyle === "compact" && archivedBoundaryGroup && compactBoundarySummary && (
           <CompactTranscriptGroup
@@ -1760,6 +2012,12 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
           <QueuedBubble key={message.id} text={message.text} kind="followUp" />
         ))}
         {showWorking && <WorkingRow sessionId={sessionId} />}
+        {showHistoryLoading && (
+          <div className="history-loading-row" role="status">
+            <Spinner />
+            <span>Loading conversation history…</span>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1952,6 +1952,85 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     ]);
   });
 
+  it("activates before pending history hydration resolves, but resolves after seeding", async () => {
+    let resolveHistory!: (value: ReturnType<typeof loadedHistory>) => void;
+    const invoke = vi.fn((channel: string, payload?: unknown) => {
+      if (channel === "session.open") {
+        return Promise.resolve({
+          outcome: "opened",
+          sessionId: SESSION_A,
+          name: null,
+          preview: null,
+          sessionStatus: "cold",
+        });
+      }
+      if (channel === "session.loadHistory") {
+        return new Promise<ReturnType<typeof loadedHistory>>((resolve) => {
+          resolveHistory = resolve;
+        });
+      }
+      if (channel === "session.activate") return Promise.resolve(undefined);
+      if (channel === "session.worktreeSnapshot") return Promise.resolve({ revision: 0 });
+      return Promise.resolve([]);
+    });
+    vi.stubGlobal("window", { pivis: { invoke } });
+
+    const opening = useSessionsStore.getState().openSessionTab(WORKSPACE, "/f/a.jsonl");
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "session.activate",
+        expect.objectContaining({ sessionId: SESSION_A }),
+      ),
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.historyHydrating).toBe(true);
+    let settled = false;
+    void opening.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveHistory(
+      loadedHistory({ historyGeneration: 0 }, [
+        { id: "h1", type: "user", data: { content: "first" } },
+      ]),
+    );
+    await expect(opening).resolves.toBe(SESSION_A);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.historyHydrating).toBe(false);
+  });
+
+  it("settles obsolete hydration promptly when a replacement removes the session file", async () => {
+    let resolveHistory!: (value: ReturnType<typeof loadedHistory>) => void;
+    const invoke = vi.fn((channel: string, payload?: unknown) => {
+      if (channel === "session.open") {
+        return Promise.resolve({
+          outcome: "opened",
+          sessionId: SESSION_A,
+          name: null,
+          preview: null,
+          sessionStatus: "cold",
+        });
+      }
+      if (channel === "session.loadHistory") {
+        return new Promise<ReturnType<typeof loadedHistory>>((resolve) => {
+          resolveHistory = resolve;
+        });
+      }
+      if (channel === "session.activate") return Promise.resolve(undefined);
+      if (channel === "session.worktreeSnapshot") return Promise.resolve({ revision: 0 });
+      return Promise.resolve([]);
+    });
+    vi.stubGlobal("window", { pivis: { invoke } });
+
+    const opening = useSessionsStore.getState().openSessionTab(WORKSPACE, "/f/a.jsonl");
+    await vi.waitFor(() => expect(resolveHistory).toBeTypeOf("function"));
+    await useSessionsStore.getState().adoptSessionFile(SESSION_A, undefined);
+    resolveHistory(loadedHistory({ historyGeneration: 0 }, []));
+
+    await expect(opening).resolves.toBe(SESSION_A);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.historyHydrating).toBe(false);
+  });
+
   it("restores authoritative worktree-operation custody when reopening after renderer reload", async () => {
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === "session.open") {
@@ -3641,6 +3720,48 @@ describe("sessions store - authority intent projection", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
+  it("materializes transcript events replayed with an attach baseline", () => {
+    const attach = authorityAttach();
+    attach.replay = [
+      {
+        sessionId: SESSION_A,
+        rendererGeneration: 0,
+        publicationSequence: 1,
+        plane: "transcript",
+        owner: attach.baseline.owner,
+        payload: {
+          kind: "delta",
+          cursor: {
+            ...attach.baseline.owner,
+            transportSequence: 2,
+            snapshotSequence: 1,
+          },
+          liveTailCursor: "2",
+          entries: [
+            {
+              type: "message_start",
+              message: { role: "user", content: "first prompt during attach" },
+            },
+          ],
+        },
+      },
+    ];
+
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, attach);
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(allTranscriptBlocks(session.transcript)).toEqual([
+      expect.objectContaining({
+        type: "user",
+        data: expect.objectContaining({ content: "first prompt during attach" }),
+      }),
+    ]);
+    expect(session.authorityProjection?.transcript).toMatchObject({
+      state: "following",
+      cursor: { transportSequence: 2 },
+    });
+  });
+
   it("installs attach restoration atomically and retains byte-identical attachments", () => {
     const attach = authorityAttach();
     const image = { mimeType: "image/png", data: "AAEC/frozen" };
@@ -3737,7 +3858,7 @@ describe("sessions store - authority intent projection", () => {
     expect(session?.authorityProjection?.authoritativeSnapshot).toBeUndefined();
     expect(session?.authorityProjection?.staleDiagnosticSnapshot?.model?.id).toBe("model-old");
     expect(isSessionWorking(session)).toBe(false);
-    expect(session?.currentModel).toBeUndefined();
+    expect(session?.currentModel).toBe("model-old");
   });
 
   it("keeps an unavailable semantic snapshot diagnostic-only", () => {
@@ -3748,8 +3869,80 @@ describe("sessions store - authority intent projection", () => {
     expect(session?.authorityProjection?.semantic.state).toBe("unavailable");
     expect(session?.authorityProjection?.authoritativeSnapshot).toBeUndefined();
     expect(session?.authorityProjection?.staleDiagnosticSnapshot?.model?.id).toBe("model-old");
-    expect(session?.currentModel).toBeUndefined();
+    expect(session?.currentModel).toBe("model-old");
     expect(session?.statusSegments.size).toBe(0);
+  });
+
+  it("retains presentation but clears controls across gap and unavailable fences", () => {
+    const snapshot = semanticSnapshot(1, {
+      sdk: {
+        isStreaming: true,
+        isIdle: false,
+        isCompacting: false,
+        isRetrying: false,
+        retryAttempt: 0,
+        isBashRunning: false,
+      },
+      model: { id: "shown-model", provider: "shown-provider" },
+      thinkingLevel: "high",
+      sessionName: "Shown session",
+      catalog: {
+        notifications: [],
+        statuses: {},
+        widgets: {},
+        capabilityDiagnostics: [],
+        title: "Shown title",
+      },
+      editor: { revision: 1, text: "injected", attachments: [] },
+      queues: { steering: ["queued"], followUp: [], steeringIntentIds: [], followUpIntentIds: [] },
+    });
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach(snapshot));
+    const assertFence = () => {
+      const session = useSessionsStore.getState().sessions.get(SESSION_A);
+      expect(session).toMatchObject({
+        currentModel: "shown-model",
+        currentProvider: "shown-provider",
+        thinkingLevel: "high",
+        sessionName: "Shown session",
+        sessionTitle: "Shown title",
+        hostInstanceId: undefined,
+        runningSince: undefined,
+        queuedMessages: undefined,
+        editorInjection: undefined,
+      });
+    };
+
+    useSessionsStore
+      .getState()
+      .applyAuthorityPublication(semanticPublication(3, semanticSnapshot(3)));
+    assertFence();
+    useSessionsStore.getState().markAuthorityUnavailable(SESSION_A, "transport_lost");
+    assertFence();
+
+    const successor = semanticSnapshot(1, {
+      owner: { hostInstanceId: "host-2", sessionEpoch: 2 },
+      model: { id: "new-model", provider: "new-provider" },
+      thinkingLevel: "low",
+      sessionName: "New session",
+      catalog: {
+        notifications: [],
+        statuses: {},
+        widgets: {},
+        capabilityDiagnostics: [],
+        title: "New title",
+      },
+    });
+    const successorAttach = authorityAttach(successor);
+    successorAttach.baseline.publicationHighWatermark = 2;
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, successorAttach);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      currentModel: "new-model",
+      currentProvider: "new-provider",
+      thinkingLevel: "low",
+      sessionName: "New session",
+      sessionTitle: "New title",
+      hostInstanceId: "host-2",
+    });
   });
 
   it("does not treat same-owner recovery after unavailability as replacement", () => {
@@ -4362,7 +4555,7 @@ describe("sessions store - recovered authority-frame regressions", () => {
     useSessionsStore.getState().markAuthorityUnavailable(SESSION_A, "lost");
     useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(false, 99));
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.currentModel).toBeUndefined();
+    expect(session?.currentModel).toBe("fresh");
     expect(session?.authorityProjection?.staleDiagnosticSnapshot?.model?.id).toBe("fresh");
   });
 

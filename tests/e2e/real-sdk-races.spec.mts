@@ -13,7 +13,19 @@ import {
 import { createScriptedOpenAIProvider } from "./support/scripted-openai-provider.mjs";
 
 type Owner = { hostInstanceId: string; sessionEpoch: number };
-type Attach = { status: string; baseline?: { rendererGeneration: number; owner: Owner } };
+type Attach = {
+  status: string;
+  baseline?: {
+    rendererGeneration: number;
+    owner: Owner;
+    semantic?: {
+      snapshot?: {
+        sdk?: { isIdle?: boolean; isStreaming?: boolean };
+        activeIntents?: unknown[];
+      };
+    };
+  };
+};
 type LogEntry = { channel?: string; payload?: { sessionId?: string; rendererGeneration?: number } };
 type PivisBridge = { invoke(channel: string, args: unknown): Promise<unknown> };
 
@@ -88,6 +100,37 @@ async function readyAttach(page: Page, sessionId: string, generation: number): P
   return response;
 }
 
+async function settledReadyAttach(
+  page: Page,
+  sessionId: string,
+  generation: number,
+): Promise<Attach> {
+  let settled: Attach | undefined;
+  await expect
+    .poll(
+      async () => {
+        const candidate = (await invoke(page, "session.authorityAttach", {
+          sessionId,
+          rendererGeneration: generation,
+        })) as Attach;
+        const snapshot = candidate.baseline?.semantic?.snapshot;
+        if (
+          candidate.status === "ready" &&
+          snapshot?.sdk?.isIdle === true &&
+          snapshot.sdk.isStreaming !== true &&
+          (snapshot.activeIntents?.length ?? 0) === 0
+        ) {
+          settled = candidate;
+        }
+        return settled !== undefined;
+      },
+      { timeout: 60_000 },
+    )
+    .toBe(true);
+  if (!settled?.baseline) throw new Error("settled authority attach had no baseline");
+  return settled;
+}
+
 async function focusStorm(page: Page, textarea: Locator): Promise<void> {
   // Deliberately focus real interactive surfaces while lifecycle commands are
   // in flight. The important assertion is the IPC attach budget below, not
@@ -137,7 +180,11 @@ test.describe("real Pi races", () => {
         (entry) => entry.channel === "session.authorityAttach",
       ).length;
 
-      const predecessor = await readyAttach(launch.window, sessionId, generation);
+      // A baseline is exact only as of its cursor; the assistant DOM can paint
+      // just before Pi's prompt promise and child intent ledger settle. Wait for
+      // the explicit idle baseline required by the lifecycle command instead of
+      // relying on an attach call itself to add scheduler delay.
+      const predecessor = await settledReadyAttach(launch.window, sessionId, generation);
       if (!predecessor.baseline) throw new Error("predecessor attach omitted its baseline");
       await launch.window.evaluate(() => {
         const target = window as unknown as { __raceFileChanges?: unknown[] };

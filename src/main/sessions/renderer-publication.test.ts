@@ -145,6 +145,91 @@ describe("RendererPublicationRouter", () => {
     expect(delivered[0]).toMatchObject({ publicationSequence: 2, payload: { frameId: "frame-3" } });
   });
 
+  it("coalesces concurrent attaches for the same renderer and owner", async () => {
+    const router = new RendererPublicationRouter("session" as SessionId, () => {});
+    router.setExpectedOwner(owner());
+    let resolveBaseline!: (value: AuthorityAttachBaselineResponse) => void;
+    const provider = vi.fn(
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveBaseline = resolve)),
+    );
+
+    const first = router.attach(4, provider);
+    const second = router.attach(4, provider);
+    expect(second).toBe(first);
+    expect(provider).toHaveBeenCalledOnce();
+
+    resolveBaseline({ status: "ready", baseline: baseline(owner(), 1) });
+    await expect(first).resolves.toMatchObject({ status: "ready" });
+  });
+
+  it("does not let a superseded attach detach its successor", async () => {
+    const delivered: RendererPublication[] = [];
+    const router = new RendererPublicationRouter("session" as SessionId, (item) =>
+      delivered.push(item),
+    );
+    router.setExpectedOwner(owner());
+    let resolveFirst!: (value: AuthorityAttachBaselineResponse) => void;
+    let resolveSecond!: (value: AuthorityAttachBaselineResponse) => void;
+    const first = router.attach(
+      4,
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveFirst = resolve)),
+    );
+    const second = router.attach(
+      5,
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveSecond = resolve)),
+    );
+    expect(router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) })).toBe(
+      true,
+    );
+
+    resolveSecond({ status: "ready", baseline: baseline(owner(), 1) });
+    await expect(second).resolves.toMatchObject({ status: "ready" });
+    resolveFirst({ status: "ready", baseline: baseline(owner(), 1) });
+    await expect(first).resolves.toEqual({
+      status: "unavailable",
+      reason: "attach_superseded",
+    });
+
+    expect(router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) })).toBe(
+      true,
+    );
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ rendererGeneration: 5, payload: { frameId: "frame-3" } });
+  });
+
+  it("carries same-owner transcript traffic into a superseding renderer attach", async () => {
+    const router = new RendererPublicationRouter("session" as SessionId, () => {});
+    router.setExpectedOwner(owner());
+    let resolveFirst!: (value: AuthorityAttachBaselineResponse) => void;
+    const first = router.attach(
+      4,
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveFirst = resolve)),
+    );
+    router.route({ plane: "transcript", owner: owner(), payload: transcript(owner(), 2) });
+
+    const second = router.attach(5, async () => ({
+      status: "ready",
+      baseline: baseline(owner(), 1, 0, 2),
+    }));
+    const response = expectReady(await second);
+    expect(response.baseline.transcript).toMatchObject({
+      sync: { state: "following", cursor: { transportSequence: 1 } },
+    });
+    expect(response.replay).toHaveLength(1);
+    expect(response.replay[0]).toMatchObject({
+      plane: "transcript",
+      rendererGeneration: 5,
+      publicationSequence: 1,
+      payload: { cursor: { transportSequence: 2 } },
+    });
+
+    resolveFirst({ status: "ready", baseline: baseline(owner(), 1, 0, 2) });
+    await expect(first).resolves.toEqual({
+      status: "unavailable",
+      reason: "attach_superseded",
+    });
+  });
+
   it("drops a buffered frame already covered by the returned baseline", async () => {
     const delivered: RendererPublication[] = [];
     const router = new RendererPublicationRouter("session" as SessionId, (item) =>
@@ -193,6 +278,31 @@ describe("RendererPublicationRouter", () => {
     expect(response.replay[0]).toMatchObject({ plane: "transcript", publicationSequence: 2 });
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
     expect(delivered[0]).toMatchObject({ publicationSequence: 3, payload: { frameId: "frame-3" } });
+  });
+
+  it("replays transcript records that its cursor-only baseline already covers", async () => {
+    const router = new RendererPublicationRouter("session" as SessionId, () => {});
+    router.setExpectedOwner(owner());
+    let resolveBaseline!: (value: AuthorityAttachBaselineResponse) => void;
+    const attaching = router.attach(
+      4,
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveBaseline = resolve)),
+    );
+
+    router.route({ plane: "transcript", owner: owner(), payload: transcript(owner(), 2) });
+    resolveBaseline({ status: "ready", baseline: baseline(owner(), 1, 0, 2) });
+
+    const response = expectReady(await attaching);
+    expect(response.baseline.transcript).toMatchObject({
+      sync: { state: "following", cursor: { transportSequence: 1 } },
+      liveTailCursor: "1",
+    });
+    expect(response.replay).toHaveLength(1);
+    expect(response.replay[0]).toMatchObject({
+      plane: "transcript",
+      publicationSequence: 1,
+      payload: { cursor: { transportSequence: 2 } },
+    });
   });
 
   it("uses the main publication high-water on same-generation reattach", async () => {

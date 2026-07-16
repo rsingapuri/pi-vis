@@ -148,6 +148,21 @@ export class HostVersionTooLowError extends Error {
   readonly versionTooLow = true;
 }
 
+/** Expected liveness loss for a correlated private host request. Callers that
+ * own lifecycle recovery convert this into a typed unavailable result instead
+ * of surfacing it as an Electron handler error. */
+export class HostRequestUnavailableError extends Error {
+  readonly hostRequestUnavailable = true;
+}
+
+export class HostRequestTimeoutError extends HostRequestUnavailableError {
+  readonly hostRequestTimeout = true;
+}
+
+export class HostRequestTransportFencedError extends HostRequestUnavailableError {
+  readonly hostRequestTransportFenced = true;
+}
+
 // Maximum time to wait for host to start
 const STARTUP_TIMEOUT_MS = 60_000;
 
@@ -179,6 +194,8 @@ interface PendingRequest {
   remainingMs: number;
   timerStartedAt: number;
   timeoutMessage: string;
+  timeoutKind: "command" | "request";
+  requestType: string;
   suspendForLifecycleUi: boolean;
 }
 
@@ -520,11 +537,21 @@ export class SessionHost extends EventEmitter {
    * a human, which is not a hang. The timer is re-armed when we send the user's
    * response, bounding any genuine hang in the post-answer work.
    */
+  private pendingTransportError(pending: PendingRequest, error: Error): Error {
+    return pending.requestType === "authority_attach"
+      ? new HostRequestUnavailableError(`Authority attach transport unavailable: ${error.message}`)
+      : error;
+  }
+
   private armPendingTimeout(id: string, pending: PendingRequest): void {
+    const timeoutError = (): Error =>
+      pending.timeoutKind === "request"
+        ? new HostRequestTimeoutError(pending.timeoutMessage)
+        : new Error(pending.timeoutMessage);
     if (pending.remainingMs <= 0) {
       this.pending.delete(id);
       this.resyncRequestIds.delete(id);
-      pending.reject(new Error(pending.timeoutMessage));
+      pending.reject(timeoutError());
       return;
     }
     pending.timerStartedAt = Date.now();
@@ -532,9 +559,23 @@ export class SessionHost extends EventEmitter {
       pending.timer = null;
       this.pending.delete(id);
       this.resyncRequestIds.delete(id);
-      pending.reject(new Error(pending.timeoutMessage));
+      pending.reject(timeoutError());
     }, pending.remainingMs);
     pending.timer.unref?.();
+  }
+
+  private rejectAuthorityAttachForTransportFence(): void {
+    for (const [id, pending] of this.pending) {
+      if (pending.requestType !== "authority_attach") continue;
+      if (pending.timer) clearTimeout(pending.timer);
+      this.pending.delete(id);
+      this.resyncRequestIds.delete(id);
+      pending.reject(
+        new HostRequestTransportFencedError(
+          `Host transport fenced while authority_attach was pending (id=${id})`,
+        ),
+      );
+    }
   }
 
   private suspendLifecycleRequestTimers(): void {
@@ -742,6 +783,7 @@ export class SessionHost extends EventEmitter {
           if (value.transportSequence <= this.lastTransportSequence) return;
           this.lastTransportSequence = value.transportSequence;
           this.transportFenced = true;
+          this.rejectAuthorityAttachForTransportFence();
           this.emit("transportGap", expected, value.transportSequence);
           void this.requestSnapshot().catch(() => {});
           return;
@@ -786,6 +828,7 @@ export class SessionHost extends EventEmitter {
           if (base.data.transportSequence <= this.lastTransportSequence) return;
           this.lastTransportSequence = base.data.transportSequence;
           this.transportFenced = true;
+          this.rejectAuthorityAttachForTransportFence();
           this.emit("transportGap", expected, base.data.transportSequence);
           void this.requestSnapshot().catch(() => {});
           return;
@@ -931,7 +974,13 @@ export class SessionHost extends EventEmitter {
             if (pending.timer) clearTimeout(pending.timer);
             this.pending.delete(id);
             this.resyncRequestIds.delete(id);
-            pending.reject(new Error("Command response runtime identity mismatch"));
+            pending.reject(
+              pending.requestType === "authority_attach"
+                ? new HostRequestUnavailableError(
+                    "Authority attach response runtime identity mismatch",
+                  )
+                : new Error("Command response runtime identity mismatch"),
+            );
             return;
           }
           if (isResync) {
@@ -1252,6 +1301,8 @@ export class SessionHost extends EventEmitter {
         remainingMs: timeoutMs,
         timerStartedAt: Date.now(),
         timeoutMessage: `Host command timeout for ${command.type} (id=${id})`,
+        timeoutKind: "command",
+        requestType: command.type,
         suspendForLifecycleUi: LIFECYCLE_COMMANDS.has(command.type),
       };
       this.pending.set(id, pending);
@@ -1299,19 +1350,29 @@ export class SessionHost extends EventEmitter {
         remainingMs: timeoutMs,
         timerStartedAt: Date.now(),
         timeoutMessage: `Host request timeout for ${String(payload["type"])} (id=${id})`,
+        timeoutKind: "request",
+        requestType: String(payload["type"]),
         suspendForLifecycleUi,
       };
       this.pending.set(id, pending);
       if (!(suspendForLifecycleUi && this.transitionUiBlockers.size > 0)) {
         this.armPendingTimeout(id, pending);
       }
-      this.sendChildMessage({ ...payload, id }, (err) => {
-        if (!err) return;
+      try {
+        this.sendChildMessage({ ...payload, id }, (err) => {
+          if (!err) return;
+          if (pending.timer) clearTimeout(pending.timer);
+          this.pending.delete(id);
+          this.resyncRequestIds.delete(id);
+          reject(this.pendingTransportError(pending, err));
+        });
+      } catch (error) {
         if (pending.timer) clearTimeout(pending.timer);
         this.pending.delete(id);
         this.resyncRequestIds.delete(id);
-        reject(err);
-      });
+        const transportError = error instanceof Error ? error : new Error(String(error));
+        reject(this.pendingTransportError(pending, transportError));
+      }
     });
   }
 
@@ -1631,8 +1692,9 @@ export class SessionHost extends EventEmitter {
   private rejectAllPending(err: Error): void {
     for (const [id, pending] of this.pending) {
       if (pending.timer) clearTimeout(pending.timer);
-      pending.reject(err);
+      pending.reject(this.pendingTransportError(pending, err));
       this.pending.delete(id);
+      this.resyncRequestIds.delete(id);
     }
   }
 }

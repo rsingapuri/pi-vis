@@ -4,7 +4,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { newSessionId } from "@shared/ids.js";
 import type { SessionId } from "@shared/ids.js";
-import type { SessionStatus } from "@shared/ipc-contract.js";
+import type { RendererAttachResult, SessionStatus } from "@shared/ipc-contract.js";
 import type { PiReadOnlyCommand } from "@shared/pi-protocol/commands.js";
 import type { PiEvent } from "@shared/pi-protocol/events.js";
 import type { ExtensionUiRequest, ExtensionUiResponse } from "@shared/pi-protocol/extension-ui.js";
@@ -41,7 +41,7 @@ import {
 } from "@shared/pi-protocol/runtime-state.js";
 import lockfile from "proper-lockfile";
 import { resolveHostExecPath } from "../pi/locate-node.js";
-import { SessionHost } from "../pi/session-host.js";
+import { HostRequestUnavailableError, SessionHost } from "../pi/session-host.js";
 import { type AuthorityPublication, RendererPublicationRouter } from "./renderer-publication.js";
 import { reconcileRestoration } from "./restoration-reconciler.js";
 import {
@@ -2253,15 +2253,17 @@ export class SessionRegistry {
 
   /**
    * Return a child-serialized baseline plus the main-buffered contiguous tail.
-   * Legacy rendererAttach remains untouched while hosts without the new frame
-   * endpoint continue on the compatibility channels.
+   * The renderer-generation handshake remains separate while hosts without the
+   * new frame endpoint continue on the compatibility channels.
    */
   async authorityAttach(
     sessionId: SessionId,
     generation: number,
   ): Promise<AuthorityAttachResponse> {
     const record = this.sessions.get(sessionId);
-    if (!record) throw new Error(`Unknown session: ${sessionId}`);
+    if (!record || record._closing) {
+      return { status: "unavailable", reason: "session_missing" };
+    }
     const proc = record.proc as
       | (SessionHost & {
           requestAuthorityAttach?: (
@@ -2272,14 +2274,37 @@ export class SessionRegistry {
     if (!proc?.hostInstanceId || !proc.requestAuthorityAttach) {
       return { status: "unavailable", reason: "host_cold" };
     }
-    const router = this.authorityRouter(record);
-    router.setExpectedOwner({
+    const runtimeIdentity = {
+      proc,
       hostInstanceId: proc.hostInstanceId,
       sessionEpoch: proc.sessionEpoch,
+    };
+    const runtimeStillCurrent = (): boolean =>
+      this.sessions.get(sessionId) === record &&
+      !record._closing &&
+      record.proc === runtimeIdentity.proc &&
+      record.proc.hostInstanceId === runtimeIdentity.hostInstanceId &&
+      record.proc.sessionEpoch === runtimeIdentity.sessionEpoch;
+    const router = this.authorityRouter(record);
+    router.setExpectedOwner({
+      hostInstanceId: runtimeIdentity.hostInstanceId,
+      sessionEpoch: runtimeIdentity.sessionEpoch,
     });
-    const response = await router.attach(generation, () =>
-      proc.requestAuthorityAttach!(generation),
-    );
+    let response: AuthorityAttachResponse;
+    try {
+      response = await router.attach(generation, () => proc.requestAuthorityAttach!(generation));
+    } catch (error) {
+      if (!runtimeStillCurrent()) {
+        return { status: "unavailable", reason: "runtime_replaced" };
+      }
+      if (error instanceof HostRequestUnavailableError) {
+        return { status: "unavailable", reason: "host_unresponsive" };
+      }
+      throw error;
+    }
+    if (!runtimeStillCurrent()) {
+      return { status: "unavailable", reason: "runtime_replaced" };
+    }
     // Frames emitted while detached are intentionally not routed, so seed the
     // main acknowledgement mirror from the child-serialized baseline. This is
     // not a delivery acknowledgement; the child retains every item until the
@@ -2312,13 +2337,39 @@ export class SessionRegistry {
     return record._authorityPublications;
   }
 
-  async rendererAttach(sessionId: SessionId, generation: number): Promise<RuntimeStateUpdate> {
+  async rendererAttach(sessionId: SessionId, generation: number): Promise<RendererAttachResult> {
     const record = this.sessions.get(sessionId);
-    if (!record) throw new Error(`Unknown session: ${sessionId}`);
+    if (!record) return { status: "unavailable", reason: "session_missing" };
+    if (record._closing) return { status: "unavailable", reason: "session_closing" };
+    if (generation < record._rendererGeneration) {
+      return { status: "unavailable", reason: "attach_superseded" };
+    }
+    const attachProc = record.proc;
+    if (!attachProc?.hostInstanceId) {
+      return { status: "unavailable", reason: "host_cold" };
+    }
+    const runtimeIdentity = {
+      proc: attachProc,
+      hostInstanceId: attachProc.hostInstanceId,
+      sessionEpoch: attachProc.sessionEpoch,
+    };
+    const runtimeStillCurrent = (): boolean =>
+      this.sessions.get(sessionId) === record &&
+      !record._closing &&
+      record.proc === runtimeIdentity.proc &&
+      record.proc.hostInstanceId === runtimeIdentity.hostInstanceId &&
+      record.proc.sessionEpoch === runtimeIdentity.sessionEpoch;
     if (generation > record._rendererGeneration) {
       const priorGeneration = record._rendererGeneration;
       record._rendererGeneration = generation;
-      if (priorGeneration > 0 && record.proc) {
+      if (priorGeneration > 0) {
+        const cancellationProc = attachProc;
+        const supersededCancellation = record._pendingRendererCancellation;
+        if (supersededCancellation) {
+          clearTimeout(supersededCancellation.timer);
+          record._pendingRendererCancellation = undefined;
+          supersededCancellation.resolve(false);
+        }
         const acknowledged = await new Promise<boolean>((resolve) => {
           const timer = setTimeout(() => {
             if (record._pendingRendererCancellation?.generation === priorGeneration) {
@@ -2332,10 +2383,22 @@ export class SessionRegistry {
             resolve,
             timer,
           };
-          record.proc?.sendRendererDetached(priorGeneration);
+          cancellationProc.sendRendererDetached(priorGeneration);
         });
+        if (!runtimeStillCurrent()) {
+          return { status: "unavailable", reason: "runtime_replaced" };
+        }
+        if (record._rendererGeneration !== generation) {
+          return { status: "unavailable", reason: "attach_superseded" };
+        }
         if (!acknowledged) {
-          return this.publishUnavailable(record, "Renderer cancellation acknowledgement timed out");
+          return {
+            status: "attached",
+            runtime: this.publishUnavailable(
+              record,
+              "Renderer cancellation acknowledgement timed out",
+            ),
+          };
         }
         // The successor renderer has a fresh local input sequencer. The host
         // fenced the old revision before acknowledging detachment, so reset
@@ -2394,7 +2457,33 @@ export class SessionRegistry {
     for (const restoration of record._restorations.values()) {
       this.queueRestoration(record, structuredClone(restoration));
     }
-    return this.resyncSession(sessionId);
+    if (!runtimeStillCurrent()) {
+      return { status: "unavailable", reason: "runtime_replaced" };
+    }
+    if (record._rendererGeneration !== generation) {
+      return { status: "unavailable", reason: "attach_superseded" };
+    }
+    try {
+      const runtime = await this.resyncSession(sessionId);
+      if (!runtimeStillCurrent()) {
+        return { status: "unavailable", reason: "runtime_replaced" };
+      }
+      if (record._rendererGeneration !== generation) {
+        return { status: "unavailable", reason: "attach_superseded" };
+      }
+      return { status: "attached", runtime };
+    } catch (error) {
+      if (!runtimeStillCurrent()) {
+        return { status: "unavailable", reason: "runtime_replaced" };
+      }
+      if (record._rendererGeneration !== generation) {
+        return { status: "unavailable", reason: "attach_superseded" };
+      }
+      if (error instanceof HostRequestUnavailableError) {
+        return { status: "unavailable", reason: "host_unresponsive" };
+      }
+      throw error;
+    }
   }
 
   acknowledgeRestoration(sessionId: SessionId, restorationId: string): boolean {
