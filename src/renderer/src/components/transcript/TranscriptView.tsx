@@ -9,6 +9,7 @@ import { htmlToMarkdown } from "../../lib/turndown.js";
 import { useImageViewerStore } from "../../stores/image-viewer-store.js";
 import {
   authoritySnapshotFor,
+  sessionCompactionActivity,
   sessionMatchesRuntime,
   shouldShowWorkingIndicator,
   useSessionsStore,
@@ -238,27 +239,36 @@ function formatDuration(ms: number): string {
   return `${s}s`;
 }
 
-/** The working indicator row. Shows a spinner plus a live "Running for …"
- *  countdown driven by `runningSince`. The store starts/stops that timestamp
- *  from the store's logical working transition, so prompt admission and
- *  retries stay on one continuous timer. */
+/** Authority-gated working phase. Compaction takes label precedence over a
+ * simultaneously streaming turn because it is the operation currently making
+ * progress. */
 function WorkingRow({ sessionId }: { sessionId: SessionId }): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
+  const compaction = sessionCompactionActivity(session);
   const runningSince = authoritySnapshotFor(session)?.sdk.isStreaming
     ? session?.runningSince
     : undefined;
+  const elapsedSince = compaction?.startedAt ?? (!compaction ? runningSince : undefined);
   const [, setTick] = useState(0);
-  // Re-render once a second while a turn is actively running so the elapsed
-  // display stays live. `runningSince` is undefined between turns, in which
-  // case there's nothing to count and no interval is scheduled.
   useEffect(() => {
-    if (runningSince == null) return;
+    if (elapsedSince == null) return;
     const id = window.setInterval(() => setTick((t) => t + 1), 1000);
     return () => window.clearInterval(id);
-  }, [runningSince]);
+  }, [elapsedSince]);
 
-  const label =
-    runningSince != null ? `Running for ${formatDuration(Date.now() - runningSince)}` : "Working…";
+  let label: string;
+  if (compaction?.state === "cancelling") label = "Cancelling compaction…";
+  else if (compaction?.state === "retry_wait") label = "Retrying compaction…";
+  else if (compaction) {
+    label = compaction.startedAt
+      ? `Compacting… ${formatDuration(Date.now() - compaction.startedAt)}`
+      : "Compacting…";
+  } else {
+    label =
+      runningSince != null
+        ? `Running for ${formatDuration(Date.now() - runningSince)}`
+        : "Working…";
+  }
   return (
     <div className="working-row">
       <Spinner />
@@ -611,6 +621,9 @@ const ToolCallBlock = memo(function ToolCallBlock({
       )}
       {data.isStreaming && <Spinner className="tool-card__spinner" />}
       {data.isError && <span className="tool-card__badge">error</span>}
+      {data.interrupted && !data.isError && (
+        <span className="tool-card__badge tool-card__badge--interrupted">interrupted</span>
+      )}
     </>
   );
 
@@ -726,6 +739,9 @@ const BashBlock = memo(function BashBlock({
       </FadeText>
       {data.isStreaming && <Spinner className="tool-card__spinner" />}
       {isError && <span className="tool-card__badge">exit {data.exitCode}</span>}
+      {data.interrupted && !isError && (
+        <span className="tool-card__badge tool-card__badge--interrupted">interrupted</span>
+      )}
     </>
   );
 

@@ -20,6 +20,7 @@ import {
   isPendingNewSessionActiveFor,
   isSessionAbortable,
   isSessionWorking,
+  sessionCompactionActivity,
   sessionHasHistory,
   shouldShowWorkingIndicator,
   useSessionsStore,
@@ -1365,6 +1366,383 @@ describe("sessions store - shouldShowWorkingIndicator", () => {
   it("does not use direct runtime availability", () => {
     useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(true));
     expect(shouldShowWorkingIndicator(session())).toBe(false);
+  });
+
+  it("uses every authoritative compaction activity state, the sdk fallback, and no fenced state", () => {
+    installAuthority();
+    const states = ["active", "active_unknown_origin", "cancelling", "retry_wait"] as const;
+    for (const [index, state] of states.entries()) {
+      const activity = { kind: "compaction" as const, state, attempt: index + 1 };
+      publishSemantic(
+        SESSION_A,
+        index + 2,
+        semanticSnapshot(index + 2, { activity: { compaction: activity } }),
+      );
+      expect(sessionCompactionActivity(session())).toEqual(activity);
+      expect(shouldShowWorkingIndicator(session())).toBe(true);
+    }
+
+    publishSemantic(
+      SESSION_A,
+      6,
+      semanticSnapshot(6, {
+        sdk: {
+          isStreaming: false,
+          isIdle: false,
+          isCompacting: true,
+          isRetrying: false,
+          retryAttempt: 0,
+          isBashRunning: false,
+        },
+      }),
+    );
+    expect(sessionCompactionActivity(session())).toEqual({
+      kind: "compaction",
+      state: "active",
+      attempt: 0,
+    });
+
+    // A sequence gap fences the authority snapshot; neither its former
+    // compaction activity nor a direct runtime diagnostic may keep the UI busy.
+    useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(true, 99));
+    publishSemantic(SESSION_A, 8, semanticSnapshot(8));
+    expect(sessionCompactionActivity(session())).toBeUndefined();
+    expect(shouldShowWorkingIndicator(session())).toBe(false);
+  });
+});
+
+describe("sessions store - transcript recovery", () => {
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("marks an active tool call interrupted when the session fails", () => {
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
+    store.applyEvent(SESSION_A, {
+      type: "tool_execution_start",
+      toolCallId: "call-1",
+      toolName: "read",
+      args: { path: "/tmp/file" },
+    });
+    expect(
+      allTranscriptBlocks(useSessionsStore.getState().sessions.get(SESSION_A)!.transcript)[0],
+    ).toMatchObject({ type: "tool_call", data: { isStreaming: true } });
+
+    store.setSessionStatus(SESSION_A, "failed", "host died");
+
+    expect(
+      allTranscriptBlocks(useSessionsStore.getState().sessions.get(SESSION_A)!.transcript),
+    ).toEqual([
+      expect.objectContaining({
+        type: "tool_call",
+        data: expect.objectContaining({ isStreaming: false, interrupted: true }),
+      }),
+    ]);
+  });
+
+  it("drops invalid and unknown transcript entries, then rehydrates once idle", async () => {
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === "session.loadHistory") return loadedHistory(payload, []);
+      return [];
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("window", { pivis: { invoke } });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    installAuthority();
+
+    useSessionsStore.getState().applyAuthorityPublication({
+      sessionId: SESSION_A,
+      rendererGeneration: 0,
+      publicationSequence: 1,
+      plane: "transcript",
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+      payload: {
+        kind: "delta",
+        cursor: {
+          hostInstanceId: "host-1",
+          sessionEpoch: 1,
+          transportSequence: 2,
+          snapshotSequence: 1,
+        },
+        liveTailCursor: "2",
+        entries: [{ malformed: true }, { type: "future_transcript_event" }],
+      },
+    } as RendererPublication);
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.droppedTranscriptEntryCount).toBe(2);
+    expect(session.transcriptPresentationDirty).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      "Dropped transcript-plane entry",
+      expect.objectContaining({ sessionId: SESSION_A, reason: "schema_validation_failed" }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "Dropped unknown transcript-plane entry",
+      expect.objectContaining({ sessionId: SESSION_A, type: "future_transcript_event" }),
+    );
+
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "session.loadHistory",
+        expect.objectContaining({ sessionId: SESSION_A, expectedSessionFile: "/f/a.jsonl" }),
+      ),
+    );
+  });
+
+  it("marks a valid transcript delta rejected by a plane gap dirty and rehydrates", async () => {
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === "session.loadHistory") return loadedHistory(payload, []);
+      return [];
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("window", { pivis: { invoke } });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    installAuthority();
+
+    useSessionsStore.getState().applyAuthorityPublication({
+      sessionId: SESSION_A,
+      rendererGeneration: 0,
+      publicationSequence: 1,
+      plane: "transcript",
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+      payload: {
+        kind: "delta",
+        cursor: {
+          hostInstanceId: "host-1",
+          sessionEpoch: 1,
+          transportSequence: 3,
+          snapshotSequence: 1,
+        },
+        liveTailCursor: "3",
+        entries: [{ type: "compaction_end", result: { summary: "lost summary" } }],
+      },
+    } as RendererPublication);
+
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      droppedTranscriptEntryCount: 1,
+      transcriptPresentationDirty: true,
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Dropped transcript-plane entry",
+      expect.objectContaining({ reason: "authority_rejected", type: "compaction_end" }),
+    );
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "session.loadHistory",
+        expect.objectContaining({ sessionId: SESSION_A }),
+      ),
+    );
+  });
+
+  it("marks attach replay entries dirty when replay cannot follow or parse", async () => {
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === "session.loadHistory") return loadedHistory(payload, []);
+      return [];
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("window", { pivis: { invoke } });
+
+    for (const variant of ["gap", "invalid"] as const) {
+      useSessionsStore.setState({ sessions: new Map() });
+      useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+      const attach = authorityAttach();
+      attach.replay = [
+        {
+          sessionId: SESSION_A,
+          rendererGeneration: 0,
+          publicationSequence: 1,
+          plane: "transcript",
+          owner: attach.baseline.owner,
+          payload: {
+            kind: "delta",
+            cursor: {
+              ...attach.baseline.owner,
+              transportSequence: variant === "gap" ? 3 : 2,
+              snapshotSequence: 1,
+            },
+            liveTailCursor: "2",
+            entries:
+              variant === "gap"
+                ? [{ type: "compaction_end", result: { summary: "lost" } }]
+                : [{ malformed: true }],
+          },
+        },
+      ] as RendererPublication[];
+      useSessionsStore.getState().applyAuthorityAttach(SESSION_A, attach);
+      await vi.waitFor(() =>
+        expect(
+          useSessionsStore.getState().sessions.get(SESSION_A)?.droppedTranscriptEntryCount,
+        ).toBe(1),
+      );
+      await vi.waitFor(() =>
+        expect(
+          invoke.mock.calls.filter(([channel]) => channel === "session.loadHistory").length,
+        ).toBe(variant === "gap" ? 1 : 2),
+      );
+    }
+  });
+
+  it("retries hydration when a drop advances presentation revision during the read", async () => {
+    const pending: Array<{
+      payload: unknown;
+      resolve: (value: ReturnType<typeof loadedHistory>) => void;
+    }> = [];
+    const invoke = vi.fn((channel: string, payload?: unknown) => {
+      if (channel !== "session.loadHistory") return Promise.resolve([]);
+      return new Promise<ReturnType<typeof loadedHistory>>((resolve) => {
+        pending.push({ payload, resolve });
+      });
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("window", { pivis: { invoke } });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    installAuthority();
+    const publishInvalid = (publicationSequence: number, transportSequence: number) => {
+      useSessionsStore.getState().applyAuthorityPublication({
+        sessionId: SESSION_A,
+        rendererGeneration: 0,
+        publicationSequence,
+        plane: "transcript",
+        owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        payload: {
+          kind: "delta",
+          cursor: {
+            hostInstanceId: "host-1",
+            sessionEpoch: 1,
+            transportSequence,
+            snapshotSequence: 1,
+          },
+          liveTailCursor: String(transportSequence),
+          entries: [{ malformed: true }],
+        },
+      } as RendererPublication);
+    };
+
+    publishInvalid(1, 2);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    publishInvalid(2, 3);
+    pending[0]!.resolve(loadedHistory(pending[0]!.payload, []));
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.transcriptPresentationDirty).toBe(
+      true,
+    );
+    pending[1]!.resolve(loadedHistory(pending[1]!.payload, []));
+    await vi.waitFor(() =>
+      expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+        historyHydrating: false,
+        transcriptPresentationDirty: false,
+      }),
+    );
+  });
+
+  it("removes reconciliation baselines for non-success terminal compactions", () => {
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    installAuthority();
+    const active = {
+      operationId: "compact-failed",
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+      kind: "compaction" as const,
+      state: "active" as const,
+      observedAt: Date.now(),
+    };
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        sdk: { ...semanticSnapshot(2).sdk, isIdle: false, isCompacting: true },
+        activity: { compaction: { kind: "compaction", state: "active", attempt: 0 } },
+        recentObservedOperations: [active],
+      }),
+    );
+    expect(
+      Object.keys(
+        useSessionsStore.getState().sessions.get(SESSION_A)!.compactionOperationBlockBaselines,
+      ),
+    ).toHaveLength(1);
+    publishSemantic(
+      SESSION_A,
+      3,
+      semanticSnapshot(3, {
+        recentObservedOperations: [{ ...active, state: "failed" as const }],
+      }),
+    );
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)!.compactionOperationBlockBaselines,
+    ).toEqual({});
+  });
+
+  it("waits through production compaction ordering and repairs only missing results", async () => {
+    const persistedCompaction = {
+      id: "compact-block",
+      type: "compaction" as const,
+      data: { summary: "compacted" },
+    };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === "session.loadHistory") return loadedHistory(payload, [persistedCompaction]);
+      return [];
+    });
+    vi.stubGlobal("window", { pivis: { invoke } });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
+    installAuthority();
+    const operation = (operationId: string, state: "active" | "completed") => ({
+      operationId,
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+      kind: "compaction" as const,
+      state,
+      observedAt: Date.now(),
+    });
+    const loadHistoryCalls = () =>
+      invoke.mock.calls.filter(([channel]) => channel === "session.loadHistory");
+
+    const active = operation("compact-normal", "active");
+    const completed = operation("compact-normal", "completed");
+    publishSemantic(
+      SESSION_A,
+      2,
+      semanticSnapshot(2, {
+        sdk: { ...semanticSnapshot(2).sdk, isIdle: false, isCompacting: true },
+        activity: { compaction: { kind: "compaction", state: "active", attempt: 0 } },
+        recentObservedOperations: [active],
+      }),
+    );
+    publishSemantic(
+      SESSION_A,
+      3,
+      semanticSnapshot(3, { recentObservedOperations: [active, completed] }),
+    );
+    useSessionsStore.getState().applyEvent(SESSION_A, {
+      type: "compaction_end",
+      result: { summary: "compacted" },
+    });
+    publishSemantic(
+      SESSION_A,
+      4,
+      semanticSnapshot(4, { recentObservedOperations: [active, completed] }),
+    );
+    await Promise.resolve();
+    expect(loadHistoryCalls()).toHaveLength(0);
+
+    // A detached completion has no locally observed baseline. An older block
+    // cannot prove that this newer operation's result was materialized.
+    const detached = operation("compact-detached", "completed");
+    publishSemantic(SESSION_A, 5, semanticSnapshot(5, { recentObservedOperations: [detached] }));
+    publishSemantic(SESSION_A, 6, semanticSnapshot(6, { recentObservedOperations: [detached] }));
+    await vi.waitFor(() => expect(loadHistoryCalls()).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(useSessionsStore.getState().sessions.get(SESSION_A)?.historyHydrating).toBe(false),
+    );
+
+    publishSemantic(SESSION_A, 7, semanticSnapshot(7, { recentObservedOperations: [detached] }));
+    await Promise.resolve();
+    expect(loadHistoryCalls()).toHaveLength(1);
   });
 });
 
@@ -3468,6 +3846,103 @@ describe("sessions store - adoptSessionFileAndHydrate", () => {
     const transcript = useSessionsStore.getState().sessions.get(SESSION_A)!.transcript;
     expect(allTranscriptBlocks(transcript)).toEqual([
       expect.objectContaining({ id: "persisted-race", type: "user" }),
+    ]);
+  });
+
+  it("rereads adopted history when a dropped entry advances the presentation revision", async () => {
+    installAuthority();
+    const identity = { hostInstanceId: "host-1", sessionEpoch: 1 };
+    const historyRequests: Array<{
+      payload: unknown;
+      resolve: (history: ReturnType<typeof loadedHistory>) => void;
+    }> = [];
+    invokeMock.mockImplementation((channel: string, payload?: unknown) => {
+      if (channel === "session.loadHistory") {
+        return new Promise((resolve) => historyRequests.push({ payload, resolve }));
+      }
+      return Promise.resolve({ success: true });
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const pending = useSessionsStore
+      .getState()
+      .adoptSessionFileAndHydrate(SESSION_A, "/new/session.jsonl", "Forked", identity);
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(1));
+    useSessionsStore.getState().applyAuthorityPublication({
+      sessionId: SESSION_A,
+      rendererGeneration: 0,
+      publicationSequence: 1,
+      plane: "transcript",
+      owner: identity,
+      payload: {
+        kind: "delta",
+        cursor: { ...identity, transportSequence: 2, snapshotSequence: 1 },
+        liveTailCursor: "2",
+        entries: [{ malformed: true }],
+      },
+    } as RendererPublication);
+    historyRequests[0]!.resolve(loadedHistory(historyRequests[0]!.payload, []));
+
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(2));
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.transcriptPresentationDirty).toBe(
+      true,
+    );
+    historyRequests[1]!.resolve(loadedHistory(historyRequests[1]!.payload, []));
+    await pending;
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      transcriptPresentationDirty: false,
+      historyHydrating: false,
+    });
+  });
+
+  it("keeps a successor hydration marker owned when an older adoption finishes", async () => {
+    const historyRequests: Array<{
+      payload: unknown;
+      resolve: (history: ReturnType<typeof loadedHistory>) => void;
+    }> = [];
+    invokeMock.mockImplementation((channel: string, payload?: unknown) => {
+      if (channel === "session.loadHistory") {
+        return new Promise((resolve) => historyRequests.push({ payload, resolve }));
+      }
+      return Promise.resolve({ success: true });
+    });
+
+    const older = useSessionsStore
+      .getState()
+      .adoptSessionFileAndHydrate(SESSION_A, "/new/session.jsonl", "First");
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(1));
+    const newer = useSessionsStore
+      .getState()
+      .adoptSessionFileAndHydrate(SESSION_A, "/new/session.jsonl", "Second");
+    await vi.waitFor(() => expect(historyRequests).toHaveLength(2));
+    const successorToken = useSessionsStore
+      .getState()
+      .sessions.get(SESSION_A)?.historyHydrationToken;
+    expect(successorToken).toBeTruthy();
+
+    historyRequests[0]!.resolve(
+      loadedHistory(historyRequests[0]!.payload, [
+        { id: "older", type: "user", data: { content: "older" } },
+      ]),
+    );
+    await older;
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      historyHydrating: true,
+      historyHydrationToken: successorToken,
+    });
+    expect(historyRequests).toHaveLength(2);
+
+    historyRequests[1]!.resolve(
+      loadedHistory(historyRequests[1]!.payload, [
+        { id: "newer", type: "user", data: { content: "newer" } },
+      ]),
+    );
+    await newer;
+    const current = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(current.historyHydrating).toBe(false);
+    expect(current.historyHydrationToken).toBeUndefined();
+    expect(allTranscriptBlocks(current.transcript)).toEqual([
+      expect.objectContaining({ id: "newer" }),
     ]);
   });
 

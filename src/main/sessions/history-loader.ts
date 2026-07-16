@@ -258,6 +258,18 @@ export async function entriesToTranscript(
     }
   }
 
+  // Persisted history is only hydrated once the runtime is idle, so any
+  // unresolved tool call is an interrupted turn, never a live one. Sweep the
+  // blocks rather than toolCallsById because duplicate ids shadow older calls.
+  for (const block of blocks) {
+    if (block.type !== "tool_call") continue;
+    const data = block.data as Record<string, unknown>;
+    if (data["isStreaming"] === true) {
+      data["isStreaming"] = false;
+      data["interrupted"] = true;
+    }
+  }
+
   return blocks;
 }
 

@@ -473,6 +473,11 @@ button.tool-card__header {
   padding: 0.071em 0.429em;
 }
 
+.tool-card__badge--interrupted {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 12%, var(--bg-sunken));
+}
+
 .tool-card__body {
   margin-top: 0.429rem;
   padding-right: 1.714rem; /* leave room for the absolute-positioned expand button */

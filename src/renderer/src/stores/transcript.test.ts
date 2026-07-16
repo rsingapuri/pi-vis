@@ -39,6 +39,45 @@ describe("transcript reducer", () => {
     expect(state.blocks[0]?.type).toBe("user");
   });
 
+  it("settles streaming history blocks and marks them interrupted", () => {
+    const state = seedFromHistory(createTranscriptState(), [
+      {
+        id: "tool-streaming",
+        type: "tool_call",
+        data: {
+          toolCallId: "call-1",
+          toolName: "read",
+          outputText: "",
+          isError: false,
+          isStreaming: true,
+        },
+      },
+      {
+        id: "bash-streaming",
+        type: "bash",
+        data: { command: "sleep 10", outputText: "", isStreaming: true },
+      },
+      {
+        id: "tool-interrupted",
+        type: "tool_call",
+        data: {
+          toolCallId: "call-2",
+          toolName: "write",
+          outputText: "",
+          isError: false,
+          isStreaming: false,
+          interrupted: true,
+        },
+      },
+    ]);
+
+    expect(allTranscriptBlocks(state)).toMatchObject([
+      { type: "tool_call", data: { isStreaming: false, interrupted: true } },
+      { type: "bash", data: { isStreaming: false, interrupted: true } },
+      { type: "tool_call", data: { isStreaming: false, interrupted: true } },
+    ]);
+  });
+
   it("assembles assistant text from deltas", () => {
     let state = createTranscriptState();
     state = applyPiEvent(state, e({ type: "message_start", message: ASST_MSG }));

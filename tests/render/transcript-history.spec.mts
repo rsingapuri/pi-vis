@@ -55,6 +55,134 @@ test("live compaction preserves earlier GUI scrollback", async ({ page }) => {
   await expect(page.getByText(/stream stream stream/)).toBeVisible();
 });
 
+test("authoritative compaction activity uses the working row and clears at idle", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });
+  await page.evaluate(() => {
+    (
+      window as unknown as {
+        __pivisPreview: { replaceCustomEntryRuntime: (available: boolean) => void };
+      }
+    ).__pivisPreview.replaceCustomEntryRuntime(true);
+  });
+  await page.waitForTimeout(100);
+
+  await page.evaluate(() => {
+    type PreviewSession = {
+      authorityProjection?: {
+        authoritativeSnapshot?: Record<string, unknown> & {
+          sdk: Record<string, unknown>;
+          activity: Record<string, unknown>;
+        };
+      };
+    };
+    type PreviewState = { activeSessionId: string; sessions: Map<string, PreviewSession> };
+    type PreviewStore = {
+      getState: () => PreviewState;
+      setState: (update: { sessions: Map<string, PreviewSession> }) => void;
+    };
+    const store = (window as unknown as { __pivisStore: PreviewStore }).__pivisStore;
+    const state = store.getState();
+    const session = state.sessions.get(state.activeSessionId)!;
+    const projection = session.authorityProjection!;
+    const snapshot = projection.authoritativeSnapshot!;
+    const sessions = new Map(state.sessions);
+    sessions.set(state.activeSessionId, {
+      ...session,
+      authorityProjection: {
+        ...projection,
+        authoritativeSnapshot: {
+          ...snapshot,
+          sdk: { ...snapshot.sdk, isCompacting: true },
+          activity: {
+            ...snapshot.activity,
+            compaction: {
+              kind: "compaction",
+              state: "active",
+              attempt: 0,
+              startedAt: Date.now() - 2_000,
+            },
+          },
+        },
+      },
+    });
+    store.setState({ sessions });
+  });
+
+  await expect(page.locator(".working-row")).toContainText("Compacting…");
+
+  await page.evaluate(() => {
+    type PreviewSession = {
+      authorityProjection?: {
+        authoritativeSnapshot?: Record<string, unknown> & {
+          sdk: Record<string, unknown>;
+          activity: Record<string, unknown>;
+        };
+      };
+    };
+    type PreviewState = { activeSessionId: string; sessions: Map<string, PreviewSession> };
+    type PreviewStore = {
+      getState: () => PreviewState;
+      setState: (update: { sessions: Map<string, PreviewSession> }) => void;
+    };
+    const store = (window as unknown as { __pivisStore: PreviewStore }).__pivisStore;
+    const state = store.getState();
+    const session = state.sessions.get(state.activeSessionId)!;
+    const projection = session.authorityProjection!;
+    const snapshot = projection.authoritativeSnapshot!;
+    const sessions = new Map(state.sessions);
+    sessions.set(state.activeSessionId, {
+      ...session,
+      authorityProjection: {
+        ...projection,
+        authoritativeSnapshot: {
+          ...snapshot,
+          sdk: { ...snapshot.sdk, isCompacting: false },
+          activity: { ...snapshot.activity, compaction: undefined },
+        },
+      },
+    });
+    store.setState({ sessions });
+  });
+
+  await expect(page.locator(".working-row")).toHaveCount(0);
+});
+
+test("streaming history tool calls render as interrupted without a spinner", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });
+
+  await page.evaluate(() => {
+    type PreviewState = {
+      activeSessionId: string;
+      seedHistory: (sessionId: string, history: Array<Record<string, unknown>>) => void;
+    };
+    const state = (
+      window as unknown as { __pivisStore: { getState: () => PreviewState } }
+    ).__pivisStore.getState();
+    state.seedHistory(state.activeSessionId, [
+      {
+        id: "interrupted-tool",
+        type: "tool_call",
+        data: {
+          toolCallId: "call-interrupted",
+          toolName: "read",
+          outputText: "",
+          isError: false,
+          isStreaming: true,
+        },
+      },
+    ]);
+  });
+
+  const card = page.locator(".tool-card");
+  await expect(card.locator(".tool-card__spinner")).toHaveCount(0);
+  await expect(card.locator(".tool-card__badge--interrupted")).toHaveText("interrupted");
+  await expect(card).not.toHaveClass(/tool-card--error/);
+});
+
 test("large compact activity stays grouped across the archive/live boundary", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });

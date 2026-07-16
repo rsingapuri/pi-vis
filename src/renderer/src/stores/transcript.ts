@@ -53,12 +53,14 @@ export interface ToolCallBlockData {
   resultDetails?: Record<string, unknown> | undefined;
   isError: boolean;
   isStreaming: boolean;
+  interrupted?: boolean | undefined;
 }
 
 export interface BashBlockData {
   command: string;
   outputText: string;
   isStreaming: boolean;
+  interrupted?: boolean | undefined;
   exitCode?: number | undefined;
 }
 
@@ -228,7 +230,10 @@ function transcriptHasBlockId(state: TranscriptState, id: string): boolean {
   );
 }
 
-export function finalizeActiveBlocks(state: TranscriptState): TranscriptState {
+export function finalizeActiveBlocks(
+  state: TranscriptState,
+  opts: { markInterrupted?: boolean } = {},
+): TranscriptState {
   const activeIds = new Set<string>();
   if (state.activeAssistantId) activeIds.add(state.activeAssistantId);
   if (state.activeBashId) activeIds.add(state.activeBashId);
@@ -244,11 +249,25 @@ export function finalizeActiveBlocks(state: TranscriptState): TranscriptState {
           : block;
       case "tool_call":
         return block.data.isStreaming
-          ? { ...block, data: { ...block.data, isStreaming: false } }
+          ? {
+              ...block,
+              data: {
+                ...block.data,
+                isStreaming: false,
+                interrupted: opts.markInterrupted ? true : block.data.interrupted,
+              },
+            }
           : block;
       case "bash":
         return block.data.isStreaming
-          ? { ...block, data: { ...block.data, isStreaming: false } }
+          ? {
+              ...block,
+              data: {
+                ...block.data,
+                isStreaming: false,
+                interrupted: opts.markInterrupted ? true : block.data.interrupted,
+              },
+            }
           : block;
       default:
         return block;
@@ -338,7 +357,10 @@ export function mapHistoryBlocks(history: TranscriptBlock[]): TypedTranscriptBlo
             patch: d.patch as string | undefined,
             resultDetails: d.resultDetails as Record<string, unknown> | undefined,
             isError: (d.isError as boolean) ?? false,
-            isStreaming: (d.isStreaming as boolean) ?? false,
+            // History is an idle baseline, so a persisted streaming claim is
+            // an interrupted operation rather than a live tool call.
+            isStreaming: false,
+            interrupted: d.interrupted === true || d.isStreaming === true ? true : undefined,
           },
         };
       }
@@ -349,7 +371,10 @@ export function mapHistoryBlocks(history: TranscriptBlock[]): TypedTranscriptBlo
           data: {
             command: (d.command as string) ?? "",
             outputText: (d.outputText as string) ?? "",
-            isStreaming: (d.isStreaming as boolean) ?? false,
+            // History is an idle baseline, so a persisted streaming claim is
+            // an interrupted operation rather than a live bash command.
+            isStreaming: false,
+            interrupted: d.interrupted === true || d.isStreaming === true ? true : undefined,
             exitCode: d.exitCode as number | undefined,
           },
         };

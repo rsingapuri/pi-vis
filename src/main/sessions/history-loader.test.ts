@@ -548,6 +548,67 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
     });
   });
 
+  it("settles an unmatched tool call as interrupted", async () => {
+    const blocks = await entriesToTranscript([
+      {
+        type: "message",
+        id: "a1",
+        timestamp: "t1",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call-1", name: "read", arguments: {} }],
+        },
+      },
+    ]);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.data).toMatchObject({
+      toolCallId: "call-1",
+      isStreaming: false,
+      interrupted: true,
+    });
+  });
+
+  it("marks only unmatched tool calls as interrupted", async () => {
+    const blocks = await entriesToTranscript([
+      {
+        type: "message",
+        id: "a1",
+        timestamp: "t1",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "paired", name: "read", arguments: {} },
+            { type: "toolCall", id: "unpaired", name: "edit", arguments: {} },
+          ],
+        },
+      },
+      {
+        type: "message",
+        id: "tr1",
+        timestamp: "t2",
+        message: {
+          role: "toolResult",
+          toolCallId: "paired",
+          content: [{ type: "text", text: "contents" }],
+        },
+      },
+    ]);
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]?.data).toMatchObject({
+      toolCallId: "paired",
+      outputText: "contents",
+      isStreaming: false,
+    });
+    expect((blocks[0]?.data as Record<string, unknown>)["interrupted"]).toBeUndefined();
+    expect(blocks[1]?.data).toMatchObject({
+      toolCallId: "unpaired",
+      isStreaming: false,
+      interrupted: true,
+    });
+  });
+
   it("matches a duplicate toolCallId to the most recent tool call", async () => {
     const blocks = await entriesToTranscript([
       {
@@ -581,7 +642,11 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
     ]);
 
     expect(blocks).toHaveLength(2);
-    expect(blocks[0]?.data).toMatchObject({ toolName: "first", isStreaming: true });
+    expect(blocks[0]?.data).toMatchObject({
+      toolName: "first",
+      isStreaming: false,
+      interrupted: true,
+    });
     expect(blocks[1]?.data).toMatchObject({
       toolName: "second",
       outputText: "latest output",

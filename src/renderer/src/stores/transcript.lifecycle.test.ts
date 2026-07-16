@@ -7,6 +7,7 @@ import {
   allTranscriptBlocks,
   applyPiEvent,
   createTranscriptState,
+  finalizeActiveBlocks,
   finishBashBlock,
   mapHistoryBlocks,
   seedFromHistory,
@@ -74,6 +75,20 @@ describe("transcript lifecycle invariants", () => {
     expect(state.blocks.at(-1)?.type).toBe("compaction");
   });
 
+  it("marks only active streaming tool and bash blocks interrupted when requested", () => {
+    const state = finalizeActiveBlocks(liveStreams(), { markInterrupted: true });
+
+    for (const block of state.blocks) {
+      if (block.type === "tool_call" || block.type === "bash") {
+        expect(block.data).toMatchObject({ isStreaming: false, interrupted: true });
+      }
+      if (block.type === "assistant") {
+        expect(block.data).toMatchObject({ isStreaming: false });
+        expect(block.data).not.toHaveProperty("interrupted");
+      }
+    }
+  });
+
   it("archives finalized active blocks once, clears active lifecycle ids, and preserves echo custody", () => {
     const before = liveStreams();
     const state = applyPiEvent(before, e({ type: "compaction_end", result: { summary: "done" } }));
@@ -89,6 +104,9 @@ describe("transcript lifecycle invariants", () => {
     for (const block of state.archivedBlockChunks[0] ?? []) {
       if (block.type === "assistant" || block.type === "tool_call" || block.type === "bash") {
         expect(block.data.isStreaming).toBe(false);
+      }
+      if (block.type === "tool_call" || block.type === "bash") {
+        expect(block.data.interrupted).toBeUndefined();
       }
     }
     expect(state.blocks).toHaveLength(1);

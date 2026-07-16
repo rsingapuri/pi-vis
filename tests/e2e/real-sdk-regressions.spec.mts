@@ -451,6 +451,9 @@ test.describe("Pinned real Pi 0.80.6 regressions", () => {
         expect(JSON.stringify(provider.requests[2]!.parsedBody).toLowerCase()).toContain("summary");
         await expect(window.getByText(WRONG_COMPACT, { exact: true })).toHaveCount(0);
         await expect(window.getByText("Context compacted", { exact: false })).toHaveCount(0);
+        await expect(window.locator(".working-row")).toContainText("Compacting…", {
+          timeout: 30_000,
+        });
         // Admission transfers command custody immediately. It must not remain
         // in the editor while the native compact request is in flight.
         await expect(textarea).toHaveValue("");
@@ -471,6 +474,12 @@ test.describe("Pinned real Pi 0.80.6 regressions", () => {
         await expect(window.getByText("Context compacted", { exact: false }).first()).toBeVisible({
           timeout: 60_000,
         });
+        // The summary must materialize in the live transcript; no session
+        // switch/reopen is allowed to repair the presentation first.
+        await expect(
+          window.getByText("REAL-REGRESSION-COMPACT-SUMMARY", { exact: false }).first(),
+        ).toBeVisible({ timeout: 60_000 });
+        await expect(window.locator(".working-row")).toHaveCount(0);
         await expect(window.getByText(/Compaction failed|Nothing to compact/)).toHaveCount(0);
         await expect(textarea).toHaveValue("");
         await expect

@@ -13,6 +13,7 @@ import { ModelInfoSchema } from "@shared/pi-protocol/responses.js";
 import type {
   AgentSessionSnapshot,
   AuthorityAttachResponse,
+  CompactionActivity,
   IntentOutcome,
   RendererPublication,
   RuntimeIdentity,
@@ -291,6 +292,20 @@ export interface SessionViewState {
   historyGeneration: number;
   /** True while complete persisted transcript hydration is in progress. */
   historyHydrating?: boolean | undefined;
+  /** Owner token preventing an older full-history read from clearing a successor marker. */
+  historyHydrationToken?: string | undefined;
+  /** Number of transcript-plane entries rejected by presentation parsing/filtering. */
+  droppedTranscriptEntryCount: number;
+  /** Persisted presentation may be newer than the materialized transcript. */
+  transcriptPresentationDirty?: boolean | undefined;
+  /** Monotonic fence for drops that do not change the transcript object identity. */
+  transcriptPresentationRevision: number;
+  /** Bounded owner-qualified compaction operations already checked for a result block. */
+  reconciledCompactionOperationIds: string[];
+  /** Result-block count captured when each observed live compaction began. */
+  compactionOperationBlockBaselines: Record<string, number>;
+  /** Completed operations waiting for the ordered transcript delta and next idle frame. */
+  pendingCompactionReconciliations: Record<string, number | null>;
   /** True for a brand-new session (created without a session file) that
    *  has not yet sent its first message. Such sessions are hidden from
    *  the sidebar (the "+ New session" button shows as selected instead)
@@ -526,6 +541,21 @@ export function isSessionWorking(session: SessionViewState | undefined): boolean
   return authoritySnapshotFor(session)?.sdk.isStreaming === true;
 }
 
+export function sessionCompactionActivity(
+  session: SessionViewState | undefined,
+): CompactionActivity | undefined {
+  const snapshot = authoritySnapshotFor(session);
+  if (!snapshot) return undefined;
+  return (
+    snapshot.activity.compaction ??
+    (snapshot.sdk.isCompacting ? { kind: "compaction", state: "active", attempt: 0 } : undefined)
+  );
+}
+
+function isSessionHistoryBusy(session: SessionViewState | undefined): boolean {
+  return isSessionWorking(session) || sessionCompactionActivity(session) !== undefined;
+}
+
 function authorityObservation(session: SessionViewState) {
   const snapshot = authoritySnapshotFor(session);
   const semantic = session.authorityProjection;
@@ -649,7 +679,7 @@ async function waitForHistoryHydrationIdle(
         finish(false);
         return;
       }
-      if (!isSessionWorking(session)) finish(true);
+      if (!isSessionHistoryBusy(session)) finish(true);
     };
     const timer = globalThis.setTimeout(() => finish(false), timeoutMs);
     unsubscribe = useSessionsStore.subscribe(inspect);
@@ -678,7 +708,9 @@ async function requestBoundHistory(
 }
 
 export function shouldShowWorkingIndicator(session: SessionViewState | undefined): boolean {
-  if (!session || !isSessionWorking(session)) return false;
+  if (!session) return false;
+  if (sessionCompactionActivity(session)) return true;
+  if (!isSessionWorking(session)) return false;
   const extensionUiActive = session.pendingDialogs.length > 0 || session.panel != null;
   return !extensionUiActive || hasActiveAgentWork(session);
 }
@@ -1097,13 +1129,19 @@ interface SessionsStore {
   ) => void;
   applyEvent: (sessionId: SessionId, event: PiEvent) => void;
   applyEvents: (sessionId: SessionId, events: PiEvent[]) => void;
-  seedHistory: (sessionId: SessionId, history: TranscriptBlock[]) => void;
+  seedHistory: (
+    sessionId: SessionId,
+    history: TranscriptBlock[],
+    opts?: { hydrationToken?: string },
+  ) => void;
   /** Replace only the visible transcript from a completed, owner-bound tree navigation. */
   replaceTranscriptForNavigate: (
     sessionId: SessionId,
     outcome: Extract<IntentOutcome, { kind: "navigate" }>,
     history: TranscriptBlock[],
   ) => boolean;
+  /** Rebuild presentation from persisted JSONL under history ownership and idle fences. */
+  rehydrateHistory: (sessionId: SessionId) => Promise<void>;
   refreshHistoricalCacheMissNotices: (sessionId: SessionId) => Promise<void>;
   addUserMessage: (
     sessionId: SessionId,
@@ -1346,6 +1384,43 @@ function appendUnifiedReplayBuffer(buffer: string[], data: string): string[] {
 type SessionsSet = Parameters<StateCreator<SessionsStore>>[0];
 type SessionsGet = Parameters<StateCreator<SessionsStore>>[1];
 
+function recentCompactionBlockCount(state: TranscriptState): number {
+  const newestArchiveCount =
+    state.archivedBlockChunks.at(-1)?.filter((block) => block.type === "compaction").length ?? 0;
+  return newestArchiveCount + state.blocks.filter((block) => block.type === "compaction").length;
+}
+
+function observedCompactionKey(
+  operation: SemanticSnapshot["recentObservedOperations"][number],
+): string {
+  return `${operation.owner.hostInstanceId}\u0000${operation.owner.sessionEpoch}\u0000${operation.operationId}`;
+}
+
+const scheduledPresentationRehydrates = new Set<SessionId>();
+let historyHydrationCounter = 0;
+
+function newHistoryHydrationToken(): string {
+  return `history-${++historyHydrationCounter}`;
+}
+
+function schedulePresentationRehydrateIfIdle(sessionId: SessionId): void {
+  const session = useSessionsStore.getState().sessions.get(sessionId);
+  if (
+    !session?.sessionFile ||
+    !session.transcriptPresentationDirty ||
+    session.historyHydrating ||
+    isSessionHistoryBusy(session) ||
+    scheduledPresentationRehydrates.has(sessionId)
+  ) {
+    return;
+  }
+  scheduledPresentationRehydrates.add(sessionId);
+  queueMicrotask(() => {
+    scheduledPresentationRehydrates.delete(sessionId);
+    void useSessionsStore.getState().rehydrateHistory(sessionId);
+  });
+}
+
 const buildSessionsStore = (
   set: SessionsSet,
   get: SessionsGet,
@@ -1497,6 +1572,13 @@ const buildSessionsStore = (
         hasTreeHistory: false,
         historyGeneration: 0,
         historyHydrating: false,
+        historyHydrationToken: undefined,
+        droppedTranscriptEntryCount: 0,
+        transcriptPresentationDirty: false,
+        transcriptPresentationRevision: 0,
+        reconciledCompactionOperationIds: [],
+        compactionOperationBlockBaselines: {},
+        pendingCompactionReconciliations: {},
         // Bootstrap hasn't run yet — it fires once when the session goes live.
         modelInitialized: false,
       });
@@ -1593,7 +1675,9 @@ const buildSessionsStore = (
         // Only store piVersion when explicitly provided (a non-host "ready"
         // or a status change without version info mustn't clobber a prior
         // value). See P1-c.
-        const transcript = becomingTerminal ? finalizeActiveBlocks(s.transcript) : s.transcript;
+        const transcript = becomingTerminal
+          ? finalizeActiveBlocks(s.transcript, { markInterrupted: true })
+          : s.transcript;
         const runtime = becomingTerminal || status === "starting" ? resetRuntimeState(s) : s;
         const authorityProjection =
           becomingTerminal || status === "starting"
@@ -1623,10 +1707,35 @@ const buildSessionsStore = (
   },
 
   applyEvents: (sessionId, rawEvents) => {
+    const unknownEvents = rawEvents.filter((rawEvent) => "__unknown" in rawEvent);
+    for (const event of unknownEvents) {
+      console.warn("Dropped unknown transcript-plane entry", {
+        sessionId,
+        type: event.type,
+        reason: "unknown_event_type",
+      });
+    }
+    if (unknownEvents.length > 0) {
+      set((state) => {
+        const current = state.sessions.get(sessionId);
+        if (!current) return {};
+        const sessions = new Map(state.sessions);
+        sessions.set(sessionId, {
+          ...current,
+          droppedTranscriptEntryCount: current.droppedTranscriptEntryCount + unknownEvents.length,
+          transcriptPresentationDirty: true,
+          transcriptPresentationRevision: current.transcriptPresentationRevision + 1,
+        });
+        return { sessions };
+      });
+    }
     const events = rawEvents.filter(
       (rawEvent): rawEvent is KnownPiEvent => !("__unknown" in rawEvent),
     );
-    if (events.length === 0) return;
+    if (events.length === 0) {
+      schedulePresentationRehydrateIfIdle(sessionId);
+      return;
+    }
 
     set((state) => {
       const sessions = new Map(state.sessions);
@@ -1718,19 +1827,26 @@ const buildSessionsStore = (
         ? { sessions, newSessionDrafts, newSessionSetupDrafts, sessionDrafts }
         : { sessions };
     });
+    schedulePresentationRehydrateIfIdle(sessionId);
   },
 
-  seedHistory: (sessionId, history) => {
+  seedHistory: (sessionId, history, opts) => {
     set((state) => {
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
-      if (!s) return {};
+      if (
+        !s ||
+        (opts?.hydrationToken !== undefined && s.historyHydrationToken !== opts.hydrationToken)
+      )
+        return {};
       const transcript = seedFromHistory(s.transcript, history);
       sessions.set(sessionId, {
         ...s,
         transcript,
         historyHydrating: false,
+        historyHydrationToken: undefined,
         historyGeneration: s.historyGeneration + 1,
+        transcriptPresentationDirty: false,
         hasTreeHistory: s.hasTreeHistory || history.length > 0,
       });
       return { sessions };
@@ -1777,6 +1893,82 @@ const buildSessionsStore = (
       return { sessions };
     });
     return replaced;
+  },
+
+  rehydrateHistory: async (sessionId) => {
+    const initial = get().sessions.get(sessionId);
+    if (!initial?.sessionFile || initial.historyHydrating) return;
+    const hydrationToken = newHistoryHydrationToken();
+    set((state) => {
+      const sessions = new Map(state.sessions);
+      const session = sessions.get(sessionId);
+      if (!session?.sessionFile || session.historyHydrating) return {};
+      sessions.set(sessionId, {
+        ...session,
+        historyHydrating: true,
+        historyHydrationToken: hydrationToken,
+      });
+      return { sessions };
+    });
+    let retryAfterFinish = false;
+    try {
+      // Renderer attach and live events can race a large file read. Read only
+      // while both model work and compaction are idle, require the transcript
+      // to remain unchanged, and retry only against a newly installed owner.
+      let historyCapture = captureHistoryRead(get().sessions.get(sessionId));
+      while (historyCapture) {
+        const beforeRead = get().sessions.get(sessionId);
+        if (beforeRead?.historyHydrationToken !== hydrationToken) return;
+        if (!historyCaptureMatches(beforeRead, historyCapture)) {
+          historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
+          continue;
+        }
+        if (isSessionHistoryBusy(beforeRead)) {
+          if (await waitForHistoryHydrationIdle(sessionId, historyCapture)) continue;
+          historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
+          continue;
+        }
+        const transcriptAtRequest = beforeRead?.transcript;
+        const presentationRevisionAtRequest = beforeRead?.transcriptPresentationRevision;
+        const history = await requestBoundHistory(sessionId, historyCapture);
+        if (!history) {
+          historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
+          continue;
+        }
+        const current = get().sessions.get(sessionId);
+        if (current?.historyHydrationToken !== hydrationToken) return;
+        if (!historyCaptureMatches(current, historyCapture)) {
+          historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
+          continue;
+        }
+        if (
+          current?.transcript !== transcriptAtRequest ||
+          current?.transcriptPresentationRevision !== presentationRevisionAtRequest
+        ) {
+          retryAfterFinish = true;
+          if (await waitForHistoryHydrationIdle(sessionId, historyCapture)) continue;
+          historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
+          continue;
+        }
+        get().seedHistory(sessionId, history, { hydrationToken });
+        break;
+      }
+    } catch {
+      /* stale or unavailable history — presentation remains dirty for a later boundary */
+    } finally {
+      set((state) => {
+        const sessions = new Map(state.sessions);
+        const session = sessions.get(sessionId);
+        if (!session || session.historyHydrationToken !== hydrationToken) return {};
+        sessions.set(sessionId, {
+          ...session,
+          historyHydrating: false,
+          historyHydrationToken: undefined,
+        });
+        return { sessions };
+      });
+      if (retryAfterFinish) schedulePresentationRehydrateIfIdle(sessionId);
+    }
   },
 
   refreshHistoricalCacheMissNotices: async (sessionId) => {
@@ -2007,14 +2199,18 @@ const buildSessionsStore = (
     // message emitted during attach vanishes while the later assistant delta is
     // rendered. Parse before the atomic commit and apply only if the transcript
     // plane accepts the attach.
-    const replayEvents = response.replay.flatMap((publication) =>
+    const replayTranscriptEntries = response.replay.flatMap((publication) =>
       publication.plane === "transcript" && publication.payload.kind === "delta"
-        ? publication.payload.entries.flatMap((entry) => {
-            const parsed = PiEventSchema.safeParse(entry);
-            return parsed.success ? [parsed.data] : [];
-          })
+        ? publication.payload.entries
         : [],
     );
+    const invalidReplayEntries: unknown[] = [];
+    const replayEvents = replayTranscriptEntries.flatMap((entry) => {
+      const parsed = PiEventSchema.safeParse(entry);
+      if (parsed.success) return [parsed.data];
+      invalidReplayEntries.push(entry);
+      return [];
+    });
     let following = false;
     let transcriptFollowing = false;
     runAtomically(() => {
@@ -2044,6 +2240,9 @@ const buildSessionsStore = (
         const authorityPanels = [...authorityProjection.panels.values()];
         const customPanel = authorityPanels.find((panel) => !panel.baseline.unified);
         const unifiedPanel = authorityPanels.find((panel) => panel.baseline.unified);
+        const droppedReplayCount = transcriptFollowing
+          ? invalidReplayEntries.length
+          : replayTranscriptEntries.length;
         sessions.set(sessionId, {
           ...appendQueueRestorations(
             applyAuthoritySemanticProjection(current, authorityProjection),
@@ -2108,6 +2307,11 @@ const buildSessionsStore = (
                 })),
               }
             : {}),
+          droppedTranscriptEntryCount: current.droppedTranscriptEntryCount + droppedReplayCount,
+          transcriptPresentationDirty:
+            current.transcriptPresentationDirty || droppedReplayCount > 0,
+          transcriptPresentationRevision:
+            current.transcriptPresentationRevision + (droppedReplayCount > 0 ? 1 : 0),
         });
         return { sessions };
       });
@@ -2115,6 +2319,21 @@ const buildSessionsStore = (
         get().applyEvents(sessionId, replayEvents);
       }
     });
+    const droppedReplayEntries = transcriptFollowing
+      ? invalidReplayEntries
+      : replayTranscriptEntries;
+    for (const entry of droppedReplayEntries) {
+      const type =
+        entry && typeof entry === "object" && "type" in entry
+          ? String((entry as { type?: unknown }).type ?? "unknown")
+          : "unknown";
+      console.warn("Dropped transcript attach-replay entry", {
+        sessionId,
+        type,
+        reason: transcriptFollowing ? "schema_validation_failed" : "attach_not_following",
+      });
+    }
+    schedulePresentationRehydrateIfIdle(sessionId);
     if (following && get().sessions.get(sessionId)?.status === "ready") {
       void get().refreshCommands(sessionId);
     }
@@ -2124,13 +2343,17 @@ const buildSessionsStore = (
     const sessionId = publication.sessionId as SessionId;
     // Transcript is a separate presentation plane. Semantic frames intentionally
     // carry no Pi event records, so no event can become a liveness authority.
-    const events =
+    const transcriptEntries =
       publication.plane === "transcript" && publication.payload.kind === "delta"
-        ? publication.payload.entries.flatMap((entry) => {
-            const parsed = PiEventSchema.safeParse(entry);
-            return parsed.success ? [parsed.data] : [];
-          })
+        ? publication.payload.entries
         : [];
+    const invalidTranscriptEntries: unknown[] = [];
+    const events = transcriptEntries.flatMap((entry) => {
+      const parsed = PiEventSchema.safeParse(entry);
+      if (parsed.success) return [parsed.data];
+      invalidTranscriptEntries.push(entry);
+      return [];
+    });
     const uiRequest =
       publication.plane === "extensionUi" && publication.payload.kind === "request"
         ? publication.payload.request
@@ -2146,6 +2369,7 @@ const buildSessionsStore = (
     // renderer commit. The transcript remains presentation-only, but cannot
     // visually race the cursor that names its semantic boundary.
     let accepted = false;
+    let authorityRejectedTranscript = false;
     runAtomically(() => {
       set((state) => {
         const current = state.sessions.get(sessionId);
@@ -2182,6 +2406,85 @@ const buildSessionsStore = (
         const authorityPanels = [...authorityProjection.panels.values()];
         const customPanel = authorityPanels.find((panel) => !panel.baseline.unified);
         const unifiedPanel = authorityPanels.find((panel) => panel.baseline.unified);
+        authorityRejectedTranscript =
+          publication.plane === "transcript" && !accepted && transcriptEntries.length > 0;
+        const droppedCount =
+          publication.plane === "transcript"
+            ? accepted
+              ? invalidTranscriptEntries.length
+              : transcriptEntries.length
+            : 0;
+        const observedCompactions =
+          accepted && publication.plane === "semantic"
+            ? (authorityProjection.authoritativeSnapshot?.recentObservedOperations ?? []).filter(
+                (operation) => operation.kind === "compaction",
+              )
+            : [];
+        const compactionBlockCount = recentCompactionBlockCount(current.transcript);
+        const semanticSnapshot = authorityProjection.authoritativeSnapshot;
+        const reachedIdleBoundary =
+          accepted &&
+          publication.plane === "semantic" &&
+          !!semanticSnapshot &&
+          !semanticSnapshot.sdk.isStreaming &&
+          !semanticSnapshot.sdk.isCompacting &&
+          semanticSnapshot.activity.compaction === undefined;
+        let pendingCompactionReconciliations = current.pendingCompactionReconciliations;
+        let reconciledCompactionOperationIds = current.reconciledCompactionOperationIds;
+        let compactionResultMissing = false;
+        if (
+          reachedIdleBoundary &&
+          Object.keys(current.pendingCompactionReconciliations).length > 0
+        ) {
+          const settled = Object.entries(current.pendingCompactionReconciliations);
+          compactionResultMissing = settled.some(
+            ([, baseline]) => baseline === null || compactionBlockCount <= baseline,
+          );
+          reconciledCompactionOperationIds = [
+            ...current.reconciledCompactionOperationIds,
+            ...settled.map(([operationKey]) => operationKey),
+          ].slice(-128);
+          pendingCompactionReconciliations = {};
+        }
+
+        let compactionOperationBlockBaselines = current.compactionOperationBlockBaselines;
+        const terminalStates = new Set(["completed", "aborted", "failed", "unknown"]);
+        for (const operation of observedCompactions) {
+          const operationKey = observedCompactionKey(operation);
+          if (
+            !terminalStates.has(operation.state) &&
+            compactionOperationBlockBaselines[operationKey] === undefined
+          ) {
+            compactionOperationBlockBaselines = {
+              ...compactionOperationBlockBaselines,
+              [operationKey]: compactionBlockCount,
+            };
+            continue;
+          }
+          if (!terminalStates.has(operation.state)) continue;
+          const baseline = compactionOperationBlockBaselines[operationKey];
+          if (baseline !== undefined) {
+            const { [operationKey]: _settled, ...remainingBaselines } =
+              compactionOperationBlockBaselines;
+            compactionOperationBlockBaselines = remainingBaselines;
+          }
+          if (
+            operation.state === "completed" &&
+            !reconciledCompactionOperationIds.includes(operationKey) &&
+            pendingCompactionReconciliations[operationKey] === undefined
+          ) {
+            pendingCompactionReconciliations = {
+              ...pendingCompactionReconciliations,
+              [operationKey]: baseline ?? null,
+            };
+          }
+        }
+        compactionOperationBlockBaselines = Object.fromEntries(
+          Object.entries(compactionOperationBlockBaselines).slice(-128),
+        );
+        pendingCompactionReconciliations = Object.fromEntries(
+          Object.entries(pendingCompactionReconciliations).slice(-128),
+        );
         sessions.set(sessionId, {
           ...appendQueueRestorations(
             applyAuthoritySemanticProjection(current, authorityProjection),
@@ -2231,12 +2534,38 @@ const buildSessionsStore = (
                 syncState: unifiedPanel.sync.state,
               }
             : undefined,
+          droppedTranscriptEntryCount: current.droppedTranscriptEntryCount + droppedCount,
+          transcriptPresentationDirty:
+            current.transcriptPresentationDirty || droppedCount > 0 || compactionResultMissing,
+          transcriptPresentationRevision:
+            current.transcriptPresentationRevision +
+            (droppedCount > 0 || compactionResultMissing ? 1 : 0),
+          reconciledCompactionOperationIds,
+          compactionOperationBlockBaselines,
+          pendingCompactionReconciliations,
         });
         return { sessions };
       });
       if (accepted && events.length > 0) get().applyEvents(sessionId, events);
       if (accepted && uiRequest) get().addUiRequest(sessionId, uiRequest);
     });
+    const droppedEntries = authorityRejectedTranscript
+      ? transcriptEntries
+      : accepted
+        ? invalidTranscriptEntries
+        : [];
+    for (const entry of droppedEntries) {
+      const type =
+        entry && typeof entry === "object" && "type" in entry
+          ? String((entry as { type?: unknown }).type ?? "unknown")
+          : "unknown";
+      console.warn("Dropped transcript-plane entry", {
+        sessionId,
+        type,
+        reason: authorityRejectedTranscript ? "authority_rejected" : "schema_validation_failed",
+      });
+    }
+    if (accepted || authorityRejectedTranscript) schedulePresentationRehydrateIfIdle(sessionId);
   },
 
   markAuthorityUnavailable: (sessionId, reason) => {
@@ -3370,6 +3699,7 @@ const buildSessionsStore = (
         hasTreeHistory: false,
         historyGeneration: s.historyGeneration + 1,
         historyHydrating: false,
+        historyHydrationToken: undefined,
         unreadStatus: undefined,
         turnErrored: false,
       };
@@ -3397,31 +3727,65 @@ const buildSessionsStore = (
     await get().adoptSessionFile(sessionId, sessionFile, sessionName);
     if (!continuationGuard()) return;
     if (!sessionFile) return;
+    const hydrationToken = newHistoryHydrationToken();
     // Initial hydration replaces the transcript. If transcript events race
     // the file read, never overwrite them with overlapping persisted history:
     // wait for the authoritative turn to become idle and reread until
-    // the transcript remains unchanged for the entire request.
-    while (continuationGuard()) {
-      const beforeRead = get().sessions.get(sessionId);
-      const historyCapture = captureHistoryRead(beforeRead, expectedRuntime);
-      if (!historyCapture) return;
-      if (isSessionWorking(beforeRead)) {
-        if (!(await waitForHistoryHydrationIdle(sessionId, historyCapture))) return;
-        continue;
+    // the transcript and presentation-dirty revision remain unchanged.
+    set((state) => {
+      const current = state.sessions.get(sessionId);
+      if (!current) return {};
+      const sessions = new Map(state.sessions);
+      sessions.set(sessionId, {
+        ...current,
+        historyHydrating: true,
+        historyHydrationToken: hydrationToken,
+      });
+      return { sessions };
+    });
+    try {
+      while (continuationGuard()) {
+        const beforeRead = get().sessions.get(sessionId);
+        if (beforeRead?.historyHydrationToken !== hydrationToken) return;
+        const historyCapture = captureHistoryRead(beforeRead, expectedRuntime);
+        if (!historyCapture) return;
+        if (isSessionHistoryBusy(beforeRead)) {
+          if (!(await waitForHistoryHydrationIdle(sessionId, historyCapture))) return;
+          continue;
+        }
+        const transcriptAtRequest = beforeRead?.transcript;
+        const presentationRevisionAtRequest = beforeRead?.transcriptPresentationRevision;
+        const history = await requestBoundHistory(sessionId, historyCapture);
+        if (!history || !continuationGuard()) return;
+        const current = get().sessions.get(sessionId);
+        if (current?.historyHydrationToken !== hydrationToken) return;
+        if (!historyCaptureMatches(current, historyCapture)) return;
+        if (
+          isSessionHistoryBusy(current) ||
+          current?.transcript !== transcriptAtRequest ||
+          current?.transcriptPresentationRevision !== presentationRevisionAtRequest
+        ) {
+          if (!(await waitForHistoryHydrationIdle(sessionId, historyCapture))) return;
+          continue;
+        }
+        get().seedHistory(sessionId, history, { hydrationToken });
+        const workspacePath = current?.workspacePath;
+        if (workspacePath) void get().refreshWorkspaceSessions(workspacePath);
+        return;
       }
-      const transcriptAtRequest = beforeRead?.transcript;
-      const history = await requestBoundHistory(sessionId, historyCapture);
-      if (!history || !continuationGuard()) return;
-      const current = get().sessions.get(sessionId);
-      if (!historyCaptureMatches(current, historyCapture)) return;
-      if (current?.transcript !== transcriptAtRequest) {
-        if (!(await waitForHistoryHydrationIdle(sessionId, historyCapture))) return;
-        continue;
-      }
-      get().seedHistory(sessionId, history);
-      const workspacePath = current?.workspacePath;
-      if (workspacePath) void get().refreshWorkspaceSessions(workspacePath);
-      return;
+    } finally {
+      set((state) => {
+        const current = state.sessions.get(sessionId);
+        if (!current || current.historyHydrationToken !== hydrationToken) return {};
+        const sessions = new Map(state.sessions);
+        sessions.set(sessionId, {
+          ...current,
+          historyHydrating: false,
+          historyHydrationToken: undefined,
+        });
+        return { sessions };
+      });
+      schedulePresentationRehydrateIfIdle(sessionId);
     }
   },
 
@@ -3747,63 +4111,7 @@ const buildSessionsStore = (
       // Persisted hydration is deliberately concurrent with activation: large
       // JSONL conversion yields in main, and the tab must become interactive
       // before the complete scrollback has arrived.
-      const hydrate = async (): Promise<void> => {
-        if (!sessionFile) return;
-        set((state) => {
-          const sessions = new Map(state.sessions);
-          const session = sessions.get(sessionId);
-          if (!session) return {};
-          sessions.set(sessionId, { ...session, historyHydrating: true });
-          return { sessions };
-        });
-        try {
-          // Renderer attach and live events can race a large file read. Read
-          // only while idle, require the transcript to remain unchanged for the
-          // request, and retry against a newly installed owner.
-          let historyCapture = captureHistoryRead(get().sessions.get(sessionId));
-          while (historyCapture) {
-            const beforeRead = get().sessions.get(sessionId);
-            if (!historyCaptureMatches(beforeRead, historyCapture)) {
-              historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
-              continue;
-            }
-            if (isSessionWorking(beforeRead)) {
-              if (await waitForHistoryHydrationIdle(sessionId, historyCapture)) continue;
-              historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
-              continue;
-            }
-            const transcriptAtRequest = beforeRead?.transcript;
-            const history = await requestBoundHistory(sessionId, historyCapture);
-            if (!history) {
-              historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
-              continue;
-            }
-            const current = get().sessions.get(sessionId);
-            if (!historyCaptureMatches(current, historyCapture)) {
-              historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
-              continue;
-            }
-            if (current?.transcript !== transcriptAtRequest) {
-              if (await waitForHistoryHydrationIdle(sessionId, historyCapture)) continue;
-              historyCapture = await waitForHistoryOwnershipChange(sessionId, historyCapture);
-              continue;
-            }
-            get().seedHistory(sessionId, history);
-            break;
-          }
-        } catch {
-          /* stale or unavailable history — fine */
-        } finally {
-          set((state) => {
-            const sessions = new Map(state.sessions);
-            const session = sessions.get(sessionId);
-            if (!session) return {};
-            sessions.set(sessionId, { ...session, historyHydrating: false });
-            return { sessions };
-          });
-        }
-      };
-      const hydration = hydrate();
+      const hydration = sessionFile ? get().rehydrateHistory(sessionId) : Promise.resolve();
       if (focus) {
         if (opts?.requestComposerFocus) get().requestComposerFocus(sessionId);
         if (!(await get().setActiveSession(sessionId))) {
