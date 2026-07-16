@@ -68,6 +68,7 @@ export function assertHostCapabilities(session, runtime) {
   );
   fn(session?.resourceLoader, "getSkills", "session.resourceLoader.getSkills");
   fn(session?.sessionManager, "getLeafId", "session.sessionManager.getLeafId");
+  fn(session?.sessionManager, "getBranch", "session.sessionManager.getBranch");
 
   for (const m of [
     "newSession",
@@ -955,12 +956,24 @@ export function setupCommandBridge({
             .runNavigation(() =>
               _session.navigateTree(intent.targetId, { summarize: intent.summarize }),
             )
-            .then((result) => ({
-              targetId: intent.targetId,
-              ...(typeof result?.summaryEntry === "object" ? { summarized: true } : {}),
-              ...(result?.cancelled === true ? { cancelled: true } : {}),
-              ...(result?.aborted === true ? { aborted: true } : {}),
-            }));
+            .then((result) => {
+              const cancelled = result?.cancelled === true || result?.aborted === true;
+              return {
+                targetId: intent.targetId,
+                ...(typeof result?.summaryEntry === "object" ? { summarized: true } : {}),
+                ...(result?.cancelled === true ? { cancelled: true } : {}),
+                ...(result?.aborted === true ? { aborted: true } : {}),
+                // Read post-navigation state only after Pi has settled the
+                // navigation. getBranch() is the public root-to-leaf,
+                // in-memory branch; copying it makes the authority outcome
+                // serializable without relying on the session file.
+                ...(!cancelled && typeof result?.editorText === "string"
+                  ? { editorText: result.editorText }
+                  : {}),
+                ...(!cancelled ? { leafId: _session.sessionManager.getLeafId() } : {}),
+                ...(!cancelled ? { branch: [..._session.sessionManager.getBranch()] } : {}),
+              };
+            });
         case "setModel": {
           const models = await _session.modelRegistry.getAvailable();
           const model = models.find(

@@ -83,7 +83,7 @@ function makeSession(overrides = {}) {
       getRegisteredCommands: vi.fn(() => []),
     },
     resourceLoader: { getSkills: vi.fn(() => ({ skills: [] })) },
-    sessionManager: { getLeafId: vi.fn(() => "leaf-9") },
+    sessionManager: { getLeafId: vi.fn(() => "leaf-9"), getBranch: vi.fn(() => []) },
     settingsManager: { setEnabledModels: vi.fn(), getEnabledModels: vi.fn(() => undefined) },
     scopedModels: [],
     setScopedModels: vi.fn(),
@@ -500,6 +500,75 @@ describe("setupCommandBridge — target intent dispatch", () => {
     // renderer-selected PiRpcCommand type enters this dispatch.
     expect(session.prompt).toHaveBeenCalledWith("/extension arg", expect.any(Object));
     expect(runtime.newSession).not.toHaveBeenCalled();
+  });
+
+  it("publishes navigate intent post-state only after successful Pi navigation", async () => {
+    const sendFrame = vi.fn();
+    const branch = [
+      { id: "root", type: "message", timestamp: 1 },
+      { id: "leaf-9", type: "message", parentId: "root", timestamp: 2 },
+    ];
+    const navigateTree = vi
+      .fn()
+      .mockResolvedValueOnce({ cancelled: false, editorText: "restored draft", summaryEntry: {} })
+      .mockResolvedValueOnce({ cancelled: true, editorText: "stale draft" });
+    const getLeafId = vi.fn(() => "leaf-9");
+    const getBranch = vi.fn(() => branch);
+    const { dispatchIntent } = setup(
+      { navigateTree, sessionManager: { getLeafId, getBranch } },
+      { sendFrame },
+    );
+    const envelope = (intentId) => ({
+      intentId,
+      expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+      intent: { kind: "navigate", targetId: "leaf-9", summarize: true },
+    });
+
+    await expect(dispatchIntent(envelope("navigate-success"))).resolves.toMatchObject({
+      status: "admitted",
+    });
+    await vi.waitFor(() =>
+      expect(sendFrame.mock.calls.flatMap(([frame]) => frame.records)).toContainEqual(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({
+            intentId: "navigate-success",
+            kind: "navigate",
+            state: "completed",
+            result: {
+              targetId: "leaf-9",
+              summarized: true,
+              editorText: "restored draft",
+              leafId: "leaf-9",
+              branch,
+            },
+          }),
+        }),
+      ),
+    );
+    expect(getLeafId).toHaveBeenCalledOnce();
+    expect(getBranch).toHaveBeenCalledOnce();
+
+    await expect(dispatchIntent(envelope("navigate-cancelled"))).resolves.toMatchObject({
+      status: "admitted",
+    });
+    await vi.waitFor(() =>
+      expect(sendFrame.mock.calls.flatMap(([frame]) => frame.records)).toContainEqual(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: {
+            intentId: "navigate-cancelled",
+            owner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+            kind: "navigate",
+            state: "cancelled",
+            result: { targetId: "leaf-9" },
+          },
+        }),
+      ),
+    );
+    expect(getLeafId).toHaveBeenCalledOnce();
+    expect(getBranch).toHaveBeenCalledOnce();
+    expect(sendFrame.mock.calls.map(([frame]) => frame).every((frame) => AuthorityFrameSchema.safeParse(frame).success)).toBe(true);
   });
 
   it("runs replacement built-ins through runtime, emits one predecessor outcome, and follows with a valid successor frame", async () => {

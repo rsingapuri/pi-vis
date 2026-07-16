@@ -1781,6 +1781,64 @@ describe("state authority", () => {
     );
   });
 
+  it("retains successful navigate post-state but omits it for cancelled navigation", async () => {
+    const sendFrame = vi.fn();
+    const { authority } = setup({}, { sendFrame });
+    const owner = { hostInstanceId: "host-1", sessionEpoch: 0 };
+    const envelope = (intentId) => ({
+      intentId,
+      expectedOwner: owner,
+      intent: { kind: "navigate", targetId: "target-a", summarize: true },
+    });
+
+    await authority.dispatchIntent(envelope("navigate-success"), async () => ({
+      targetId: "target-a",
+      summarized: true,
+      editorText: "draft from target",
+      leafId: "leaf-a",
+      branch: [{ id: "root-a", type: "message", timestamp: 1 }],
+    }));
+    await vi.waitFor(() =>
+      expect(sendFrame.mock.calls.flatMap(([frame]) => frame.records)).toContainEqual(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({
+            intentId: "navigate-success",
+            state: "completed",
+            result: {
+              targetId: "target-a",
+              summarized: true,
+              editorText: "draft from target",
+              leafId: "leaf-a",
+              branch: [{ id: "root-a", type: "message", timestamp: 1 }],
+            },
+          }),
+        }),
+      ),
+    );
+
+    await authority.dispatchIntent(envelope("navigate-cancelled"), async () => ({
+      targetId: "target-a",
+      cancelled: true,
+      branch: [{ id: "stale", type: "message" }],
+    }));
+    await vi.waitFor(() =>
+      expect(sendFrame.mock.calls.flatMap(([frame]) => frame.records)).toContainEqual(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: {
+            intentId: "navigate-cancelled",
+            owner,
+            kind: "navigate",
+            state: "cancelled",
+            result: { targetId: "target-a" },
+          },
+        }),
+      ),
+    );
+    expect(sendFrame.mock.calls.map(([frame]) => frame).every((frame) => AuthorityFrameSchema.safeParse(frame).success)).toBe(true);
+  });
+
   it("settles admitted idle and queued submit intents exactly once with typed public evidence", async () => {
     const idleGate = deferred();
     const sendFrame = vi.fn();

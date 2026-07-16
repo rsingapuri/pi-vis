@@ -2,7 +2,7 @@ import { z } from "zod";
 import { PiEventSchema } from "./events.js";
 import { ExtensionUiRequestSchema } from "./extension-ui.js";
 import { PanelEventSchema } from "./panel-events.js";
-import { PiRpcResponseSchema } from "./responses.js";
+import { PiRpcResponseSchema, SessionTreeEntrySchema } from "./responses.js";
 import { ThinkingLevelSchema } from "./thinking.js";
 
 export const RuntimeAvailabilitySchema = z.enum(["available", "unavailable", "transitioning"]);
@@ -799,8 +799,17 @@ export const RunBashIntentResultSchema = z
     truncated: z.boolean().optional(),
   })
   .strict();
+/** Public post-navigation evidence from AgentSession.navigateTree(). */
 export const NavigateIntentResultSchema = z
-  .object({ targetId: NonEmptyIdSchema, summarized: z.boolean().optional() })
+  .object({
+    targetId: NonEmptyIdSchema,
+    summarized: z.boolean().optional(),
+    editorText: z.string().optional(),
+    /** Null when navigation leaves the session at its root. */
+    leafId: z.string().nullable().optional(),
+    /** Serializable active root-to-leaf branch, using the tree response entry wire shape. */
+    branch: z.array(SessionTreeEntrySchema).optional(),
+  })
   .strict();
 export const SetModelIntentResultSchema = z
   .object({ provider: z.string(), modelId: NonEmptyIdSchema })
