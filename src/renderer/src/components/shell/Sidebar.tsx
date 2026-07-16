@@ -126,6 +126,7 @@ export function Sidebar({
   const closeSessionTab = useSessionsStore((s) => s.closeSessionTab);
   const archiveSession = useSessionsStore((s) => s.archiveSession);
   const setActiveSession = useSessionsStore((s) => s.setActiveSession);
+  const requestComposerFocus = useSessionsStore((s) => s.requestComposerFocus);
   const setActiveWorkspace = useSessionsStore((s) => s.setActiveWorkspace);
   const toggleWorkspaceExpanded = useSessionsStore((s) => s.toggleWorkspaceExpanded);
   const expandWorkspace = useSessionsStore((s) => s.expandWorkspace);
@@ -338,13 +339,15 @@ export function Sidebar({
       // is already showing its composer and draft. Avoids spawning a
       // fresh pi process on a redundant click.
       if (isPendingNewSessionActiveFor(useSessionsStore.getState(), workspacePath)) {
+        const active = useSessionsStore.getState().activeSessionId;
+        if (active) requestComposerFocus(active);
         return;
       }
       setActiveWorkspace(workspacePath);
       void updateSettings({ lastActiveWorkspace: workspacePath });
-      void openSessionTab(workspacePath);
+      void openSessionTab(workspacePath, undefined, { requestComposerFocus: true });
     },
-    [openSessionTab, setActiveWorkspace, updateSettings],
+    [openSessionTab, requestComposerFocus, setActiveWorkspace, updateSettings],
   );
 
   // Clicking a workspace header activates it (sets focus + opens/switches
@@ -355,7 +358,7 @@ export function Sidebar({
     (path: string) => {
       setActiveWorkspace(path);
       void updateSettings({ lastActiveWorkspace: path });
-      void openSessionTab(path);
+      void openSessionTab(path, undefined, { requestComposerFocus: true });
     },
     [setActiveWorkspace, openSessionTab, updateSettings],
   );
@@ -395,17 +398,21 @@ export function Sidebar({
         setActiveWorkspace(workspacePath);
         void updateSettings({ lastActiveWorkspace: workspacePath });
       }
-      void openSessionTab(workspacePath, filePath, { focus: makeActive });
+      void openSessionTab(workspacePath, filePath, {
+        focus: makeActive,
+        requestComposerFocus: makeActive,
+      });
     },
     [openSessionTab, setActiveWorkspace, updateSettings],
   );
 
   const handleSelectLiveSession = useCallback(
     (sessionId: SessionId, workspacePath: string) => {
-      setActiveSession(sessionId);
+      requestComposerFocus(sessionId);
+      void setActiveSession(sessionId);
       void updateSettings({ lastActiveWorkspace: workspacePath });
     },
-    [setActiveSession, updateSettings],
+    [requestComposerFocus, setActiveSession, updateSettings],
   );
 
   // Load the ordered workspace list on mount. NOTE: This effect MUST NOT

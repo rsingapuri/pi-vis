@@ -73,6 +73,7 @@ export function App(): React.ReactElement {
   const applyAuthorityPublication = useSessionsStore((s) => s.applyAuthorityPublication);
   const markAuthorityUnavailable = useSessionsStore((s) => s.markAuthorityUnavailable);
   const applyRestoreDraft = useSessionsStore((s) => s.applyRestoreDraft);
+  const applySubmissionDisposition = useSessionsStore((s) => s.applySubmissionDisposition);
   const applyWorktree = useSessionsStore((s) => s.applyWorktree);
   const applyWorkspace = useSessionsStore((s) => s.applyWorkspace);
   const addUiRequest = useSessionsStore((s) => s.addUiRequest);
@@ -502,6 +503,13 @@ export function App(): React.ReactElement {
       applyRestoreDraft(restoration.sessionId as SessionId, restoration);
     });
 
+    const unsubSubmissionDisposition = window.pivis.on(
+      "session.submissionDisposition",
+      ({ sessionId, result }) => {
+        applySubmissionDisposition(sessionId as SessionId, result);
+      },
+    );
+
     const unsubUiReq = window.pivis.on("session.uiRequest", ({ sessionId, request }) => {
       const projection = useSessionsStore
         .getState()
@@ -687,6 +695,7 @@ export function App(): React.ReactElement {
       unsubPublication();
       unsubRuntime();
       unsubRestoreDraft();
+      unsubSubmissionDisposition();
       unsubUiReq();
       unsubUiAck();
       unsubStatus();
@@ -709,6 +718,7 @@ export function App(): React.ReactElement {
     requestAttach,
     markAuthorityUnavailable,
     applyRestoreDraft,
+    applySubmissionDisposition,
     applyWorktree,
     applyWorkspace,
     addUiRequest,
@@ -758,6 +768,7 @@ export function App(): React.ReactElement {
       if (!("sessionId" in resolved)) throw new Error(resolved.message);
       const opened = await openSessionTab(resolved.workspacePath, resolved.sessionFile, {
         focus: true,
+        requestComposerFocus: true,
         preopened: resolved,
       });
       return opened !== null;

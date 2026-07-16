@@ -57,6 +57,7 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
   const addToast = useSessionsStore((s) => s.addToast);
   const openSessionTab = useSessionsStore((s) => s.openSessionTab);
   const setActiveSession = useSessionsStore((s) => s.setActiveSession);
+  const requestComposerFocus = useSessionsStore((s) => s.requestComposerFocus);
 
   // Claim ESC while any picker is open so a background streaming session
   // isn't aborted (the picker's own ESC handler closes it).
@@ -157,7 +158,8 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
               (s) => s.sessionFile === target.filePath,
             );
             if (liveTab) {
-              setActiveSession(liveTab.sessionId);
+              requestComposerFocus(liveTab.sessionId);
+              void setActiveSession(liveTab.sessionId);
               closePicker(sessionId);
               return;
             }
@@ -169,9 +171,12 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
               closePicker(sessionId);
               return;
             }
-            const id = await openSessionTab(workspacePath, target.filePath, { focus: true });
+            const id = await openSessionTab(workspacePath, target.filePath, {
+              focus: true,
+              requestComposerFocus: true,
+            });
             if (!pickerRuntimeIsCurrent()) return;
-            if (id) setActiveSession(id);
+            if (id) void setActiveSession(id);
             closePicker(sessionId);
           }}
         />

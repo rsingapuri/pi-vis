@@ -41,6 +41,7 @@ import {
   isNewSessionPending,
   isSessionWorking,
   sessionHasHistory,
+  submissionDispositionKey,
   useSessionsStore,
 } from "../../stores/sessions-store.js";
 import { useTreeStore } from "../../stores/tree-store.js";
@@ -84,6 +85,23 @@ function mayFocusComposer(textarea: HTMLTextAreaElement): boolean {
     active === document.documentElement ||
     active === textarea
   );
+}
+
+function mayExplicitlyFocusComposer(textarea: HTMLTextAreaElement): boolean {
+  const active = document.activeElement;
+  if (!active || active === document.body || active === document.documentElement || active === textarea)
+    return true;
+  if (!(active instanceof HTMLElement)) return false;
+  // Sidebar and ordinary buttons are deliberate entry controls. Never pull
+  // focus from an input, editable surface, Composer, or terminal/panel slot.
+  if (
+    active.isContentEditable ||
+    /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) ||
+    active.closest(".composer, .custom-panel, .unified-tui, .picker-slot")
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function fileAttachmentsFromEditorText(text: string): FileAttachment[] | null {
@@ -162,10 +180,25 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   const editorPatchEpochRef = useRef(0);
   const editorPatchRetryNeededRef = useRef(false);
   const replicatedAttachmentsRef = useRef<ReplicatedComposerAttachment[]>([]);
+  const pendingOrdinaryPromptRef = useRef<
+    | {
+        intentId: string;
+        owner: RuntimeIdentity;
+        editorRevision: number;
+        text: string;
+        attachmentsKey: string;
+        localEditGeneration: number;
+        editorInjectionNonce?: number;
+      }
+    | undefined
+  >(undefined);
 
   // Pull the active session's state. We read everything we might need at
   // submit time from the same snapshot to avoid a render-during-update race.
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
+  const submissionDispositions = useSessionsStore((s) => s.submissionDispositions);
+  const composerFocusRequest = useSessionsStore((s) => s.composerFocusRequest);
+  const consumeComposerFocus = useSessionsStore((s) => s.consumeComposerFocus);
   const escapeClaimCount = useOverlayStore((s) => s.count);
   const semanticSnapshot = authoritySnapshotFor(session);
   const commands = session?.commands ?? [];
@@ -549,6 +582,55 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     if (!el || !mayFocusComposer(el)) return;
     el.focus();
   }, [live, escapeClaimCount]);
+
+  // Explicit entry focus is deliberately separate from ordinary selection.
+  // Consume the matching request at its first live native-Composer chance,
+  // even when an overlay or a typing control means focus must be declined.
+  useEffect(() => {
+    const request = composerFocusRequest;
+    if (!request || request.sessionId !== sessionId || !live) return;
+    consumeComposerFocus(sessionId, request.nonce);
+    if (escapeClaimCount > 0) return;
+    const el = textareaRef.current;
+    if (el && mayExplicitlyFocusComposer(el)) el.focus();
+  }, [composerFocusRequest, consumeComposerFocus, escapeClaimCount, live, sessionId]);
+
+  // Accepted custody/consumption feedback is presentation-only, but it lets
+  // the originating ordinary prompt disappear before its terminal frame. Do
+  // not patch the host editor here: its revision/custody remains authoritative.
+  useEffect(() => {
+    const pending = pendingOrdinaryPromptRef.current;
+    if (!pending) return;
+    const receipt = submissionDispositions.get(submissionDispositionKey(pending.intentId, pending.owner));
+    if (
+      !receipt ||
+      !["in_custody", "consumed"].includes(receipt.disposition) ||
+      receipt.editorRevision !== pending.editorRevision ||
+      !mountedRef.current ||
+      renderedSessionIdRef.current !== sessionId ||
+      textRef.current !== pending.text ||
+      JSON.stringify(replicatedAttachmentsRef.current) !== pending.attachmentsKey ||
+      localEditGenerationRef.current !== pending.localEditGeneration
+    ) {
+      return;
+    }
+    pendingOrdinaryPromptRef.current = undefined;
+    textRef.current = "";
+    setText("");
+    setAttachments([]);
+    setFileAttachments([]);
+    replicatedAttachmentsRef.current = [];
+    setSlashIndex(0);
+    const current = useSessionsStore.getState().sessions.get(sessionId);
+    if (current?.isNewPending && workspacePathRef.current) {
+      useSessionsStore.getState().clearNewSessionDraft(workspacePathRef.current);
+    } else {
+      useSessionsStore.getState().setSessionDraft(sessionId, "");
+    }
+    if (current?.editorInjection?.nonce === pending.editorInjectionNonce) {
+      useSessionsStore.getState().clearEditorInjection(sessionId);
+    }
+  }, [sessionId, submissionDispositions]);
 
   // ── Attachment handling ─────────────────────────────────────────────
 
@@ -1086,6 +1168,26 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           useSessionsStore.getState().setSessionDraft(sessionId, "");
         };
         const deps = {
+          // Register before dispatch: main can forward a correlated admission
+          // disposition before executeAction receives its receipt or terminal
+          // authority outcome.
+          createIntentId: isRealPrompt
+            ? () => {
+                const intentId = crypto.randomUUID();
+                pendingOrdinaryPromptRef.current = {
+                  intentId,
+                  owner: dispatchSnapshot.owner,
+                  editorRevision: submittedEditorRevision,
+                  text: submittedLocalText,
+                  attachmentsKey: submittedAttachmentsKey,
+                  localEditGeneration: submittedLocalEditGeneration,
+                  ...(submittedEditorInjectionNonce !== undefined
+                    ? { editorInjectionNonce: submittedEditorInjectionNonce }
+                    : {}),
+                };
+                return intentId;
+              }
+            : undefined,
           dispatch: (sid: SessionId, intent: SessionIntent, intentId?: string) => {
             const observation = intentObservation(sid);
             if (!observation)

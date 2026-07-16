@@ -955,9 +955,20 @@ export function isSessionAbortable(session: SessionViewState | undefined): boole
   return !!session && session.status !== "exited" && session.status !== "failed";
 }
 
+export function submissionDispositionKey(
+  intentId: string,
+  owner: Pick<RuntimeIdentity, "hostInstanceId" | "sessionEpoch">,
+): string {
+  return `${intentId}\u0000${owner.hostInstanceId}\u0000${owner.sessionEpoch}`;
+}
+
 interface SessionsStore {
   workspaces: Map<string, WorkspaceState>;
   sessions: Map<SessionId, SessionViewState>;
+  /** Bounded renderer-presentation-only admission feedback. Never semantic authority. */
+  submissionDispositions: Map<string, SubmissionResult>;
+  /** One-shot native Composer focus request, distinct from session selection. */
+  composerFocusRequest?: { sessionId: SessionId; nonce: number } | undefined;
   activeSessionId: SessionId | null;
   activeWorkspacePath: string | null;
   /** Workspace paths whose session lists are expanded in the sidebar.
@@ -1060,6 +1071,8 @@ interface SessionsStore {
     sessionFile?: string,
     opts?: {
       focus?: boolean;
+      /** Explicit user-entry request for the native Composer, not selection semantics. */
+      requestComposerFocus?: boolean;
       preopened?: Extract<SessionSearchOpenResult, { sessionId: unknown }>;
     },
   ) => Promise<SessionId | null>;
@@ -1111,6 +1124,10 @@ interface SessionsStore {
     state: RuntimeStateUpdate,
   ) => void;
   applySubmissionDisposition: (sessionId: SessionId, result: SubmissionResult) => void;
+  /** Request a one-shot focus attempt by the matching mounted native Composer. */
+  requestComposerFocus: (sessionId: SessionId) => void;
+  /** Consume only the exact matching request; refused attempts are final. */
+  consumeComposerFocus: (sessionId: SessionId, nonce: number) => void;
   applyQueueRestoration: (
     sessionId: SessionId,
     restoration: {
@@ -1285,6 +1302,8 @@ interface SessionsStore {
 
 let toastCounter = 0;
 let editorInjectionNonce = 0;
+let composerFocusNonce = 0;
+const SUBMISSION_DISPOSITION_CACHE_LIMIT = 128;
 
 /** Upper bound on a session's retained panel replay buffer (chars).
  *  See the panel_data case in handlePanelEvent for the rationale. */
@@ -1328,6 +1347,8 @@ const buildSessionsStore = (
 ): SessionsStore => ({
   workspaces: new Map(),
   sessions: new Map(),
+  submissionDispositions: new Map(),
+  composerFocusRequest: undefined,
   activeSessionId: null,
   activeWorkspacePath: null,
   expandedWorkspaces: [],
@@ -2284,9 +2305,35 @@ const buildSessionsStore = (
       .catch(() => {});
   },
 
-  applySubmissionDisposition: (_sessionId, _result) => {
-    // A compatibility disposition/receipt is admission feedback only. Typed
-    // intent outcomes in an authority frame are the only canonical settlement.
+  applySubmissionDisposition: (sessionId, result) => {
+    // Compatibility admission feedback is renderer presentation only. It is
+    // intentionally bounded and never changes authority, transcript, queues,
+    // editor custody, or liveness.
+    set((state) => {
+      if (!state.sessions.has(sessionId)) return {};
+      const key = submissionDispositionKey(result.intentId, result);
+      const submissionDispositions = new Map(state.submissionDispositions);
+      submissionDispositions.delete(key);
+      submissionDispositions.set(key, result);
+      while (submissionDispositions.size > SUBMISSION_DISPOSITION_CACHE_LIMIT) {
+        const oldest = submissionDispositions.keys().next().value;
+        if (oldest === undefined) break;
+        submissionDispositions.delete(oldest);
+      }
+      return { submissionDispositions };
+    });
+  },
+
+  requestComposerFocus: (sessionId) => {
+    set({ composerFocusRequest: { sessionId, nonce: ++composerFocusNonce } });
+  },
+
+  consumeComposerFocus: (sessionId, nonce) => {
+    set((state) => {
+      const request = state.composerFocusRequest;
+      if (!request || request.sessionId !== sessionId || request.nonce !== nonce) return {};
+      return { composerFocusRequest: undefined };
+    });
   },
 
   abortSession: (sessionId) => {
@@ -3541,7 +3588,10 @@ const buildSessionsStore = (
         for (const s of get().sessions.values()) {
           if (s.sessionFile !== sessionFile) continue;
           if (!opts?.preopened || s.sessionId === opts.preopened.sessionId) {
-            if (focus && !(await get().setActiveSession(s.sessionId))) return null;
+            if (focus) {
+              if (opts?.requestComposerFocus) get().requestComposerFocus(s.sessionId);
+              if (!(await get().setActiveSession(s.sessionId))) return null;
+            }
             return s.sessionId;
           }
           // sessionSearch.open may have replaced an exited/failed main record.
@@ -3571,7 +3621,10 @@ const buildSessionsStore = (
       // A concurrent openSessionTab for the same file may have already adopted
       // this id (double-click TOCTOU) — never recreate/reseed an existing record.
       if (get().sessions.has(sessionId)) {
-        if (focus && !(await get().setActiveSession(sessionId))) return null;
+        if (focus) {
+          if (opts?.requestComposerFocus) get().requestComposerFocus(sessionId);
+          if (!(await get().setActiveSession(sessionId))) return null;
+        }
         return sessionId;
       }
 
@@ -3706,9 +3759,12 @@ const buildSessionsStore = (
         }
       };
       const hydration = hydrate();
-      if (focus && !(await get().setActiveSession(sessionId))) {
-        await hydration.catch(() => {});
-        return null;
+      if (focus) {
+        if (opts?.requestComposerFocus) get().requestComposerFocus(sessionId);
+        if (!(await get().setActiveSession(sessionId))) {
+          await hydration.catch(() => {});
+          return null;
+        }
       }
       await hydration;
       return sessionId;
