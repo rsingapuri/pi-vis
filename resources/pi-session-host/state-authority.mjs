@@ -725,8 +725,17 @@ export function createStateAuthority({
   }
 
   function publishSnapshot(full = false) {
-    if (!transition && typeof sendFrame === "function") return commitSemanticFrame([], full);
     const value = snapshot();
+    if (!transition && typeof sendFrame === "function") {
+      // Semantic consumers receive the frame, while the direct snapshot keeps
+      // main's independent control-channel availability lease alive. Dropping
+      // this compatibility control publication makes an otherwise healthy
+      // idle session flap unavailable on every lease interval.
+      const frame = createSemanticFrame([], value);
+      sendFrame(frame);
+      sendControl({ type: "snapshot", snapshot: value, full });
+      return value;
+    }
     observeSnapshotMutation(value);
     if (transition) {
       transition.lastSnapshot = value;
@@ -776,8 +785,7 @@ export function createStateAuthority({
   // The legacy snapshot intentionally remains available to compatibility
   // consumers. Frames use this separate, schema-shaped projection so no
   // renderer has to merge old host facts with a new semantic commit.
-  function semanticSnapshot() {
-    const value = snapshot();
+  function semanticSnapshot(value = snapshot()) {
     const owner = semanticOwner();
     const observed = observedJournal();
     // Keep the child-normalized typed outcome intact. Dropping result/error
@@ -952,8 +960,8 @@ export function createStateAuthority({
     });
   }
 
-  function createSemanticFrame(records = []) {
-    const terminalSnapshot = semanticSnapshot();
+  function createSemanticFrame(records = [], directSnapshot = undefined) {
+    const terminalSnapshot = semanticSnapshot(directSnapshot);
     observeSnapshotMutation(terminalSnapshot);
     const transportSequence = ++semanticTransportSequence;
     return {

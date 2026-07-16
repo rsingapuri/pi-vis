@@ -1313,6 +1313,27 @@ describe("state authority", () => {
     );
   });
 
+  it("keeps the compatibility availability lease alive while publishing semantic frames", () => {
+    const sendFrame = vi.fn();
+    const { authority, sendControl } = setup({}, { sendFrame });
+
+    const directSnapshot = authority.publishSnapshot();
+
+    expect(AgentSessionSnapshotSchema.safeParse(directSnapshot).success).toBe(true);
+    expect(sendFrame).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminalSnapshot: expect.objectContaining({
+          snapshotSequence: directSnapshot.snapshotSequence,
+        }),
+      }),
+    );
+    expect(sendControl).toHaveBeenCalledWith({
+      type: "snapshot",
+      snapshot: directSnapshot,
+      full: false,
+    });
+  });
+
   it("defers full state requests until a provisional transition commits", async () => {
     const { authority } = setup();
     authority.beginTransition(1);

@@ -447,6 +447,19 @@ test.describe("Pinned real Pi 0.80.6 regressions", () => {
         expect(provider.requests).toHaveLength(1);
       });
 
+      await test.step("periodic authority publication does not blur the focused composer", async () => {
+        const restored = await inputView(window);
+        await restored.focus();
+        await expect(restored).toBeFocused();
+        // The compatibility transport lease is five seconds. Waiting beyond
+        // it catches a missing companion control snapshot: main briefly marks
+        // the runtime unavailable, which disables and blurs this textarea.
+        await window.waitForTimeout(6_000);
+        await expect(restored).toBeEnabled();
+        await expect(restored).toBeFocused();
+        await expect(restored).toHaveValue(draft);
+      });
+
       await test.step("immediate saved-session search owns focus and returns it to its trigger without dispatch", async () => {
         const trigger = window.getByRole("button", { name: "Search sessions in workspace" });
         // Dispatch directly so this assertion probes the attach-race itself
