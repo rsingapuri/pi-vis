@@ -1796,7 +1796,8 @@ describe("state authority", () => {
       summarized: true,
       editorText: "draft from target",
       leafId: "leaf-a",
-      branch: [{ id: "root-a", type: "message", timestamp: 1 }],
+      // Pi uses null rather than an omitted parentId for its root entries.
+      branch: [{ id: "root-a", parentId: null, type: "message", timestamp: 1 }],
     }));
     await vi.waitFor(() =>
       expect(sendFrame.mock.calls.flatMap(([frame]) => frame.records)).toContainEqual(
@@ -1836,7 +1837,11 @@ describe("state authority", () => {
         }),
       ),
     );
-    expect(sendFrame.mock.calls.map(([frame]) => frame).every((frame) => AuthorityFrameSchema.safeParse(frame).success)).toBe(true);
+    expect(
+      sendFrame.mock.calls
+        .map(([frame]) => frame)
+        .every((frame) => AuthorityFrameSchema.safeParse(frame).success),
+    ).toBe(true);
   });
 
   it("settles admitted idle and queued submit intents exactly once with typed public evidence", async () => {

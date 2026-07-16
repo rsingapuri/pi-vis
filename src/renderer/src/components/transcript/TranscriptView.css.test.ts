@@ -5,9 +5,16 @@ describe("TranscriptView CSS", () => {
   it("shows the shared scrollbar only while the transcript is unpinned", () => {
     const css = readFileSync(new URL("./TranscriptView.css", import.meta.url), "utf8");
 
-    expect(css).toContain(".transcript-view--pinned {");
-    expect(css).toContain(".transcript-view--pinned::-webkit-scrollbar {");
-    expect(css).not.toMatch(/\.transcript-view\s*{[^}]*scrollbar-width:\s*none/s);
+    const transcriptRule = css.match(/\.transcript-view\s*{(?<body>[^}]*)}/s)?.groups?.body ?? "";
+    const pinnedThumbRule =
+      css.match(
+        /\.transcript-view--pinned::-webkit-scrollbar-thumb,\s*\.transcript-view--pinned::-webkit-scrollbar-thumb:hover\s*{(?<body>[^}]*)}/s,
+      )?.groups?.body ?? "";
+
+    expect(transcriptRule).toContain("scrollbar-gutter: stable;");
+    expect(pinnedThumbRule).toContain("background: transparent;");
+    expect(css).not.toContain(".transcript-view--pinned::-webkit-scrollbar {");
+    expect(css).not.toMatch(/\.transcript-view--pinned\s*{[^}]*scrollbar-width:/s);
     expect(css).not.toContain(".show-earlier-btn");
   });
 

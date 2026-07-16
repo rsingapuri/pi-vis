@@ -18,6 +18,10 @@
 .transcript-view {
   flex: 1;
   overflow-y: auto;
+  /* Reserve the shared scrollbar gutter even while its thumb is hidden at
+     bottom. Without this, revealing it after user scrollback narrows the
+     centered reading column and shifts content sideways. */
+  scrollbar-gutter: stable;
   /* The transcript is a vertical feed — it must never scroll horizontally.
      Wide content (code blocks, tables) scrolls inside its own box, and text
      wraps, so anything that would still overflow is a bug; clip it rather than
@@ -104,15 +108,12 @@
 }
 
 /* While following the latest output, the edge treatment is the only scroll
-   affordance. Once the user scrolls up, removing this class reveals the shared
-   app scrollbar so their position in a long transcript stays visible. */
-.transcript-view--pinned {
-  scrollbar-width: none;
-}
-.transcript-view--pinned::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-  display: none;
+   affordance. Keep the shared-width gutter reserved, but make its thumb
+   transparent; removing the scrollbar altogether would shift the centered
+   reading column when it returns during scrollback. */
+.transcript-view--pinned::-webkit-scrollbar-thumb,
+.transcript-view--pinned::-webkit-scrollbar-thumb:hover {
+  background: transparent;
 }
 
 .transcript-blocks,

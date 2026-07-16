@@ -951,13 +951,50 @@ export function setupCommandBridge({
                     : {}),
                 })),
           );
-        case "navigate":
+        case "navigate": {
+          // Capture the empty pre-navigation editor once. Navigation can await
+          // summarization, so a patch made while it runs must make this
+          // compare-and-apply fail rather than lose the newer draft.
+          const editorAtNavigationStart = uiState.editorSnapshot();
+          const editorIsEmptyForNavigation = (editor) =>
+            editor.text === "" &&
+            (editor.attachments?.length ?? 0) === 0 &&
+            editor.conflictText === undefined &&
+            (editor.conflictAttachments?.length ?? 0) === 0 &&
+            editor.alternateConflictText === undefined &&
+            (editor.alternateConflictAttachments?.length ?? 0) === 0 &&
+            (editor.additionalConflictCandidates?.length ?? 0) === 0;
           return authority
             .runNavigation(() =>
               _session.navigateTree(intent.targetId, { summarize: intent.summarize }),
             )
             .then((result) => {
               const cancelled = result?.cancelled === true || result?.aborted === true;
+              // Pi returns restored editor text as navigation evidence, but
+              // only an empty editor may accept it. The terminal snapshot then
+              // carries the revisioned host editor state; stale/non-empty
+              // drafts remain authoritative instead of being overwritten.
+              if (
+                !cancelled &&
+                typeof result?.editorText === "string" &&
+                editorIsEmptyForNavigation(editorAtNavigationStart)
+              ) {
+                // A rejected concurrent renderer patch can retain a conflict
+                // candidate without changing the revision. Re-read all editor
+                // custody before applying so navigation never clears it.
+                const editorBeforeInjection = uiState.editorSnapshot();
+                if (
+                  editorBeforeInjection.revision === editorAtNavigationStart.revision &&
+                  editorIsEmptyForNavigation(editorBeforeInjection)
+                ) {
+                  uiState.applyEditorPatch({
+                    baseRevision: editorAtNavigationStart.revision,
+                    revision: editorAtNavigationStart.revision + 1,
+                    text: result.editorText,
+                    attachments: [],
+                  });
+                }
+              }
               return {
                 targetId: intent.targetId,
                 ...(typeof result?.summaryEntry === "object" ? { summarized: true } : {}),
@@ -974,6 +1011,7 @@ export function setupCommandBridge({
                 ...(!cancelled ? { branch: [..._session.sessionManager.getBranch()] } : {}),
               };
             });
+        }
         case "setModel": {
           const models = await _session.modelRegistry.getAvailable();
           const model = models.find(

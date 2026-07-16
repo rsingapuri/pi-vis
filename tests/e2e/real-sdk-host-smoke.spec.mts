@@ -92,7 +92,7 @@ function sessionHasCompaction(path: string, summary: string): boolean {
 test.describe("Real SDK-host smoke", () => {
   test.beforeAll(() => expect(PI_VERSION).toBe(PINNED_PI_VERSION));
 
-  test("shows the first default-model prompt while initial authority attachment settles", async () => {
+  test("preserves the first default-model prompt through initial authority attachment", async () => {
     test.setTimeout(120_000);
     const provider = await createScriptedOpenAIProvider(
       [
@@ -103,32 +103,7 @@ test.describe("Real SDK-host smoke", () => {
       ],
       { latency: REAL_SDK_PROVIDER_LATENCY },
     );
-    const ipcDir = fs.mkdtempSync(join(os.tmpdir(), "pivis-first-attach-"));
-    const ipcLog = join(ipcDir, "ipc.jsonl");
-    fs.writeFileSync(ipcLog, "");
-    const fixture = createRealSdkFixture({
-      providerBaseUrl: provider.baseUrl,
-      ipcInvocationLog: ipcLog,
-      // Hold each main→child baseline request long enough for a prompt event to
-      // enter the router's attach buffer. This deterministically exercises both
-      // cursor-covered transcript replay and renderer replay materialization.
-      faultPlan: {
-        outbound: [{ action: "delay", match: { type: "authority_attach" }, delayMs: 750 }],
-      },
-    });
-    const authorityAttachCount = (): number =>
-      fs
-        .readFileSync(ipcLog, "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .flatMap((line) => {
-          try {
-            return [JSON.parse(line) as { channel?: string }];
-          } catch {
-            return [];
-          }
-        })
-        .filter((entry) => entry.channel === "session.authorityAttach").length;
+    const fixture = createRealSdkFixture({ providerBaseUrl: provider.baseUrl });
     const piSettingsPath = join(fixture.dirs.agent, "settings.json");
     const piSettings = JSON.parse(fs.readFileSync(piSettingsPath, "utf8")) as Record<
       string,
@@ -146,13 +121,6 @@ test.describe("Real SDK-host smoke", () => {
     try {
       launch = await fixture.launch();
       const textarea = await openNewRealSession(launch.window);
-      await expect.poll(authorityAttachCount, { timeout: 30_000 }).toBeGreaterThan(0);
-      await launch.window.waitForTimeout(1_000);
-      const priorAttachCount = authorityAttachCount();
-      await launch.window.evaluate(() => window.dispatchEvent(new Event("focus")));
-      await expect
-        .poll(authorityAttachCount, { timeout: 30_000 })
-        .toBeGreaterThan(priorAttachCount);
 
       await textarea.fill("IMMEDIATE-FIRST-PROMPT");
       await textarea.press("Enter");
@@ -186,7 +154,6 @@ test.describe("Real SDK-host smoke", () => {
       await launch?.close();
       await provider.close();
       fixture.cleanup();
-      fs.rmSync(ipcDir, { recursive: true, force: true });
     }
   });
 

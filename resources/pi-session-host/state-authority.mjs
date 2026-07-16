@@ -996,6 +996,19 @@ export function createStateAuthority({
     if (!Array.isArray(value)) return undefined;
     try {
       const branch = structuredClone(value);
+      // Pi serializes a root entry's parent as null, while the public wire
+      // contract represents a root by omitting parentId. Normalize that SDK
+      // detail before validation so root-target navigation retains its branch.
+      for (const entry of branch) {
+        if (
+          entry &&
+          typeof entry === "object" &&
+          !Array.isArray(entry) &&
+          entry.parentId === null
+        ) {
+          delete entry.parentId;
+        }
+      }
       // Match SessionTreeEntrySchema's required wire identity fields before
       // retaining arbitrary entry extras. This keeps the outcome IPC-safe
       // without inventing an opaque branch payload.

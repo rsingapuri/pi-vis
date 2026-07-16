@@ -51,6 +51,8 @@ async function expectPinnedScrollbar(page: Page, pinned: boolean): Promise<void>
   } else {
     await expect(transcript).not.toHaveClass(/transcript-view--pinned/);
   }
+  // The pinned state makes the thumb transparent but retains the shared
+  // scrollbar width, reserving the reading-column gutter before scrollback.
   await expect
     .poll(() =>
       page.evaluate(() => {
@@ -58,7 +60,15 @@ async function expectPinnedScrollbar(page: Page, pinned: boolean): Promise<void>
         return getComputedStyle(el, "::-webkit-scrollbar").width;
       }),
     )
-    .toBe(pinned ? "0px" : "10px");
+    .toBe("10px");
+}
+
+async function readingColumnGeometry(page: Page): Promise<{ left: number; width: number }> {
+  return page.evaluate(() => {
+    const rect = document.querySelector(".transcript-blocks")?.getBoundingClientRect();
+    if (!rect) throw new Error("Missing transcript reading column");
+    return { left: rect.left, width: rect.width };
+  });
 }
 
 test.describe("Transcript bottom pinning across Composer replacements", () => {
@@ -99,6 +109,7 @@ test.describe("Transcript bottom pinning across Composer replacements", () => {
     );
     await waitPinned(page);
     await expectPinnedScrollbar(page, true);
+    const pinnedGeometry = await readingColumnGeometry(page);
 
     // Simulate a browser/layout scrollTop correction without any wheel/touch/key
     // input. This used to be enough to clear pinnedRef, after which streaming
@@ -116,6 +127,9 @@ test.describe("Transcript bottom pinning across Composer replacements", () => {
     await page.mouse.wheel(0, -500);
     await expect.poll(() => bottomDistance(page), { timeout: 5_000 }).toBeGreaterThan(RESTICK_PX);
     await expectPinnedScrollbar(page, false);
+    const scrollbackGeometry = await readingColumnGeometry(page);
+    expect(scrollbackGeometry.left).toBeCloseTo(pinnedGeometry.left, 5);
+    expect(scrollbackGeometry.width).toBeCloseTo(pinnedGeometry.width, 5);
 
     const before = await bottomDistance(page);
     await appendAssistantText(page, `\n\nUser-scrolled follow-up ${"more text ".repeat(80)}`);

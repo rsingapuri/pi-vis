@@ -309,9 +309,10 @@ describe("setupCommandBridge — wiring", () => {
       owner: { hostInstanceId: "test-host", sessionEpoch: 1 },
       records: [],
     });
-    expect(TransitionBatchSchema.safeParse(sendControl.mock.calls.at(-1)[0].batch).success).toBe(
-      true,
-    );
+    const transitionBatch = sendControl.mock.calls
+      .map(([payload]) => payload)
+      .findLast((payload) => payload?.type === "transition_batch")?.batch;
+    expect(TransitionBatchSchema.safeParse(transitionBatch).success).toBe(true);
   });
 
   it("retires extension-triggered replacement after post-invalidation failure", async () => {
@@ -514,9 +515,16 @@ describe("setupCommandBridge — target intent dispatch", () => {
       .mockResolvedValueOnce({ cancelled: true, editorText: "stale draft" });
     const getLeafId = vi.fn(() => "leaf-9");
     const getBranch = vi.fn(() => branch);
+    const applyEditorPatch = vi.fn(() => ({ accepted: true }));
+    const uiState = {
+      catalogSnapshot: () => ({}),
+      editorSnapshot: () => ({ revision: 7, text: "", attachments: [] }),
+      acceptEditorSubmission: () => false,
+      applyEditorPatch,
+    };
     const { dispatchIntent } = setup(
       { navigateTree, sessionManager: { getLeafId, getBranch } },
-      { sendFrame },
+      { sendFrame, uiState },
     );
     const envelope = (intentId) => ({
       intentId,
@@ -548,6 +556,12 @@ describe("setupCommandBridge — target intent dispatch", () => {
     );
     expect(getLeafId).toHaveBeenCalledOnce();
     expect(getBranch).toHaveBeenCalledOnce();
+    expect(applyEditorPatch).toHaveBeenCalledWith({
+      baseRevision: 7,
+      revision: 8,
+      text: "restored draft",
+      attachments: [],
+    });
 
     await expect(dispatchIntent(envelope("navigate-cancelled"))).resolves.toMatchObject({
       status: "admitted",
@@ -568,7 +582,156 @@ describe("setupCommandBridge — target intent dispatch", () => {
     );
     expect(getLeafId).toHaveBeenCalledOnce();
     expect(getBranch).toHaveBeenCalledOnce();
-    expect(sendFrame.mock.calls.map(([frame]) => frame).every((frame) => AuthorityFrameSchema.safeParse(frame).success)).toBe(true);
+    // Cancelled/aborted navigation never changes the host editor snapshot.
+    expect(applyEditorPatch).toHaveBeenCalledOnce();
+    expect(
+      sendFrame.mock.calls
+        .map(([frame]) => frame)
+        .every((frame) => AuthorityFrameSchema.safeParse(frame).success),
+    ).toBe(true);
+  });
+
+  it("preserves a draft patched while navigation is pending", async () => {
+    let resolveNavigation;
+    const navigation = new Promise((resolve) => {
+      resolveNavigation = resolve;
+    });
+    const editor = { revision: 7, text: "", attachments: [] };
+    const applyEditorPatch = vi.fn((patch) => {
+      if (patch.baseRevision !== editor.revision || patch.revision <= editor.revision) {
+        return { accepted: false, ...editor };
+      }
+      editor.revision = patch.revision;
+      editor.text = patch.text;
+      editor.attachments = patch.attachments;
+      return { accepted: true, ...editor };
+    });
+    const uiState = {
+      catalogSnapshot: () => ({}),
+      editorSnapshot: () => ({ ...editor, attachments: [...editor.attachments] }),
+      acceptEditorSubmission: () => false,
+      applyEditorPatch,
+    };
+    const navigateTree = vi.fn(() => navigation);
+    const sendFrame = vi.fn();
+    const { dispatchIntent } = setup(
+      {
+        navigateTree,
+        sessionManager: { getLeafId: vi.fn(() => null), getBranch: vi.fn(() => []) },
+      },
+      { uiState, sendFrame },
+    );
+
+    await expect(
+      dispatchIntent({
+        intentId: "delayed-navigation",
+        expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+        intent: { kind: "navigate", targetId: "leaf-9" },
+      }),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() => expect(navigateTree).toHaveBeenCalledOnce());
+
+    const newerAttachments = [{ kind: "file", path: "/tmp/newer.txt" }];
+    expect(
+      uiState.applyEditorPatch({
+        baseRevision: 7,
+        revision: 8,
+        text: "newer draft",
+        attachments: newerAttachments,
+      }),
+    ).toMatchObject({ accepted: true });
+    resolveNavigation({ cancelled: false, editorText: "restored historical draft" });
+
+    await vi.waitFor(() =>
+      expect(sendFrame.mock.calls.flatMap(([frame]) => frame.records)).toContainEqual(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({ intentId: "delayed-navigation", state: "completed" }),
+        }),
+      ),
+    );
+    expect(applyEditorPatch).toHaveBeenCalledOnce();
+    expect(editor).toEqual({ revision: 8, text: "newer draft", attachments: newerAttachments });
+  });
+
+  it("does not clear a conflict draft that appears while navigation is pending", async () => {
+    let resolveNavigation;
+    const navigation = new Promise((resolve) => {
+      resolveNavigation = resolve;
+    });
+    const editor = {
+      revision: 7,
+      text: "",
+      attachments: [],
+      conflictText: undefined,
+      conflictAttachments: [],
+    };
+    const applyEditorPatch = vi.fn((patch) => {
+      if (patch.baseRevision !== editor.revision || patch.revision <= editor.revision) {
+        editor.conflictText = patch.text;
+        editor.conflictAttachments = patch.attachments;
+        return { accepted: false, ...editor };
+      }
+      editor.revision = patch.revision;
+      editor.text = patch.text;
+      editor.attachments = patch.attachments;
+      editor.conflictText = undefined;
+      editor.conflictAttachments = [];
+      return { accepted: true, ...editor };
+    });
+    const uiState = {
+      catalogSnapshot: () => ({}),
+      editorSnapshot: () => ({
+        ...editor,
+        attachments: [...editor.attachments],
+        conflictAttachments: [...editor.conflictAttachments],
+      }),
+      acceptEditorSubmission: () => false,
+      applyEditorPatch,
+    };
+    const sendFrame = vi.fn();
+    const navigateTree = vi.fn(() => navigation);
+    const { dispatchIntent } = setup(
+      {
+        navigateTree,
+        sessionManager: { getLeafId: vi.fn(() => null), getBranch: vi.fn(() => []) },
+      },
+      { uiState, sendFrame },
+    );
+
+    await dispatchIntent({
+      intentId: "conflict-navigation",
+      expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+      intent: { kind: "navigate", targetId: "leaf-9" },
+    });
+    await vi.waitFor(() => expect(navigateTree).toHaveBeenCalledOnce());
+
+    expect(
+      uiState.applyEditorPatch({
+        baseRevision: 6,
+        revision: 8,
+        text: "newer conflict draft",
+        attachments: [],
+      }),
+    ).toMatchObject({ accepted: false });
+    resolveNavigation({ cancelled: false, editorText: "restored historical draft" });
+
+    await vi.waitFor(() =>
+      expect(sendFrame.mock.calls.flatMap(([frame]) => frame.records)).toContainEqual(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({ intentId: "conflict-navigation", state: "completed" }),
+        }),
+      ),
+    );
+    // The only call was the stale patch that created conflict custody; returned
+    // navigation text is not allowed to erase that candidate.
+    expect(applyEditorPatch).toHaveBeenCalledOnce();
+    expect(editor).toMatchObject({
+      revision: 7,
+      text: "",
+      conflictText: "newer conflict draft",
+    });
   });
 
   it("runs replacement built-ins through runtime, emits one predecessor outcome, and follows with a valid successor frame", async () => {

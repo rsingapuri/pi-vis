@@ -293,6 +293,8 @@ describe("Composer autocomplete and authority intents", () => {
       diffComments: new Map(),
       sessionDrafts: new Map(),
       newSessionDrafts: new Map(),
+      submissionDispositions: new Map(),
+      composerFocusRequest: undefined,
     });
     useSessionsStore.getState().createSession(SID, WORKSPACE);
     setSessionField({
@@ -374,7 +376,7 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
-  it("keeps editor custody after an admitted prompt receipt until its authority frame arrives", async () => {
+  it("clears an admitted prompt only after its matching consumed disposition", async () => {
     installInvoke(invoke, false);
     const composer = mount();
     type(composer.textarea(), "hello");
@@ -382,9 +384,43 @@ describe("Composer autocomplete and authority intents", () => {
     await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
     const envelope = intentCalls(invoke)[0]!;
     expect(envelope.intent).toMatchObject({ kind: "submit", text: "hello" });
+
+    // Admission alone is not a terminal authority outcome and retains custody.
     expect(composer.textarea().value).toBe("hello");
-    publishOutcome(envelope);
+    act(() =>
+      useSessionsStore.getState().applySubmissionDisposition(SID, {
+        intentId: envelope.intentId,
+        hostInstanceId: OWNER.hostInstanceId,
+        sessionEpoch: OWNER.sessionEpoch,
+        editorRevision: (envelope.intent as Extract<SessionIntent, { kind: "submit" }>)
+          .editorRevision,
+        disposition: "consumed",
+      }),
+    );
     await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
+    composer.unmount();
+  });
+
+  it("retains a newer local prompt edit when its dispatched prompt is consumed", async () => {
+    installInvoke(invoke, false);
+    const composer = mount();
+    type(composer.textarea(), "original");
+    key(composer.textarea(), "Enter");
+    await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
+    const envelope = intentCalls(invoke)[0]!;
+
+    type(composer.textarea(), "newer local edit");
+    act(() =>
+      useSessionsStore.getState().applySubmissionDisposition(SID, {
+        intentId: envelope.intentId,
+        hostInstanceId: OWNER.hostInstanceId,
+        sessionEpoch: OWNER.sessionEpoch,
+        editorRevision: (envelope.intent as Extract<SessionIntent, { kind: "submit" }>)
+          .editorRevision,
+        disposition: "consumed",
+      }),
+    );
+    await vi.waitFor(() => expect(composer.textarea().value).toBe("newer local edit"));
     composer.unmount();
   });
 
@@ -744,6 +780,30 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
+  it("focuses the enabled Composer for an explicit focus request from a button", async () => {
+    const composer = mount();
+    const button = document.createElement("button");
+    document.body.appendChild(button);
+    button.focus();
+
+    act(() => useSessionsStore.getState().requestComposerFocus(SID));
+    await vi.waitFor(() => expect(document.activeElement).toBe(composer.textarea()));
+    button.remove();
+    composer.unmount();
+  });
+
+  it("does not steal focus from an external input for an explicit focus request", async () => {
+    const composer = mount();
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+
+    act(() => useSessionsStore.getState().requestComposerFocus(SID));
+    await vi.waitFor(() => expect(document.activeElement).toBe(input));
+    input.remove();
+    composer.unmount();
+  });
+
   it("autofocuses normally when body owns focus as Composer becomes live", () => {
     document.body.focus();
     const composer = mount();
@@ -763,6 +823,8 @@ describe("Composer attachments under authority outcomes", () => {
       diffComments: new Map(),
       sessionDrafts: new Map(),
       newSessionDrafts: new Map(),
+      submissionDispositions: new Map(),
+      composerFocusRequest: undefined,
     });
     useSessionsStore.getState().createSession(SID, WORKSPACE);
     setSessionField({

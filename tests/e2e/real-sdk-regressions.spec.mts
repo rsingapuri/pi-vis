@@ -8,6 +8,8 @@ import {
   type RealSdkFixture,
   type RealSdkLaunch,
   createRealSdkFixture,
+  openNewRealSession,
+  parseSessionEntries,
   selectLocalTestModel,
 } from "./support/real-sdk-host.mjs";
 import {
@@ -293,6 +295,103 @@ test.describe("Pinned real Pi 0.80.6 regressions", () => {
       await expect(window.locator(".tree-viewer .tree-viewer__row")).toHaveCount(2, {
         timeout: 30_000,
       });
+    } catch (error) {
+      throw await withDiagnostics(error, fixture, launch, provider);
+    } finally {
+      await closeFixture(launch, fixture, provider);
+    }
+  });
+
+  test("a real divergent tree branch activates on double click", async () => {
+    test.setTimeout(180_000);
+    const provider = await createScriptedOpenAIProvider(
+      [
+        {
+          expect: { promptIncludes: "TREE-BRANCH-ORIGINAL", compaction: false },
+          response: { type: "text", chunks: ["TREE-ANSWER-ORIGINAL"] },
+        },
+        {
+          expect: { promptIncludes: "TREE-BRANCH-ALTERNATE", compaction: false },
+          response: { type: "text", chunks: ["TREE-ANSWER-ALTERNATE"] },
+        },
+      ],
+      { latency: REAL_SDK_PROVIDER_LATENCY },
+    );
+    const fixture = createRealSdkFixture({ providerBaseUrl: provider.baseUrl });
+    let launch: RealSdkLaunch | undefined;
+    try {
+      launch = await fixture.launch();
+      const { window } = launch;
+      const textarea = await openNewRealSession(window);
+      await selectLocalTestModel(window, textarea);
+
+      await textarea.fill("TREE-BRANCH-ORIGINAL");
+      await textarea.press("Enter");
+      await expect(window.getByText("TREE-ANSWER-ORIGINAL", { exact: true })).toBeVisible({
+        timeout: 60_000,
+      });
+
+      const openTree = async (): Promise<Locator> => {
+        const input = window.locator(".composer__textarea");
+        await input.fill("/tree");
+        await input.press("Enter");
+        const tree = window.locator(".tree-viewer");
+        await expect(tree).toBeVisible();
+        return tree;
+      };
+      const originalUser = (tree: Locator): Locator =>
+        tree.locator(".tree-viewer__row").filter({ hasText: "TREE-BRANCH-ORIGINAL" }).first();
+      const originalAssistant = (tree: Locator): Locator =>
+        tree.locator(".tree-viewer__row").filter({ hasText: "TREE-ANSWER-ORIGINAL" }).first();
+
+      await test.step("a user-row double click restores its draft and creates a sibling", async () => {
+        const tree = await openTree();
+        await expect(originalUser(tree)).toHaveCount(1);
+        // Double click is the browser equivalent of Pi TUI's select + Enter.
+        await originalUser(tree).dblclick();
+        await expect(window.locator(".tree-viewer, .tree-overlay")).toHaveCount(0, {
+          timeout: 30_000,
+        });
+        await expect(window.locator(".composer__textarea")).toHaveValue("TREE-BRANCH-ORIGINAL");
+
+        await textarea.fill("TREE-BRANCH-ALTERNATE");
+        await textarea.press("Enter");
+        await expect(window.getByText("TREE-ANSWER-ALTERNATE", { exact: true })).toBeVisible({
+          timeout: 60_000,
+        });
+      });
+
+      await test.step("an assistant-row double click replaces transcript and closes the modal", async () => {
+        const tree = await openTree();
+        await expect(tree).toContainText("TREE-BRANCH-ALTERNATE");
+        await expect(tree).toContainText("TREE-ANSWER-ALTERNATE");
+        await originalAssistant(tree).dblclick();
+
+        await expect(window.locator(".tree-viewer, .tree-overlay")).toHaveCount(0, {
+          timeout: 30_000,
+        });
+        await expect(window.getByText("TREE-ANSWER-ORIGINAL", { exact: true })).toBeVisible();
+        await expect(window.getByText("TREE-ANSWER-ALTERNATE", { exact: true })).toHaveCount(0);
+        await expect(
+          window.locator(".transcript-block--user").filter({ hasText: "TREE-BRANCH-ORIGINAL" }),
+        ).toHaveCount(1);
+        await expect(
+          window.locator(".transcript-block--user").filter({ hasText: "TREE-BRANCH-ALTERNATE" }),
+        ).toHaveCount(0);
+        await expect(window.locator(".composer__textarea")).toHaveValue("");
+      });
+
+      const users = fixture
+        .sessionFiles()
+        .flatMap(parseSessionEntries)
+        .filter(
+          (entry) =>
+            entry.type === "message" &&
+            (entry.message as { role?: string } | undefined)?.role === "user",
+        );
+      expect(users).toHaveLength(2);
+      expect(users[0]?.parentId).toBe(users[1]?.parentId);
+      provider.assertExhausted();
     } catch (error) {
       throw await withDiagnostics(error, fixture, launch, provider);
     } finally {

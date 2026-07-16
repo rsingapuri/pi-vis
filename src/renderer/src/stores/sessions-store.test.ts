@@ -4748,3 +4748,89 @@ describe("sessions store - explicit search result open", () => {
     );
   });
 });
+
+describe("sessions store - tree navigation presentation", () => {
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      workspaces: new Map(),
+      activeSessionId: null,
+      activeWorkspacePath: null,
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    installAuthority(SESSION_A);
+  });
+
+  it("replaces only the visible transcript from the exact completed navigate outcome", () => {
+    const store = useSessionsStore.getState();
+    store.seedHistory(SESSION_A, [
+      { id: "old", type: "user", data: { role: "user", content: "old branch" } },
+    ]);
+    const before = store.sessions.get(SESSION_A);
+    const snapshot = before?.authorityProjection?.authoritativeSnapshot;
+    const cursor =
+      before?.authorityProjection?.semantic.state === "following"
+        ? before.authorityProjection.semantic.cursor
+        : undefined;
+    if (!snapshot || !cursor) throw new Error("missing authority baseline");
+    const outcome = {
+      intentId: "tree-navigation",
+      owner: snapshot.owner,
+      state: "completed" as const,
+      kind: "navigate" as const,
+      result: { targetId: "leaf", leafId: null, branch: [] },
+    } satisfies Extract<IntentOutcome, { kind: "navigate" }>;
+    publishSemantic(
+      SESSION_A,
+      cursor.transportSequence + 1,
+      {
+        ...snapshot,
+        snapshotSequence: snapshot.snapshotSequence + 1,
+        recentIntentOutcomes: [...snapshot.recentIntentOutcomes, outcome],
+      },
+      [{ type: "intent_outcome", outcome }],
+    );
+
+    const generation = useSessionsStore.getState().sessions.get(SESSION_A)?.historyGeneration;
+    expect(useSessionsStore.getState().replaceTranscriptForNavigate(SESSION_A, outcome, [])).toBe(
+      true,
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.historyGeneration).toBe(generation);
+    expect(
+      allTranscriptBlocks(useSessionsStore.getState().sessions.get(SESSION_A)?.transcript!),
+    ).toEqual([]);
+
+    // A later same-owner authority frame may clone the retained terminal
+    // outcome while branch conversion is in flight. The original result must
+    // still apply by its stable intent/owner/state evidence, not object identity.
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      const current = sessions.get(SESSION_A)!;
+      const projection = current.authorityProjection!;
+      sessions.set(SESSION_A, {
+        ...current,
+        authorityProjection: {
+          ...projection,
+          authoritativeSnapshot: {
+            ...projection.authoritativeSnapshot!,
+            recentIntentOutcomes: projection.authoritativeSnapshot!.recentIntentOutcomes.map(
+              (candidate) =>
+                candidate.intentId === outcome.intentId ? { ...candidate } : candidate,
+            ),
+          },
+        },
+      });
+      return { sessions };
+    });
+    expect(
+      useSessionsStore
+        .getState()
+        .replaceTranscriptForNavigate(SESSION_A, outcome, [
+          { id: "late", type: "user", data: { role: "user", content: "late branch" } },
+        ]),
+    ).toBe(true);
+    expect(
+      allTranscriptBlocks(useSessionsStore.getState().sessions.get(SESSION_A)?.transcript!),
+    ).toMatchObject([{ id: "late" }]);
+  });
+});

@@ -43,23 +43,7 @@ async function mockInvoke(channel: string, payload: unknown): Promise<unknown> {
     };
   }
   if (channel === "session.dispatchIntent") {
-    const envelope = payload as {
-      intentId: string;
-      expectedOwner: { hostInstanceId: string; sessionEpoch: number };
-      intent: { kind: string; targetId?: string; text?: string };
-    };
-    const command =
-      envelope.intent.kind === "navigate"
-        ? { type: "navigate_tree", targetId: envelope.intent.targetId }
-        : envelope.intent.text?.startsWith("/label ")
-          ? { type: "set_label" }
-          : { type: envelope.intent.kind };
-    const response = (await nextResponse("child.transport", { ...envelope, command })) as {
-      success?: boolean;
-    };
-    return response.success
-      ? { status: "admitted", intentId: envelope.intentId, owner: envelope.expectedOwner }
-      : { status: "not_admitted", intentId: envelope.intentId, reason: "invalid" };
+    return nextResponse("session.dispatchIntent", payload);
   }
   return nextResponse(channel, payload);
 }
@@ -444,18 +428,55 @@ describe("tree-store — open / refresh", () => {
 });
 
 describe("tree-store — navigateTo", () => {
-  it("blocks with a toast when the session is mid-turn (review B1)", async () => {
-    // Open the viewer first so tree-store.sessionId is populated; then
-    // mark the session as mid-turn and verify the navigate_tree command
-    // never goes out and a warning toast surfaces.
-    nextResponse = async (_channel, payload) => {
-      const cmd = (payload as { command?: { type?: string } }).command;
-      if (cmd?.type === "get_tree") return { success: true, data: { nodes: [], leafId: null } };
-      return { success: false };
+  function publishNavigateOutcome(
+    intentId: string,
+    state: "completed" | "cancelled" | "failed" | "outcome_unknown",
+    result?: { targetId: string; leafId?: string | null; branch?: unknown[] },
+  ) {
+    const projection = useSessionsStore.getState().sessions.get(SESSION_A)?.authorityProjection;
+    const prior = projection?.authoritativeSnapshot;
+    const cursor =
+      projection?.semantic.state === "following" ? projection.semantic.cursor : undefined;
+    if (!prior || !cursor) throw new Error("missing authority snapshot");
+    const outcome = {
+      intentId,
+      owner: prior.owner,
+      state,
+      kind: "navigate" as const,
+      ...(result ? { result } : {}),
     };
-    await useTreeStore.getState().openTreeForSession(SESSION_A);
-    calls.length = 0;
+    useSessionsStore.getState().applyAuthorityPublication({
+      sessionId: SESSION_A,
+      rendererGeneration: 0,
+      publicationSequence: cursor.transportSequence,
+      plane: "semantic",
+      owner: prior.owner,
+      payload: {
+        owner: prior.owner,
+        transportSequence: cursor.transportSequence + 1,
+        frameId: `navigate-${intentId}`,
+        records: [{ type: "intent_outcome", outcome }],
+        terminalSnapshot: {
+          ...prior,
+          snapshotSequence: prior.snapshotSequence + 1,
+          recentIntentOutcomes: [...prior.recentIntentOutcomes, outcome],
+        },
+      },
+    } as RendererPublication);
+  }
 
+  async function startNavigate() {
+    useTreeStore.setState({ open: true, sessionId: SESSION_A, navigating: false });
+    const navigation = useTreeStore.getState().navigateTo("u1");
+    await Promise.resolve();
+    const dispatch = calls.find((call) => call.channel === "session.dispatchIntent");
+    const intentId = (dispatch?.payload as { intentId?: string } | undefined)?.intentId;
+    if (!intentId) throw new Error("navigate intent was not dispatched");
+    return { navigation, intentId };
+  }
+
+  it("blocks with a toast when the session is mid-turn (review B1)", async () => {
+    useTreeStore.setState({ open: true, sessionId: SESSION_A });
     const prior = useSessionsStore.getState().sessions.get(SESSION_A)
       ?.authorityProjection?.authoritativeSnapshot;
     if (!prior) throw new Error("missing authority snapshot");
@@ -479,122 +500,123 @@ describe("tree-store — navigateTo", () => {
     } as RendererPublication);
     await useTreeStore.getState().navigateTo("u1");
 
-    // No navigate_tree command was sent.
     expect(calls.find((c) => c.channel === "session.dispatchIntent")).toBeUndefined();
-
     const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
-    expect(toasts.length).toBeGreaterThan(0);
     expect(toasts.some((t) => /wait/i.test(t.message) && t.type === "warning")).toBe(true);
   });
 
-  it("success path: seeds transcript, injects editorText, refreshes stats, closes overlay", async () => {
-    const branch = [
-      {
-        id: "u1",
-        type: "message",
-        timestamp: "t1",
-        message: { role: "user", content: "the first message" },
-      },
-    ];
-    let sentNavigate = false;
-    nextResponse = async (channel, payload) => {
-      const cmd = (payload as { command?: { type?: string } }).command;
-      if (cmd?.type === "get_tree") {
-        // Initial open — return a tiny tree with the target.
-        return { success: true, data: { nodes: [], leafId: "u1" } };
-      }
-      if (cmd?.type === "navigate_tree") {
-        sentNavigate = true;
+  it("waits for the matching terminal frame; a receipt alone does not close", async () => {
+    nextResponse = async (channel) => {
+      if (channel === "session.dispatchIntent") {
         return {
-          success: true,
-          data: {
-            cancelled: false,
-            editorText: "the first message",
-            leafId: "u1",
-            branch,
-          },
+          status: "admitted",
+          intentId: "ignored",
+          owner: { hostInstanceId: "tree-host", sessionEpoch: 1 },
         };
       }
-      if (cmd?.type === "get_session_stats") {
+      if (channel === "session.transcriptForEntries") return [];
+      return { success: false };
+    };
+    const { navigation, intentId } = await startNavigate();
+
+    expect(useTreeStore.getState()).toMatchObject({ open: true, navigating: true });
+    publishNavigateOutcome(intentId, "completed", { targetId: "u1", leafId: "u1", branch: [] });
+    await navigation;
+    expect(useTreeStore.getState()).toMatchObject({ open: false, navigating: false, leafId: "u1" });
+  });
+
+  it("replaces the transcript from a completed same-owner branch, including an empty branch", async () => {
+    useSessionsStore
+      .getState()
+      .seedHistory(SESSION_A, [
+        { id: "old", type: "user", data: { role: "user", content: "old branch" } },
+      ]);
+    const historyGeneration = useSessionsStore
+      .getState()
+      .sessions.get(SESSION_A)?.historyGeneration;
+    nextResponse = async (channel) => {
+      if (channel === "session.dispatchIntent") {
         return {
-          success: true,
-          data: {
-            sessionId: SESSION_A,
-            tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, total: 3 },
-            cost: 0.001,
-          },
+          status: "admitted",
+          intentId: "ignored",
+          owner: { hostInstanceId: "tree-host", sessionEpoch: 1 },
         };
       }
-      if (channel === "session.transcriptForEntries") {
-        return [{ id: "u1", type: "user", data: { role: "user", content: "the first message" } }];
-      }
+      if (channel === "session.transcriptForEntries") return [];
       return { success: false };
     };
+    const { navigation, intentId } = await startNavigate();
+    publishNavigateOutcome(intentId, "completed", { targetId: "u1", leafId: null, branch: [] });
+    await navigation;
 
-    // Open the viewer so sessionId is populated, then drop the open-time
-    // get_tree call from the captured `calls`.
-    await useTreeStore.getState().openTreeForSession(SESSION_A);
-    calls.length = 0;
-
-    await useTreeStore.getState().navigateTo("u1");
-
-    expect(sentNavigate).toBe(true);
-    // A dispatch receipt is admission only; authority frames own transcript,
-    // editor, and stats. The local overlay can close once admission succeeds.
-    expect(useTreeStore.getState().open).toBe(false);
-    expect(useTreeStore.getState().navigating).toBe(false);
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(session?.transcript.archivedBlockCount).toBe(0);
+    expect(session?.historyGeneration).toBe(historyGeneration);
+    expect(useTreeStore.getState()).toMatchObject({ open: false, leafId: null, selectedId: null });
   });
 
-  it("success path: empty branch + null leafId yields an empty transcript (review S3)", async () => {
-    nextResponse = async (_channel, payload) => {
-      const cmd = (payload as { command?: { type?: string } }).command;
-      if (cmd?.type === "navigate_tree") {
-        return { success: true, data: { cancelled: false, leafId: null, branch: [] } };
+  it.each(["cancelled", "failed", "outcome_unknown"] as const)(
+    "%s terminal outcome preserves the previous transcript and leaves the overlay open",
+    async (state) => {
+      useSessionsStore
+        .getState()
+        .seedHistory(SESSION_A, [
+          { id: "old", type: "user", data: { role: "user", content: "old branch" } },
+        ]);
+      nextResponse = async (channel) =>
+        channel === "session.dispatchIntent"
+          ? {
+              status: "admitted",
+              intentId: "ignored",
+              owner: { hostInstanceId: "tree-host", sessionEpoch: 1 },
+            }
+          : { success: false };
+      const { navigation, intentId } = await startNavigate();
+      publishNavigateOutcome(intentId, state, { targetId: "u1" });
+      await navigation;
+
+      expect(
+        useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.archivedBlockCount,
+      ).toBe(1);
+      expect(useTreeStore.getState()).toMatchObject({ open: true, navigating: false });
+    },
+  );
+
+  it("stale authority after terminal evidence cannot replace the transcript or close", async () => {
+    useSessionsStore
+      .getState()
+      .seedHistory(SESSION_A, [
+        { id: "old", type: "user", data: { role: "user", content: "old branch" } },
+      ]);
+    nextResponse = async (channel) => {
+      if (channel === "session.dispatchIntent") {
+        return {
+          status: "admitted",
+          intentId: "ignored",
+          owner: { hostInstanceId: "tree-host", sessionEpoch: 1 },
+        };
       }
-      if (_channel === "session.transcriptForEntries") {
-        return [];
-      }
+      if (channel === "session.transcriptForEntries") return [];
       return { success: false };
     };
+    const { navigation, intentId } = await startNavigate();
+    publishNavigateOutcome(intentId, "completed", { targetId: "u1", leafId: "u1", branch: [] });
+    useSessionsStore.getState().markAuthorityUnavailable(SESSION_A, "test stale authority");
+    await navigation;
 
-    await useTreeStore.getState().navigateTo("u1");
-
-    expect(useTreeStore.getState().open).toBe(false);
-  });
-
-  it("cancelled keeps the overlay open and toasts info", async () => {
-    useTreeStore.setState({ open: true, sessionId: SESSION_A });
-    nextResponse = async () => ({
-      success: true,
-      data: { cancelled: true },
-    });
-
-    await useTreeStore.getState().navigateTo("u1");
-
-    // A legacy cancellation payload is no longer completion evidence; the
-    // intent receipt merely admits the navigation and closes the local picker.
-    expect(useTreeStore.getState().open).toBe(false);
-    expect(useTreeStore.getState().navigating).toBe(false);
-  });
-
-  it("aborted keeps the overlay open", async () => {
-    useTreeStore.setState({ open: true, sessionId: SESSION_A });
-    nextResponse = async () => ({ success: true, data: { cancelled: false, aborted: true } });
-
-    await useTreeStore.getState().navigateTo("u1");
-
-    expect(useTreeStore.getState().open).toBe(false);
-    expect(useTreeStore.getState().navigating).toBe(false);
-  });
-
-  it("failed RPC leaves the overlay open and toasts error", async () => {
-    useTreeStore.setState({ open: true, sessionId: SESSION_A });
-    nextResponse = async () => ({ success: false, error: "boom" });
-
-    await useTreeStore.getState().navigateTo("u1");
-
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.archivedBlockCount).toBe(
+      1,
+    );
     expect(useTreeStore.getState().open).toBe(true);
-    expect(useTreeStore.getState().navigating).toBe(false);
+  });
+
+  it("not-admitted receipt leaves the overlay open and reports failure", async () => {
+    useTreeStore.setState({ open: true, sessionId: SESSION_A });
+    nextResponse = async () => ({ status: "not_admitted", intentId: "x", reason: "invalid" });
+
+    await useTreeStore.getState().navigateTo("u1");
+
+    expect(useTreeStore.getState()).toMatchObject({ open: true, navigating: false });
     const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
     expect(toasts.some((t) => t.type === "error" && /branch switch/.test(t.message))).toBe(true);
   });

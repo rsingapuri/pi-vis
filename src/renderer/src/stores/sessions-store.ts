@@ -1098,6 +1098,12 @@ interface SessionsStore {
   applyEvent: (sessionId: SessionId, event: PiEvent) => void;
   applyEvents: (sessionId: SessionId, events: PiEvent[]) => void;
   seedHistory: (sessionId: SessionId, history: TranscriptBlock[]) => void;
+  /** Replace only the visible transcript from a completed, owner-bound tree navigation. */
+  replaceTranscriptForNavigate: (
+    sessionId: SessionId,
+    outcome: Extract<IntentOutcome, { kind: "navigate" }>,
+    history: TranscriptBlock[],
+  ) => boolean;
   refreshHistoricalCacheMissNotices: (sessionId: SessionId) => Promise<void>;
   addUserMessage: (
     sessionId: SessionId,
@@ -1732,6 +1738,45 @@ const buildSessionsStore = (
     if (get().sessions.get(sessionId)?.status === "ready") {
       void get().refreshHistoricalCacheMissNotices(sessionId);
     }
+  },
+
+  replaceTranscriptForNavigate: (sessionId, outcome, history) => {
+    let replaced = false;
+    set((state) => {
+      const current = state.sessions.get(sessionId);
+      const snapshot = authoritySnapshotFor(current);
+      const currentOutcome = snapshot?.recentIntentOutcomes.find(
+        (candidate) =>
+          candidate.kind === "navigate" &&
+          candidate.intentId === outcome.intentId &&
+          candidate.owner.hostInstanceId === outcome.owner.hostInstanceId &&
+          candidate.owner.sessionEpoch === outcome.owner.sessionEpoch,
+      );
+      // A conversion result is presentation-only and is valid only while the
+      // same terminal authority evidence that requested it remains current.
+      // Authority reducers may clone a retained outcome in a later same-owner
+      // frame, so compare its stable owner-bound intent identity and terminal
+      // state rather than JavaScript object identity. Never let a stale owner
+      // or changed terminal settlement replace a successor's visible branch.
+      if (
+        !current ||
+        !snapshot ||
+        snapshot.owner.hostInstanceId !== outcome.owner.hostInstanceId ||
+        snapshot.owner.sessionEpoch !== outcome.owner.sessionEpoch ||
+        !currentOutcome ||
+        currentOutcome.state !== outcome.state
+      ) {
+        return {};
+      }
+      const sessions = new Map(state.sessions);
+      sessions.set(sessionId, {
+        ...current,
+        transcript: seedFromHistory(current.transcript, history),
+      });
+      replaced = true;
+      return { sessions };
+    });
+    return replaced;
   },
 
   refreshHistoricalCacheMissNotices: async (sessionId) => {

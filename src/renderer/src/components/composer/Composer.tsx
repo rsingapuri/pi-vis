@@ -89,7 +89,12 @@ function mayFocusComposer(textarea: HTMLTextAreaElement): boolean {
 
 function mayExplicitlyFocusComposer(textarea: HTMLTextAreaElement): boolean {
   const active = document.activeElement;
-  if (!active || active === document.body || active === document.documentElement || active === textarea)
+  if (
+    !active ||
+    active === document.body ||
+    active === document.documentElement ||
+    active === textarea
+  )
     return true;
   if (!(active instanceof HTMLElement)) return false;
   // Sidebar and ordinary buttons are deliberate entry controls. Never pull
@@ -188,6 +193,8 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         text: string;
         attachmentsKey: string;
         localEditGeneration: number;
+        /** Slash commands consume only their command text, not staged context. */
+        clearPromptAttachments: boolean;
         editorInjectionNonce?: number;
       }
     | undefined
@@ -596,12 +603,15 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   }, [composerFocusRequest, consumeComposerFocus, escapeClaimCount, live, sessionId]);
 
   // Accepted custody/consumption feedback is presentation-only, but it lets
-  // the originating ordinary prompt disappear before its terminal frame. Do
-  // not patch the host editor here: its revision/custody remains authoritative.
+  // the originating prompt transport clear its command text before the terminal
+  // frame. Slash commands preserve staged context. Do not patch the host editor
+  // here: its revision/custody remains authoritative.
   useEffect(() => {
     const pending = pendingOrdinaryPromptRef.current;
     if (!pending) return;
-    const receipt = submissionDispositions.get(submissionDispositionKey(pending.intentId, pending.owner));
+    const receipt = submissionDispositions.get(
+      submissionDispositionKey(pending.intentId, pending.owner),
+    );
     if (
       !receipt ||
       !["in_custody", "consumed"].includes(receipt.disposition) ||
@@ -617,9 +627,11 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     pendingOrdinaryPromptRef.current = undefined;
     textRef.current = "";
     setText("");
-    setAttachments([]);
-    setFileAttachments([]);
-    replicatedAttachmentsRef.current = [];
+    if (pending.clearPromptAttachments) {
+      setAttachments([]);
+      setFileAttachments([]);
+      replicatedAttachmentsRef.current = [];
+    }
     setSlashIndex(0);
     const current = useSessionsStore.getState().sessions.get(sessionId);
     if (current?.isNewPending && workspacePathRef.current) {
@@ -1171,23 +1183,25 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           // Register before dispatch: main can forward a correlated admission
           // disposition before executeAction receives its receipt or terminal
           // authority outcome.
-          createIntentId: isRealPrompt
-            ? () => {
-                const intentId = crypto.randomUUID();
-                pendingOrdinaryPromptRef.current = {
-                  intentId,
-                  owner: dispatchSnapshot.owner,
-                  editorRevision: submittedEditorRevision,
-                  text: submittedLocalText,
-                  attachmentsKey: submittedAttachmentsKey,
-                  localEditGeneration: submittedLocalEditGeneration,
-                  ...(submittedEditorInjectionNonce !== undefined
-                    ? { editorInjectionNonce: submittedEditorInjectionNonce }
-                    : {}),
-                };
-                return intentId;
-              }
-            : undefined,
+          createIntentId:
+            finalAction.kind === "send-prompt"
+              ? () => {
+                  const intentId = crypto.randomUUID();
+                  pendingOrdinaryPromptRef.current = {
+                    intentId,
+                    owner: dispatchSnapshot.owner,
+                    editorRevision: submittedEditorRevision,
+                    text: submittedLocalText,
+                    attachmentsKey: submittedAttachmentsKey,
+                    localEditGeneration: submittedLocalEditGeneration,
+                    clearPromptAttachments: isRealPrompt,
+                    ...(submittedEditorInjectionNonce !== undefined
+                      ? { editorInjectionNonce: submittedEditorInjectionNonce }
+                      : {}),
+                  };
+                  return intentId;
+                }
+              : undefined,
           dispatch: (sid: SessionId, intent: SessionIntent, intentId?: string) => {
             const observation = intentObservation(sid);
             if (!observation)

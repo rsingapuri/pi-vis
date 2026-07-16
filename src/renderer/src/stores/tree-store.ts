@@ -7,8 +7,13 @@
 // installed pi lacks session.sessionManager.getTree() / session.navigateTree().
 
 import type { SessionId } from "@shared/ids.js";
+import type { TranscriptBlock } from "@shared/ipc-contract.js";
 import type { FlatTreeNode, GetTreeData, SessionTreeNode } from "@shared/pi-protocol/responses.js";
-import type { AuthorityCursor, RuntimeIdentity } from "@shared/pi-protocol/runtime-state.js";
+import type {
+  AuthorityCursor,
+  IntentOutcome,
+  RuntimeIdentity,
+} from "@shared/pi-protocol/runtime-state.js";
 import { create } from "zustand";
 import { buildNestedTree } from "../components/tree/tree-flatten.js";
 import { describeIpcError } from "../lib/ipc-errors.js";
@@ -40,6 +45,65 @@ function observationIsCurrent(sessionId: SessionId, observation: TreeObservation
   // cursor still travels with the query as its observation context, but only
   // following authority and owner/epoch replacement fence its response.
   return true;
+}
+
+type NavigateOutcome = Extract<IntentOutcome, { kind: "navigate" }>;
+
+function findNavigateOutcome(
+  sessionId: SessionId,
+  intentId: string,
+  owner: RuntimeIdentity,
+): NavigateOutcome | undefined {
+  return useSessionsStore
+    .getState()
+    .sessions.get(sessionId)
+    ?.authorityProjection?.authoritativeSnapshot?.recentIntentOutcomes.find(
+      (outcome): outcome is NavigateOutcome =>
+        outcome.kind === "navigate" &&
+        outcome.intentId === intentId &&
+        outcome.owner.hostInstanceId === owner.hostInstanceId &&
+        outcome.owner.sessionEpoch === owner.sessionEpoch,
+    );
+}
+
+function treeViewOwns(sessionId: SessionId): boolean {
+  const tree = useTreeStore.getState();
+  return tree.open && tree.sessionId === sessionId;
+}
+
+/** Wait for framed terminal evidence; dispatch receipts only prove admission. */
+function waitForNavigateOutcome(
+  sessionId: SessionId,
+  intentId: string,
+  observation: TreeObservation,
+): Promise<NavigateOutcome | undefined> {
+  const valid = () => treeViewOwns(sessionId) && observationIsCurrent(sessionId, observation);
+  if (!valid()) return Promise.resolve(undefined);
+  const immediate = findNavigateOutcome(sessionId, intentId, observation.owner);
+  if (immediate) return Promise.resolve(immediate);
+  return new Promise((resolve) => {
+    let settled = false;
+    let unsubscribeSessions = () => {};
+    let unsubscribeTree = () => {};
+    const finish = (outcome: NavigateOutcome | undefined) => {
+      if (settled) return;
+      settled = true;
+      unsubscribeSessions();
+      unsubscribeTree();
+      resolve(outcome);
+    };
+    const inspect = () => {
+      if (!valid()) {
+        finish(undefined);
+        return;
+      }
+      const outcome = findNavigateOutcome(sessionId, intentId, observation.owner);
+      if (outcome) finish(outcome);
+    };
+    unsubscribeSessions = useSessionsStore.subscribe(inspect);
+    unsubscribeTree = useTreeStore.subscribe(inspect);
+    inspect();
+  });
 }
 
 // ── Phases / state shape ──────────────────────────────────────────────
@@ -176,6 +240,7 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
       return;
     }
 
+    const intentId = crypto.randomUUID();
     set({ navigating: true });
     try {
       const receipt = await dispatchSessionIntent(
@@ -186,18 +251,61 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
           ...(get().summarizeOnSwitch ? { summarize: true } : {}),
         },
         observation,
+        intentId,
       );
-      if (!observationIsCurrent(sessionId, observation) || get().sessionId !== sessionId) return;
-      if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+      if (!treeViewOwns(sessionId) || !observationIsCurrent(sessionId, observation)) return;
+      if (receipt.status === "not_admitted") {
         useSessionsStore.getState().addToast(sessionId, "Failed to request branch switch", "error");
         set({ navigating: false });
         return;
       }
-      // A receipt is admission only. Authority frames own the resulting
-      // transcript, editor, stats, and navigation outcome.
-      set({ navigating: false, open: false });
+
+      // Receipt status is deliberately not completion evidence, including
+      // delivery_unknown. Wait for the matching owner-bound terminal frame.
+      const outcome = await waitForNavigateOutcome(sessionId, intentId, observation);
+      if (!outcome || !treeViewOwns(sessionId) || !observationIsCurrent(sessionId, observation)) {
+        return;
+      }
+      if (outcome.state !== "completed" || !Array.isArray(outcome.result?.branch)) {
+        // Cancellation, failure, and unknown settlement leave the currently
+        // visible branch intact. The overlay remains available to retry.
+        set({ navigating: false });
+        return;
+      }
+
+      let history: TranscriptBlock[];
+      try {
+        history = await window.pivis.invoke("session.transcriptForEntries", {
+          sessionId,
+          entries: outcome.result.branch,
+        });
+      } catch (err) {
+        if (treeViewOwns(sessionId) && observationIsCurrent(sessionId, observation)) {
+          const message = describeIpcError(err);
+          if (message) useSessionsStore.getState().addToast(sessionId, message, "error");
+          set({ navigating: false });
+        }
+        return;
+      }
+      if (!treeViewOwns(sessionId) || !observationIsCurrent(sessionId, observation)) return;
+      if (!useSessionsStore.getState().replaceTranscriptForNavigate(sessionId, outcome, history)) {
+        if (treeViewOwns(sessionId) && observationIsCurrent(sessionId, observation)) {
+          set({ navigating: false });
+        }
+        return;
+      }
+      // Only a successful complete presentation baseline permits the viewer
+      // state to advance or close. Editor text remains solely in the terminal
+      // semantic projection; navigation evidence never injects it directly.
+      if (!treeViewOwns(sessionId) || !observationIsCurrent(sessionId, observation)) return;
+      set({
+        leafId: outcome.result.leafId ?? null,
+        selectedId: outcome.result.leafId ?? null,
+        navigating: false,
+        open: false,
+      });
     } catch (err) {
-      if (!observationIsCurrent(sessionId, observation) || get().sessionId !== sessionId) return;
+      if (!treeViewOwns(sessionId) || !observationIsCurrent(sessionId, observation)) return;
       const message = describeIpcError(err);
       if (message) useSessionsStore.getState().addToast(sessionId, message, "error");
       set({ navigating: false });
