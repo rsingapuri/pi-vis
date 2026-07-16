@@ -273,6 +273,35 @@ describe("authority protocol schemas", () => {
     ).toBe(false);
   });
 
+  it("carries only validated public post-navigation tree data", () => {
+    const outcome = {
+      intentId: "intent-a",
+      owner,
+      kind: "navigate" as const,
+      state: "completed" as const,
+      result: {
+        targetId: "target-a",
+        summarized: true,
+        editorText: "restored draft",
+        leafId: "leaf-a",
+        branch: [{ id: "root-a", type: "message", timestamp: 1 }],
+      },
+    };
+    expect(IntentOutcomeSchema.safeParse(outcome).success).toBe(true);
+    expect(
+      IntentOutcomeSchema.safeParse({
+        ...outcome,
+        result: { ...outcome.result, branch: [{ id: "missing-type" }] },
+      }).success,
+    ).toBe(false);
+    expect(
+      IntentOutcomeSchema.safeParse({
+        ...outcome,
+        result: { ...outcome.result, extra: true },
+      }).success,
+    ).toBe(false);
+  });
+
   it("accepts only atomically owner-consistent frames and publication payloads", () => {
     const frame = {
       owner,

@@ -992,6 +992,35 @@ export function createStateAuthority({
     return frame;
   }
 
+  function normalizedTreeBranch(value) {
+    if (!Array.isArray(value)) return undefined;
+    try {
+      const branch = structuredClone(value);
+      // Match SessionTreeEntrySchema's required wire identity fields before
+      // retaining arbitrary entry extras. This keeps the outcome IPC-safe
+      // without inventing an opaque branch payload.
+      if (
+        !branch.every(
+          (entry) =>
+            entry &&
+            typeof entry === "object" &&
+            !Array.isArray(entry) &&
+            typeof entry.id === "string" &&
+            typeof entry.type === "string" &&
+            (entry.parentId === undefined || typeof entry.parentId === "string") &&
+            (entry.timestamp === undefined ||
+              typeof entry.timestamp === "string" ||
+              typeof entry.timestamp === "number"),
+        )
+      ) {
+        return undefined;
+      }
+      return branch;
+    } catch {
+      return undefined;
+    }
+  }
+
   // Intent outcomes are public protocol values, not an accidental projection
   // of arbitrary SDK return objects. Preserve only evidence the corresponding
   // typed schema names, while retaining error text at the outcome boundary.
@@ -1041,11 +1070,23 @@ export function createStateAuthority({
           ...(typeof value.cancelled === "boolean" ? { cancelled: value.cancelled } : {}),
           ...(typeof value.truncated === "boolean" ? { truncated: value.truncated } : {}),
         };
-      case "navigate":
+      case "navigate": {
+        const cancelled = value.cancelled === true || value.aborted === true;
+        const branch = !cancelled ? normalizedTreeBranch(value.branch) : undefined;
         return {
           targetId: intent?.targetId ?? value.targetId ?? "unknown",
           ...(typeof value.summarized === "boolean" ? { summarized: value.summarized } : {}),
+          // Cancellation leaves Pi's active branch unchanged. Do not attach
+          // stale/fabricated post-navigation data to that terminal outcome.
+          ...(!cancelled && typeof value.editorText === "string"
+            ? { editorText: value.editorText }
+            : {}),
+          ...(!cancelled && (typeof value.leafId === "string" || value.leafId === null)
+            ? { leafId: value.leafId }
+            : {}),
+          ...(branch ? { branch } : {}),
         };
+      }
       case "setModel":
         return {
           provider: value.provider ?? intent?.provider ?? "",
