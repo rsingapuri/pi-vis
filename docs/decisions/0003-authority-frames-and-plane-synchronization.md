@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR 0004](0004-silent-reconciliation-replaces-user-review.md)
 
 ## Context
 
@@ -34,3 +34,4 @@ Legacy mutation and presentation consumers are prohibited. Renderer and main dis
 - [State and sessions](../architecture/state-and-sessions.md)
 - [Command system](../architecture/commands.md)
 - [Testing](../testing.md)
+- [ADR 0004: Silent reconciliation replaces user review](0004-silent-reconciliation-replaces-user-review.md)

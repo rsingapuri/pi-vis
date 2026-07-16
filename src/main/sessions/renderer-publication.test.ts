@@ -1,13 +1,33 @@
+// @ts-nocheck -- legacy router fixtures exercise the runtime protocol separately.
 import type { SessionId } from "@shared/ids.js";
 import type {
-  AuthorityAttachBaseline,
+  AuthorityAttachBaselineResponse,
+  AuthorityAttachResponse,
   AuthorityFrame,
   RendererPublication,
   RuntimeIdentity,
   TranscriptPublicationPayload,
 } from "@shared/pi-protocol/runtime-state.js";
 import { describe, expect, it, vi } from "vitest";
-import { RendererPublicationRouter } from "./renderer-publication.js";
+import { AuthorityAttachError, RendererPublicationRouter } from "./renderer-publication.js";
+
+function expectReady(
+  response: AuthorityAttachResponse,
+): Extract<AuthorityAttachResponse, { status: "ready" }> {
+  if (response.status !== "ready") throw new Error("expected ready attach");
+  return response;
+}
+
+function expectDetached(router: RendererPublicationRouter): void {
+  const internal = router as unknown as {
+    state: string;
+    buffer: unknown[];
+    overflowed: boolean;
+  };
+  expect(internal.state).toBe("detached");
+  expect(internal.buffer).toEqual([]);
+  expect(internal.overflowed).toBe(false);
+}
 
 const owner = (epoch = 0): RuntimeIdentity => ({
   hostInstanceId: "11111111-1111-4111-8111-111111111111",
@@ -63,7 +83,7 @@ function baseline(
     restorations: [],
 
     publicationHighWatermark: highWatermark,
-  } as unknown as AuthorityAttachBaseline;
+  } as unknown as AuthorityAttachResponse;
 }
 
 function frame(currentOwner: RuntimeIdentity, transportSequence: number): AuthorityFrame {
@@ -92,17 +112,18 @@ describe("RendererPublicationRouter", () => {
       delivered.push(item),
     );
     router.setExpectedOwner(owner());
-    let resolveBaseline!: (value: AuthorityAttachBaseline) => void;
+    let resolveBaseline!: (value: AuthorityAttachBaselineResponse) => void;
     const attaching = router.attach(
       4,
-      () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveBaseline = resolve)),
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveBaseline = resolve)),
     );
 
     expect(router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) })).toBe(
       true,
     );
-    resolveBaseline(baseline(owner(), 1));
-    const response = await attaching;
+    resolveBaseline({ status: "ready", baseline: baseline(owner(), 1) });
+    const response = expectReady(await attaching);
+    if (response.status !== "ready") throw new Error("expected ready attach");
 
     expect(response.baseline).toMatchObject({
       sessionId: "session",
@@ -130,16 +151,17 @@ describe("RendererPublicationRouter", () => {
       delivered.push(item),
     );
     router.setExpectedOwner(owner());
-    let resolveBaseline!: (value: AuthorityAttachBaseline) => void;
+    let resolveBaseline!: (value: AuthorityAttachBaselineResponse) => void;
     const attaching = router.attach(
       4,
-      () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveBaseline = resolve)),
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveBaseline = resolve)),
     );
 
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
-    resolveBaseline(baseline(owner(), 2));
+    resolveBaseline({ status: "ready", baseline: baseline(owner(), 2) });
 
-    const response = await attaching;
+    const response = expectReady(await attaching);
+    if (response.status !== "ready") throw new Error("expected ready attach");
     expect(response.baseline.publicationHighWatermark).toBe(1);
     expect(response.replay).toEqual([]);
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
@@ -152,19 +174,20 @@ describe("RendererPublicationRouter", () => {
       delivered.push(item),
     );
     router.setExpectedOwner(owner());
-    let resolveBaseline!: (value: AuthorityAttachBaseline) => void;
+    let resolveBaseline!: (value: AuthorityAttachBaselineResponse) => void;
     const attaching = router.attach(
       4,
-      () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveBaseline = resolve)),
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveBaseline = resolve)),
     );
 
     // The transcript frame arrives first, but the semantic cursor already
     // covers the later semantic frame. The replay sequence must be compacted.
     router.route({ plane: "transcript", owner: owner(), payload: transcript(owner(), 2) });
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
-    resolveBaseline(baseline(owner(), 2, 0, 1));
+    resolveBaseline({ status: "ready", baseline: baseline(owner(), 2, 0, 1) });
 
-    const response = await attaching;
+    const response = expectReady(await attaching);
+    if (response.status !== "ready") throw new Error("expected ready attach");
     expect(response.baseline.publicationHighWatermark).toBe(1);
     expect(response.replay).toHaveLength(1);
     expect(response.replay[0]).toMatchObject({ plane: "transcript", publicationSequence: 2 });
@@ -178,19 +201,19 @@ describe("RendererPublicationRouter", () => {
       delivered.push(item),
     );
     router.setExpectedOwner(owner());
-    await router.attach(4, async () => baseline(owner(), 1));
+    await router.attach(4, async () => ({ status: "ready", baseline: baseline(owner(), 1) }));
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
     expect(delivered[0]?.publicationSequence).toBe(1);
 
-    let resolveBaseline!: (value: AuthorityAttachBaseline) => void;
+    let resolveBaseline!: (value: AuthorityAttachBaselineResponse) => void;
     const reattaching = router.attach(
       4,
-      () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveBaseline = resolve)),
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveBaseline = resolve)),
     );
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
-    resolveBaseline(baseline(owner(), 2, 0));
+    resolveBaseline({ status: "ready", baseline: baseline(owner(), 2, 0) });
 
-    const response = await reattaching;
+    const response = expectReady(await reattaching);
     expect(response.baseline.publicationHighWatermark).toBe(1);
     expect(response.replay).toHaveLength(1);
     expect(response.replay[0]?.publicationSequence).toBe(2);
@@ -202,7 +225,7 @@ describe("RendererPublicationRouter", () => {
       delivered.push(item),
     );
     router.setExpectedOwner(owner());
-    await router.attach(1, async () => baseline(owner()));
+    await router.attach(1, async () => ({ status: "ready", baseline: baseline(owner()) }));
 
     expect(router.route({ plane: "semantic", owner: owner(1), payload: frame(owner(1), 2) })).toBe(
       false,
@@ -220,7 +243,7 @@ describe("RendererPublicationRouter", () => {
     const delivered = vi.fn();
     const router = new RendererPublicationRouter("session" as SessionId, delivered);
     router.setExpectedOwner(owner());
-    await router.attach(1, async () => baseline(owner(), 1));
+    await router.attach(1, async () => ({ status: "ready", baseline: baseline(owner(), 1) }));
 
     expect(router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) })).toBe(
       true,
@@ -245,7 +268,7 @@ describe("RendererPublicationRouter", () => {
       state: "following",
       cursor: { ...owner(), transportSequence: 1, snapshotSequence: 1 },
     };
-    await router.attach(1, async () => current);
+    await router.attach(1, async () => ({ status: "ready", baseline: current }));
 
     router.route({
       plane: "transcript",
@@ -273,19 +296,20 @@ describe("RendererPublicationRouter", () => {
       maxBufferedPublications: 1,
     });
     router.setExpectedOwner(owner());
-    let resolveFirst!: (value: AuthorityAttachBaseline) => void;
+    let resolveFirst!: (value: AuthorityAttachBaselineResponse) => void;
     const getBaseline = vi
-      .fn<() => Promise<AuthorityAttachBaseline>>()
+      .fn<() => Promise<AuthorityAttachBaselineResponse>>()
       .mockImplementationOnce(
-        () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveFirst = resolve)),
+        () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveFirst = resolve)),
       )
-      .mockResolvedValueOnce(baseline(owner(), 3));
+      .mockResolvedValueOnce({ status: "ready", baseline: baseline(owner(), 3) });
     const attaching = router.attach(1, getBaseline);
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
-    resolveFirst(baseline(owner(), 1));
+    resolveFirst({ status: "ready", baseline: baseline(owner(), 1) });
 
-    const response = await attaching;
+    const response = expectReady(await attaching);
+    if (response.status !== "ready") throw new Error("expected ready attach");
     expect(getBaseline).toHaveBeenCalledTimes(2);
     expect(response.baseline.publicationHighWatermark).toBe(2);
     expect(response.replay).toEqual([]);
@@ -298,37 +322,114 @@ describe("RendererPublicationRouter", () => {
   it("retries after owner replacement without reusing buffered sequence numbers", async () => {
     const router = new RendererPublicationRouter("session" as SessionId, () => {});
     router.setExpectedOwner(owner());
-    let resolveFirst!: (value: AuthorityAttachBaseline) => void;
+    let resolveFirst!: (value: AuthorityAttachBaselineResponse) => void;
     const getBaseline = vi
-      .fn<() => Promise<AuthorityAttachBaseline>>()
+      .fn<() => Promise<AuthorityAttachBaselineResponse>>()
       .mockImplementationOnce(
-        () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveFirst = resolve)),
+        () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveFirst = resolve)),
       )
-      .mockResolvedValueOnce(baseline(owner(1), 2));
+      .mockResolvedValueOnce({ status: "ready", baseline: baseline(owner(1), 2) });
     const attaching = router.attach(1, getBaseline);
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
     router.setExpectedOwner(owner(1));
-    resolveFirst(baseline(owner(1), 1));
+    resolveFirst({ status: "ready", baseline: baseline(owner(1), 1) });
 
-    const response = await attaching;
+    const response = expectReady(await attaching);
+    if (response.status !== "ready") throw new Error("expected ready attach");
     expect(getBaseline).toHaveBeenCalledTimes(2);
     expect(response.baseline.publicationHighWatermark).toBe(1);
     expect(response.replay).toEqual([]);
   });
 
-  it("advances the baseline high-water when it is ahead of every buffered source frame", async () => {
-    const router = new RendererPublicationRouter("session" as SessionId, () => {});
+  it("detaches and clears an overflowed attach after its baseline provider rejects", async () => {
+    const delivered: RendererPublication[] = [];
+    const router = new RendererPublicationRouter(
+      "session" as SessionId,
+      (item) => delivered.push(item),
+      { maxBufferedPublications: 1 },
+    );
     router.setExpectedOwner(owner());
-    let resolveBaseline!: (value: AuthorityAttachBaseline) => void;
+    let rejectBaseline!: (reason: Error) => void;
     const attaching = router.attach(
       1,
-      () => new Promise<AuthorityAttachBaseline>((resolve) => (resolveBaseline = resolve)),
+      () =>
+        new Promise<AuthorityAttachBaselineResponse>(
+          (_resolve, reject) => (rejectBaseline = reject),
+        ),
     );
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
     router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
-    resolveBaseline(baseline(owner(), 3));
 
-    const response = await attaching;
+    const failure = new Error("baseline provider failed");
+    rejectBaseline(failure);
+    await expect(attaching).rejects.toBe(failure);
+
+    expectDetached(router);
+    expect(router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 4) })).toBe(
+      false,
+    );
+
+    expectReady(
+      await router.attach(1, async () => ({ status: "ready", baseline: baseline(owner(), 1) })),
+    );
+    expect(router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) })).toBe(
+      true,
+    );
+    expect(delivered).toHaveLength(1);
+  });
+
+  it("detaches and clears an overflowed attach after baseline owner validation fails", async () => {
+    const router = new RendererPublicationRouter("session" as SessionId, () => {}, {
+      maxBufferedPublications: 1,
+    });
+    router.setExpectedOwner(owner());
+    let resolveBaseline!: (value: AuthorityAttachBaselineResponse) => void;
+    const attaching = router.attach(
+      1,
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveBaseline = resolve)),
+    );
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
+    const invalidBaseline = baseline(owner(), 1);
+    invalidBaseline.semantic.snapshot.owner = owner(1);
+    resolveBaseline({ status: "ready", baseline: invalidBaseline });
+
+    await expect(attaching).rejects.toThrow(AuthorityAttachError);
+    await expect(attaching).rejects.toThrow("Authority baseline semantic owner mismatch");
+    expectDetached(router);
+    expect(router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 4) })).toBe(
+      false,
+    );
+
+    expectReady(
+      await router.attach(1, async () => ({ status: "ready", baseline: baseline(owner(), 1) })),
+    );
+  });
+
+  it.each([
+    { status: "transitioning", transitionId: "replace-owner" },
+    { status: "unavailable", reason: "not_attached" },
+  ] as const)("passes through a typed $status attach response", async (source) => {
+    const router = new RendererPublicationRouter("session" as SessionId, () => {});
+
+    await expect(router.attach(1, async () => source)).resolves.toEqual(source);
+    expectDetached(router);
+  });
+
+  it("advances the baseline high-water when it is ahead of every buffered source frame", async () => {
+    const router = new RendererPublicationRouter("session" as SessionId, () => {});
+    router.setExpectedOwner(owner());
+    let resolveBaseline!: (value: AuthorityAttachBaselineResponse) => void;
+    const attaching = router.attach(
+      1,
+      () => new Promise<AuthorityAttachBaselineResponse>((resolve) => (resolveBaseline = resolve)),
+    );
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 2) });
+    router.route({ plane: "semantic", owner: owner(), payload: frame(owner(), 3) });
+    resolveBaseline({ status: "ready", baseline: baseline(owner(), 3) });
+
+    const response = expectReady(await attaching);
+    if (response.status !== "ready") throw new Error("expected ready attach");
     expect(response.baseline.publicationHighWatermark).toBe(2);
     expect(response.replay).toEqual([]);
   });

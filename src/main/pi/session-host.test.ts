@@ -101,6 +101,36 @@ describe("SessionHost", () => {
     expect(fake.sent).toContainEqual({ type: "initial_session_file_permit", allowed: true });
   });
 
+  it("refuses real-host controls unless their explicit environment gate is enabled", async () => {
+    await expect(host.testControl("replacement")).rejects.toThrow("disabled");
+    expect(fake.sent.some((message) => message.type === "test_control")).toBe(false);
+    expect(() => host.killForTests()).toThrow("disabled");
+  });
+
+  it("forwards an explicitly gated replacement control and validates its successor identity", async () => {
+    const prior = process.env.PIVIS_TEST_REAL_HOST_CONTROL;
+    process.env.PIVIS_TEST_REAL_HOST_CONTROL = "1";
+    try {
+      const pending = host.testControl("replacement");
+      const request = fake.sent.find((message) => message.type === "test_control");
+      if (!request || typeof request.id !== "string")
+        throw new Error("missing test-control request");
+      fake.emitWire({
+        type: "response",
+        id: request.id,
+        success: true,
+        data: { hostInstanceId: fake.hostInstanceId, sessionEpoch: 1 },
+      });
+      await expect(pending).resolves.toEqual({
+        hostInstanceId: fake.hostInstanceId,
+        sessionEpoch: 1,
+      });
+    } finally {
+      if (prior === undefined) delete process.env.PIVIS_TEST_REAL_HOST_CONTROL;
+      else process.env.PIVIS_TEST_REAL_HOST_CONTROL = prior;
+    }
+  });
+
   it("validates opaque authority frames and requests a serialized attach baseline", async () => {
     fake.emitReady("0.80.6");
     await host.waitForReady();
@@ -123,8 +153,16 @@ describe("SessionHost", () => {
     const request = fake.sent.find((message) => message.type === "authority_attach");
     if (!request || typeof request.id !== "string")
       throw new Error("missing authority attach request");
-    fake.emitWire({ type: "response", id: request.id, success: true, data: baseline });
-    await expect(attach).resolves.toMatchObject({ rendererGeneration: 3, owner: baseline.owner });
+    fake.emitWire({
+      type: "response",
+      id: request.id,
+      success: true,
+      data: { status: "ready", baseline },
+    });
+    await expect(attach).resolves.toMatchObject({
+      status: "ready",
+      baseline: { rendererGeneration: 3, owner: baseline.owner },
+    });
   });
 
   describe("control silence", () => {

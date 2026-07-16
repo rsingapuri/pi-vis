@@ -2,9 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
-import { type LaunchedElectronApplication, launchElectron } from "./electron-launch.mjs";
 import { generateSessionSearchCorpus } from "./session-search-corpus.mjs";
+import {
+  type LaunchedElectronApplication,
+  launchElectron,
+} from "./support/instrumented-launch.mjs";
+import { allowInvariant, expect, test } from "./support/invariants.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ENTRY = join(__dirname, "../../out/main/index.js");
@@ -260,6 +263,9 @@ test.describe("workspace saved-session search", () => {
   });
 
   test("keeps verified preview and the previous activation visit when target activation fails", async () => {
+    // The fixture deliberately exits this target host before ready; the UI
+    // assertion below verifies activation failure is contained.
+    allowInvariant("main-stderr", "Host process exited with code 23 before ready");
     fs.chmodSync(FAKE_PI, 0o755);
     const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "pivis-e2e-search-fail-")));
     const settingsDir = join(root, "user-data");

@@ -190,15 +190,7 @@ export class FakeHostProcess extends EventEmitter {
           type: "response",
           id: msg.id,
           success: true,
-          data: {
-            token: this.closeToken,
-            mutationSequence: 0,
-            snapshot: this.snapshot(),
-            custody: [],
-            activeIntents: [],
-            restorations: [],
-            ui: {},
-          },
+          data: { token: this.closeToken },
         });
       });
     } else if (msg?.type === "confirm_close" && this.initialized) {
@@ -207,14 +199,8 @@ export class FakeHostProcess extends EventEmitter {
           type: "response",
           id: msg.id,
           success: true,
-          data: { valid: msg.token === this.closeToken, mutationSequence: 0 },
+          data: { valid: msg.token === this.closeToken },
         });
-      });
-    } else if (msg?.type === "cancel_close" && this.initialized) {
-      const cancelled = msg.token === this.closeToken;
-      if (cancelled) this.closeToken = undefined;
-      queueMicrotask(() => {
-        this.emitWire({ type: "response", id: msg.id, success: true, data: { cancelled } });
       });
     } else if (msg?.type === "panel_input" && this.initialized) {
       queueMicrotask(() => {

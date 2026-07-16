@@ -60,9 +60,10 @@ function frame(transportSequence: number, snapshotSequence = transportSequence):
   };
 }
 
-function baseline(highWatermark = 10): AuthorityAttachResponse {
+function baseline(highWatermark = 10): Extract<AuthorityAttachResponse, { status: "ready" }> {
   const cursor = { ...owner, transportSequence: 1, snapshotSequence: 1 };
   return {
+    status: "ready",
     baseline: {
       sessionId: "session-a",
       rendererGeneration: 7,

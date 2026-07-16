@@ -3,10 +3,15 @@ import fs from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Page, expect, test } from "@playwright/test";
-import { type LaunchedElectronApplication, launchElectron } from "./electron-launch.mjs";
+import type { Page } from "@playwright/test";
+import {
+  type LaunchedElectronApplication,
+  launchElectron,
+} from "./support/instrumented-launch.mjs";
+import { allowInvariant, expect, test } from "./support/invariants.mjs";
 import {
   PINNED_PI_VERSION,
+  REAL_SDK_PROVIDER_LATENCY,
   createRealSdkFixture,
   openNewRealSession,
   pinnedPiBinary,
@@ -101,6 +106,8 @@ test.describe("Real SDK-host smoke", () => {
         ),
       ).toHaveCount(0);
 
+      // This is the asserted domain failure, not an unexpected UI error.
+      allowInvariant("error-toast", /Nothing to compact/);
       // Exercise the domain-failure path before adding any extension-owned content.
       await textarea.fill("/compact");
       await textarea.press("Enter");
@@ -135,44 +142,50 @@ test.describe("Real SDK-host smoke", () => {
 
   test("successfully compacts through a deterministic localhost provider", async () => {
     test.setTimeout(180_000);
-    const provider = await createScriptedOpenAIProvider([
-      {
-        expect: {
-          model: "pivis-test-model",
-          promptIncludes: "First deterministic turn",
-          compaction: false,
+    const provider = await createScriptedOpenAIProvider(
+      [
+        {
+          expect: {
+            model: "pivis-test-model",
+            promptIncludes: "First deterministic turn",
+            compaction: false,
+          },
+          response: { type: "text", chunks: ["Deterministic local assistant response 1."] },
         },
-        response: { type: "text", chunks: ["Deterministic local assistant response 1."] },
-      },
-      {
-        expect: {
-          model: "pivis-test-model",
-          promptIncludes: "Second deterministic turn",
-          compaction: false,
+        {
+          expect: {
+            model: "pivis-test-model",
+            promptIncludes: "Second deterministic turn",
+            compaction: false,
+          },
+          response: { type: "text", chunks: ["Deterministic local assistant response 2."] },
         },
-        response: { type: "text", chunks: ["Deterministic local assistant response 2."] },
-      },
-      {
-        expect: {
-          model: "pivis-test-model",
-          compaction: { includes: "First deterministic turn" },
+        {
+          expect: {
+            model: "pivis-test-model",
+            compaction: { includes: "First deterministic turn" },
+          },
+          response: {
+            type: "text",
+            chunks: [
+              "## Goal\nDeterministic compacted summary.\n\n## Progress\n- Seeded local-provider turns were processed.",
+            ],
+          },
         },
-        response: {
-          type: "text",
-          chunks: [
-            "## Goal\nDeterministic compacted summary.\n\n## Progress\n- Seeded local-provider turns were processed.",
-          ],
+        {
+          expect: {
+            model: "pivis-test-model",
+            promptIncludes: [
+              "Deterministic compacted summary",
+              "Post-compaction deterministic turn",
+            ],
+            compaction: false,
+          },
+          response: { type: "text", chunks: ["Deterministic local assistant response 4."] },
         },
-      },
-      {
-        expect: {
-          model: "pivis-test-model",
-          promptIncludes: ["Deterministic compacted summary", "Post-compaction deterministic turn"],
-          compaction: false,
-        },
-        response: { type: "text", chunks: ["Deterministic local assistant response 4."] },
-      },
-    ]);
+      ],
+      { latency: REAL_SDK_PROVIDER_LATENCY },
+    );
     const fixture = createRealSdkFixture({
       providerBaseUrl: provider.baseUrl,
       compactionEnabled: false,

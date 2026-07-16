@@ -1254,7 +1254,9 @@ async function executeAuthorityIntent(entry) {
                 intentId: item.intentId,
                 images: structuredClone(item.images),
               })),
-              requiresReview: true,
+              // Real Pi's requestEscape clears the queue before consumption, so the
+              // authentic record certainty is not_processed (always restored).
+              certainty: "not_processed",
             };
             authorityRestorations.set(restoration.restorationId, restoration);
             emitAuthorityFrame([restoration]);
@@ -1335,6 +1337,9 @@ function dispatchAuthorityIntent(envelope) {
 }
 
 function authorityAttach(rendererGeneration) {
+  if (process.env.PIVIS_TEST_AUTHORITY_ATTACH_TRANSITIONING === "1") {
+    return { status: "transitioning", transitionId: "test-transition" };
+  }
   const semantic = semanticSnapshot();
   if (semanticTransportSequence === 0) semanticTransportSequence = 1;
   if (presentationTransportSequence.transcript === 0) presentationTransportSequence.transcript = 1;
@@ -1358,34 +1363,37 @@ function authorityAttach(rendererGeneration) {
     snapshotSequence: semantic.snapshotSequence,
   };
   return {
-    sessionId,
-    rendererGeneration,
-    owner,
-    semantic: { sync: { state: "following", cursor }, snapshot: semantic },
-    operationJournal: authorityJournal.filter(
-      (entry) => entry.outcome.owner.sessionEpoch === sessionEpoch,
-    ),
-    restorations: [...authorityRestorations.values()],
-    transcript: {
-      sync: { state: "following", cursor: transcriptCursor },
-      persistedHistoryCursor: sessionFile ?? null,
-      liveTailCursor: null,
-      overlapBoundary: sessionFile ? `persisted:${sessionFile}` : null,
+    status: "ready",
+    baseline: {
+      sessionId,
+      rendererGeneration,
+      owner,
+      semantic: { sync: { state: "following", cursor }, snapshot: semantic },
+      operationJournal: authorityJournal.filter(
+        (entry) => entry.outcome.owner.sessionEpoch === sessionEpoch,
+      ),
+      restorations: [...authorityRestorations.values()],
+      transcript: {
+        sync: { state: "following", cursor: transcriptCursor },
+        persistedHistoryCursor: sessionFile ?? null,
+        liveTailCursor: null,
+        overlapBoundary: sessionFile ? `persisted:${sessionFile}` : null,
+      },
+      extensionUi: {
+        sync: { state: "following", cursor: extensionUiCursor },
+        notifications: structuredClone(catalog.notifications),
+        statuses: structuredClone(catalog.statuses),
+        widgets: structuredClone(catalog.widgets),
+        dialogs: [...pendingDialogs.values()].map(({ request }) => ({
+          request: structuredClone(request),
+          rendererGeneration,
+          inputPending: false,
+          acknowledged: false,
+        })),
+      },
+      panels: [],
+      publicationHighWatermark: 0,
     },
-    extensionUi: {
-      sync: { state: "following", cursor: extensionUiCursor },
-      notifications: structuredClone(catalog.notifications),
-      statuses: structuredClone(catalog.statuses),
-      widgets: structuredClone(catalog.widgets),
-      dialogs: [...pendingDialogs.values()].map(({ request }) => ({
-        request: structuredClone(request),
-        rendererGeneration,
-        inputPending: false,
-        acknowledged: false,
-      })),
-    },
-    panels: [],
-    publicationHighWatermark: 0,
   };
 }
 
@@ -1568,28 +1576,11 @@ async function handleMessage(message) {
     }
     case "prepare_close":
       closeToken = crypto.randomUUID();
-      reply(message.id, true, {
-        token: closeToken,
-        mutationSequence: snapshotSequence,
-        snapshot: snapshot(),
-        custody: [],
-        activeIntents: [],
-        restorations: [],
-        ui: {
-          editor: { revision: editorRevision, text: editorText, attachments: editorAttachments },
-          panels: [...openPanels].map((panelId) => ({ panelId })),
-        },
-      });
+      reply(message.id, true, { token: closeToken });
       break;
     case "confirm_close":
       reply(message.id, true, { valid: message.token === closeToken });
       break;
-    case "cancel_close": {
-      const cancelled = message.token === closeToken;
-      if (cancelled) closeToken = undefined;
-      reply(message.id, true, { cancelled });
-      break;
-    }
     case "escape": {
       const target = runtimeNavigation
         ? "navigation"
@@ -1625,7 +1616,9 @@ async function handleMessage(message) {
               intentId: item.intentId,
               images: structuredClone(item.images),
             })),
-            requiresReview: true,
+            // Real Pi's requestEscape clears the queue before consumption, so the
+            // authentic record certainty is not_processed (always restored).
+            certainty: "not_processed",
           });
           const restoration = {
             type: "queue_restoration",
@@ -1636,7 +1629,9 @@ async function handleMessage(message) {
               intentId: item.intentId,
               images: structuredClone(item.images),
             })),
-            requiresReview: true,
+            // Real Pi's requestEscape clears the queue before consumption, so the
+            // authentic record certainty is not_processed (always restored).
+            certainty: "not_processed",
           };
           authorityRestorations.set(restorationId, restoration);
           emitAuthorityFrame([restoration]);

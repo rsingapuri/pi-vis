@@ -48,6 +48,12 @@ function makeSession(overrides = {}) {
   };
 }
 
+async function readyAttach(authority, rendererGeneration, presentation) {
+  const attached = await authority.requestAuthorityAttach(rendererGeneration, presentation);
+  expect(attached.status).toBe("ready");
+  return attached.baseline;
+}
+
 function makeRequest(intentId, overrides = {}) {
   return {
     intentId,
@@ -128,12 +134,12 @@ describe("state authority", () => {
         originalAttachments: [{ intentId: "esc-restoration", images: [image] }],
       }),
     );
-    const detached = await authority.requestAuthorityAttach(4);
+    const detached = await readyAttach(authority, 4);
     expect(detached.restorations).toContainEqual(
       expect.objectContaining({ restorationId: expect.any(String), steering: ["queued bytes"] }),
     );
     authority.acknowledgeRestoration(detached.restorations[0].restorationId);
-    expect((await authority.requestAuthorityAttach(5)).restorations).toEqual([]);
+    expect((await readyAttach(authority, 5)).restorations).toEqual([]);
     expect(session.prompt).toHaveBeenCalledTimes(1);
   });
 
@@ -1146,15 +1152,14 @@ describe("state authority", () => {
     expect(batch.terminalSnapshot).toMatchObject({ sessionEpoch: 0, isStreaming: false });
   });
 
-  it("invalidates a host close token when authoritative state changes", () => {
+  it("keeps a forced close token valid when authoritative state changes", () => {
     const { authority, session } = setup();
-    authority.publishSnapshot();
-    const checkpoint = authority.prepareClose();
+    const checkpoint = authority.prepareClose(true);
     session.isStreaming = true;
     session.isIdle = false;
     authority.publishSnapshot();
 
-    expect(authority.confirmClose(checkpoint.token)).toMatchObject({ valid: false });
+    expect(authority.confirmClose(checkpoint.token)).toMatchObject({ valid: true });
   });
 
   it("permits the correlated response after a valid close confirmation", () => {
@@ -1168,24 +1173,12 @@ describe("state authority", () => {
     expect(authority.captureOutbound({ type: "event", event: { type: "late" } })).toBe(true);
   });
 
-  it("includes custody and replicated UI in the host close checkpoint", async () => {
-    const getCheckpoint = vi.fn(() => ({
-      editor: { revision: 4, text: "draft" },
-      unifiedSubmissions: [{ id: "u1", text: "pending", revision: 3 }],
-      panels: [{ panelId: 2, lastData: "frame" }],
-    }));
-    const { authority } = setup({}, { getCheckpoint });
+  it("returns only an opaque token for a forced close", async () => {
+    const { authority } = setup();
     authority.observeEvent({ type: "compaction_start" });
     await authority.submit(makeRequest("custody"));
 
-    const checkpoint = authority.prepareClose();
-
-    expect(checkpoint.custody).toHaveLength(1);
-    expect(checkpoint.activeIntents).toContainEqual({
-      intentId: "custody",
-      disposition: "custody",
-    });
-    expect(checkpoint.ui).toEqual(getCheckpoint());
+    expect(authority.prepareClose(true)).toEqual({ token: expect.any(String) });
   });
 
   it("rejects prompt ingress while a replacement transition is active", async () => {
@@ -1204,6 +1197,20 @@ describe("state authority", () => {
       provisionalEpoch: 1,
     });
     authority.cancelTransition(session);
+  });
+
+  it("keeps the published transport epoch on the predecessor until transition commit", () => {
+    const { authority } = setup();
+
+    expect(authority.transportSessionEpoch).toBe(0);
+    authority.beginTransition(1);
+    authority.adoptSession(makeSession({ sessionId: "replacement" }), 1);
+
+    expect(authority.sessionEpoch).toBe(1);
+    expect(authority.transportSessionEpoch).toBe(0);
+
+    authority.commitTransition();
+    expect(authority.transportSessionEpoch).toBe(1);
   });
 
   it("keeps a predecessor terminal result out of the successor transition batch", async () => {
@@ -1588,19 +1595,21 @@ describe("state authority", () => {
     authority.observeEvent({ type: "compaction_end" });
 
     const attached = await attach;
-    expect(attached.rendererGeneration).toBe(7);
-    expect(attached.semantic.snapshot.activity).toEqual({});
-    expect(attached.operationJournal).toEqual(
+    expect(attached.status).toBe("ready");
+    const baseline = attached.baseline;
+    expect(baseline.rendererGeneration).toBe(7);
+    expect(baseline.semantic.snapshot.activity).toEqual({});
+    expect(baseline.operationJournal).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: "observed_operation" })]),
     );
-    expect(attached.panels).toHaveLength(1);
-    expect(attached.panels[0]?.panelId).toBe(4);
-    expect(attached.panels[0]?.sync).toMatchObject({
+    expect(baseline.panels).toHaveLength(1);
+    expect(baseline.panels[0]?.panelId).toBe(4);
+    expect(baseline.panels[0]?.sync).toMatchObject({
       state: "synchronizing",
       lastCursor: { transportSequence: expect.any(Number) },
       reason: "repaint_required",
     });
-    expect(attached.panels[0]?.keyframe).toEqual({
+    expect(baseline.panels[0]?.keyframe).toEqual({
       kind: "repaint_required",
       renderRevision: 9,
     });
@@ -1952,7 +1961,7 @@ describe("state authority", () => {
       },
     );
 
-    const attach = await authority.requestAuthorityAttach(3);
+    const attach = await readyAttach(authority, 3);
     expect(attach.operationJournal.map((entry) => entry.record.kind)).toEqual(
       expect.arrayContaining(["agent", "retry", "bash", "navigation", "command"]),
     );
@@ -2089,8 +2098,8 @@ describe("state authority", () => {
     navigation.resolve();
     await navigating;
 
-    const first = await authority.requestAuthorityAttach(11);
-    const second = await authority.requestAuthorityAttach(12);
+    const first = await readyAttach(authority, 11);
+    const second = await readyAttach(authority, 12);
     for (const attach of [first, second]) {
       expect(AuthorityAttachBaselineSchema.safeParse(attach).success).toBe(true);
       expect(attach.operationJournal.map((entry) => entry.type)).toEqual(
@@ -2169,7 +2178,7 @@ describe("state authority", () => {
     }
     expect(execute).not.toHaveBeenCalled();
     expect(sendFrame).not.toHaveBeenCalled();
-    expect((await authority.requestAuthorityAttach(1)).operationJournal).toEqual([]);
+    expect((await readyAttach(authority, 1)).operationJournal).toEqual([]);
   });
 
   it("exposes an atomic semantic frame and failure escrow without inventing a compaction end", () => {

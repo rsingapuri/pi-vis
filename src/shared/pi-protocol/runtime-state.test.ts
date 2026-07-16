@@ -92,7 +92,7 @@ describe("authority protocol schemas", () => {
             queueMode: "steer",
             barrier: "compaction",
             enteredAt: 1,
-            requiresReview: false,
+            certainty: "not_processed",
           },
         ],
       },
@@ -234,6 +234,7 @@ describe("authority protocol schemas", () => {
     ).toBe(false);
     expect(
       SessionQueryResultSchema.safeParse({
+        status: "ok",
         queryId: "query-a",
         owner,
         queryType: "render_entry",
@@ -242,6 +243,7 @@ describe("authority protocol schemas", () => {
     ).toBe(true);
     expect(
       SessionQueryResultSchema.safeParse({
+        status: "ok",
         queryId: "query-a",
         owner,
         queryType: "render_entry",
@@ -327,6 +329,7 @@ describe("authority protocol schemas", () => {
     ).toBe(false);
 
     const response = {
+      status: "ready",
       baseline: baseline(),
       replay: [
         {

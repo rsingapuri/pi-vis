@@ -41,7 +41,6 @@ import {
   isNewSessionPending,
   isSessionWorking,
   sessionHasHistory,
-  sessionMatchesRuntime,
   useSessionsStore,
 } from "../../stores/sessions-store.js";
 import { useTreeStore } from "../../stores/tree-store.js";
@@ -241,6 +240,20 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           // created in the new epoch and rebased to the host revision, may
           // resolve the preserved conflict.
           if (patchEpoch !== editorPatchEpochRef.current) return "rejected";
+          // A local command may synchronously replace the host (/new, reload,
+          // worktree switch) before this serialized optimistic patch reaches
+          // IPC. Silently retire that stale patch instead of invoking main
+          // against an owner that can no longer accept it.
+          const latestSnapshot = authoritySnapshotFor(
+            useSessionsStore.getState().sessions.get(sessionId),
+          );
+          if (
+            !latestSnapshot ||
+            latestSnapshot.owner.hostInstanceId !== expectedHostInstanceId ||
+            latestSnapshot.owner.sessionEpoch !== expectedSessionEpoch
+          ) {
+            return "rejected";
+          }
           const result = await window.pivis.invoke("session.editorPatch", {
             sessionId,
             expectedHostInstanceId,
@@ -251,6 +264,21 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
             attachments: nextAttachments,
           });
           if (patchEpoch !== editorPatchEpochRef.current) return "rejected";
+          // /new and host replacement can begin in the narrow interval after
+          // the renderer fence above and before main admits this patch. They
+          // are normal owner-bound rejections, not synchronization conflicts:
+          // retire this whole optimistic chain, retain the visible draft, and
+          // never let queued predecessor work cross into the replacement.
+          if (
+            result.rejection === "runtime_unavailable" ||
+            result.rejection === "runtime_replaced"
+          ) {
+            editorPatchEpochRef.current++;
+            editorRevisionRef.current =
+              useSessionsStore.getState().sessions.get(sessionId)?.editorRevision ??
+              result.revision;
+            return "rejected";
+          }
           if (result.accepted) {
             useSessionsStore.getState().acknowledgeEditorPatch(sessionId, result.revision);
             // A snapshot sent just before this acknowledgement may have
@@ -377,6 +405,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     }
   }, [pending, workspacePath, sessionId]);
   const editorInjectionText = session?.editorInjection?.text;
+  const editorInjectionAttachments = session?.editorInjection?.attachments;
 
   const addUserMessage = useSessionsStore((s) => s.addUserMessage);
   const addToast = useSessionsStore((s) => s.addToast);
@@ -475,7 +504,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     }
     setSlashIndex(0);
     const restored = parseReplicatedAttachments(
-      useSessionsStore.getState().sessions.get(sessionId)?.editorAttachments ?? [],
+      editorInjectionAttachments ??
+        useSessionsStore.getState().sessions.get(sessionId)?.editorAttachments ??
+        [],
     );
     setAttachments(restored.images);
     setFileAttachments(injectedFiles ?? restored.files);
@@ -485,6 +516,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
     editorInjectionNonce,
     editorInjectionText,
     editorInjectionMayPreserveDraft,
+    editorInjectionAttachments,
     discovered,
     sessionId,
     synchronizeEditorText,
@@ -932,6 +964,10 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
               sessionId,
               rendererGeneration: RENDERER_GENERATION,
             });
+            if (attached.status !== "ready") {
+              editorPatchRetryNeededRef.current = true;
+              return;
+            }
             useSessionsStore.getState().applyAuthorityAttach(sessionId, attached);
             dispatchIdentity = useSessionsStore.getState().sessions.get(sessionId);
           } catch {
@@ -1027,6 +1063,28 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
             });
           });
         };
+        // Admission proves the child owns the command, so its stale text can
+        // clear immediately (notably long-running /compact). A later failed
+        // outcome is a domain error the user already sees in the transcript
+        // and toasts; the command text is deliberately not re-injected.
+        const clearOnAdmission = (intent: SessionIntent) => {
+          if (
+            !["compact", "export", "reload", "rename", "setModel", "runBash", "navigate"].includes(
+              intent.kind,
+            ) ||
+            !mountedRef.current ||
+            renderedSessionIdRef.current !== sessionId ||
+            textRef.current !== submittedLocalText ||
+            localEditGenerationRef.current !== submittedLocalEditGeneration
+          ) {
+            return;
+          }
+          synchronizeEditorText("", replicatedAttachmentsRef.current);
+          textRef.current = "";
+          setText("");
+          setSlashIndex(0);
+          useSessionsStore.getState().setSessionDraft(sessionId, "");
+        };
         const deps = {
           dispatch: (sid: SessionId, intent: SessionIntent, intentId?: string) => {
             const observation = intentObservation(sid);
@@ -1053,6 +1111,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           },
           awaitIntentOutcome,
           getIntentObservation: intentObservation,
+          onAdmitted: (_sid: SessionId, intent: SessionIntent) => clearOnAdmission(intent),
           uiSurface: "composer" as const,
           invoke: async <T = unknown>(channel: string, payload: unknown) =>
             window.pivis.invoke(
@@ -1116,9 +1175,17 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
             completion?.outcome.kind === "invokeCommand");
         const acceptedPromptCanClear =
           acceptedPromptOutcome && originatingComposerStillMounted && localPayloadUnchanged;
+        // Local UI commands (for example /tree) settle synchronously and have
+        // no intent completion, so clear their stale command text once the UI
+        // opens. `/name` without an argument is different: it is a read-only
+        // query that deliberately leaves the completed `/name ` prefix ready
+        // for the user to enter a value.
+        const preservesReadOnlyNamePrefix =
+          finalAction.kind === "name" && finalAction.name === undefined;
         const completedCommandCanClear =
           finalAction.kind !== "send-prompt" &&
           finalAction.kind !== "unsupported" &&
+          !preservesReadOnlyNamePrefix &&
           (completion === undefined || terminalOutcome) &&
           originatingComposerStillMounted &&
           localPayloadUnchanged;

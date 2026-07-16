@@ -32,6 +32,7 @@ import { InputNotConsumedError, executeAction } from "../lib/commands/execute.js
 import { parseComposerInput } from "../lib/commands/parse.js";
 import {
   parseReplicatedAttachments,
+  restorationImagesToComposerAttachments,
   runtimeImagesFromAttachments,
   textWithAppendedFilePaths,
   textWithPrependedFilePaths,
@@ -46,6 +47,7 @@ import {
 } from "../lib/diff-comments.js";
 import type { DiffModel } from "../lib/diff/diff-model.js";
 import { reanchorCommentsForEdit } from "../lib/diff/edit-anchor.js";
+import { describeIpcError } from "../lib/ipc-errors.js";
 import { findCurrentModel } from "../lib/model-utils.js";
 import { forgetPanelInputSequence } from "../lib/panel-input-sequence.js";
 import { RENDERER_GENERATION } from "../lib/renderer-generation.js";
@@ -117,6 +119,7 @@ export interface SessionViewState {
       }
     | undefined;
   queuedMessages?: { steering: QueuedMessage[]; followUp: QueuedMessage[] } | undefined;
+  /** Queued records are retained solely to suppress late optimistic echoes. */
   queueRestorations?:
     | Array<{
         restorationId: string;
@@ -127,7 +130,8 @@ export interface SessionViewState {
         commandDescription?: string | undefined;
       }>
     | undefined;
-  /** Start time derived from the last authoritative streaming snapshot. */
+  /** Restore instructions already applied; survives duplicate IPC delivery. */
+  appliedRestoreDraftIds?: string[] | undefined;
   runningSince?: number | undefined;
   /**
    * Unread turn-result marker for the sidebar status dot. Set to "done" or
@@ -167,6 +171,8 @@ export interface SessionViewState {
         revision?: number;
         /** Only a fresh owner baseline may yield to an existing renderer draft. */
         preserveRendererDraft?: boolean;
+        /** Renderer-owned restored attachments to apply with this injection. */
+        attachments?: unknown[];
       }
     | undefined;
   pendingPicker?: PickerRequest | undefined;
@@ -690,37 +696,6 @@ function queuedFromSnapshot(
   });
 }
 
-function closeCheckpointPreview(
-  checkpoint: unknown,
-  localDraft: string,
-  localEditor: { attachments: unknown[]; pendingAttachmentReads: number },
-): string {
-  const truncate = (value: unknown): unknown => {
-    if (typeof value === "string") {
-      return value.length > 400 ? `${value.slice(0, 400)}… (${value.length} chars)` : value;
-    }
-    if (Array.isArray(value)) return value.slice(0, 12).map(truncate);
-    if (value && typeof value === "object") {
-      return Object.fromEntries(
-        Object.entries(value as Record<string, unknown>)
-          .filter(([key]) => !["data", "bytes"].includes(key))
-          .slice(0, 20)
-          .map(([key, entry]) => [key, truncate(entry)]),
-      );
-    }
-    return value;
-  };
-  const details = truncate({
-    ...(localDraft.trim() ? { rendererDraft: localDraft } : {}),
-    ...(localEditor.attachments.length > 0 || localEditor.pendingAttachmentReads > 0
-      ? { rendererEditor: localEditor }
-      : {}),
-    checkpoint,
-  });
-  const rendered = JSON.stringify(details, null, 2);
-  return rendered.length > 8_000 ? `${rendered.slice(0, 8_000)}\n… checkpoint truncated` : rendered;
-}
-
 interface EditorCandidate {
   text: string;
   attachments: unknown[];
@@ -1145,8 +1120,15 @@ interface SessionsStore {
       commandDescription?: string | undefined;
     },
   ) => void;
-  dismissQueueRestoration: (sessionId: SessionId, restorationId: string) => Promise<void>;
-  restoreQueueRestorationText: (sessionId: SessionId, restorationId: string) => void;
+  applyRestoreDraft: (
+    sessionId: SessionId,
+    restoration: {
+      restorationId: string;
+      text: string;
+      attachments: unknown[];
+      disposition: "restore" | "dropped";
+    },
+  ) => void;
   /** Request that the host escape the active runtime operation. The host
    *  chooses the concrete action and returns its authoritative disposition. */
   abortSession: (sessionId: SessionId) => void;
@@ -1737,7 +1719,7 @@ const buildSessionsStore = (
     const sessionFile = session.sessionFile;
     try {
       const result = await querySession(sessionId, { type: "get_cache_miss_notices" }, observation);
-      if (!result.response.success) return;
+      if (result.status !== "ok" || !result.response.success) return;
       const parsed = CacheMissNoticeEventSchema.array().safeParse(
         (result.response.data as { notices?: unknown } | undefined)?.notices,
       );
@@ -1948,6 +1930,7 @@ const buildSessionsStore = (
   },
 
   applyAuthorityAttach: (sessionId, response) => {
+    if (response.status !== "ready") return;
     let following = false;
     set((state) => {
       const current = state.sessions.get(sessionId);
@@ -2198,92 +2181,82 @@ const buildSessionsStore = (
   },
 
   applyQueueRestoration: (sessionId, restoration) => {
-    const clearedIntentIds = restoration.clearedIntentIds ?? [];
-    if (clearedIntentIds.length > 0) {
-      set((state) => {
-        const current = state.sessions.get(sessionId);
-        if (!current) return {};
-        const transcript = retirePendingUserEchoesByIntent(current.transcript, clearedIntentIds);
-        if (transcript === current.transcript) return {};
-        const sessions = new Map(state.sessions);
-        sessions.set(sessionId, { ...current, transcript });
-        return { sessions };
-      });
-    }
-    const hasRecoverableText = [...restoration.steering, ...restoration.followUp].some(
-      (value) => value.trim().length > 0,
-    );
-    const hasRecoverableAttachments = restoration.originalAttachments.some(
-      (item) => item.images.length > 0,
-    );
-    const hasCommandReview = !!restoration.commandDescription?.trim();
-    // Every restoration remains child-owned until an explicit dismissal. Even
-    // an empty marker can name destructive custody and must not be silently
-    // acknowledged while a renderer is attaching or detached.
-    const session = get().sessions.get(sessionId);
-    if (
-      !session ||
-      session.queueRestorations?.some((item) => item.restorationId === restoration.restorationId)
-    ) {
-      return;
-    }
-    const restored = [...restoration.steering, ...restoration.followUp].join("\n\n");
-    const currentDraft =
-      get().sessionDrafts.get(sessionId) ??
-      session.editorInjection?.text ??
-      session.runtimeSnapshot?.editor.text ??
-      "";
+    // Authority records remain only as custody markers for late optimistic
+    // transcript echoes. They never inject text, request review, or toast.
     set((state) => {
       const current = state.sessions.get(sessionId);
-      if (!current) return {};
+      if (
+        !current ||
+        current.queueRestorations?.some((item) => item.restorationId === restoration.restorationId)
+      )
+        return {};
+      const transcript = restoration.clearedIntentIds?.length
+        ? retirePendingUserEchoesByIntent(current.transcript, restoration.clearedIntentIds)
+        : current.transcript;
       const sessions = new Map(state.sessions);
       sessions.set(sessionId, {
         ...current,
+        transcript,
         queueRestorations: [...(current.queueRestorations ?? []), structuredClone(restoration)],
       });
       return { sessions };
     });
-    // Never overwrite newer typing. With a non-empty editor the review card
-    // exposes an explicit Restore action instead.
-    if (restored && !hasCommandReview && currentDraft.trim() === "") {
-      get().injectEditorText(sessionId, restored);
-    }
-    get().addToast(
-      sessionId,
-      hasCommandReview
-        ? "A command may have completed before acknowledgement; review it before retrying."
-        : "Queued text and possible original attachments require review; extensions may have transformed or consumed queue items.",
-      "warning",
-    );
   },
 
-  dismissQueueRestoration: async (sessionId, restorationId) => {
-    const response = await window.pivis.invoke("session.acknowledgeRestoration", {
-      sessionId,
-      restorationId,
-    });
-    if (!response.acknowledged) return;
+  applyRestoreDraft: (sessionId, restoration) => {
+    let applied = false;
+    let shouldAcknowledge = false;
     set((state) => {
-      const session = state.sessions.get(sessionId);
-      if (!session) return {};
+      const current = state.sessions.get(sessionId);
+      // An absent renderer session has not assumed restoration custody. Do not
+      // acknowledge it: main must retain and redeliver after reattachment.
+      if (!current) return {};
+      // Main retains this instruction until acknowledgement. A redelivery
+      // after transient IPC failure must not mutate the draft twice, but it
+      // must retry the idempotent acknowledgement so custody can retire.
+      shouldAcknowledge = true;
+      if (current.appliedRestoreDraftIds?.includes(restoration.restorationId)) return {};
+      applied = true;
       const sessions = new Map(state.sessions);
+      const appliedRestoreDraftIds = [
+        ...(current.appliedRestoreDraftIds ?? []),
+        restoration.restorationId,
+      ];
+      if (restoration.disposition === "dropped") {
+        sessions.set(sessionId, { ...current, appliedRestoreDraftIds });
+        return { sessions };
+      }
+      const draft =
+        state.sessionDrafts.get(sessionId) ??
+        current.editorInjection?.text ??
+        current.runtimeSnapshot?.editor.text ??
+        "";
+      const text = restoration.text.trim()
+        ? draft.trim()
+          ? `${draft}\n\n${restoration.text}`
+          : restoration.text
+        : draft;
+      const attachments = [
+        ...(current.editorInjection?.attachments ?? current.editorAttachments ?? []),
+        ...restorationImagesToComposerAttachments(restoration.attachments),
+      ];
       sessions.set(sessionId, {
-        ...session,
-        queueRestorations: (session.queueRestorations ?? []).filter(
-          (item) => item.restorationId !== restorationId,
-        ),
+        ...current,
+        appliedRestoreDraftIds,
+        editorInjection: { text, attachments, nonce: ++editorInjectionNonce },
       });
       return { sessions };
     });
-  },
-
-  restoreQueueRestorationText: (sessionId, restorationId) => {
-    const restoration = get()
-      .sessions.get(sessionId)
-      ?.queueRestorations?.find((item) => item.restorationId === restorationId);
-    if (!restoration) return;
-    const restored = [...restoration.steering, ...restoration.followUp].join("\n\n");
-    if (restored) get().injectEditorText(sessionId, restored);
+    if (!shouldAcknowledge) return;
+    if (applied && restoration.disposition === "dropped") {
+      get().addToast(sessionId, "Interrupted command was not restored.", "info");
+    }
+    void window.pivis
+      .invoke("session.acknowledgeRestoration", {
+        sessionId,
+        restorationId: restoration.restorationId,
+      })
+      .catch(() => {});
   },
 
   applySubmissionDisposition: (_sessionId, _result) => {
@@ -2298,9 +2271,10 @@ const buildSessionsStore = (
     if (!session) return;
     const observation = authorityObservation(session);
     if (!observation) return;
-    void dispatchSessionIntent(sessionId, { kind: "interrupt" }, observation).catch((error) =>
-      get().addToast(sessionId, String(error), "error"),
-    );
+    void dispatchSessionIntent(sessionId, { kind: "interrupt" }, observation).catch((error) => {
+      const message = describeIpcError(error);
+      if (message) get().addToast(sessionId, message, "error");
+    });
   },
 
   addUiRequest: (sessionId, request) => {
@@ -3123,6 +3097,7 @@ const buildSessionsStore = (
     try {
       const result = await querySession(sessionId, { type: "get_available_models" }, observation);
       if (
+        result.status !== "ok" ||
         !result.response.success ||
         !sessionMatchesRuntime(get().sessions.get(sessionId), observation.owner)
       ) {
@@ -3341,7 +3316,7 @@ const buildSessionsStore = (
     if (!observation) return;
     try {
       const result = await querySession(sessionId, { type: "get_commands" }, observation);
-      if (!result.response.success) return;
+      if (result.status !== "ok" || !result.response.success) return;
       // Tolerant read: pi v0.79.1 returns { commands: RpcSlashCommand[] };
       // the contract's PiRpcResponse is a discriminated union, but we
       // only care about `data.commands` so a narrow cast is fine here.
@@ -3698,93 +3673,11 @@ const buildSessionsStore = (
   closeSessionTab: async (sessionId, opts) => {
     if (typeof window !== "undefined" && window.pivis) {
       try {
-        let prepared = await window.pivis.invoke("session.prepareClose", { sessionId });
-        const checkpoint = prepared?.checkpoint as
-          | {
-              snapshot?: AgentSessionSnapshot;
-              editor?: {
-                text?: string;
-                attachments?: unknown[];
-                conflictText?: string;
-                conflictAttachments?: unknown[];
-                alternateConflictText?: string;
-                alternateConflictAttachments?: unknown[];
-                additionalConflictCandidates?: Array<{ text: string; attachments: unknown[] }>;
-              };
-              intents?: unknown[];
-              restorations?: unknown[];
-              dialogs?: unknown[];
-              panels?: unknown[];
-            }
-          | undefined;
-        const localDraft = opts?.preservePendingDraft
-          ? ""
-          : (get().sessionDrafts.get(sessionId) ?? "");
-        const localSession = get().sessions.get(sessionId);
-        const localEditor = {
-          attachments: localSession?.editorAttachments ?? [],
-          pendingAttachmentReads: localSession?.editorAttachmentReads ?? 0,
-        };
-        const hasReviewableWork =
-          localDraft.trim().length > 0 ||
-          localEditor.attachments.length > 0 ||
-          localEditor.pendingAttachmentReads > 0 ||
-          !!checkpoint?.editor?.text?.trim() ||
-          checkpoint?.editor?.conflictText !== undefined ||
-          checkpoint?.editor?.alternateConflictText !== undefined ||
-          (checkpoint?.editor?.attachments?.length ?? 0) > 0 ||
-          (checkpoint?.editor?.conflictAttachments?.length ?? 0) > 0 ||
-          (checkpoint?.editor?.alternateConflictAttachments?.length ?? 0) > 0 ||
-          (checkpoint?.editor?.additionalConflictCandidates?.length ?? 0) > 0 ||
-          (checkpoint?.intents?.length ?? 0) > 0 ||
-          (checkpoint?.restorations?.length ?? 0) > 0 ||
-          (checkpoint?.dialogs?.length ?? 0) > 0 ||
-          (checkpoint?.panels?.length ?? 0) > 0 ||
-          checkpoint?.snapshot?.isIdle === false ||
-          checkpoint?.snapshot?.hostFacts.submitting === true ||
-          (checkpoint?.snapshot?.hostFacts.custodyCount ?? 0) > 0;
-        if (hasReviewableWork) {
-          const confirmed = window.confirm(
-            `Review the close checkpoint below. Force closing permanently discards this in-memory checkpoint and may leave work outcomes unknown.\n\n${closeCheckpointPreview(
-              checkpoint,
-              localDraft,
-              localEditor,
-            )}\n\nForce close now?`,
-          );
-          if (!confirmed) {
-            if (prepared?.reviewToken) {
-              await window.pivis.invoke("session.cancelClose", {
-                sessionId,
-                reviewToken: prepared.reviewToken,
-              });
-            }
-            return;
-          }
-          if (prepared?.reviewToken) {
-            await window.pivis.invoke("session.cancelClose", {
-              sessionId,
-              reviewToken: prepared.reviewToken,
-            });
-          }
-          prepared = await window.pivis.invoke("session.prepareClose", { sessionId, force: true });
-        }
-        if (prepared?.reviewToken) {
-          const result = await window.pivis.invoke("session.confirmClose", {
-            sessionId,
-            reviewToken: prepared.reviewToken,
-          });
-          if (!result.closed) {
-            get().addToast(
-              sessionId,
-              result.reason ?? "Session changed; review it before closing",
-              "warning",
-            );
-            return;
-          }
-        }
+        await window.pivis.invoke("session.close", { sessionId });
       } catch (error) {
-        console.error(error);
-        return;
+        // A tab close is local UI cleanup as well as best-effort host disposal.
+        // Main guarantees file preservation; never strand a tab on IPC failure.
+        console.error("Failed to close session:", error);
       }
     }
     get().removeSession(sessionId, opts);

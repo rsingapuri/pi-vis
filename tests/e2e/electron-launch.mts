@@ -2,23 +2,76 @@ import { type ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
-import type { Browser, Page } from "@playwright/test";
+import { join, resolve } from "node:path";
+import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { chromium } from "@playwright/test";
 import { registerElectronPid, terminateElectronProcessTree } from "./electron-process-registry.mjs";
 
 const require = createRequire(import.meta.url);
 
-interface LaunchOptions {
+export interface LaunchOptions {
   executablePath?: string;
   args?: string[];
   env?: NodeJS.ProcessEnv;
   cwd?: string;
+  /** Internal instrumentation seam; invoked immediately after spawn. */
+  onProcessStarted?: (process: ChildProcess) => void;
+  /** Internal instrumentation seam; invoked for every Electron renderer page. */
+  onPage?: (page: Page) => void | Promise<void>;
 }
 
 export interface LaunchedElectronApplication {
   firstWindow(): Promise<Page>;
   close(): Promise<void>;
   process(): ChildProcess;
+}
+
+const PROJECT_ROOT = resolve(import.meta.dirname, "../..");
+const SOURCE_HOST_DIRECTORY = join(PROJECT_ROOT, "resources/pi-session-host");
+const COPIED_HOST_DIRECTORY = join(PROJECT_ROOT, "out/resources/pi-session-host");
+const MAIN_BUNDLE = join(PROJECT_ROOT, "out/main/index.js");
+export const BUILD_STALE_MESSAGE = "Build is stale; run npm run build.";
+
+export interface BuildFreshnessPaths {
+  sourceDirectories: string[];
+  mainBundle: string;
+  copiedHostDirectory: string;
+}
+
+function recursiveFiles(directory: string): string[] {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? recursiveFiles(path) : entry.isFile() ? [path] : [];
+  });
+}
+
+function hostMjsFiles(directory: string): string[] {
+  return recursiveFiles(directory).filter((path) => path.endsWith(".mjs"));
+}
+
+export function assertBuildFreshness(
+  skipFreshness: boolean,
+  paths: BuildFreshnessPaths = {
+    sourceDirectories: [join(PROJECT_ROOT, "src"), SOURCE_HOST_DIRECTORY],
+    mainBundle: MAIN_BUNDLE,
+    copiedHostDirectory: COPIED_HOST_DIRECTORY,
+  },
+): void {
+  if (skipFreshness) return;
+  try {
+    const newestSourceMtime = Math.max(
+      ...paths.sourceDirectories.flatMap(recursiveFiles).map((path) => fs.statSync(path).mtimeMs),
+    );
+    const outputs = [paths.mainBundle, ...hostMjsFiles(paths.copiedHostDirectory)];
+    if (!Number.isFinite(newestSourceMtime) || outputs.length === 1)
+      throw new Error(BUILD_STALE_MESSAGE);
+    if (outputs.some((path) => fs.statSync(path).mtimeMs < newestSourceMtime)) {
+      throw new Error(BUILD_STALE_MESSAGE);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === BUILD_STALE_MESSAGE) throw error;
+    throw new Error(BUILD_STALE_MESSAGE);
+  }
 }
 
 function waitForLine(child: ChildProcess, pattern: RegExp, timeoutMs: number): Promise<string> {
@@ -103,6 +156,9 @@ async function waitForCdpPort(child: ChildProcess, port: number): Promise<string
 }
 
 export async function launchElectron(options: LaunchOptions): Promise<LaunchedElectronApplication> {
+  assertBuildFreshness(
+    (options.env?.PIVIS_TEST_SKIP_FRESHNESS ?? process.env.PIVIS_TEST_SKIP_FRESHNESS) === "1",
+  );
   const appEntry = options.args?.[0];
   if (appEntry && !appEntry.startsWith("-") && !fs.existsSync(appEntry)) {
     throw new Error(
@@ -112,7 +168,7 @@ export async function launchElectron(options: LaunchOptions): Promise<LaunchedEl
 
   const electronPath = options.executablePath ?? String(require("electron"));
   const packagedCdpPort = options.executablePath ? await reserveLoopbackPort() : null;
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...options.env,
     // Packaged Electron suppresses the `DevTools listening` line, so use a
@@ -137,8 +193,41 @@ export async function launchElectron(options: LaunchOptions): Promise<LaunchedEl
   });
   const pid = child.pid;
   if (pid) registerElectronPid(pid);
+  // Register stderr instrumentation before waiting for the DevTools endpoint:
+  // startup diagnostics otherwise disappear before the caller receives app.
+  try {
+    options.onProcessStarted?.(child);
+  } catch (error) {
+    child.stdout?.resume();
+    child.stderr?.resume();
+    if (pid) await terminateElectronProcessTree(pid);
+    throw error;
+  }
 
-  let browser: Browser;
+  let browser: Browser | undefined;
+  const pageRegistrations = new Map<Page, Promise<void>>();
+  const observedContexts = new Set<BrowserContext>();
+  const registerPage = (page: Page): Promise<void> => {
+    const existing = pageRegistrations.get(page);
+    if (existing) return existing;
+    let registration: Promise<void>;
+    try {
+      registration = Promise.resolve(options.onPage?.(page)).then(() => undefined);
+    } catch (error) {
+      registration = Promise.reject(error);
+    }
+    pageRegistrations.set(page, registration);
+    return registration;
+  };
+  const attachContext = (context: BrowserContext): void => {
+    if (observedContexts.has(context)) return;
+    observedContexts.add(context);
+    for (const page of context.pages()) registerPage(page);
+    context.on("page", (page) => {
+      void registerPage(page);
+    });
+  };
+
   try {
     const cdpUrl = packagedCdpPort
       ? await waitForCdpPort(child, packagedCdpPort)
@@ -148,22 +237,27 @@ export async function launchElectron(options: LaunchOptions): Promise<LaunchedEl
     child.stdout?.resume();
     child.stderr?.resume();
     browser = await chromium.connectOverCDP(cdpUrl);
+    const initialContext = browser.contexts()[0] ?? (await waitForContext(browser));
+    attachContext(initialContext);
+    await Promise.all([...pageRegistrations.values()]);
   } catch (error) {
     child.stdout?.resume();
     child.stderr?.resume();
+    await browser?.close().catch(() => undefined);
     if (pid) await terminateElectronProcessTree(pid);
     throw error;
   }
 
   const app: LaunchedElectronApplication = {
     async firstWindow() {
-      const context = browser.contexts()[0] ?? (await waitForContext(browser));
-      const existing = context.pages()[0];
-      if (existing) return existing;
-      return context.waitForEvent("page", { timeout: 15_000 });
+      const context = browser!.contexts()[0] ?? (await waitForContext(browser!));
+      attachContext(context);
+      const page = context.pages()[0] ?? (await context.waitForEvent("page", { timeout: 15_000 }));
+      await registerPage(page);
+      return page;
     },
     async close() {
-      await browser.close().catch(() => undefined);
+      await browser!.close().catch(() => undefined);
       if (pid) await terminateElectronProcessTree(pid);
     },
     process() {

@@ -134,7 +134,7 @@ function send(msg) {
     process.send({
       ...outbound,
       hostInstanceId,
-      sessionEpoch: runtimeAuthority?.sessionEpoch ?? activeEpoch,
+      sessionEpoch: runtimeAuthority?.transportSessionEpoch ?? activeEpoch,
       transportSequence: ++transportSequence,
     });
   }
@@ -627,7 +627,6 @@ async function handleInit(msg) {
       publishSnapshot: publish,
       requestAuthorityAttach: attachAuthority,
       requestLifecyclePermit: lifecyclePermit,
-      requestTransitionPermit: requestMainTransitionPermit,
       applyEditorPatch: patchEditor,
       authority,
       bindExtensions: bindExt,
@@ -646,6 +645,7 @@ async function handleInit(msg) {
       cwd,
       hostInstanceId,
       sendControl,
+      requestTransitionPermit: requestMainTransitionPermit,
       // Frames are opaque semantic commits. `send` envelopes the child frame
       // without re-emitting its records/snapshot on compatibility channels.
       sendFrame: (frame) => send({ type: "authority_frame", frame }),
@@ -706,7 +706,7 @@ async function handleInit(msg) {
 
 process.on("message", async (msg) => {
   try {
-    const closeAllowed = new Set(["prepare_close", "confirm_close", "cancel_close"]);
+    const closeAllowed = new Set(["prepare_close", "confirm_close"]);
     if (runtimeAuthority?.isClosing && msg.type !== "init" && !closeAllowed.has(msg.type)) {
       if (msg.type === "dispatch_intent") {
         send({
@@ -733,6 +733,32 @@ process.on("message", async (msg) => {
       case "init":
         await handleInit(msg);
         break;
+
+      case "test_control": {
+        // A real-Pi E2E can request an authority-owned replacement without
+        // relying on a lazily persisted /new session file. This code path is
+        // unreachable outside an explicitly inherited test environment.
+        if (process.env.PIVIS_TEST_REAL_HOST_CONTROL !== "1" || msg.action !== "replacement") {
+          send({ type: "response", id: msg.id, success: false, error: "Test control is disabled" });
+          return;
+        }
+        if (!handleReload || !runtimeAuthority) {
+          send({ type: "response", id: msg.id, success: false, error: "Host is not initialized" });
+          return;
+        }
+        await handleReload();
+        const successor = runtimeAuthority.snapshot();
+        send({
+          type: "response",
+          id: msg.id,
+          success: true,
+          data: {
+            hostInstanceId: successor.hostInstanceId,
+            sessionEpoch: successor.sessionEpoch,
+          },
+        });
+        break;
+      }
 
       case "dispatch_intent": {
         if (!dispatchIntent) {
@@ -854,12 +880,6 @@ process.on("message", async (msg) => {
           data: result,
           closeConfirmation: true,
         });
-        break;
-      }
-
-      case "cancel_close": {
-        const cancelled = runtimeAuthority?.cancelClose(msg.token) ?? false;
-        send({ type: "response", id: msg.id, success: true, data: { cancelled } });
         break;
       }
 

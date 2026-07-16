@@ -17,6 +17,7 @@ import type {
   SessionQuery,
   SessionQueryResult,
 } from "@shared/pi-protocol/runtime-state.js";
+import { describeIpcError } from "../ipc-errors.js";
 import { modelDisplayName } from "../model-utils.js";
 import { findExactModelReferenceMatch } from "./model-resolver.js";
 import type { ComposerAction } from "./types.js";
@@ -49,6 +50,8 @@ export interface ExecuteDeps {
     owner: RuntimeIdentity,
   ) => Promise<IntentOutcome>;
   getIntentObservation?: (sessionId: SessionId) => IntentObservation | undefined;
+  /** Called after a child has admitted an intent, before its terminal outcome. */
+  onAdmitted?: (sessionId: SessionId, intent: SessionIntent, intentId: string) => void;
   /** Unified-TUI ingress supplies its main-assigned stable intent ID here. */
   createIntentId?: (() => string) | undefined;
   uiSurface?: "composer" | "unified" | undefined;
@@ -115,6 +118,8 @@ export type PickerRequest = (
 ) & { expectedHostInstanceId?: string; expectedSessionEpoch?: number };
 
 function queryData<T>(result: SessionQueryResult): T {
+  if (result.status !== "ok")
+    throw new InputNotConsumedError("Session is synchronizing; please try again.");
   if (!result.response.success)
     throw new InputNotConsumedError(result.response.error ?? "Query failed");
   return result.response.data as T;
@@ -138,8 +143,9 @@ async function dispatchAndAwait(
       throw new Error("Intent transport is unavailable");
     receipt = await deps.dispatch(sessionId, intent, intentId);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    deps.addToast(sessionId, message, "error");
+    const description = describeIpcError(error);
+    const message = description ?? "Session is synchronizing; input was not submitted.";
+    if (description) deps.addToast(sessionId, message, "error");
     throw new InputNotConsumedError(message);
   }
   if (receipt.status === "not_admitted") {
@@ -152,8 +158,10 @@ async function dispatchAndAwait(
     deps.addToast(sessionId, message, "warning");
     throw new InputNotConsumedError(message);
   }
-  // Admission is deliberately not used to clear editor state, update names or
-  // models, or settle queues. Only the owner-bound frame outcome below can do so.
+  // Admission proves this intent is now child-owned. Composer may clear only
+  // intent-shaped commands here; prompt/editor acknowledgement remains fenced
+  // by the terminal outcome.
+  deps.onAdmitted?.(sessionId, intent, intentId);
   const outcome = await deps.awaitIntentOutcome!(sessionId, intentId, observation.owner);
   if (outcome.state === "outcome_unknown") {
     const message = outcome.error ?? "Intent outcome is unknown; input was preserved for review.";

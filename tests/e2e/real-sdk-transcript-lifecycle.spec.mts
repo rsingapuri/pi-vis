@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Locator, type Page, expect, test } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+import { allowInvariant, expect, test } from "./support/invariants.mjs";
 import {
+  REAL_SDK_PROVIDER_LATENCY,
   type RealSdkFixture,
   type RealSdkLaunch,
   createRealSdkFixture,
@@ -185,6 +187,7 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
           window.getByText(/E2E persisted entry: e2e persisted lifecycle entry/),
         ).toBeVisible({ timeout: 30_000 });
 
+        allowInvariant("error-toast", "e2e lifecycle command error");
         await submitSlash(textarea, "/e2e-throw");
         const showNotifications = window.getByRole("button", { name: "Show notifications" });
         await expect(showNotifications).toBeVisible({ timeout: 30_000 });
@@ -212,69 +215,72 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
 
   test("ordinary turns, exact duplicate admission, transformed echoes, tools, errors, and reload stay coherent", async () => {
     test.setTimeout(300_000);
-    const provider = await createScriptedOpenAIProvider([
-      {
-        expect: {
-          model: "pivis-test-model",
-          promptIncludes: ["staged-prompt.txt", "[[E2E_LIFECYCLE_TRANSFORMED]]"],
-          compaction: false,
+    const provider = await createScriptedOpenAIProvider(
+      [
+        {
+          expect: {
+            model: "pivis-test-model",
+            promptIncludes: ["staged-prompt.txt", "[[E2E_LIFECYCLE_TRANSFORMED]]"],
+            compaction: false,
+          },
+          response: {
+            type: "text",
+            chunks: ["first streamed ", "assistant response"],
+            afterFirstChunkGate: "first-turn",
+          },
         },
-        response: {
-          type: "text",
-          chunks: ["first streamed ", "assistant response"],
-          afterFirstChunkGate: "first-turn",
+        {
+          expect: { promptIncludes: "exact duplicate payload", compaction: false },
+          response: { type: "text", chunks: ["duplicate accepted once"], gate: "duplicate-turn" },
         },
-      },
-      {
-        expect: { promptIncludes: "exact duplicate payload", compaction: false },
-        response: { type: "text", chunks: ["duplicate accepted once"], gate: "duplicate-turn" },
-      },
-      {
-        expect: { promptIncludes: "exact duplicate payload", compaction: false },
-        response: { type: "text", chunks: ["same payload accepted after settlement"] },
-      },
-      {
-        expect: {
-          promptIncludes: "invoke the deterministic lifecycle tool",
-          toolNames: ["e2e-lifecycle-tool"],
-          compaction: false,
+        {
+          expect: { promptIncludes: "exact duplicate payload", compaction: false },
+          response: { type: "text", chunks: ["same payload accepted after settlement"] },
         },
-        response: {
-          type: "tool_call",
-          name: "e2e-lifecycle-tool",
-          id: "call_e2e_lifecycle",
-          argumentChunks: ['{"value":"', "from-provider", '"}'],
+        {
+          expect: {
+            promptIncludes: "invoke the deterministic lifecycle tool",
+            toolNames: ["e2e-lifecycle-tool"],
+            compaction: false,
+          },
+          response: {
+            type: "tool_call",
+            name: "e2e-lifecycle-tool",
+            id: "call_e2e_lifecycle",
+            argumentChunks: ['{"value":"', "from-provider", '"}'],
+          },
         },
-      },
-      {
-        expect: {
-          promptIncludes: ["e2e-tool-adjacent-first", "e2e-tool-adjacent-second:from-provider"],
-          compaction: false,
+        {
+          expect: {
+            promptIncludes: ["e2e-tool-adjacent-first", "e2e-tool-adjacent-second:from-provider"],
+            compaction: false,
+          },
+          response: { type: "text", chunks: ["tool continuation complete"] },
         },
-        response: { type: "text", chunks: ["tool continuation complete"] },
-      },
-      {
-        expect: { promptIncludes: "partial disconnect turn", compaction: false },
-        response: {
-          type: "disconnect",
-          chunks: ["partial output before disconnect"],
-          disconnectGate: "partial-disconnect",
+        {
+          expect: { promptIncludes: "partial disconnect turn", compaction: false },
+          response: {
+            type: "disconnect",
+            chunks: ["partial output before disconnect"],
+            disconnectGate: "partial-disconnect",
+          },
         },
-      },
-      {
-        expect: { promptIncludes: "terminal provider failure turn", compaction: false },
-        response: {
-          type: "error",
-          status: 500,
-          message: "e2e scripted terminal provider failure",
-          errorType: "api_error",
+        {
+          expect: { promptIncludes: "terminal provider failure turn", compaction: false },
+          response: {
+            type: "error",
+            status: 500,
+            message: "e2e scripted terminal provider failure",
+            errorType: "api_error",
+          },
         },
-      },
-      {
-        expect: { promptIncludes: "recovery after provider failure", compaction: false },
-        response: { type: "text", chunks: ["provider recovery complete"] },
-      },
-    ]);
+        {
+          expect: { promptIncludes: "recovery after provider failure", compaction: false },
+          response: { type: "text", chunks: ["provider recovery complete"] },
+        },
+      ],
+      { latency: REAL_SDK_PROVIDER_LATENCY },
+    );
     const fixture = createRealSdkFixture({
       providerBaseUrl: provider.baseUrl,
       extensionFiles: [LIFECYCLE_EXTENSION],
@@ -427,18 +433,21 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
     }
   });
 
-  test("streaming queue ownership transfers to one review card on Escape and never dispatches twice", async () => {
+  test("streaming queue ownership restores directly to the composer on Escape and never dispatches twice", async () => {
     test.setTimeout(180_000);
-    const provider = await createScriptedOpenAIProvider([
-      {
-        expect: { promptIncludes: "hold the first streaming turn", compaction: false },
-        response: { type: "text", chunks: ["must not appear after interruption"], gate: "held" },
-      },
-      {
-        expect: { promptIncludes: "recovery after interruption", compaction: false },
-        response: { type: "text", chunks: ["interrupt recovery complete"] },
-      },
-    ]);
+    const provider = await createScriptedOpenAIProvider(
+      [
+        {
+          expect: { promptIncludes: "hold the first streaming turn", compaction: false },
+          response: { type: "text", chunks: ["must not appear after interruption"], gate: "held" },
+        },
+        {
+          expect: { promptIncludes: "recovery after interruption", compaction: false },
+          response: { type: "text", chunks: ["interrupt recovery complete"] },
+        },
+      ],
+      { latency: REAL_SDK_PROVIDER_LATENCY },
+    );
     const fixture = createRealSdkFixture({
       providerBaseUrl: provider.baseUrl,
       extensionFiles: [LIFECYCLE_EXTENSION],
@@ -450,15 +459,8 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
       const textarea = await openNewRealSession(window);
       await selectLocalTestModel(window, textarea);
       await window.evaluate(() => {
-        const target = window as unknown as {
-          __e2eRestorations: unknown[];
-          __e2ePublications: unknown[];
-        };
-        target.__e2eRestorations = [];
+        const target = window as unknown as { __e2ePublications: unknown[] };
         target.__e2ePublications = [];
-        window.pivis.on("session.queueRestoration", (restoration) => {
-          target.__e2eRestorations.push(restoration);
-        });
         window.pivis.on("session.publication", (publication) => {
           target.__e2ePublications.push(publication);
         });
@@ -486,14 +488,10 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
       expect(provider.requests).toHaveLength(1);
 
       await window.keyboard.press("Escape");
-      const review = window.getByRole("region", { name: "Interrupted message review" });
-      await expect(review).toBeVisible({ timeout: 30_000 });
-      await expect(review).toContainText(queuedText);
+      await expect(textarea).toHaveValue(queuedText, { timeout: 30_000 });
+      await expect(window.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
       const restorationEvents = await window.evaluate(() => {
-        const target = window as unknown as {
-          __e2eRestorations: unknown[];
-          __e2ePublications: unknown[];
-        };
+        const target = window as unknown as { __e2ePublications: unknown[] };
         const semanticSnapshots = target.__e2ePublications.flatMap((publication) => {
           if (!publication || typeof publication !== "object") return [];
           const payload = (publication as { payload?: unknown }).payload;
@@ -515,11 +513,7 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
               )
             : [];
         });
-        return {
-          compatibility: target.__e2eRestorations,
-          queueRecords,
-          semanticSnapshots,
-        };
+        return { queueRecords, semanticSnapshots };
       });
       if (
         !restorationEvents.queueRecords.some(
@@ -545,9 +539,6 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
       await expect(
         window.getByText("must not appear after interruption", { exact: true }),
       ).toHaveCount(0);
-      await review.getByRole("button", { name: "Dismiss" }).click();
-      await expect(review).toHaveCount(0);
-
       await textarea.fill("recovery after interruption");
       await textarea.press("Enter");
       await expect(window.getByText("interrupt recovery complete", { exact: true })).toBeVisible({
@@ -566,34 +557,37 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
 
   test("Escape cancels a real extension tool and a real Pi retry wait without stale work", async () => {
     test.setTimeout(180_000);
-    const provider = await createScriptedOpenAIProvider([
-      {
-        expect: {
-          promptIncludes: "start the cancellable lifecycle tool",
-          toolNames: ["e2e-cancellable-tool"],
-          compaction: false,
+    const provider = await createScriptedOpenAIProvider(
+      [
+        {
+          expect: {
+            promptIncludes: "start the cancellable lifecycle tool",
+            toolNames: ["e2e-cancellable-tool"],
+            compaction: false,
+          },
+          response: {
+            type: "tool_call",
+            name: "e2e-cancellable-tool",
+            id: "call_e2e_cancellable",
+            argumentChunks: ['{"value":"held"}'],
+          },
         },
-        response: {
-          type: "tool_call",
-          name: "e2e-cancellable-tool",
-          id: "call_e2e_cancellable",
-          argumentChunks: ['{"value":"held"}'],
+        {
+          expect: { promptIncludes: "cancel this retry wait", compaction: false },
+          response: {
+            type: "error",
+            status: 503,
+            message: "e2e retry cancellation outage",
+            errorType: "service_unavailable_error",
+          },
         },
-      },
-      {
-        expect: { promptIncludes: "cancel this retry wait", compaction: false },
-        response: {
-          type: "error",
-          status: 503,
-          message: "e2e retry cancellation outage",
-          errorType: "service_unavailable_error",
+        {
+          expect: { promptIncludes: "recovery after cancellation checks", compaction: false },
+          response: { type: "text", chunks: ["cancellation recovery complete"] },
         },
-      },
-      {
-        expect: { promptIncludes: "recovery after cancellation checks", compaction: false },
-        response: { type: "text", chunks: ["cancellation recovery complete"] },
-      },
-    ]);
+      ],
+      { latency: REAL_SDK_PROVIDER_LATENCY },
+    );
     const fixture = createRealSdkFixture({
       providerBaseUrl: provider.baseUrl,
       extensionFiles: [LIFECYCLE_EXTENSION],
@@ -676,21 +670,24 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
 
   test("real Pi automatic retry preserves one user turn and settles to one successful answer", async () => {
     test.setTimeout(180_000);
-    const provider = await createScriptedOpenAIProvider([
-      {
-        expect: { promptIncludes: "retry this transient provider failure", compaction: false },
-        response: {
-          type: "error",
-          status: 503,
-          message: "e2e transient provider outage",
-          errorType: "service_unavailable_error",
+    const provider = await createScriptedOpenAIProvider(
+      [
+        {
+          expect: { promptIncludes: "retry this transient provider failure", compaction: false },
+          response: {
+            type: "error",
+            status: 503,
+            message: "e2e transient provider outage",
+            errorType: "service_unavailable_error",
+          },
         },
-      },
-      {
-        expect: { promptIncludes: "retry this transient provider failure", compaction: false },
-        response: { type: "text", chunks: ["automatic retry recovered"] },
-      },
-    ]);
+        {
+          expect: { promptIncludes: "retry this transient provider failure", compaction: false },
+          response: { type: "text", chunks: ["automatic retry recovered"] },
+        },
+      ],
+      { latency: REAL_SDK_PROVIDER_LATENCY },
+    );
     const fixture = createRealSdkFixture({
       providerBaseUrl: provider.baseUrl,
       extensionFiles: [LIFECYCLE_EXTENSION],

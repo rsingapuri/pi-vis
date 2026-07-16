@@ -1026,6 +1026,7 @@ async function handleQuery(envelope: {
     throw new Error("Preview query owner is stale");
   }
   return {
+    status: "ok",
     queryId: envelope.queryId,
     owner: currentOwner(envelope.sessionId),
     queryType: envelope.query.type,
@@ -1209,6 +1210,7 @@ function authorityAttach(
       },
     }));
   return {
+    status: "ready",
     baseline: {
       sessionId,
       rendererGeneration,
@@ -1488,11 +1490,7 @@ const stub = {
           disposition: "consumed",
         };
       }
-      case "session.prepareClose":
-        return { reviewToken: `preview-close-${Date.now()}`, checkpoint: {} };
-      case "session.cancelClose":
-        return { cancelled: true };
-      case "session.confirmClose":
+      case "session.close":
         return { closed: true };
       case "session.acknowledgeRestoration":
         return { acknowledged: true };

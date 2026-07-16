@@ -2,8 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Page, expect, test } from "@playwright/test";
-import { type LaunchedElectronApplication, launchElectron } from "./electron-launch.mjs";
+import type { Page } from "@playwright/test";
+import {
+  type LaunchedElectronApplication,
+  launchElectron,
+} from "./support/instrumented-launch.mjs";
+import { expect, test } from "./support/invariants.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FAKE_PI = join(__dirname, "../fixtures/fake-pi.mjs");
@@ -119,22 +123,17 @@ test.describe("process-level ESC cancellation", () => {
       await waitForOperation(folders, "queued", "steer");
       await textarea.press("Escape");
       await waitForOperation(folders, "cancelled", "streaming");
-      await expect(window.getByText("Review interrupted message", { exact: true })).toBeVisible({
-        timeout: 10_000,
-      });
-      await expect(
-        window
-          .getByLabel("Interrupted message review")
-          .getByText("queued for explicit review", { exact: true }),
-      ).toBeVisible();
+      // ESC cleared the queue before consumption (certainty not_processed), so
+      // the text returns straight to the composer with no review decision —
+      // the same custody contract real-sdk-transcript-lifecycle proves on real Pi.
+      await expect(textarea).toHaveValue("queued for explicit review", { timeout: 10_000 });
+      await expect(window.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
       await window.waitForTimeout(500);
       expect(
         operationEntries(folders).some(
           (entry) => entry.event === "persisted" && entry.token === streaming.token,
         ),
       ).toBe(false);
-      await window.getByRole("button", { name: "Dismiss", exact: true }).click();
-
       await textarea.fill("/compact");
       await textarea.press("Escape"); // close slash completion
       await textarea.press("Enter");
@@ -243,7 +242,7 @@ test.describe("process-level ESC cancellation", () => {
             ).length,
         )
         .toBe(idleEscapesBefore + 1);
-      await expect(window.getByLabel("Interrupted message review")).toHaveCount(0);
+      await expect(window.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
       await expect(window.locator(".status-dot--streaming")).toHaveCount(0);
     } finally {
       await app.close();

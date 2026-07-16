@@ -34,6 +34,7 @@ function harness(
   const submissions: unknown[] = [];
   const readyLocks: boolean[] = [];
   const availableRuntimeLocks: boolean[] = [];
+  const fileChanges: unknown[] = [];
   const fakes: FakeHostProcess[] = [];
   const spawnArgs: string[][] = [];
   const spawnCwds: Array<string | undefined> = [];
@@ -49,7 +50,10 @@ function harness(
     fake.on("message", (message) => {
       if ((message as { type?: string }).type !== "init") return;
       if (options.initialSessionFile) {
-        const readyAfterPermit = (permit: { type?: string; allowed?: boolean }) => {
+        const readyAfterPermit = (permit: {
+          type?: string;
+          allowed?: boolean;
+        }) => {
           if (permit.type !== "initial_session_file_permit") return;
           fake.off("message", readyAfterPermit);
           queueMicrotask(() => {
@@ -61,7 +65,10 @@ function harness(
         // SessionRegistry attaches host listeners immediately after
         // construction, before the real child can finish runtime creation.
         queueMicrotask(() => {
-          fake.emitWire({ type: "initial_session_file", sessionFile: options.initialSessionFile });
+          fake.emitWire({
+            type: "initial_session_file",
+            sessionFile: options.initialSessionFile,
+          });
         });
         return;
       }
@@ -95,6 +102,8 @@ function harness(
         ? { unifiedClaimTimeoutMs: options.unifiedClaimTimeoutMs }
         : {}),
     },
+    () => {},
+    (...args) => fileChanges.push(args),
   );
   return {
     registry,
@@ -109,6 +118,7 @@ function harness(
     panelEvents,
     readyLocks,
     availableRuntimeLocks,
+    fileChanges,
     fakes,
     spawnArgs,
     spawnCwds,
@@ -132,6 +142,129 @@ afterEach(() => {
 });
 
 describe("SessionRegistry direct AgentSession authority", () => {
+  it("silently closes cold sessions", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+
+    await h.registry.closeSessionGracefully(id);
+
+    expect(h.registry.getSession(id)).toBeUndefined();
+  });
+
+  it("fails closed for real-host controls without the explicit test environment", async () => {
+    const h = harness();
+    const prior = process.env.PIVIS_TEST_REAL_HOST_CONTROL;
+    delete process.env.PIVIS_TEST_REAL_HOST_CONTROL;
+    try {
+      await expect(h.registry.testControl("missing" as SessionId, "kill")).resolves.toEqual({
+        status: "disabled",
+      });
+    } finally {
+      if (prior !== undefined) process.env.PIVIS_TEST_REAL_HOST_CONTROL = prior;
+    }
+  });
+
+  it("acknowledges a test-only host kill only after the bounded replacement is ready", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const predecessor = h.registry.getSession(id)!.proc!;
+    const prior = process.env.PIVIS_TEST_REAL_HOST_CONTROL;
+    process.env.PIVIS_TEST_REAL_HOST_CONTROL = "1";
+    try {
+      const result = await h.registry.testControl(id, "kill", 1_000);
+      expect(result.status).toBe("restarted");
+      if (result.status !== "restarted") throw new Error("host did not restart");
+      expect(predecessor.exitCode).toBe(143);
+      expect(h.registry.getSession(id)!.proc).not.toBe(predecessor);
+      expect(result.owner).toEqual({
+        hostInstanceId: h.registry.getSession(id)!.snapshot!.hostInstanceId,
+        sessionEpoch: h.registry.getSession(id)!.snapshot!.sessionEpoch,
+      });
+    } finally {
+      if (prior === undefined) delete process.env.PIVIS_TEST_REAL_HOST_CONTROL;
+      else process.env.PIVIS_TEST_REAL_HOST_CONTROL = prior;
+      h.registry.stopAll();
+    }
+  });
+
+  it("escapes a streaming host from a fresh direct snapshot before force close", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    // The cached snapshot is deliberately stale; close eligibility comes only
+    // from the direct child snapshot requested at the close boundary.
+    record.snapshot = { ...record.snapshot!, isStreaming: false, isIdle: true };
+    h.fakes[0]!.runtime.isStreaming = true;
+    h.fakes[0]!.runtime.isIdle = false;
+    const escapeRequest = vi.spyOn(record.proc!, "escape");
+    const forceClose = vi.spyOn(record.proc!, "forceClose");
+
+    await h.registry.closeSessionGracefully(id);
+
+    expect(escapeRequest).toHaveBeenCalledOnce();
+    expect(forceClose).toHaveBeenCalledOnce();
+    expect(escapeRequest.mock.invocationCallOrder[0]).toBeLessThan(
+      forceClose.mock.invocationCallOrder[0]!,
+    );
+    expect(h.registry.getSession(id)).toBeUndefined();
+  });
+
+  it("forces cleanup when the best-effort streaming escape fails", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    h.fakes[0]!.runtime.isStreaming = true;
+    h.fakes[0]!.runtime.isIdle = false;
+    const escapeRequest = vi
+      .spyOn(record.proc!, "escape")
+      .mockRejectedValue(new Error("abort failed"));
+    const forceClose = vi
+      .spyOn(record.proc!, "forceClose")
+      .mockRejectedValue(new Error("child unavailable"));
+
+    await h.registry.closeSessionGracefully(id);
+
+    expect(escapeRequest).toHaveBeenCalledOnce();
+    expect(forceClose).toHaveBeenCalledOnce();
+    expect(escapeRequest.mock.invocationCallOrder[0]).toBeLessThan(
+      forceClose.mock.invocationCallOrder[0]!,
+    );
+    expect(h.registry.getSession(id)).toBeUndefined();
+    expect(h.fakes[0]!.killed).toBe(true);
+  });
+
+  it("forces cleanup when the best-effort streaming escape times out", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const snapshot = { ...record.snapshot!, isStreaming: true, isIdle: false };
+    vi.spyOn(record.proc!, "requestSnapshot").mockResolvedValue(snapshot);
+    const escapeRequest = vi
+      .spyOn(record.proc!, "escape")
+      .mockImplementation(() => new Promise(() => {}));
+    const forceClose = vi.spyOn(record.proc!, "forceClose").mockResolvedValue();
+
+    vi.useFakeTimers();
+    try {
+      const closing = h.registry.closeSessionGracefully(id);
+      await vi.advanceTimersByTimeAsync(251);
+      await closing;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(escapeRequest).toHaveBeenCalledOnce();
+    expect(forceClose).toHaveBeenCalledOnce();
+    expect(escapeRequest.mock.invocationCallOrder[0]).toBeLessThan(
+      forceClose.mock.invocationCallOrder[0]!,
+    );
+    expect(h.registry.getSession(id)).toBeUndefined();
+  });
+
   it("uses only the SDK host and never spawns an rpc argv", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
@@ -161,7 +294,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       });
       expect(h.registry.getSession(id)?.snapshot?.sessionFile).toBe(file);
       expect(() => fs.fstatSync(descriptor)).toThrow();
-      h.registry.closeSession(id);
+      await h.registry.closeSessionGracefully(id);
       expect(() => fs.fstatSync(hostDescriptor as number)).toThrow();
     } finally {
       h.registry.stopAll();
@@ -185,7 +318,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
         "changed while it was opened",
       );
       expect(h.fakes).toHaveLength(0);
-      h.registry.closeSession(id);
+      await h.registry.closeSessionGracefully(id);
     } finally {
       h.registry.stopAll();
       fs.rmSync(root, { recursive: true, force: true });
@@ -239,7 +372,10 @@ describe("SessionRegistry direct AgentSession authority", () => {
     });
 
     expect(fake.killed).toBe(true);
-    expect(h.registry.getSession(id)).toMatchObject({ status: "cold", proc: undefined });
+    expect(h.registry.getSession(id)).toMatchObject({
+      status: "cold",
+      proc: undefined,
+    });
     expect(h.panelEvents).toContainEqual([id, { type: "unified_panel_reset" }]);
     h.registry.stopAll();
   });
@@ -257,7 +393,12 @@ describe("SessionRegistry direct AgentSession authority", () => {
     );
     expect(h.registry.cancelActivationVisitRelease(id, "visit-returned")).toBe(true);
     const request = [...fake.sent].reverse().find((message) => message.type === "state_request")!;
-    fake.emitWire({ type: "response", id: request.id, success: true, data: fake.snapshot() });
+    fake.emitWire({
+      type: "response",
+      id: request.id,
+      success: true,
+      data: fake.snapshot(),
+    });
 
     await expect(releasing).resolves.toEqual({ released: false });
     expect(h.registry.getSession(id)?.proc).toBeDefined();
@@ -574,6 +715,170 @@ describe("SessionRegistry direct AgentSession authority", () => {
     }
   });
 
+  it("atomically promotes a discovered different-file /new successor lock", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pivis-different-file-new-"));
+    const oldFile = path.join(dir, "old.jsonl");
+    const nextFile = path.join(dir, "next.jsonl");
+    await Promise.all([writeFile(oldFile, ""), writeFile(nextFile, "")]);
+    const h = harness();
+    const id = h.registry.openSession(dir, oldFile);
+    try {
+      await h.registry.activateSession(id, "/tmp/pi", {});
+      const fake = h.fakes[0]!;
+      fake.emitControl({
+        type: "transition_started",
+        transitionId: "different-file-new",
+        provisionalEpoch: 1,
+      });
+      fake.emitWire({
+        type: "transition_prepare",
+        transitionId: "different-file-new",
+        phase: "prepare",
+        kind: "new",
+      });
+      await vi.waitFor(() =>
+        expect(
+          fake.sent.filter(
+            (message) =>
+              message.type === "transition_permit" &&
+              message.transitionId === "different-file-new" &&
+              message.allowed === true,
+          ),
+        ).toHaveLength(1),
+      );
+      fake.emitWire({
+        type: "transition_prepare",
+        transitionId: "different-file-new",
+        phase: "successor",
+        kind: "new",
+        targetFile: nextFile,
+      });
+      await vi.waitFor(() =>
+        expect(
+          fake.sent.filter(
+            (message) =>
+              message.type === "transition_permit" &&
+              message.transitionId === "different-file-new" &&
+              message.allowed === true,
+          ),
+        ).toHaveLength(2),
+      );
+
+      fake.sessionEpoch = 1;
+      fake.emitControl({
+        type: "transition_batch",
+        batch: {
+          transitionId: "different-file-new",
+          provisionalEpoch: 1,
+          records: [],
+          terminalSnapshot: { ...fake.snapshot(), sessionFile: nextFile },
+        },
+      });
+
+      await vi.waitFor(() =>
+        expect(h.registry.getSession(id)).toMatchObject({
+          availability: "available",
+          sessionFile: path.resolve(nextFile),
+          _lockPath: path.resolve(nextFile),
+          _hasLock: true,
+          snapshot: { sessionEpoch: 1, sessionFile: nextFile },
+        }),
+      );
+      expect(h.registry.getSession(id)?._transitionLock).toBeUndefined();
+      expect(h.fileChanges).toContainEqual([
+        id,
+        { hostInstanceId: fake.hostInstanceId, sessionEpoch: 1 },
+        nextFile,
+        undefined,
+      ]);
+    } finally {
+      h.registry.stopAll();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes a semantic replacement even when /new reuses the predecessor file", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pivis-same-file-new-"));
+    const oldFile = path.join(dir, "old.jsonl");
+    await writeFile(oldFile, "");
+    const h = harness();
+    const id = h.registry.openSession(dir, oldFile);
+    try {
+      await h.registry.activateSession(id, "/tmp/pi", {});
+      const fake = h.fakes[0]!;
+      fake.emitControl({
+        type: "transition_started",
+        transitionId: "same-file-new",
+        provisionalEpoch: 1,
+      });
+      fake.emitWire({
+        type: "transition_prepare",
+        transitionId: "same-file-new",
+        phase: "prepare",
+        kind: "new",
+      });
+      await vi.waitFor(() =>
+        expect(
+          fake.sent.filter(
+            (message) =>
+              message.type === "transition_permit" &&
+              message.transitionId === "same-file-new" &&
+              message.allowed === true,
+          ),
+        ).toHaveLength(1),
+      );
+      fake.emitWire({
+        type: "transition_prepare",
+        transitionId: "same-file-new",
+        phase: "successor",
+        kind: "new",
+        targetFile: oldFile,
+      });
+      await vi.waitFor(() =>
+        expect(
+          fake.sent.filter(
+            (message) =>
+              message.type === "transition_permit" &&
+              message.transitionId === "same-file-new" &&
+              message.allowed === true,
+          ),
+        ).toHaveLength(2),
+      );
+      expect(h.registry.getSession(id)?._hostTransition).toMatchObject({ kind: "new" });
+      fake.sessionEpoch = 1;
+      fake.emitControl({
+        type: "transition_batch",
+        batch: {
+          transitionId: "same-file-new",
+          provisionalEpoch: 1,
+          records: [],
+          terminalSnapshot: { ...fake.snapshot(), sessionFile: oldFile },
+        },
+      });
+
+      await vi.waitFor(() =>
+        expect(h.registry.getSession(id)).toMatchObject({
+          availability: "available",
+          snapshot: { sessionEpoch: 1 },
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(h.fileChanges).toContainEqual([
+          id,
+          { hostInstanceId: fake.hostInstanceId, sessionEpoch: 1 },
+          oldFile,
+          undefined,
+        ]),
+      );
+      expect(h.registry.getSession(id)).toMatchObject({ availability: "available" });
+    } finally {
+      h.registry.stopAll();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the predecessor lock when a permitted successor rolls back", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "pivis-transition-lock-"));
     const oldFile = path.join(dir, "old.jsonl");
@@ -606,7 +911,10 @@ describe("SessionRegistry direct AgentSession authority", () => {
           ),
         ).toBe(true),
       );
-      fake.emitControl({ type: "transition_cancelled", transitionId: "rollback-lock" });
+      fake.emitControl({
+        type: "transition_cancelled",
+        transitionId: "rollback-lock",
+      });
 
       // The reservation for nextFile is gone, while the old primary lock is
       // still held and therefore cannot be silently moved by bookkeeping.
@@ -624,7 +932,11 @@ describe("SessionRegistry direct AgentSession authority", () => {
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
     const record = h.registry.getSession(id)!;
-    h.fakes[0]!.runtime = { ...h.fakes[0]!.runtime, isIdle: false, isStreaming: true };
+    h.fakes[0]!.runtime = {
+      ...h.fakes[0]!.runtime,
+      isIdle: false,
+      isStreaming: true,
+    };
 
     await expect(
       h.registry.executeReload(id, {
@@ -706,7 +1018,11 @@ describe("SessionRegistry direct AgentSession authority", () => {
         expectedOwner: { hostInstanceId, sessionEpoch },
         intent: { kind: "runBash", command: "pwd" },
       }),
-    ).resolves.toEqual({ status: "not_admitted", intentId: "stale-generation", reason: "invalid" });
+    ).resolves.toEqual({
+      status: "not_admitted",
+      intentId: "stale-generation",
+      reason: "invalid",
+    });
     await expect(
       h.registry.dispatchIntent({
         sessionId: id,
@@ -796,9 +1112,8 @@ describe("SessionRegistry direct AgentSession authority", () => {
     expect(h.restorations).toContainEqual([
       id,
       expect.objectContaining({
-        type: "queue_restoration",
-        requiresReview: true,
-        commandDescription: expect.stringContaining("outcome_unknown"),
+        restorationId: `ambiguous-intent:${hostInstanceId}:${sessionEpoch}:lost-dispatch`,
+        disposition: "dropped",
       }),
     ]);
     await vi.waitFor(() => expect(h.fakes).toHaveLength(2));
@@ -833,20 +1148,59 @@ describe("SessionRegistry direct AgentSession authority", () => {
       expect(h.fakes[0]!.sent.some((message) => message.type === "dispatch_intent")).toBe(true),
     );
     h.fakes[0]!.emitExit(1);
-    await expect(pending).resolves.toMatchObject({ status: "delivery_unknown" });
-    expect(h.restorations).toContainEqual([
-      id,
-      expect.objectContaining({
-        restorationId: `ambiguous-intent:${hostInstanceId}:${sessionEpoch}:lost-envelope-submit`,
-        steering: ["retain exactly this text"],
-        followUp: [],
-        originalAttachments: [{ intentId: "lost-envelope-submit", images }],
-      }),
-    ]);
+    await expect(pending).resolves.toMatchObject({
+      status: "delivery_unknown",
+    });
+    await vi.waitFor(() =>
+      expect(h.restorations).toContainEqual([
+        id,
+        expect.objectContaining({
+          restorationId: `ambiguous-intent:${hostInstanceId}:${sessionEpoch}:lost-envelope-submit`,
+          text: "retain exactly this text",
+          attachments: images,
+          disposition: "restore",
+        }),
+      ]),
+    );
     await vi.waitFor(() => expect(h.fakes).toHaveLength(2));
     expect(h.fakes[1]!.sent.filter((message) => message.type === "dispatch_intent")).toHaveLength(
       0,
     );
+    h.registry.stopAll();
+  });
+
+  it("re-emits a resolved detached restoration after renderer replacement until acknowledged", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    h.fakes[0]!.emitWire({
+      type: "queue_restoration",
+      restorationId: "detached-draft",
+      steering: [],
+      followUp: ["restore after reload"],
+      originalAttachments: [],
+      certainty: "not_processed",
+    });
+    await vi.waitFor(() =>
+      expect(h.restorations).toContainEqual([
+        id,
+        expect.objectContaining({
+          restorationId: "detached-draft",
+          text: "restore after reload",
+          disposition: "restore",
+        }),
+      ]),
+    );
+    expect(h.restorations).toHaveLength(1);
+
+    const reattach = h.registry.rendererAttach(id, 1);
+    await reattach;
+    expect(h.restorations).toHaveLength(2);
+    expect(h.restorations[1]).toEqual(h.restorations[0]);
+
+    expect(h.registry.acknowledgeRestoration(id, "detached-draft")).toBe(true);
+    await h.registry.rendererAttach(id, 1);
+    expect(h.restorations).toHaveLength(2);
     h.registry.stopAll();
   });
 
@@ -889,8 +1243,16 @@ describe("SessionRegistry direct AgentSession authority", () => {
     } as unknown as IntentEnvelope;
     const dispatch = vi
       .spyOn(record.proc!, "dispatchIntent")
-      .mockResolvedValueOnce({ status: "admitted", intentId: envelope.intentId, owner })
-      .mockResolvedValueOnce({ status: "duplicate", intentId: envelope.intentId, owner });
+      .mockResolvedValueOnce({
+        status: "admitted",
+        intentId: envelope.intentId,
+        owner,
+      })
+      .mockResolvedValueOnce({
+        status: "duplicate",
+        intentId: envelope.intentId,
+        owner,
+      });
 
     await expect(h.registry.dispatchIntent(envelope)).resolves.toEqual({
       status: "admitted",
@@ -959,6 +1321,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
         query: { type: "get_state" },
       }),
     ).resolves.toEqual({
+      status: "ok",
       queryId: "read-state",
       owner: { hostInstanceId, sessionEpoch },
       queryType: "get_state",
@@ -1000,7 +1363,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
         expectedOwner: { hostInstanceId, sessionEpoch: sessionEpoch + 1 },
         query: { type: "get_state" },
       }),
-    ).rejects.toThrow(/before query dispatch/);
+    ).resolves.toEqual({ status: "superseded" });
     expect(query).not.toHaveBeenCalled();
     h.registry.stopAll();
   });
@@ -1027,9 +1390,14 @@ describe("SessionRegistry direct AgentSession authority", () => {
     });
     await vi.waitFor(() => expect(query).toHaveBeenCalledOnce());
     record.proc!.sessionEpoch = sessionEpoch + 1;
-    resolveQuery({ type: "response", command: "get_state", success: true, data: {} });
+    resolveQuery({
+      type: "response",
+      command: "get_state",
+      success: true,
+      data: {},
+    });
 
-    await expect(pending).rejects.toThrow(/during query/);
+    await expect(pending).resolves.toEqual({ status: "superseded" });
     expect(query).toHaveBeenCalledOnce();
     h.registry.stopAll();
   });
@@ -1040,7 +1408,11 @@ describe("SessionRegistry direct AgentSession authority", () => {
     await h.registry.activateSession(id, "/tmp/pi", {});
     const fake = h.fakes[0]!;
     fake.runtime = { ...fake.runtime, isStreaming: true, isIdle: false };
-    fake.emitControl({ type: "snapshot", snapshot: fake.snapshot(), full: false });
+    fake.emitControl({
+      type: "snapshot",
+      snapshot: fake.snapshot(),
+      full: false,
+    });
     await tick();
     expect(h.registry.getSession(id)?.snapshot?.isStreaming).toBe(true);
     expect(h.events).toEqual([]);
@@ -1055,10 +1427,18 @@ describe("SessionRegistry direct AgentSession authority", () => {
     fake.runtime = { ...fake.runtime, isStreaming: true, isIdle: false };
     const newest = fake.snapshot() as unknown as AgentSessionSnapshot;
     fake.emitControl({ type: "snapshot", snapshot: newest, full: false });
-    const stale = { ...newest, snapshotSequence: newest.snapshotSequence - 1, isStreaming: false };
+    const stale = {
+      ...newest,
+      snapshotSequence: newest.snapshotSequence - 1,
+      isStreaming: false,
+    };
     fake.emitControl({ type: "snapshot", snapshot: stale, full: false });
     fake.transportSequence += 1;
-    fake.emitControl({ type: "snapshot", snapshot: fake.snapshot(), full: false });
+    fake.emitControl({
+      type: "snapshot",
+      snapshot: fake.snapshot(),
+      full: false,
+    });
     await tick();
     expect(h.registry.getSession(id)?.snapshot?.isStreaming).toBe(true);
     expect(
@@ -1134,7 +1514,13 @@ describe("SessionRegistry direct AgentSession authority", () => {
           fake.editor = {
             revision: 1,
             text: "user recovery draft",
-            attachments: [{ kind: "file", name: "replacement.txt", path: "/tmp/replacement.txt" }],
+            attachments: [
+              {
+                kind: "file",
+                name: "replacement.txt",
+                path: "/tmp/replacement.txt",
+              },
+            ],
           };
         };
       },
@@ -1180,7 +1566,11 @@ describe("SessionRegistry direct AgentSession authority", () => {
             revision: fake.editor.revision + 1,
             text: `replacement draft ${mutation}`,
             attachments: [
-              { kind: "file", name: `replacement-${mutation}.txt`, path: `/tmp/r-${mutation}` },
+              {
+                kind: "file",
+                name: `replacement-${mutation}.txt`,
+                path: `/tmp/r-${mutation}`,
+              },
             ],
           };
         };
@@ -1327,7 +1717,10 @@ describe("SessionRegistry direct AgentSession authority", () => {
     record._closing = false;
 
     await expect(
-      h.registry.submit("missing" as never, { ...base, intentId: "missing-session" }),
+      h.registry.submit("missing" as never, {
+        ...base,
+        intentId: "missing-session",
+      }),
     ).resolves.toMatchObject({
       intentId: "missing-session",
       disposition: "not_submitted",
@@ -1387,18 +1780,17 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id,
       expect.objectContaining({
         restorationId: "ambiguous-submission:crash-review",
-        followUp: ["recover exact text"],
-        originalAttachments: [
-          {
-            intentId: "crash-review",
-            images: [{ type: "image", data: "bytes", mimeType: "image/png" }],
-          },
-        ],
+        text: "recover exact text",
+        attachments: [{ type: "image", data: "bytes", mimeType: "image/png" }],
+        disposition: "restore",
       }),
     ]);
     expect(h.submissions).toContainEqual([
       id,
-      expect.objectContaining({ intentId: "crash-review", disposition: "outcome_unknown" }),
+      expect.objectContaining({
+        intentId: "crash-review",
+        disposition: "outcome_unknown",
+      }),
     ]);
     await vi.waitFor(() => expect(record.status).toBe("ready"));
     expect(h.registry.acknowledgeRestoration(id, "ambiguous-submission:crash-review")).toBe(true);
@@ -1422,7 +1814,11 @@ describe("SessionRegistry direct AgentSession authority", () => {
     const record = h.registry.getSession(id)!;
     const fake = h.fakes[0]!;
     fake.runtime = { ...fake.runtime, isStreaming: true, isIdle: false };
-    fake.emitControl({ type: "snapshot", snapshot: fake.snapshot(), full: false });
+    fake.emitControl({
+      type: "snapshot",
+      snapshot: fake.snapshot(),
+      full: false,
+    });
     await tick();
 
     await h.registry.submit(id, {
@@ -1456,7 +1852,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
         id,
         expect.objectContaining({
           restorationId: "ambiguous-submission:queued-before-crash",
-          followUp: ["queued follow-up"],
+          text: "queued follow-up",
+          attachments: [{ type: "image", data: "queued-bytes", mimeType: "image/png" }],
+          disposition: "restore",
         }),
       ]),
     );
@@ -1512,8 +1910,14 @@ describe("SessionRegistry direct AgentSession authority", () => {
     });
 
     await expect(Promise.all([first, replay])).resolves.toEqual([
-      expect.objectContaining({ intentId: submission.intentId, disposition: "consumed" }),
-      expect.objectContaining({ intentId: submission.intentId, disposition: "consumed" }),
+      expect.objectContaining({
+        intentId: submission.intentId,
+        disposition: "consumed",
+      }),
+      expect.objectContaining({
+        intentId: submission.intentId,
+        disposition: "consumed",
+      }),
     ]);
     h.registry.stopAll();
   });
@@ -1565,7 +1969,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
       },
     });
 
-    await expect(pending).resolves.toMatchObject({ disposition: "outcome_unknown" });
+    await expect(pending).resolves.toMatchObject({
+      disposition: "outcome_unknown",
+    });
     expect(
       h.submissions.some(
         (entry) =>
@@ -1578,7 +1984,8 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id,
       expect.objectContaining({
         restorationId: "ambiguous-submission:predecessor-submit",
-        followUp: ["possibly consumed by predecessor"],
+        text: "possibly consumed by predecessor",
+        disposition: "restore",
       }),
     ]);
     h.registry.stopAll();
@@ -1643,11 +2050,14 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id,
       expect.objectContaining({
         restorationId: "ambiguous-submission:transition-terminal",
-        followUp: ["terminal during transition"],
+        text: "terminal during transition",
+        disposition: "restore",
       }),
     ]);
     h.registry.stopAll();
-    await expect(pending).resolves.toMatchObject({ disposition: "outcome_unknown" });
+    await expect(pending).resolves.toMatchObject({
+      disposition: "outcome_unknown",
+    });
   });
 
   it("keeps a dispatched submission outcome unknown when the host dies before replying", async () => {
@@ -1690,13 +2100,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id,
       expect.objectContaining({
         restorationId: "ambiguous-submission:boundary-crash",
-        followUp: ["possibly consumed"],
-        originalAttachments: [
-          {
-            intentId: "boundary-crash",
-            images: [{ type: "image", data: "uncertain-bytes", mimeType: "image/png" }],
-          },
-        ],
+        text: "possibly consumed",
+        attachments: [{ type: "image", data: "uncertain-bytes", mimeType: "image/png" }],
+        disposition: "restore",
       }),
     ]);
     h.registry.stopAll();
@@ -1856,7 +2262,8 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id,
       expect.objectContaining({
         restorationId: "ambiguous-reload:lost-reload-intent",
-        commandDescription: expect.stringContaining("reload may have completed"),
+        text: "/reload",
+        disposition: "restore",
       }),
     ]);
     h.registry.stopAll();
@@ -1884,38 +2291,15 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("does not dispatch reload after close preparation wins a deferred preflight", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-    await h.registry.activateSession(id, "/tmp/pi", {});
-    const record = h.registry.getSession(id)!;
-    const originalRequestSnapshot = record.proc!.requestSnapshot.bind(record.proc!);
-    let resolvePreflight!: (snapshot: AgentSessionSnapshot) => void;
-    vi.spyOn(record.proc!, "requestSnapshot")
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolvePreflight = resolve;
-          }),
-      )
-      .mockImplementation(originalRequestSnapshot);
-
-    const reload = h.registry.reloadSession(id);
-    await vi.waitFor(() => expect(record.proc!.requestSnapshot).toHaveBeenCalledOnce());
-    const prepared = await h.registry.prepareClose(id);
-    resolvePreflight(record.snapshot!);
-    await expect(reload).rejects.toThrow("close preparation");
-    expect(h.fakes[0]!.sent.some((message) => message.type === "reload")).toBe(false);
-    await expect(h.registry.confirmClose(id, prepared.reviewToken)).resolves.toEqual({
-      closed: true,
-    });
-  });
-
   it("rejects reload when the fresh checkpoint became active", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
-    h.fakes[0]!.runtime = { ...h.fakes[0]!.runtime, isStreaming: true, isIdle: false };
+    h.fakes[0]!.runtime = {
+      ...h.fakes[0]!.runtime,
+      isStreaming: true,
+      isIdle: false,
+    };
 
     await expect(h.registry.reloadSession(id)).rejects.toThrow("current response");
 
@@ -1969,39 +2353,15 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("does not detach for worktree respawn after close wins a deferred preflight", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-    await h.registry.activateSession(id, "/tmp/pi", {});
-    const record = h.registry.getSession(id)!;
-    const originalRequestSnapshot = record.proc!.requestSnapshot.bind(record.proc!);
-    let resolvePreflight!: (snapshot: AgentSessionSnapshot) => void;
-    vi.spyOn(record.proc!, "requestSnapshot")
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolvePreflight = resolve;
-          }),
-      )
-      .mockImplementation(originalRequestSnapshot);
-
-    const respawn = h.registry.setWorktreeAndRespawn(id, "/tmp/project-worktree", "/tmp/pi", {});
-    await vi.waitFor(() => expect(record.proc!.requestSnapshot).toHaveBeenCalledOnce());
-    const prepared = await h.registry.prepareClose(id);
-    resolvePreflight(record.snapshot!);
-    await expect(respawn).rejects.toThrow("active and retained work");
-    expect(h.fakes).toHaveLength(1);
-    expect(h.fakes[0]!.killed).toBe(false);
-    await expect(h.registry.confirmClose(id, prepared.reviewToken)).resolves.toEqual({
-      closed: true,
-    });
-  });
-
   it("aborts planned respawn when the fresh checkpoint became active", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
-    h.fakes[0]!.runtime = { ...h.fakes[0]!.runtime, isStreaming: true, isIdle: false };
+    h.fakes[0]!.runtime = {
+      ...h.fakes[0]!.runtime,
+      isStreaming: true,
+      isIdle: false,
+    };
 
     await expect(
       h.registry.setWorktreeAndRespawn(id, "/tmp/project-worktree", "/tmp/pi", {}),
@@ -2010,41 +2370,6 @@ describe("SessionRegistry direct AgentSession authority", () => {
     expect(h.fakes).toHaveLength(1);
     expect(h.fakes[0]!.killed).toBe(false);
     expect(h.registry.getSession(id)?.worktreePath).toBeUndefined();
-    h.registry.stopAll();
-  });
-
-  it("restores availability when close preparation fails after a worktree abort", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-    await h.registry.activateSession(id, "/tmp/pi", {});
-    const record = h.registry.getSession(id)!;
-    record.availability = "transitioning";
-    record._worktreeTransition = undefined;
-    vi.spyOn(record.proc!, "prepareClose").mockRejectedValueOnce(new Error("checkpoint failed"));
-
-    await expect(h.registry.prepareClose(id)).rejects.toThrow("checkpoint failed");
-
-    expect(record).toMatchObject({ availability: "available", _closing: false });
-    expect(() => h.registry.assertWorktreeSwitchEligible(id)).not.toThrow();
-    h.registry.stopAll();
-  });
-
-  it("restores availability when close confirmation becomes invalid after a worktree abort", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-    await h.registry.activateSession(id, "/tmp/pi", {});
-    const record = h.registry.getSession(id)!;
-    const prepared = await h.registry.prepareClose(id);
-    record.availability = "transitioning";
-    record._worktreeTransition = undefined;
-    vi.spyOn(record.proc!, "confirmClose").mockResolvedValueOnce({ valid: false });
-
-    await expect(h.registry.confirmClose(id, prepared.reviewToken)).resolves.toEqual({
-      closed: false,
-      reason: "Host state changed after the close checkpoint",
-    });
-    expect(record).toMatchObject({ availability: "available", _closing: false });
-    expect(() => h.registry.assertWorktreeSwitchEligible(id)).not.toThrow();
     h.registry.stopAll();
   });
 
@@ -2072,50 +2397,6 @@ describe("SessionRegistry direct AgentSession authority", () => {
     expect(h.fakes[0]!.killed).toBe(false);
     expect(h.registry.getSession(id)?.worktreePath).toBeUndefined();
     expect(h.registry.getSession(id)?.status).toBe("ready");
-    h.registry.stopAll();
-  });
-
-  it("rechecks lifecycle eligibility after an asynchronous pre-detach guard", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-    await h.registry.activateSession(id, "/tmp/pi", {});
-    let guardEntered = false;
-    let releaseGuard!: () => void;
-    const guard = new Promise<void>((resolve) => {
-      releaseGuard = resolve;
-    });
-    const detached = vi.fn();
-
-    const respawn = h.registry.setWorktreeAndRespawn(
-      id,
-      "/tmp/project-worktree",
-      "/tmp/pi",
-      {},
-      {
-        onBeforeDetach: async () => {
-          guardEntered = true;
-          await guard;
-        },
-        onDetachCommitted: detached,
-      },
-    );
-    await vi.waitFor(() => expect(guardEntered).toBe(true));
-    const prepared = await h.registry.prepareClose(id);
-    releaseGuard();
-
-    await expect(respawn).rejects.toThrow("active and retained work");
-    expect(detached).not.toHaveBeenCalled();
-    expect(h.fakes).toHaveLength(1);
-    expect(h.fakes[0]!.killed).toBe(false);
-    expect(h.registry.getSession(id)?.worktreePath).toBeUndefined();
-    await expect(h.registry.cancelClose(id, prepared.reviewToken)).resolves.toEqual({
-      cancelled: true,
-    });
-    expect(h.registry.getSession(id)).toMatchObject({
-      availability: "available",
-      _worktreeTransition: undefined,
-    });
-    expect(() => h.registry.assertWorktreeSwitchEligible(id)).not.toThrow();
     h.registry.stopAll();
   });
 
@@ -2188,7 +2469,10 @@ describe("SessionRegistry direct AgentSession authority", () => {
         text: "late renderer draft",
         attachments: [],
       }),
-    ).rejects.toThrow("unavailable");
+    ).resolves.toMatchObject({
+      accepted: false,
+      rejection: "runtime_unavailable",
+    });
     h.fakes[0]!.editor = {
       revision: 3,
       text: "extension draft during guard",
@@ -2202,37 +2486,6 @@ describe("SessionRegistry direct AgentSession authority", () => {
     });
     expect(h.fakes).toHaveLength(2);
     h.registry.stopAll();
-  });
-
-  it("rejects a UI acknowledgement that arrives after close preparation", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-    await h.registry.activateSession(id, "/tmp/pi", {});
-    const record = h.registry.getSession(id)!;
-    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
-    const pending = h.registry.respondToUiRequest(
-      id,
-      record._rendererGeneration,
-      hostInstanceId,
-      sessionEpoch,
-      "late-ui-ack",
-      { type: "extension_ui_response", id: "late-ui-ack", value: "answer" },
-    );
-    await vi.waitFor(() =>
-      expect(
-        h.fakes[0]!.sent.some(
-          (message) =>
-            message.type === "dialog_response" &&
-            (message.response as { id?: string } | undefined)?.id === "late-ui-ack",
-        ),
-      ).toBe(true),
-    );
-    const prepared = await h.registry.prepareClose(id);
-    h.fakes[0]!.emitWire({ type: "ui_ack", operationId: "late-ui-ack" });
-    await expect(pending).resolves.toBe(false);
-    await expect(h.registry.confirmClose(id, prepared.reviewToken)).resolves.toEqual({
-      closed: true,
-    });
   });
 
   it("rejects delayed renderer mutations from a retired host identity", async () => {
@@ -2269,7 +2522,10 @@ describe("SessionRegistry direct AgentSession authority", () => {
         text: "stale",
         attachments: [],
       }),
-    ).rejects.toThrow("replaced");
+    ).resolves.toMatchObject({
+      accepted: false,
+      rejection: "runtime_replaced",
+    });
     await expect(
       h.registry.respondToUiRequest(
         id,
@@ -2309,7 +2565,12 @@ describe("SessionRegistry direct AgentSession authority", () => {
       message: "Continue?",
     });
     fake.emitWire({ type: "panel_open", panelId: 1, overlay: true });
-    fake.emitWire({ type: "panel_open", panelId: 2, overlay: false, unified: true });
+    fake.emitWire({
+      type: "panel_open",
+      panelId: 2,
+      overlay: false,
+      unified: true,
+    });
     await vi.waitFor(() => expect(record._openPanels.size).toBe(2));
     const response = h.registry.respondToUiRequest(
       id,
@@ -2339,75 +2600,6 @@ describe("SessionRegistry direct AgentSession authority", () => {
     expect(h.registry.getAll().filter((record) => record.proc)).toHaveLength(11);
     expectDirectHostSpawns(h.spawnArgs, 11);
     h.registry.stopAll();
-  });
-
-  it("requires a current prepare-close token", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-    await h.registry.activateSession(id, "/tmp/pi", {});
-    const prepared = await h.registry.prepareClose(id);
-    h.fakes[0]!.emitWire({ type: "event", event: { type: "agent_start" } });
-    await expect(h.registry.confirmClose(id, prepared.reviewToken)).resolves.toEqual({
-      closed: false,
-      reason: "Session changed after the close checkpoint",
-    });
-    expect(h.registry.getSession(id)?._closing).toBe(false);
-    const fresh = await h.registry.prepareClose(id);
-    await expect(h.registry.confirmClose(id, fresh.reviewToken)).resolves.toEqual({ closed: true });
-  });
-
-  it("allows a failed or cold session with no host to close", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-
-    const prepared = await h.registry.prepareClose(id);
-    await expect(h.registry.confirmClose(id, prepared.reviewToken)).resolves.toEqual({
-      closed: true,
-    });
-    expect(h.registry.getSession(id)).toBeUndefined();
-  });
-
-  it("rejects every renderer ingress path after prepare-close", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-    await h.registry.activateSession(id, "/tmp/pi", {});
-    const record = h.registry.getSession(id)!;
-    const prepared = await h.registry.prepareClose(id);
-
-    await expect(
-      h.registry.respondToUiRequest(
-        id,
-        record._rendererGeneration,
-        ...runtimeIdentity(record),
-        "dialog-op",
-        {
-          type: "extension_ui_response",
-          id: "dialog-op",
-          value: "answer",
-        },
-      ),
-    ).rejects.toThrow("close preparation");
-    await expect(
-      h.registry.closePanel(id, ...runtimeIdentity(record), 1, "panel-op"),
-    ).rejects.toThrow("close preparation");
-    await expect(
-      h.registry.applyEditorPatch(id, ...runtimeIdentity(record), {
-        baseRevision: 0,
-        revision: 1,
-        text: "late edit",
-        attachments: [],
-      }),
-    ).rejects.toThrow("close preparation");
-    await expect(
-      h.registry.sendPanelInput(id, ...runtimeIdentity(record), 1, 1, 1, "late input"),
-    ).rejects.toThrow("close preparation");
-    expect(() => h.registry.resizePanel(id, ...runtimeIdentity(record), 1, 80, 24)).toThrow(
-      "close preparation",
-    );
-
-    await expect(h.registry.confirmClose(id, prepared.reviewToken)).resolves.toEqual({
-      closed: true,
-    });
   });
 
   it("replays unresolved unified submissions after renderer reattachment", async () => {
@@ -2506,8 +2698,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id,
       expect.objectContaining({
         restorationId: "ambiguous-unified:claimed-unified",
-        followUp: [],
-        commandDescription: expect.stringContaining("!touch marker"),
+        text: "",
+        attachments: [],
+        disposition: "dropped",
       }),
     ]);
     expect(
@@ -2585,8 +2778,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
           id,
           expect.objectContaining({
             restorationId: "ambiguous-unified:hanging-unified",
-            followUp: [],
-            commandDescription: expect.stringContaining("hang forever"),
+            text: "",
+            attachments: [],
+            disposition: "dropped",
           }),
         ]),
       { timeout: 1_000 },
@@ -2713,7 +2907,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
         disposition: "consumed",
       },
     });
-    await expect(pending).resolves.toMatchObject({ disposition: "outcome_unknown" });
+    await expect(pending).resolves.toMatchObject({
+      disposition: "outcome_unknown",
+    });
     await tick();
     expect(record._expiredUnifiedIntents.has(request.submissionIntentId)).toBe(false);
     expect(record._retainedIntents.has(request.submissionIntentId)).toBe(false);
@@ -2760,8 +2956,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id,
       expect.objectContaining({
         restorationId: "ambiguous-unified:unified-stale",
-        followUp: [],
-        commandDescription: expect.stringContaining("retain stale editor text"),
+        text: "",
+        attachments: [],
+        disposition: "dropped",
       }),
     ]);
     expect(h.fakes[0]!.sent.some((message) => message.type === "unified_submit_response")).toBe(
@@ -2770,7 +2967,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("turns a pending unified submit into reviewable restoration on host crash", async () => {
+  it("silently restores a pending unified submission once after a host crash", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
@@ -2789,17 +2986,26 @@ describe("SessionRegistry direct AgentSession authority", () => {
     await h.registry.rendererAttach(id, 1);
 
     expect(h.unifiedRequests).toEqual([]);
-    expect(h.restorations).toHaveLength(2);
-    expect(h.restorations).toEqual(
-      Array.from({ length: 2 }, () => [
+    expect(h.restorations).toEqual([
+      [
         id,
         expect.objectContaining({
-          type: "queue_restoration",
-          followUp: ["do not replay me"],
-          requiresReview: true,
+          restorationId: "interrupted-unified:unified-crash",
+          text: "do not replay me",
+          attachments: [],
+          disposition: "restore",
         }),
-      ]),
-    );
+      ],
+      [
+        id,
+        expect.objectContaining({
+          restorationId: "interrupted-unified:unified-crash",
+          text: "do not replay me",
+          attachments: [],
+          disposition: "restore",
+        }),
+      ],
+    ]);
   });
 
   it("rejects an editor-patch acknowledgement that crosses an epoch boundary", async () => {
@@ -2832,10 +3038,18 @@ describe("SessionRegistry direct AgentSession authority", () => {
       type: "response",
       command: "editor_patch",
       success: true,
-      data: { accepted: true, revision: 1, text: "predecessor edit", attachments: [] },
+      data: {
+        accepted: true,
+        revision: 1,
+        text: "predecessor edit",
+        attachments: [],
+      },
     });
 
-    await expect(pending).rejects.toThrow("replaced before editor patch acknowledgement");
+    await expect(pending).resolves.toMatchObject({
+      accepted: false,
+      rejection: "runtime_replaced",
+    });
     h.registry.stopAll();
   });
 

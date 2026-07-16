@@ -31,16 +31,35 @@ export interface OpenAIRequestExpectation {
   readonly compaction?: boolean | CompactionExpectation;
 }
 
+export type ScriptedOpenAILatencyRange = number | readonly [minimumMs: number, maximumMs: number];
+
+/**
+ * Deterministic response timing. A fixed number or an inclusive [min, max]
+ * range is accepted for each delay. Ranges use a seeded PRNG, never Math.random.
+ */
+export interface ScriptedOpenAILatency {
+  /** Delay before response headers and the first response body byte. */
+  readonly firstByteMs?: ScriptedOpenAILatencyRange;
+  /** Delay before each following streamed SSE chunk. */
+  readonly perChunkMs?: ScriptedOpenAILatencyRange;
+  readonly seed?: number;
+}
+
+interface ScriptedOpenAIResponseBase {
+  /** Overrides provider- or step-level latency for this response. */
+  readonly latency?: ScriptedOpenAILatency;
+}
+
 export type ScriptedOpenAIResponse =
-  | {
+  | (ScriptedOpenAIResponseBase & {
       readonly type: "text";
       readonly chunks: readonly string[];
       /** Blocks before any response bytes are written. */
       readonly gate?: string;
       /** Blocks after the first text delta and before all remaining deltas. */
       readonly afterFirstChunkGate?: string;
-    }
-  | {
+    })
+  | (ScriptedOpenAIResponseBase & {
       readonly type: "tool_call";
       readonly name: string;
       /** JSON argument fragments, in wire order. */
@@ -49,8 +68,8 @@ export type ScriptedOpenAIResponse =
       readonly gate?: string;
       /** Joined before the first wire chunk so Pi receives a valid function name. */
       readonly nameFragments?: readonly string[];
-    }
-  | {
+    })
+  | (ScriptedOpenAIResponseBase & {
       readonly type: "error";
       readonly status: number;
       readonly message?: string;
@@ -58,8 +77,8 @@ export type ScriptedOpenAIResponse =
       readonly code?: string;
       readonly body?: unknown;
       readonly gate?: string;
-    }
-  | {
+    })
+  | (ScriptedOpenAIResponseBase & {
       readonly type: "disconnect";
       /** Text chunks written before the connection is deliberately destroyed. */
       readonly chunks?: readonly string[];
@@ -67,11 +86,18 @@ export type ScriptedOpenAIResponse =
       readonly gate?: string;
       /** Blocks after partial SSE bytes are written but before the socket is destroyed. */
       readonly disconnectGate?: string;
-    };
+    });
 
 export interface ScriptedOpenAIStep {
   readonly expect?: OpenAIRequestExpectation;
+  /** Overrides provider-level latency for this ordered script step. */
+  readonly latency?: ScriptedOpenAILatency;
   readonly response: ScriptedOpenAIResponse;
+}
+
+export interface ScriptedOpenAIProviderOptions {
+  /** Default latency for all script steps; absent by default for fast unit tests. */
+  readonly latency?: ScriptedOpenAILatency;
 }
 
 export interface UnexpectedOpenAIRequest {
@@ -223,13 +249,51 @@ const completionChunk = (
   choices: [{ index: 0, delta, finish_reason: finishReason }],
 });
 
+const seededRandom = (seed: number): (() => number) => {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 0x1_0000_0000;
+  };
+};
+
+const latencyFor = (
+  defaults: ScriptedOpenAILatency | undefined,
+  step: ScriptedOpenAILatency | undefined,
+  response: ScriptedOpenAILatency | undefined,
+): ScriptedOpenAILatency => ({
+  firstByteMs: response?.firstByteMs ?? step?.firstByteMs ?? defaults?.firstByteMs,
+  perChunkMs: response?.perChunkMs ?? step?.perChunkMs ?? defaults?.perChunkMs,
+  seed: response?.seed ?? step?.seed ?? defaults?.seed,
+});
+
+const latencyDelay = (
+  range: ScriptedOpenAILatencyRange | undefined,
+  random: () => number,
+): number => {
+  if (range === undefined) return 0;
+  const [minimum, maximum] = typeof range === "number" ? [range, range] : range;
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || minimum < 0 || maximum < minimum) {
+    throw new Error(`invalid scripted OpenAI latency range: ${JSON.stringify(range)}`);
+  }
+  return Math.floor(minimum + random() * (maximum - minimum + 1));
+};
+
+const waitForLatency = async (milliseconds: number): Promise<void> => {
+  if (milliseconds > 0) await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+};
+
 /**
  * Starts a loopback-only OpenAI Chat Completions server with an ordered script.
  * It is intentionally small and deterministic: script progress, rather than
- * elapsed time, controls every response.
+ * elapsed time, controls every response unless optional seeded latency is set.
  */
 export const createScriptedOpenAIProvider = async (
   script: readonly ScriptedOpenAIStep[],
+  options: ScriptedOpenAIProviderOptions = {},
 ): Promise<ScriptedOpenAIProvider> => {
   const remaining = [...script];
   const requests: CapturedOpenAIRequest[] = [];
@@ -305,8 +369,14 @@ export const createScriptedOpenAIProvider = async (
         writeJson(response, 400, { error: { message: reason, type: "invalid_request_error" } });
         return;
       }
+      const stepIndex = script.length - remaining.length;
       remaining.shift();
       await waitForGate(step.response.gate);
+      if (closed || response.destroyed) return;
+
+      const latency = latencyFor(options.latency, step.latency, step.response.latency);
+      const random = seededRandom((latency.seed ?? 0) + stepIndex);
+      await waitForLatency(latencyDelay(latency.firstByteMs, random));
       if (closed || response.destroyed) return;
 
       if (step.response.type === "error") {
@@ -331,6 +401,13 @@ export const createScriptedOpenAIProvider = async (
         connection: "keep-alive",
         "content-type": "text/event-stream; charset=utf-8",
       });
+      let wroteSseChunk = false;
+      const writeDelayedSse = async (value: unknown): Promise<void> => {
+        if (wroteSseChunk) await waitForLatency(latencyDelay(latency.perChunkMs, random));
+        if (closed || response.destroyed) return;
+        writeSse(response, value);
+        wroteSseChunk = true;
+      };
 
       if (step.response.type === "text" || step.response.type === "disconnect") {
         const chunks =
@@ -338,8 +415,7 @@ export const createScriptedOpenAIProvider = async (
             ? step.response.chunks
             : (step.response.chunks ?? ["partial"]);
         for (const [index, content] of chunks.entries()) {
-          writeSse(
-            response,
+          await writeDelayedSse(
             completionChunk(
               model,
               index === 0 ? { role: "assistant", content } : { content },
@@ -360,13 +436,12 @@ export const createScriptedOpenAIProvider = async (
           response.socket?.destroy();
           return;
         }
-        writeSse(response, completionChunk(model, {}, "stop"));
+        await writeDelayedSse(completionChunk(model, {}, "stop"));
       } else {
         const name = step.response.nameFragments?.join("") ?? step.response.name;
         const args = step.response.argumentChunks;
         const id = step.response.id ?? "call_scripted_0";
-        writeSse(
-          response,
+        await writeDelayedSse(
           completionChunk(
             model,
             {
@@ -384,8 +459,7 @@ export const createScriptedOpenAIProvider = async (
           ),
         );
         for (const fragment of args.slice(1)) {
-          writeSse(
-            response,
+          await writeDelayedSse(
             completionChunk(
               model,
               { tool_calls: [{ index: 0, function: { arguments: fragment } }] },
@@ -393,7 +467,7 @@ export const createScriptedOpenAIProvider = async (
             ),
           );
         }
-        writeSse(response, completionChunk(model, {}, "tool_calls"));
+        await writeDelayedSse(completionChunk(model, {}, "tool_calls"));
       }
       response.write("data: [DONE]\n\n");
       response.end();

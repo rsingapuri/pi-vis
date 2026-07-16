@@ -1,6 +1,7 @@
 import type { SessionId } from "@shared/ids.js";
 import type {
   AuthorityAttachBaseline,
+  AuthorityAttachBaselineResponse,
   AuthorityAttachResponse,
   AuthorityFrame,
   ExtensionUiPublicationPayload,
@@ -18,7 +19,7 @@ export type AuthorityPublication =
   | { plane: "extensionUi"; owner: RuntimeIdentity; payload: ExtensionUiPublicationPayload }
   | { plane: "panel"; owner: RuntimeIdentity; payload: PanelPublicationPayload };
 
-export type AuthorityBaselineProvider = () => Promise<AuthorityAttachBaseline>;
+export type AuthorityBaselineProvider = () => Promise<AuthorityAttachBaselineResponse>;
 
 export class AuthorityAttachError extends Error {}
 
@@ -179,76 +180,97 @@ export class RendererPublicationRouter {
     this.buffer = [];
     this.overflowed = false;
 
-    for (let attempt = 0; attempt < this.maxBaselineAttempts; attempt++) {
-      // This is the main-owned publication high-water covered by the baseline
-      // request. Publications routed while the child serializes its baseline
-      // receive strictly greater numbers and form the replay tail. The child
-      // cannot name this renderer-local sequence space.
-      const highWatermark = this.nextPublicationSequence - 1;
-      const sourceBaseline = await getBaseline();
-      const baselineOwner = sourceBaseline.owner;
-      if (!sameOwner(sourceBaseline.semantic.snapshot.owner, baselineOwner)) {
-        throw new AuthorityAttachError("Authority baseline semantic owner mismatch");
-      }
+    try {
+      for (let attempt = 0; attempt < this.maxBaselineAttempts; attempt++) {
+        // This is the main-owned publication high-water covered by the baseline
+        // request. Publications routed while the child serializes its baseline
+        // receive strictly greater numbers and form the replay tail. The child
+        // cannot name this renderer-local sequence space.
+        const highWatermark = this.nextPublicationSequence - 1;
+        const source = await getBaseline();
+        if (source.status !== "ready") {
+          // Do not leave the router buffering forever when the child deliberately
+          // reports a normal lifecycle race.
+          this.detach();
+          return source;
+        }
+        const sourceBaseline = source.baseline;
+        const baselineOwner = sourceBaseline.owner;
+        if (!sameOwner(sourceBaseline.semantic.snapshot.owner, baselineOwner)) {
+          throw new AuthorityAttachError("Authority baseline semantic owner mismatch");
+        }
 
-      // A child serializes its baseline after some authority work which may
-      // have raced with this request. Therefore the request-time renderer
-      // high-water alone cannot decide the replay tail: discard the covered
-      // prefix for each source plane as named by the returned cursors.
-      const { covered, replay } = this.classifyBufferedTail(sourceBaseline);
-      // Buffered items have already consumed renderer sequence numbers. Make
-      // every covered item part of the baseline's renderer history, then put
-      // the surviving cross-plane tail immediately after that high-water.
-      // This avoids holes when covered prefixes are interleaved by plane.
-      const baselineHighWatermark = highWatermark + covered.length;
-      const ownerChanged =
-        this.expectedOwner !== undefined && !sameOwner(this.expectedOwner, baselineOwner);
-      const foreignTail = replay.some(
-        ({ publication }) => !sameOwner(baselineOwner, publication.owner),
-      );
+        // A child serializes its baseline after some authority work which may
+        // have raced with this request. Therefore the request-time renderer
+        // high-water alone cannot decide the replay tail: discard the covered
+        // prefix for each source plane as named by the returned cursors.
+        const { covered, replay } = this.classifyBufferedTail(sourceBaseline);
+        // Buffered items have already consumed renderer sequence numbers. Make
+        // every covered item part of the baseline's renderer history, then put
+        // the surviving cross-plane tail immediately after that high-water.
+        // This avoids holes when covered prefixes are interleaved by plane.
+        const baselineHighWatermark = highWatermark + covered.length;
+        const ownerChanged =
+          this.expectedOwner !== undefined && !sameOwner(this.expectedOwner, baselineOwner);
+        const foreignTail = replay.some(
+          ({ publication }) => !sameOwner(baselineOwner, publication.owner),
+        );
 
-      if (
-        this.overflowed ||
-        ownerChanged ||
-        foreignTail ||
-        !this.contiguousFromBaseline(sourceBaseline, replay)
-      ) {
-        // A replacement, gap, or overflow cannot be repaired by retaining an
-        // arbitrary tail. Discard it and ask the child for a new serialized
-        // baseline. This is bounded so a flood cannot retain memory forever.
+        if (
+          this.overflowed ||
+          ownerChanged ||
+          foreignTail ||
+          !this.contiguousFromBaseline(sourceBaseline, replay)
+        ) {
+          // A replacement, gap, or overflow cannot be repaired by retaining an
+          // arbitrary tail. Discard it and ask the child for a new serialized
+          // baseline. This is bounded so a flood cannot retain memory forever.
+          this.expectedOwner = structuredClone(baselineOwner);
+          this.buffer = [];
+          this.overflowed = false;
+          this.lastTransportSequence.clear();
+          this.synchronizingPlanes.clear();
+          continue;
+        }
+
+        const baseline: AuthorityAttachBaseline = {
+          ...structuredClone(sourceBaseline),
+          sessionId: this.sessionId,
+          rendererGeneration,
+          publicationHighWatermark: baselineHighWatermark,
+        };
         this.expectedOwner = structuredClone(baselineOwner);
+        this.seedCursors(baseline);
+        for (const entry of replay) {
+          this.lastTransportSequence.set(entry.publication.plane, entry.transportSequence);
+        }
         this.buffer = [];
-        this.overflowed = false;
-        this.lastTransportSequence.clear();
         this.synchronizingPlanes.clear();
-        continue;
+        this.state = "following";
+        return {
+          status: "ready",
+          baseline,
+          replay: replay.map(({ publication }, index) => ({
+            ...publication,
+            publicationSequence: baselineHighWatermark + index + 1,
+          })) as RendererPublication[],
+        };
       }
-
-      const baseline: AuthorityAttachBaseline = {
-        ...structuredClone(sourceBaseline),
-        sessionId: this.sessionId,
-        rendererGeneration,
-        publicationHighWatermark: baselineHighWatermark,
-      };
-      this.expectedOwner = structuredClone(baselineOwner);
-      this.seedCursors(baseline);
-      for (const entry of replay) {
-        this.lastTransportSequence.set(entry.publication.plane, entry.transportSequence);
-      }
-      this.buffer = [];
-      this.synchronizingPlanes.clear();
-      this.state = "following";
-      return {
-        baseline,
-        replay: replay.map(({ publication }, index) => ({
-          ...publication,
-          publicationSequence: baselineHighWatermark + index + 1,
-        })) as RendererPublication[],
-      };
+    } catch (error) {
+      // Provider failures and malformed baselines must not strand the router
+      // in attaching mode, where subsequent authority frames would be retained.
+      this.detach();
+      throw error;
     }
 
     this.state = "synchronizing";
     throw new AuthorityAttachError("Authority publication attach overflow or continuity failure");
+  }
+
+  private detach(): void {
+    this.buffer = [];
+    this.overflowed = false;
+    this.state = "detached";
   }
 
   private seedCursors(baseline: AuthorityAttachBaseline): void {

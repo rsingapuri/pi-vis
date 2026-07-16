@@ -35,6 +35,7 @@ function authoritativeOutcome(
 
 function queryResult(query: SessionQuery, data: unknown): SessionQueryResult {
   return {
+    status: "ok",
     queryId: "query-1",
     owner: OWNER,
     queryType: query.type,

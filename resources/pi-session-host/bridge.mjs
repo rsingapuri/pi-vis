@@ -211,12 +211,6 @@ export function setupCommandBridge({
         message: `Prompt admission remained unresolved for intent ${intentId}`,
       });
     },
-    getCheckpoint: () => ({
-      catalog: uiState.catalogSnapshot(),
-      editor: uiState.editorSnapshot(),
-      unifiedSubmissions: uiState.pendingUnifiedSubmissions?.() ?? [],
-      panels: panelBridge.checkpoint?.() ?? [],
-    }),
     runWithSurface: (surface, operation, intentId) =>
       admissionContext.run(intentId, () =>
         typeof runWithInvocationSurface === "function"

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   AgentSessionSnapshotSchema,
-  AuthorityAttachBaselineSchema,
+  AuthorityAttachBaselineResponseSchema,
   AuthorityFrameSchema,
   AuthorityPresentationPublicationSchema,
 } from "../src/shared/pi-protocol/runtime-state.js";
@@ -65,7 +65,13 @@ describe("fake unified host authority protocol", () => {
 
     send({ type: "authority_attach", id: "attach", rendererGeneration: 4 });
     const attached = await response("attach");
-    const baseline = AuthorityAttachBaselineSchema.parse(attached.data);
+    // Child attach responses are a status union so a transition can answer
+    // "transitioning" instead of blocking; a settled fixture must be ready.
+    const attachResponse = AuthorityAttachBaselineResponseSchema.parse(attached.data);
+    if (attachResponse.status !== "ready") {
+      throw new Error(`Expected ready attach baseline, got ${attachResponse.status}`);
+    }
+    const baseline = attachResponse.baseline;
     expect(baseline.semantic.snapshot.owner).toEqual(baseline.owner);
     expect(baseline.transcript.sync.state).toBe("following");
     expect(baseline.extensionUi.sync.state).toBe("following");

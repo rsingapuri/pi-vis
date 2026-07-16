@@ -54,6 +54,31 @@ export function textWithAppendedFilePaths(current: string, paths: string[]): str
   return `${current}${separator}${paths.join("\n")}`;
 }
 
+/** Convert retained runtime image payloads back into composer-owned files. */
+export function restorationImagesToComposerAttachments(
+  values: unknown[],
+): ReplicatedComposerAttachment[] {
+  const result: ReplicatedComposerAttachment[] = [];
+  for (const [index, value] of values.entries()) {
+    let dataUrl: string | undefined;
+    if (typeof value === "string" && /^data:image\//.test(value)) dataUrl = value;
+    else if (value && typeof value === "object") {
+      const image = value as { data?: unknown; dataUrl?: unknown; mimeType?: unknown };
+      if (typeof image.dataUrl === "string" && /^data:image\//.test(image.dataUrl)) {
+        dataUrl = image.dataUrl;
+      } else if (typeof image.data === "string") {
+        dataUrl = image.data.startsWith("data:image/")
+          ? image.data
+          : `data:${typeof image.mimeType === "string" ? image.mimeType : "image/png"};base64,${image.data}`;
+      }
+    }
+    if (dataUrl) {
+      result.push({ kind: "image", name: `restored-image-${index + 1}.png`, path: "", dataUrl });
+    }
+  }
+  return result;
+}
+
 export function runtimeImagesFromAttachments(images: ImageAttachment[]): Array<{
   data: string;
   mimeType: string;

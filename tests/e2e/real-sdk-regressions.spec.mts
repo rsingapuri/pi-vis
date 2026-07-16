@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Locator, type Page, expect, test } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+import { expect, test } from "./support/invariants.mjs";
 import {
+  REAL_SDK_PROVIDER_LATENCY,
   type RealSdkFixture,
   type RealSdkLaunch,
   createRealSdkFixture,
@@ -184,9 +186,7 @@ test.describe("Pinned real Pi 0.80.6 regressions", () => {
         await expect(overlay).toHaveCount(0);
         await expect(window.getByText(CUSTOM_DONE, { exact: true })).toHaveCount(1);
         await expect(window.locator(".transcript-block--user")).toHaveCount(0);
-        await expect(
-          window.getByText(/Interrupted message review|Model response failed/),
-        ).toHaveCount(0);
+        await expect(window.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
         await expect(window.locator(".composer__textarea")).toBeVisible();
         await assertDockNeverFlashed(window);
       });
@@ -199,16 +199,19 @@ test.describe("Pinned real Pi 0.80.6 regressions", () => {
 
   test("provider-backed names, session-specific factory reconstruction, and /tree persist across relaunch", async () => {
     test.setTimeout(240_000);
-    const provider = await createScriptedOpenAIProvider([
-      {
-        expect: {
-          model: "pivis-test-model",
-          promptIncludes: "real regression tree turn",
-          compaction: false,
+    const provider = await createScriptedOpenAIProvider(
+      [
+        {
+          expect: {
+            model: "pivis-test-model",
+            promptIncludes: "real regression tree turn",
+            compaction: false,
+          },
+          response: { type: "text", chunks: ["REAL-REGRESSION-TREE-ANSWER"] },
         },
-        response: { type: "text", chunks: ["REAL-REGRESSION-TREE-ANSWER"] },
-      },
-    ]);
+      ],
+      { latency: REAL_SDK_PROVIDER_LATENCY },
+    );
     const fixture = createRealSdkFixture({
       providerBaseUrl: provider.baseUrl,
       extensionFiles: [EXTENSION],
@@ -299,20 +302,23 @@ test.describe("Pinned real Pi 0.80.6 regressions", () => {
 
   test("native /compact dispatches immediately once and cannot be shadowed by the extension", async () => {
     test.setTimeout(240_000);
-    const provider = await createScriptedOpenAIProvider([
-      {
-        expect: { promptIncludes: "compact seed one", compaction: false },
-        response: { type: "text", chunks: ["REAL-REGRESSION-COMPACT-SEED-ONE"] },
-      },
-      {
-        expect: { promptIncludes: "compact seed two", compaction: false },
-        response: { type: "text", chunks: ["REAL-REGRESSION-COMPACT-SEED-TWO"] },
-      },
-      {
-        expect: { compaction: { includes: "compact seed one" } },
-        response: { type: "text", chunks: ["REAL-REGRESSION-COMPACT-SUMMARY"], gate: "compact" },
-      },
-    ]);
+    const provider = await createScriptedOpenAIProvider(
+      [
+        {
+          expect: { promptIncludes: "compact seed one", compaction: false },
+          response: { type: "text", chunks: ["REAL-REGRESSION-COMPACT-SEED-ONE"] },
+        },
+        {
+          expect: { promptIncludes: "compact seed two", compaction: false },
+          response: { type: "text", chunks: ["REAL-REGRESSION-COMPACT-SEED-TWO"] },
+        },
+        {
+          expect: { compaction: { includes: "compact seed one" } },
+          response: { type: "text", chunks: ["REAL-REGRESSION-COMPACT-SUMMARY"], gate: "compact" },
+        },
+      ],
+      { latency: REAL_SDK_PROVIDER_LATENCY },
+    );
     const fixture = createRealSdkFixture({
       providerBaseUrl: provider.baseUrl,
       extensionFiles: [EXTENSION],
@@ -346,7 +352,9 @@ test.describe("Pinned real Pi 0.80.6 regressions", () => {
         expect(JSON.stringify(provider.requests[2]!.parsedBody).toLowerCase()).toContain("summary");
         await expect(window.getByText(WRONG_COMPACT, { exact: true })).toHaveCount(0);
         await expect(window.getByText("Context compacted", { exact: false })).toHaveCount(0);
-        await expect(textarea).toHaveValue("/compact ");
+        // Admission transfers command custody immediately. It must not remain
+        // in the editor while the native compact request is in flight.
+        await expect(textarea).toHaveValue("");
         await expect(textarea).toBeEnabled();
         await textarea.evaluate((element) => {
           element.dispatchEvent(
@@ -354,10 +362,9 @@ test.describe("Pinned real Pi 0.80.6 regressions", () => {
           );
         });
         expect(provider.requests).toHaveLength(3);
-        // Command text remains recoverable custody until the terminal outcome;
-        // the provider request proves it was sent immediately while duplicate
-        // Enter is fenced by the in-flight custody key.
-        await expect(textarea).toHaveValue("/compact ");
+        // The provider request proves admission was immediate; the cleared
+        // editor means a duplicate Enter cannot redispatch the command.
+        await expect(textarea).toHaveValue("");
         provider.releaseGate("compact");
       });
 
@@ -388,12 +395,15 @@ test.describe("Pinned real Pi 0.80.6 regressions", () => {
 
   test("pending-session draft and saved-session search retain focus during real authority attachment", async () => {
     test.setTimeout(180_000);
-    const provider = await createScriptedOpenAIProvider([
-      {
-        expect: { promptIncludes: "draft recovery establishing turn", compaction: false },
-        response: { type: "text", chunks: ["REAL-REGRESSION-DRAFT-ESTABLISHED"] },
-      },
-    ]);
+    const provider = await createScriptedOpenAIProvider(
+      [
+        {
+          expect: { promptIncludes: "draft recovery establishing turn", compaction: false },
+          response: { type: "text", chunks: ["REAL-REGRESSION-DRAFT-ESTABLISHED"] },
+        },
+      ],
+      { latency: REAL_SDK_PROVIDER_LATENCY },
+    );
     const fixture = createRealSdkFixture({
       providerBaseUrl: provider.baseUrl,
       extensionFiles: [EXTENSION],

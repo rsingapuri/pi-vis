@@ -211,7 +211,8 @@ export const QueueRestorationRecordSchema = z
     clearedIntentIds: z.array(z.string()).optional(),
     /** Present for an ambiguous effectful command that has no replayable queue payload. */
     commandDescription: z.string().optional(),
-    requiresReview: z.literal(true),
+    /** `not_processed` never crossed queue consumption; `unknown` must be reconciled by main. */
+    certainty: z.enum(["not_processed", "unknown"]),
   })
   .strict();
 export type QueueRestorationRecord = z.infer<typeof QueueRestorationRecordSchema>;
@@ -551,8 +552,9 @@ export const QueryEnvelopeSchema = SessionQueryEnvelopeSchema;
 export type QueryEnvelope = SessionQueryEnvelope;
 
 /** A query response is correlated with both its request and authoritative owner. */
-export const SessionQueryResultSchema = z
+const SessionQueryOkSchema = z
   .object({
+    status: z.literal("ok"),
     queryId: NonEmptyIdSchema,
     owner: RuntimeIdentitySchema,
     queryType: SessionQueryTypeSchema,
@@ -568,6 +570,14 @@ export const SessionQueryResultSchema = z
       });
     }
   });
+
+/** Expected lifecycle races are data, not cross-process exceptions. */
+export const SessionQueryResultSchema = z.union([
+  SessionQueryOkSchema,
+  z.object({ status: z.literal("superseded"), reason: z.string().optional() }).strict(),
+  z.object({ status: z.literal("transitioning"), reason: z.string().optional() }).strict(),
+  z.object({ status: z.literal("unavailable"), reason: z.string().optional() }).strict(),
+]);
 export type SessionQueryResult = z.infer<typeof SessionQueryResultSchema>;
 export const QueryResultSchema = SessionQueryResultSchema;
 export type QueryResult = SessionQueryResult;
@@ -870,7 +880,7 @@ export const CustodyProjectionSchema = z
     queueMode: z.enum(["steer", "followUp"]),
     barrier: z.enum(["compaction", "navigation", "admission_fence"]),
     enteredAt: z.number(),
-    requiresReview: z.boolean(),
+    certainty: z.enum(["not_processed", "unknown"]),
   })
   .strict();
 export type CustodyProjection = z.infer<typeof CustodyProjectionSchema>;
@@ -1528,8 +1538,12 @@ export const RendererPublicationSchema = z
   });
 export type RendererPublication = z.infer<typeof RendererPublicationSchema>;
 
-export const AuthorityAttachResponseSchema = z
-  .object({ baseline: AuthorityAttachBaselineSchema, replay: z.array(RendererPublicationSchema) })
+const AuthorityAttachReadySchema = z
+  .object({
+    status: z.literal("ready"),
+    baseline: AuthorityAttachBaselineSchema,
+    replay: z.array(RendererPublicationSchema),
+  })
   .strict()
   .superRefine((response, ctx) => {
     for (const [index, publication] of response.replay.entries()) {
@@ -1546,4 +1560,27 @@ export const AuthorityAttachResponseSchema = z
       }
     }
   });
+export const AuthorityAttachResponseSchema = z.union([
+  AuthorityAttachReadySchema,
+  z.object({ status: z.literal("unavailable"), reason: z.string().optional() }).strict(),
+  z
+    .object({
+      status: z.literal("transitioning"),
+      transitionId: z.string().min(1).optional(),
+    })
+    .strict(),
+]);
 export type AuthorityAttachResponse = z.infer<typeof AuthorityAttachResponseSchema>;
+
+/** Child-to-main attach response: main adds replay/publication sequencing. */
+export const AuthorityAttachBaselineResponseSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("ready"), baseline: AuthorityAttachBaselineSchema }).strict(),
+  z
+    .object({
+      status: z.literal("transitioning"),
+      transitionId: z.string().min(1).optional(),
+    })
+    .strict(),
+  z.object({ status: z.literal("unavailable"), reason: z.string().optional() }).strict(),
+]);
+export type AuthorityAttachBaselineResponse = z.infer<typeof AuthorityAttachBaselineResponseSchema>;

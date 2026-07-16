@@ -1,5 +1,5 @@
 import * as crypto from "node:crypto";
-import { closeSync, fstatSync, unlinkSync } from "node:fs";
+import { closeSync, fstatSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { newSessionId } from "@shared/ids.js";
@@ -13,12 +13,14 @@ import type { PiRpcResponse } from "@shared/pi-protocol/responses.js";
 import {
   type AgentSessionSnapshot,
   AgentSessionSnapshotSchema,
-  type AuthorityAttachBaseline,
+  type AuthorityAttachBaselineResponse,
   type AuthorityAttachResponse,
   type AuthorityFrame,
   type EscapeResult,
   type IntentEnvelope,
   type IntentReceipt,
+  type QueueRestorationRecord,
+  QueueRestorationRecordSchema,
   type ReloadRequest,
   ReloadRequestSchema,
   type ReloadSettlement,
@@ -40,11 +42,8 @@ import {
 import lockfile from "proper-lockfile";
 import { resolveHostExecPath } from "../pi/locate-node.js";
 import { SessionHost } from "../pi/session-host.js";
-import {
-  AuthorityAttachError,
-  type AuthorityPublication,
-  RendererPublicationRouter,
-} from "./renderer-publication.js";
+import { type AuthorityPublication, RendererPublicationRouter } from "./renderer-publication.js";
+import { reconcileRestoration } from "./restoration-reconciler.js";
 import {
   assertConfinedRegularFileDescriptor,
   createPinnedSessionHardLink,
@@ -58,11 +57,16 @@ interface RetainedIntent {
   recoveryPublished?: boolean | undefined;
   queuedAtAdmission?: boolean | undefined;
   result?: SubmissionResult | undefined;
+  /** Byte boundary captured immediately before sending to the retained host. */
+  sessionFileOffsetAtDispatch?: number | undefined;
 }
 
 /** Preserve a child-requested queue label for ambiguity review; this never
  * selects Pi admission behavior. */
-function reviewQueues(submission: SessionSubmission): { steering: string[]; followUp: string[] } {
+function reviewQueues(submission: SessionSubmission): {
+  steering: string[];
+  followUp: string[];
+} {
   const { requestedMode: queueLabel, text } = submission;
   return {
     steering: queueLabel === "steer" ? [text] : [],
@@ -80,6 +84,8 @@ interface RetainedDispatchIntent {
   deliveryUnknown?: boolean | undefined;
   /** Main emits a review-only unknown escrow once if this owner dies first. */
   recoveryPublished?: boolean | undefined;
+  /** Byte boundary captured immediately before sending to the retained host. */
+  sessionFileOffsetAtDispatch?: number | undefined;
 }
 
 interface PendingUnifiedSubmit {
@@ -155,7 +161,13 @@ export interface SessionRecord {
   _lastFailureAt?: number | undefined;
   _leaseTimer?: ReturnType<typeof setTimeout> | undefined;
   _lifecycleUiLease?: boolean | undefined;
-  _hostTransition?: { transitionId: string; provisionalEpoch: number } | undefined;
+  _hostTransition?:
+    | {
+        transitionId: string;
+        provisionalEpoch: number;
+        kind?: string;
+      }
+    | undefined;
   _worktreeTransition?: boolean | undefined;
   _retainedIntents: Map<string, RetainedIntent>;
   _pendingSubmissionPromises: Map<string, Promise<SubmissionResult>>;
@@ -164,14 +176,19 @@ export interface SessionRecord {
   _unifiedRestorationIntents: Map<string, string>;
   _retainedDispatchIntents: Map<string, RetainedDispatchIntent>;
   _restorations: Map<string, unknown>;
+  _resolvedRestorations: Set<string>;
+  /** Resolved legacy restore-draft instructions retained until renderer acknowledgement. */
+  _resolvedRestorationInstructions: Map<string, unknown>;
   _rendererGeneration: number;
   _mutationSequence: number;
-  _closeToken?: { value: string; mutationSequence: number; force: boolean } | undefined;
   _closing?: boolean | undefined;
   _panelInputSequence: Map<number, number>;
   _panelInputChains: Map<
     number,
-    Promise<{ acknowledgedThrough: number; gap?: { expected: number; received: number } }>
+    Promise<{
+      acknowledgedThrough: number;
+      gap?: { expected: number; received: number };
+    }>
   >;
   _pendingUiRequests: Map<string, ExtensionUiRequest>;
   _openPanels: Map<number, PanelEvent>;
@@ -216,6 +233,7 @@ const TRANSPORT_LEASE_MS = 5_000;
 /** A visit release is startup cancellation, never a later idle-host policy. */
 const ACTIVATION_VISIT_RELEASE_WINDOW_MS = 2_000;
 const DEFAULT_UNIFIED_CLAIM_TIMEOUT_MS = 60_000;
+const CLOSE_ESCAPE_DEADLINE_MS = 250;
 
 /** The query protocol is deliberately narrower than Pi's general command union. */
 function commandForSessionQuery(query: SessionQuery): PiReadOnlyCommand {
@@ -276,7 +294,7 @@ type AuthorityPublicationCallback = (publication: RendererPublication) => void;
 type SessionFileChangedCallback = (
   sessionId: SessionId,
   owner: RuntimeIdentity,
-  sessionFile: string,
+  sessionFile: string | undefined,
   sessionName?: string,
 ) => void;
 
@@ -302,6 +320,98 @@ export class SessionRegistry {
     private onAuthorityPublication: AuthorityPublicationCallback = () => {},
     private onSessionFileChanged: SessionFileChangedCallback = () => {},
   ) {}
+
+  private sessionFileOffset(record: SessionRecord): number | undefined {
+    if (!record.sessionFile) return undefined;
+    try {
+      return statSync(record.sessionFile).size;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private emitResolvedRestoration(record: SessionRecord, restorationId: string): void {
+    const instruction = record._resolvedRestorationInstructions.get(restorationId);
+    if (instruction) this.onQueueRestoration(record.sessionId, structuredClone(instruction));
+  }
+
+  /** Main is the sole authority deciding whether custody returns to a draft. */
+  private async resolveRestoration(record: SessionRecord, payload: unknown): Promise<void> {
+    // Legacy host records are wrapped in a transport envelope while semantic
+    // frames and attach baselines carry the record directly. Retain only the
+    // record fields before strict protocol validation in both cases.
+    const value =
+      typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
+    const parsed = QueueRestorationRecordSchema.safeParse({
+      type: value.type,
+      restorationId: value.restorationId,
+      steering: value.steering,
+      followUp: value.followUp,
+      originalAttachments: value.originalAttachments,
+      ...(value.clearedIntentIds !== undefined ? { clearedIntentIds: value.clearedIntentIds } : {}),
+      ...(value.commandDescription !== undefined
+        ? { commandDescription: value.commandDescription }
+        : {}),
+      certainty: value.certainty,
+    });
+    if (!parsed.success) return;
+    const restoration: QueueRestorationRecord = parsed.data;
+    if (record._resolvedRestorationInstructions.has(restoration.restorationId)) {
+      this.emitResolvedRestoration(record, restoration.restorationId);
+      return;
+    }
+    if (record._resolvedRestorations.has(restoration.restorationId)) return;
+    record._resolvedRestorations.add(restoration.restorationId);
+    const textParts = [...restoration.steering, ...restoration.followUp].filter((text) =>
+      text.trim(),
+    );
+    const attachments = restoration.originalAttachments.flatMap((item) => item.images);
+    let disposition: "restore" | "dropped";
+    if (
+      restoration.commandDescription?.trim() &&
+      textParts.length === 0 &&
+      attachments.length === 0
+    ) {
+      disposition = "dropped";
+    } else if (restoration.certainty === "not_processed") {
+      disposition = "restore";
+    } else {
+      const intentIds = new Set([
+        ...(restoration.clearedIntentIds ?? []),
+        ...restoration.originalAttachments.map((item) => item.intentId),
+      ]);
+      let offset: number | undefined;
+      for (const retained of record._retainedIntents.values()) {
+        if (intentIds.has(retained.payload.intentId)) {
+          offset = retained.sessionFileOffsetAtDispatch;
+          break;
+        }
+      }
+      if (offset === undefined) {
+        for (const retained of record._retainedDispatchIntents.values()) {
+          if (intentIds.has(retained.envelope.intentId)) {
+            offset = retained.sessionFileOffsetAtDispatch;
+            break;
+          }
+        }
+      }
+      disposition = await reconcileRestoration(record.sessionFile, offset, textParts);
+    }
+    // An acknowledgement can win while async reconciliation is in flight.
+    // Do not resurrect custody after that acknowledgement.
+    if (!record._restorations.has(restoration.restorationId)) return;
+    record._resolvedRestorationInstructions.set(restoration.restorationId, {
+      restorationId: restoration.restorationId,
+      text: textParts.join("\n\n"),
+      attachments: structuredClone(attachments),
+      disposition,
+    });
+    this.emitResolvedRestoration(record, restoration.restorationId);
+  }
+
+  private queueRestoration(record: SessionRecord, payload: unknown): void {
+    void this.resolveRestoration(record, payload);
+  }
 
   openSession(
     workspacePath: string,
@@ -347,6 +457,8 @@ export class SessionRegistry {
       _unifiedRestorationIntents: new Map(),
       _retainedDispatchIntents: new Map(),
       _restorations: new Map(),
+      _resolvedRestorations: new Set(),
+      _resolvedRestorationInstructions: new Map(),
       _rendererGeneration: 0,
       _mutationSequence: 0,
       _panelInputSequence: new Map(),
@@ -577,14 +689,22 @@ export class SessionRegistry {
     proc.on("panelRepaint", (panelId, revision) => {
       if (!current()) return;
       record._mutationSequence++;
-      this.onPanelEvent(record.sessionId, { type: "panel_repaint", panelId, revision });
+      this.onPanelEvent(record.sessionId, {
+        type: "panel_repaint",
+        panelId,
+        revision,
+      });
     });
     proc.on("panelData", (panelId, data) => {
       if (!current()) return;
       record._mutationSequence++;
       const checkpoint = record._panelCheckpoints.get(panelId) ?? {};
       record._panelCheckpoints.set(panelId, { ...checkpoint, lastData: data });
-      this.onPanelEvent(record.sessionId, { type: "panel_data", panelId, data });
+      this.onPanelEvent(record.sessionId, {
+        type: "panel_data",
+        panelId,
+        data,
+      });
     });
     proc.on("panelClose", (panelId) => {
       if (!current()) return;
@@ -600,7 +720,11 @@ export class SessionRegistry {
       record._mutationSequence++;
       const checkpoint = record._panelCheckpoints.get(panelId) ?? {};
       record._panelCheckpoints.set(panelId, { ...checkpoint, mode });
-      this.onPanelEvent(record.sessionId, { type: "panel_mode", panelId, mode });
+      this.onPanelEvent(record.sessionId, {
+        type: "panel_mode",
+        panelId,
+        mode,
+      });
     });
     proc.on("panelClearAll", () => {
       if (!current()) return;
@@ -654,6 +778,9 @@ export class SessionRegistry {
     });
     proc.on("transitionPrepare", (request) => {
       if (!current()) return;
+      if (record._hostTransition?.transitionId === request.transitionId) {
+        record._hostTransition = { ...record._hostTransition, kind: request.kind };
+      }
       void this.permitTransition(record, proc, request).then(
         () => proc.sendTransitionPermit(request.transitionId, true),
         (error) =>
@@ -762,7 +889,7 @@ export class SessionRegistry {
       const restorationId = (payload as { restorationId?: unknown }).restorationId;
       if (typeof restorationId !== "string" || record._restorations.has(restorationId)) return;
       record._restorations.set(restorationId, structuredClone(payload));
-      this.onQueueRestoration(record.sessionId, payload);
+      this.queueRestoration(record, payload);
     });
     proc.on("rendererCancelled", (generation) => {
       if (!current()) return;
@@ -801,6 +928,7 @@ export class SessionRegistry {
     record: SessionRecord,
     snapshotInput: AgentSessionSnapshot,
     publish = true,
+    adoptSessionFile = true,
   ): void {
     const parsed = AgentSessionSnapshotSchema.safeParse(snapshotInput);
     if (!parsed.success) {
@@ -848,7 +976,9 @@ export class SessionRegistry {
       : record.snapshotReceivedAt + TRANSPORT_LEASE_MS;
     record.availability = transitionPending ? "transitioning" : "available";
     record.lastActiveAt = Date.now();
-    if (snapshot.sessionFile) this.noteSessionFile(record.sessionId, snapshot.sessionFile);
+    if (adoptSessionFile && snapshot.sessionFile) {
+      this.noteSessionFile(record.sessionId, snapshot.sessionFile);
+    }
     if (transitionPending) {
       if (record._leaseTimer) clearTimeout(record._leaseTimer);
       record._leaseTimer = undefined;
@@ -862,7 +992,13 @@ export class SessionRegistry {
     record: SessionRecord,
     batchInput: TransitionBatch,
     options: {
-      expectedTransition?: { transitionId: string; provisionalEpoch: number } | undefined;
+      expectedTransition?:
+        | {
+            transitionId: string;
+            provisionalEpoch: number;
+            kind?: string;
+          }
+        | undefined;
       allowInitial?: boolean | undefined;
     } = {},
   ): boolean {
@@ -964,21 +1100,35 @@ export class SessionRegistry {
       } else if (item.type === "queue_restoration") {
         if (!record._restorations.has(item.restorationId)) {
           record._restorations.set(item.restorationId, structuredClone(item));
+          this.queueRestoration(record, item);
         }
       }
       // Escape results are already correlated to their request. Keeping them in
       // this combined record stream preserves ordering without inventing state.
     }
-    this.installSnapshot(record, terminal, false);
+    // A different-file successor is already reserved by `_transitionLock`,
+    // while the predecessor remains the primary route until this atomic
+    // commit completes. Defer file adoption to `commitTransitionLock` rather
+    // than asking the generic snapshot path to move a held primary lock.
+    this.installSnapshot(record, terminal, false, options.expectedTransition === undefined);
     const state = this.publishRuntime(record, "available", undefined, false);
     // Routing is now committed and the successor lock is still held. Only at
     // this point may the predecessor advisory lock be released.
     if (options.expectedTransition !== undefined) {
       this.commitTransitionLock(record, batch.transitionId);
-      if (terminal.sessionFile && terminal.sessionFile !== prior?.sessionFile) {
+      // Reload is the only host transition that intentionally preserves the
+      // current conversation. Every other successor represents a semantic
+      // session replacement and must reseed renderer transcript ownership,
+      // even when Pi temporarily reuses the same file path or the prepare
+      // record did not expose a more specific replacement kind.
+      const semanticReplacement = options.expectedTransition.kind !== "reload";
+      if (semanticReplacement || terminal.sessionFile !== prior?.sessionFile) {
         this.onSessionFileChanged(
           record.sessionId,
-          { hostInstanceId: terminal.hostInstanceId, sessionEpoch: terminal.sessionEpoch },
+          {
+            hostInstanceId: terminal.hostInstanceId,
+            sessionEpoch: terminal.sessionEpoch,
+          },
           terminal.sessionFile,
           terminal.sessionName,
         );
@@ -1014,7 +1164,10 @@ export class SessionRegistry {
       receivedAt: Date.now(),
       ...(record.proc?.hostInstanceId ? { hostInstanceId: record.proc.hostInstanceId } : {}),
       ...(record.snapshot
-        ? { sessionEpoch: record.snapshot.sessionEpoch, snapshot: record.snapshot }
+        ? {
+            sessionEpoch: record.snapshot.sessionEpoch,
+            snapshot: record.snapshot,
+          }
         : {}),
       ...(record.leaseExpiresAt ? { leaseExpiresAt: record.leaseExpiresAt } : {}),
       ...(reason ? { reason } : {}),
@@ -1074,7 +1227,12 @@ export class SessionRegistry {
       type EditorCandidate = { text: string; attachments: unknown[] };
       const storedCandidates = (editor: typeof recovery): EditorCandidate[] => [
         ...(editor.conflictText !== undefined
-          ? [{ text: editor.conflictText, attachments: editor.conflictAttachments ?? [] }]
+          ? [
+              {
+                text: editor.conflictText,
+                attachments: editor.conflictAttachments ?? [],
+              },
+            ]
           : []),
         ...(editor.alternateConflictText !== undefined
           ? [
@@ -1112,7 +1270,10 @@ export class SessionRegistry {
         const carriedCandidates = deduplicateCandidates(
           [
             { text: recovery.text, attachments: recovery.attachments },
-            { text: replacementState.text, attachments: replacementState.attachments },
+            {
+              text: replacementState.text,
+              attachments: replacementState.attachments,
+            },
           ],
           [...storedCandidates(recovery), ...storedCandidates(replacementState)],
         );
@@ -1143,7 +1304,10 @@ export class SessionRegistry {
               conflictAttachments?: unknown[];
               alternateConflictText?: string;
               alternateConflictAttachments?: unknown[];
-              additionalConflictCandidates?: Array<{ text: string; attachments: unknown[] }>;
+              additionalConflictCandidates?: Array<{
+                text: string;
+                attachments: unknown[];
+              }>;
             }
           | undefined;
         if (result?.accepted === true && typeof result.revision === "number") {
@@ -1300,9 +1464,12 @@ export class SessionRegistry {
                 surface: intent.surface,
               }),
               originalAttachments: [
-                { intentId: retained.envelope.intentId, images: structuredClone(intent.images) },
+                {
+                  intentId: retained.envelope.intentId,
+                  images: structuredClone(intent.images),
+                },
               ],
-              requiresReview: true,
+              certainty: "unknown",
             }
           : {
               type: "queue_restoration",
@@ -1311,10 +1478,10 @@ export class SessionRegistry {
               followUp: [],
               originalAttachments: [],
               commandDescription: `Intent ${retained.envelope.intentId} has outcome_unknown because its owning host failed: ${reason}`,
-              requiresReview: true,
+              certainty: "unknown",
             };
       record._restorations.set(restorationId, structuredClone(restoration));
-      this.onQueueRestoration(record.sessionId, restoration);
+      this.queueRestoration(record, restoration);
       // Keep the entry as a tombstone. A successor is never allowed to replay
       // it and an old delayed frame cannot clear a new owner's escrow.
       record._retainedDispatchIntents.set(escrowKey, retained);
@@ -1348,11 +1515,11 @@ export class SessionRegistry {
         restorationId: `ambiguous-submission:${payload.intentId}`,
         ...reviewQueues(payload),
         originalAttachments: [{ intentId: payload.intentId, images: payload.images }],
-        requiresReview: true,
+        certainty: "unknown",
       };
       if (!record._restorations.has(restoration.restorationId)) {
         record._restorations.set(restoration.restorationId, structuredClone(restoration));
-        this.onQueueRestoration(record.sessionId, restoration);
+        this.queueRestoration(record, restoration);
       }
       this.onSubmission(record.sessionId, {
         intentId: payload.intentId,
@@ -1383,10 +1550,10 @@ export class SessionRegistry {
         steering: [],
         followUp: [pending.text],
         originalAttachments: [],
-        requiresReview: true,
+        certainty: "not_processed",
       };
       record._restorations.set(restoration.restorationId, structuredClone(restoration));
-      this.onQueueRestoration(record.sessionId, restoration);
+      this.queueRestoration(record, restoration);
       record._pendingUnifiedSubmits.delete(pending.id);
     }
     this.publishUnavailable(record, reason);
@@ -1439,7 +1606,11 @@ export class SessionRegistry {
     const record = this.sessions.get(sessionId);
     const notAdmitted = (
       reason: Extract<IntentReceipt, { status: "not_admitted" }>["reason"],
-    ): IntentReceipt => ({ status: "not_admitted", intentId: envelope.intentId, reason });
+    ): IntentReceipt => ({
+      status: "not_admitted",
+      intentId: envelope.intentId,
+      reason,
+    });
     if (!record) return notAdmitted("stale_owner");
     if (envelope.rendererGeneration !== record._rendererGeneration) return notAdmitted("invalid");
     if (record._closing) return notAdmitted("closing");
@@ -1470,6 +1641,7 @@ export class SessionRegistry {
     const retained: RetainedDispatchIntent = {
       envelope: structuredClone(envelope),
       possibleDispatch: true,
+      sessionFileOffsetAtDispatch: this.sessionFileOffset(record),
     };
     record._retainedDispatchIntents.set(escrowKey, retained);
     record._mutationSequence++;
@@ -1505,6 +1677,57 @@ export class SessionRegistry {
   }
 
   /**
+   * Explicitly test-only real-child controls. IPC calls this only when
+   * PIVIS_TEST_REAL_HOST_CONTROL=1; keeping the guard here makes accidental
+   * in-process callers fail closed too. Replacement stays entirely inside the
+   * real child authority. Kill waits for one bounded restart/terminal state,
+   * so E2E never needs to race CDP against Electron process teardown.
+   */
+  async testControl(
+    sessionId: SessionId,
+    action: "replacement" | "kill",
+    timeoutMs = 10_000,
+  ): Promise<
+    | { status: "replacement" | "restarted" | "terminal" | "timeout"; owner?: RuntimeIdentity }
+    | { status: "disabled" | "unavailable" }
+  > {
+    if (process.env.PIVIS_TEST_REAL_HOST_CONTROL !== "1") return { status: "disabled" };
+    const record = this.sessions.get(sessionId);
+    const proc = record?.proc;
+    if (!record || !proc || !record._procReady || record.status !== "ready") {
+      return { status: "unavailable" };
+    }
+    if (action === "replacement") {
+      // SessionHost validates the response envelope against its live runtime
+      // identity. The terminal frame can race behind that response, so callers
+      // must attach for the baseline rather than incorrectly treating the
+      // ordinary independent-IPC ordering as a terminal failure.
+      return { status: "replacement", owner: await proc.testControl("replacement") };
+    }
+
+    proc.killForTests();
+    const deadline = Date.now() + Math.min(Math.max(timeoutMs, 250), 15_000);
+    while (Date.now() < deadline) {
+      if (record.proc && record.proc !== proc && record._procReady && record.status === "ready") {
+        const snapshot = record.snapshot;
+        if (snapshot) {
+          return {
+            status: "restarted",
+            owner: {
+              hostInstanceId: snapshot.hostInstanceId,
+              sessionEpoch: snapshot.sessionEpoch,
+            },
+          };
+        }
+      }
+      if (!record.proc && (record.error !== undefined || record._dead))
+        return { status: "terminal" };
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    }
+    return { status: "timeout" };
+  }
+
+  /**
    * Execute one owner-bound read-only host query. Query responses are opaque:
    * registry only correlates transport ownership and never retries a callback.
    */
@@ -1515,59 +1738,68 @@ export class SessionRegistry {
     const sessionId = envelope.sessionId as SessionId;
     const expected = envelope.expectedOwner;
     const record = this.sessions.get(sessionId);
-    if (
-      !record?.proc ||
-      !record._procReady ||
-      record.status !== "ready" ||
-      record._closing ||
-      record._dead ||
-      record.availability !== "available" ||
-      record._hostTransition ||
-      !this.matchesExpectedRuntime(record, expected.hostInstanceId, expected.sessionEpoch)
-    ) {
-      throw new Error("Session changed before query dispatch");
-    }
+    if (!record) throw new Error(`Unknown session: ${sessionId}`);
 
-    const proc = record.proc;
-    const response = await proc.query(commandForSessionQuery(envelope.query));
-    const actualOwnerAfterQuery = {
-      hostInstanceId: record.proc?.hostInstanceId ?? "none",
-      sessionEpoch: record.proc?.sessionEpoch ?? -1,
-    };
-    if (
-      this.sessions.get(sessionId) !== record ||
-      !record._procReady ||
-      record.status !== "ready" ||
-      record._closing ||
-      record._dead ||
-      record.availability !== "available" ||
-      record._hostTransition ||
-      record.proc !== proc ||
-      !this.matchesExpectedRuntime(record, expected.hostInstanceId, expected.sessionEpoch)
-    ) {
-      const reasons = [
-        ...(this.sessions.get(sessionId) !== record ? ["record_replaced"] : []),
-        ...(!record._procReady ? ["not_ready"] : []),
-        ...(record.status !== "ready" ? [`status_${record.status}`] : []),
-        ...(record._closing ? ["closing"] : []),
-        ...(record._dead ? ["dead"] : []),
-        ...(record.availability !== "available" ? [`availability_${record.availability}`] : []),
-        ...(record._hostTransition ? ["transition"] : []),
-        ...(record.proc !== proc ? ["process_replaced"] : []),
-        ...(!this.matchesExpectedRuntime(record, expected.hostInstanceId, expected.sessionEpoch)
-          ? [
-              `owner_${actualOwnerAfterQuery.hostInstanceId}:${actualOwnerAfterQuery.sessionEpoch}_expected_${expected.hostInstanceId}:${expected.sessionEpoch}`,
-            ]
-          : []),
-      ];
-      throw new Error(`Session changed during query (${reasons.join(",") || "unknown"})`);
+    const stable = await this.awaitStableRuntime(record, expected, 2_000);
+    if (stable !== "ready") return { status: stable };
+    const proc = record.proc!;
+    try {
+      const response = await proc.query(commandForSessionQuery(envelope.query));
+      if (this.sessions.get(sessionId) !== record || record.proc !== proc) {
+        return { status: "superseded", reason: "process_replaced" };
+      }
+      const after = await this.awaitStableRuntime(record, expected, 0);
+      if (after !== "ready") return { status: after };
+      return {
+        status: "ok",
+        queryId: envelope.queryId,
+        owner: expected,
+        queryType: envelope.query.type,
+        response,
+      };
+    } catch (error) {
+      // A child disappearing during a read is an expected lifecycle boundary.
+      const after = await this.awaitStableRuntime(record, expected, 0);
+      if (after !== "ready") return { status: after };
+      throw error;
     }
-    return {
-      queryId: envelope.queryId,
-      owner: expected,
-      queryType: envelope.query.type,
-      response,
-    };
+  }
+
+  private async awaitStableRuntime(
+    record: SessionRecord,
+    expected: RuntimeIdentity,
+    timeoutMs: number,
+  ): Promise<"ready" | "superseded" | "transitioning" | "unavailable"> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (this.sessions.get(record.sessionId) !== record) return "superseded";
+      // An owner mismatch cannot be repaired by waiting; the caller's read is
+      // fenced to that exact runtime identity.
+      if (
+        record.proc &&
+        !this.matchesExpectedRuntime(record, expected.hostInstanceId, expected.sessionEpoch)
+      ) {
+        return "superseded";
+      }
+      if (record._closing || record._dead || record.status === "failed") return "unavailable";
+      if (
+        record.proc &&
+        record._procReady &&
+        record.status === "ready" &&
+        record.availability === "available" &&
+        !record._hostTransition
+      ) {
+        return "ready";
+      }
+      if (Date.now() >= deadline) {
+        // Cold/dead hosts are unavailable; a host merely settling a normal
+        // transition/readiness boundary is retryable.
+        return !record.proc || record._dead || record._closing ? "unavailable" : "transitioning";
+      }
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, Math.min(25, deadline - Date.now())),
+      );
+    }
   }
 
   async submit(
@@ -1676,16 +1908,17 @@ export class SessionRegistry {
           restorationId,
           ...reviewQueues(submission),
           originalAttachments: [{ intentId: submission.intentId, images: submission.images }],
-          requiresReview: true,
+          certainty: "unknown",
         };
         record._restorations.set(restorationId, structuredClone(restoration));
-        this.onQueueRestoration(sessionId, restoration);
+        this.queueRestoration(record, restoration);
       }
       if (publishDisposition) this.onSubmission(sessionId, result);
       return result;
     };
     const operation = (async (): Promise<SubmissionResult> => {
       try {
+        retained.sessionFileOffsetAtDispatch = this.sessionFileOffset(record);
         const result = await admittedProc.submit(submission);
         if (record._expiredUnifiedIntents.has(submission.intentId)) {
           return (
@@ -1758,12 +1991,15 @@ export class SessionRegistry {
       restorationId,
       ...reviewQueues(retained.payload),
       originalAttachments: [
-        { intentId: retained.payload.intentId, images: retained.payload.images },
+        {
+          intentId: retained.payload.intentId,
+          images: retained.payload.images,
+        },
       ],
-      requiresReview: true,
+      certainty: "unknown",
     };
     record._restorations.set(restorationId, structuredClone(restoration));
-    this.onQueueRestoration(record.sessionId, restoration);
+    this.queueRestoration(record, restoration);
   }
 
   private retainDisposition(record: SessionRecord, resultInput: SubmissionResult): void {
@@ -1854,7 +2090,10 @@ export class SessionRegistry {
         record.proc !== proc ||
         !record._procReady
       ) {
-        throw new Error("Session lifecycle changed before runtime resynchronization completed");
+        return this.publishUnavailable(
+          record,
+          "Session lifecycle changed before runtime resynchronization completed",
+        );
       }
       this.installSnapshot(record, snapshot);
       return this.publishRuntime(record, record.availability);
@@ -1865,7 +2104,10 @@ export class SessionRegistry {
         record._dead ||
         record.proc !== proc
       ) {
-        throw error;
+        return this.publishUnavailable(
+          record,
+          "Session lifecycle changed before runtime resynchronization completed",
+        );
       }
       return this.publishUnavailable(
         record,
@@ -1896,10 +2138,10 @@ export class SessionRegistry {
         followUp: [],
         originalAttachments: [],
         commandDescription: `${message}: ${pending.text}`,
-        requiresReview: true,
+        certainty: "unknown",
       };
       record._restorations.set(restorationId, structuredClone(restoration));
-      this.onQueueRestoration(record.sessionId, restoration);
+      this.queueRestoration(record, restoration);
     }
     record._unifiedRestorationIntents.set(restorationId, pending.submissionIntentId);
     record._expiredUnifiedIntents.add(pending.submissionIntentId);
@@ -2002,6 +2244,7 @@ export class SessionRegistry {
       for (const item of publication.payload.records) {
         if (item.type === "queue_restoration" && !record._restorations.has(item.restorationId)) {
           record._restorations.set(item.restorationId, structuredClone(item));
+          this.queueRestoration(record, item);
         }
       }
     }
@@ -2021,11 +2264,13 @@ export class SessionRegistry {
     if (!record) throw new Error(`Unknown session: ${sessionId}`);
     const proc = record.proc as
       | (SessionHost & {
-          requestAuthorityAttach?: (rendererGeneration: number) => Promise<AuthorityAttachBaseline>;
+          requestAuthorityAttach?: (
+            rendererGeneration: number,
+          ) => Promise<AuthorityAttachBaselineResponse>;
         })
       | undefined;
     if (!proc?.hostInstanceId || !proc.requestAuthorityAttach) {
-      throw new AuthorityAttachError("Authority-frame baseline is not available from this host");
+      return { status: "unavailable", reason: "host_cold" };
     }
     const router = this.authorityRouter(record);
     router.setExpectedOwner({
@@ -2039,8 +2284,15 @@ export class SessionRegistry {
     // main acknowledgement mirror from the child-serialized baseline. This is
     // not a delivery acknowledgement; the child retains every item until the
     // renderer later calls acknowledgeRestoration.
-    for (const restoration of response.baseline.restorations) {
-      record._restorations.set(restoration.restorationId, structuredClone(restoration));
+    if (response.status === "ready") {
+      for (const restoration of response.baseline.restorations) {
+        if (!record._restorations.has(restoration.restorationId)) {
+          record._restorations.set(restoration.restorationId, structuredClone(restoration));
+          this.queueRestoration(record, restoration);
+        } else {
+          this.emitResolvedRestoration(record, restoration.restorationId);
+        }
+      }
     }
     return response;
   }
@@ -2049,7 +2301,9 @@ export class SessionRegistry {
     const options =
       this.options.authorityPublicationBufferLimit === undefined
         ? {}
-        : { maxBufferedPublications: this.options.authorityPublicationBufferLimit };
+        : {
+            maxBufferedPublications: this.options.authorityPublicationBufferLimit,
+          };
     record._authorityPublications ??= new RendererPublicationRouter(
       record.sessionId,
       this.onAuthorityPublication,
@@ -2138,7 +2392,7 @@ export class SessionRegistry {
       });
     }
     for (const restoration of record._restorations.values()) {
-      this.onQueueRestoration(sessionId, structuredClone(restoration));
+      this.queueRestoration(record, structuredClone(restoration));
     }
     return this.resyncSession(sessionId);
   }
@@ -2149,6 +2403,7 @@ export class SessionRegistry {
     this.markActivationVisitInteracted(record);
     const acknowledged = record._restorations.delete(restorationId);
     if (acknowledged) {
+      record._resolvedRestorationInstructions.delete(restorationId);
       // Main mirrors child-owned restoration custody for legacy delivery, but
       // only an explicit renderer acknowledgement may retire the child copy.
       record.proc?.acknowledgeRestoration(restorationId);
@@ -2277,7 +2532,11 @@ export class SessionRegistry {
       resolvePromise(false);
     }, 2_000);
     timer.unref?.();
-    record._pendingUiAcks.set(operationId, { promise, resolve: resolvePromise, timer });
+    record._pendingUiAcks.set(operationId, {
+      promise,
+      resolve: resolvePromise,
+      timer,
+    });
     sendOperation();
     return promise;
   }
@@ -2374,7 +2633,12 @@ export class SessionRegistry {
     sessionId: SessionId,
     expectedHostInstanceId: string,
     expectedSessionEpoch: number,
-    patch: { baseRevision: number; revision: number; text: string; attachments: unknown[] },
+    patch: {
+      baseRevision: number;
+      revision: number;
+      text: string;
+      attachments: unknown[];
+    },
   ): Promise<{
     accepted: boolean;
     revision: number;
@@ -2382,17 +2646,32 @@ export class SessionRegistry {
     attachments: unknown[];
     conflictText?: string;
     conflictAttachments?: unknown[];
+    rejection?: "runtime_unavailable" | "runtime_replaced";
   }> {
+    const rejected = (rejection: "runtime_unavailable" | "runtime_replaced") => {
+      const editor = this.sessions.get(sessionId)?.snapshot?.editor;
+      return {
+        accepted: false,
+        revision: editor?.revision ?? patch.baseRevision,
+        text: editor?.text ?? "",
+        attachments: editor?.attachments ?? [],
+        rejection,
+      };
+    };
     const record = this.sessions.get(sessionId);
-    if (record?._closing) throw new Error("Session close preparation is in progress");
+    // Editor synchronization is deliberately optimistic and can overlap /new,
+    // reload, or a respawn. Those owner transitions are an expected rejection,
+    // never an Electron handler exception.
+    if (record?._closing) return rejected("runtime_unavailable");
     this.markActivationVisitInteracted(record);
+    if (!this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch))
+      return rejected("runtime_replaced");
     if (
-      !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
       !record._procReady ||
       record.availability !== "available" ||
       record._hostTransition !== undefined
     )
-      throw new Error("Runtime unavailable or replaced");
+      return rejected("runtime_unavailable");
     const admittedProc = record.proc;
     record._mutationSequence++;
     const response = await admittedProc.sendEditorPatch(patch);
@@ -2405,7 +2684,7 @@ export class SessionRegistry {
       record.availability !== "available" ||
       record._hostTransition !== undefined
     )
-      throw new Error("Runtime replaced before editor patch acknowledgement");
+      return rejected("runtime_replaced");
     if (!response.success || !response.data)
       throw new Error(response.error ?? "Editor patch failed");
     if ((response.data as { accepted?: boolean }).accepted) record._mutationSequence++;
@@ -2440,7 +2719,9 @@ export class SessionRegistry {
     const prior =
       record._panelInputChains.get(panelId) ?? Promise.resolve({ acknowledgedThrough: 0 });
     const current = prior
-      .catch(() => ({ acknowledgedThrough: record._panelInputSequence.get(panelId) ?? 0 }))
+      .catch(() => ({
+        acknowledgedThrough: record._panelInputSequence.get(panelId) ?? 0,
+      }))
       .then(() =>
         this.forwardPanelInput(
           record,
@@ -2478,7 +2759,10 @@ export class SessionRegistry {
     const acknowledged = record._panelInputSequence.get(panelId) ?? 0;
     const expected = acknowledged + 1;
     if (sequence > acknowledged && sequence !== expected) {
-      return { acknowledgedThrough: acknowledged, gap: { expected, received: sequence } };
+      return {
+        acknowledgedThrough: acknowledged,
+        gap: { expected, received: sequence },
+      };
     }
     if (
       !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
@@ -2600,10 +2884,10 @@ export class SessionRegistry {
           originalAttachments: [],
           commandDescription:
             "reload may have completed before its acknowledgement was lost. Review before retrying.",
-          requiresReview: true,
+          certainty: "unknown",
         };
         record._restorations.set(restorationId, structuredClone(restoration));
-        this.onQueueRestoration(sessionId, restoration);
+        this.queueRestoration(record, restoration);
       }
       return {
         ...base,
@@ -2850,8 +3134,7 @@ export class SessionRegistry {
           record.proc === proc &&
           !record._dead
         ) {
-          // Clear this fence even while close review owns `_closing`.
-          // `cancelClose` restores availability after its own fence clears.
+          // Clear this fence unless a silent tab close already owns `_closing`.
           record._worktreeTransition = undefined;
           this.restoreAvailableRuntime(record);
         }
@@ -2914,150 +3197,64 @@ export class SessionRegistry {
     return Promise.resolve();
   }
 
-  async prepareClose(
-    sessionId: SessionId,
-    force = false,
-  ): Promise<{ reviewToken: string; checkpoint: unknown }> {
-    const record = this.sessions.get(sessionId);
-    if (!record) throw new Error(`Unknown session: ${sessionId}`);
-    record._closing = true;
-    if (!record.proc || !record._procReady) {
-      // Failed/cold sessions have no live authority to freeze. A local token is
-      // sufficient because every renderer ingress path is already fenced by
-      // `_closing`; this keeps failed tabs explicitly closeable.
-      const reviewToken = crypto.randomUUID();
-      record._closeToken = {
-        value: reviewToken,
-        mutationSequence: record._mutationSequence,
-        force,
-      };
-      return {
-        reviewToken,
-        checkpoint: {
-          force,
-          snapshot: record.snapshot,
-          editor: record.snapshot?.editor,
-          catalog: record.snapshot?.catalog,
-          intents: [...record._retainedIntents.values()].map((item) => structuredClone(item)),
-          restorations: [...record._restorations.values()].map((item) => structuredClone(item)),
-          dialogs: [...record._pendingUiRequests.values()].map((item) => structuredClone(item)),
-          unifiedSubmissions: [...record._pendingUnifiedSubmits.values()].map((item) =>
-            structuredClone(item),
-          ),
-          panels: [...record._openPanels.values()].map((item) => structuredClone(item)),
-          rendererGeneration: record._rendererGeneration,
-        },
-      };
-    }
-    const closeProc = record.proc;
-    let hostReviewToken: string | undefined;
+  private async withCloseDeadline<T>(operation: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Freeze ingress in both main and the authoritative host before exposing
-      // review state. The host checkpoint is therefore the causal boundary.
-      const hostCheckpoint = await closeProc.prepareClose(force);
-      const reviewToken = hostCheckpoint["token"];
-      if (typeof reviewToken !== "string") throw new Error("Invalid host close checkpoint");
-      hostReviewToken = reviewToken;
-      if (force) {
-        for (const retained of record._retainedIntents.values()) {
-          if (["in_custody", "consumed"].includes(retained.disposition)) {
-            retained.disposition = "outcome_unknown";
-            retained.updatedAt = Date.now();
+      return await Promise.race([
+        operation,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Close escape deadline exceeded")),
+            CLOSE_ESCAPE_DEADLINE_MS,
+          );
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Dispose a tab without asking the renderer to arbitrate host state. The
+   * main-process fence is installed first, so every normal ingress path loses
+   * custody while the best-effort child shutdown is in flight.
+   */
+  async closeSessionGracefully(sessionId: SessionId): Promise<void> {
+    const record = this.sessions.get(sessionId);
+    if (!record) return;
+    record._closing = true;
+    const proc = record.proc;
+    try {
+      if (proc && record._procReady && record.proc === proc) {
+        try {
+          const snapshot = await this.withCloseDeadline(proc.requestSnapshot());
+          if (
+            this.sessions.get(sessionId) === record &&
+            record.proc === proc &&
+            snapshot.hostInstanceId === proc.hostInstanceId &&
+            snapshot.sessionEpoch === proc.sessionEpoch &&
+            snapshot.isStreaming
+          ) {
+            await this.withCloseDeadline(proc.escape(crypto.randomUUID()));
           }
+        } catch {
+          // Snapshot and escape are best-effort. A failed or timed-out abort
+          // must not delay the force-close protocol or local cleanup.
         }
+        // This is a private child protocol: force preparation records the
+        // shutdown token and confirmation fences its final outbound traffic.
+        await proc.forceClose();
       }
-      record._closeToken = {
-        value: reviewToken,
-        mutationSequence: record._mutationSequence,
-        force,
-      };
-      const panels = [...record._openPanels.values()].map((open) => {
-        if (open.type !== "panel_open") return structuredClone(open);
-        const panel = record._panelCheckpoints.get(open.panelId);
-        return {
-          ...structuredClone(open),
-          ...(panel?.mode ? { mode: panel.mode } : {}),
-          ...(panel?.lastData ? { lastData: panel.lastData } : {}),
-        };
-      });
-      return {
-        reviewToken,
-        checkpoint: {
-          force,
-          host: structuredClone(hostCheckpoint),
-          snapshot: record.snapshot,
-          editor: record.snapshot?.editor,
-          catalog: record.snapshot?.catalog,
-          intents: [...record._retainedIntents.values()].map((item) => structuredClone(item)),
-          restorations: [...record._restorations.values()].map((item) => structuredClone(item)),
-          dialogs: [...record._pendingUiRequests.values()].map((item) => structuredClone(item)),
-          unifiedSubmissions: [...record._pendingUnifiedSubmits.values()].map((item) =>
-            structuredClone(item),
-          ),
-          panels,
-          rendererGeneration: record._rendererGeneration,
-        },
-      };
-    } catch (error) {
-      if (hostReviewToken) await closeProc.cancelClose(hostReviewToken).catch(() => false);
-      record._closing = false;
-      record._closeToken = undefined;
-      this.restoreAvailableRuntime(record);
-      throw error;
+    } catch {
+      // The child may already be cold, failed, or unresponsive. In all cases
+      // disposal below is still required and session files remain untouched.
+    } finally {
+      this.closeSession(sessionId);
     }
   }
 
-  async cancelClose(sessionId: SessionId, token: string): Promise<{ cancelled: boolean }> {
-    const record = this.sessions.get(sessionId);
-    if (!record?._closeToken || record._closeToken.value !== token) return { cancelled: false };
-    const cancelled = record.proc ? await record.proc.cancelClose(token) : true;
-    if (!cancelled) return { cancelled: false };
-    record._closeToken = undefined;
-    record._closing = false;
-    this.restoreAvailableRuntime(record);
-    return { cancelled: true };
-  }
-
-  async confirmClose(
-    sessionId: SessionId,
-    token: string,
-  ): Promise<{ closed: boolean; reason?: string }> {
-    const record = this.sessions.get(sessionId);
-    if (!record) return { closed: true };
-    if (!record._closeToken || record._closeToken.value !== token) {
-      return { closed: false, reason: "Close checkpoint token is no longer current" };
-    }
-    if (record._closeToken.mutationSequence !== record._mutationSequence) {
-      if (record.proc) await record.proc.cancelClose(token).catch(() => false);
-      record._closeToken = undefined;
-      record._closing = false;
-      this.restoreAvailableRuntime(record);
-      return { closed: false, reason: "Session changed after the close checkpoint" };
-    }
-    if (record.proc) {
-      let confirmed: { valid: boolean };
-      try {
-        confirmed = await record.proc.confirmClose(token);
-      } catch (error) {
-        await record.proc.cancelClose(token).catch(() => false);
-        record._closeToken = undefined;
-        record._closing = false;
-        this.restoreAvailableRuntime(record);
-        return { closed: false, reason: error instanceof Error ? error.message : String(error) };
-      }
-      if (!confirmed.valid) {
-        await record.proc.cancelClose(token).catch(() => false);
-        record._closeToken = undefined;
-        record._closing = false;
-        this.restoreAvailableRuntime(record);
-        return { closed: false, reason: "Host state changed after the close checkpoint" };
-      }
-    }
-    this.closeSession(sessionId);
-    return { closed: true };
-  }
-
-  closeSession(sessionId: SessionId): void {
+  private closeSession(sessionId: SessionId): void {
     const record = this.sessions.get(sessionId);
     if (!record) return;
     record._dead = true;
@@ -3247,10 +3444,10 @@ export class SessionRegistry {
           steering: [],
           followUp: [pending.text],
           originalAttachments: [],
-          requiresReview: true,
+          certainty: "not_processed",
         };
         record._restorations.set(restoration.restorationId, structuredClone(restoration));
-        this.onQueueRestoration(sessionId, restoration);
+        this.queueRestoration(record, restoration);
         record.proc?.sendUnifiedSubmitResponse(
           pending.id,
           false,

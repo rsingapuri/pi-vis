@@ -19,8 +19,12 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import { join, resolve } from "node:path";
-import { type Page, expect, test } from "@playwright/test";
-import { type LaunchedElectronApplication, launchElectron } from "./electron-launch.mjs";
+import type { Page } from "@playwright/test";
+import {
+  type LaunchedElectronApplication,
+  launchElectron,
+} from "./support/instrumented-launch.mjs";
+import { expect, test } from "./support/invariants.mjs";
 
 const APP_ENTRY = join(import.meta.dirname, "../../out/main/index.js");
 const SETTINGS_DIR = join(os.homedir(), "Library/Application Support/Pi-Vis");

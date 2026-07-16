@@ -25,7 +25,6 @@ export function createStateAuthority({
   getCatalog = () => ({}),
   getEditor = () => ({ revision: 0, text: "", attachments: [] }),
   acceptEditorSubmission = () => false,
-  getCheckpoint = () => ({}),
   onSubmissionResult = () => {},
   onAdmissionStuck = () => {},
   admissionStuckMs = 60_000,
@@ -915,7 +914,7 @@ export function createStateAuthority({
               ? "navigation"
               : "admission_fence",
         enteredAt: item.ingressSequence,
-        requiresReview: false,
+        certainty: "not_processed",
       })),
       editor: value.editor,
       activeIntents: active,
@@ -1264,7 +1263,7 @@ export function createStateAuthority({
           ? message.originalAttachments
           : [],
         clearedIntentIds: Array.isArray(message.clearedIntentIds) ? message.clearedIntentIds : [],
-        requiresReview: true,
+        certainty: "unknown",
       };
     }
     if (!value) return false;
@@ -2020,7 +2019,7 @@ export function createStateAuthority({
         intentId: item.request.intentId,
         images: structuredClone(item.request.images ?? []),
       })),
-      requiresReview: true,
+      certainty: "not_processed",
     };
     restorations.set(restorationId, restoration);
     record(restoration);
@@ -2143,7 +2142,7 @@ export function createStateAuthority({
             followUp,
             originalAttachments,
             clearedIntentIds,
-            requiresReview: true,
+            certainty: "not_processed",
           };
           restorations.set(restorationId, restoration);
           record(restoration);
@@ -2495,8 +2494,12 @@ export function createStateAuthority({
   // an arbitrary interleaving. Presentation planes deliberately use independent
   // cursors; panels are synchronizing until a forced repaint is acknowledged.
   function requestAuthorityAttach(rendererGeneration, presentation = {}) {
+    // Attach must never sit behind a lifecycle transition: main/renderer can
+    // retry from the successor publication once it commits.
+    if (transition)
+      return Promise.resolve({ status: "transitioning", transitionId: transition.transitionId });
     return schedule("ingress", async () => {
-      while (transition) await transition.settled;
+      if (transition) return { status: "transitioning", transitionId: transition.transitionId };
       const semantic = semanticSnapshot();
       const owner = semantic.owner;
       // Cursor zero is not wire-valid. Reserve the initial semantic source
@@ -2552,41 +2555,44 @@ export function createStateAuthority({
         };
       });
       return {
-        // Main replaces this local identity with its SessionId while installing
-        // the baseline. It is still a non-empty child correlation value.
-        sessionId: String(session.sessionId ?? "session"),
-        rendererGeneration,
-        owner,
-        semantic: { sync: { state: "following", cursor }, snapshot: semantic },
-        operationJournal: journal,
-        // A restoration is retained until the renderer explicitly acknowledges
-        // it. Attach therefore carries the durable child-owned custody, even
-        // when its original frame was emitted while no renderer was attached.
-        restorations: [...restorations.values()].map((item) => structuredClone(item)),
-        transcript: {
-          sync: { state: "following", cursor: transcriptCursor },
-          persistedHistoryCursor: transcriptPresentation.persistedHistoryCursor,
-          liveTailCursor: transcriptPresentation.liveTailCursor,
-          overlapBoundary: transcriptPresentation.overlapBoundary,
-          ...(transcriptPresentation.currentStreamingMessage !== undefined
-            ? {
-                currentStreamingMessage: structuredClone(
-                  transcriptPresentation.currentStreamingMessage,
-                ),
-              }
-            : {}),
+        status: "ready",
+        baseline: {
+          // Main replaces this local identity with its SessionId while installing
+          // the baseline. It is still a non-empty child correlation value.
+          sessionId: String(session.sessionId ?? "session"),
+          rendererGeneration,
+          owner,
+          semantic: { sync: { state: "following", cursor }, snapshot: semantic },
+          operationJournal: journal,
+          // A restoration is retained until the renderer explicitly acknowledges
+          // it. Attach therefore carries the durable child-owned custody, even
+          // when its original frame was emitted while no renderer was attached.
+          restorations: [...restorations.values()].map((item) => structuredClone(item)),
+          transcript: {
+            sync: { state: "following", cursor: transcriptCursor },
+            persistedHistoryCursor: transcriptPresentation.persistedHistoryCursor,
+            liveTailCursor: transcriptPresentation.liveTailCursor,
+            overlapBoundary: transcriptPresentation.overlapBoundary,
+            ...(transcriptPresentation.currentStreamingMessage !== undefined
+              ? {
+                  currentStreamingMessage: structuredClone(
+                    transcriptPresentation.currentStreamingMessage,
+                  ),
+                }
+              : {}),
+          },
+          extensionUi: {
+            sync: { state: "following", cursor: extensionUiCursor },
+            notifications: catalog.notifications ?? [],
+            statuses: catalog.statuses ?? {},
+            widgets: catalog.widgets ?? {},
+            dialogs: presentation.dialogs?.(rendererGeneration) ?? [],
+          },
+          panels,
+          // The main router owns renderer-publication numbering. Zero means no
+          // main publication is claimed by the child baseline itself.
+          publicationHighWatermark: 0,
         },
-        extensionUi: {
-          sync: { state: "following", cursor: extensionUiCursor },
-          notifications: catalog.notifications ?? [],
-          statuses: catalog.statuses ?? {},
-          widgets: catalog.widgets ?? {},
-          dialogs: presentation.dialogs?.(rendererGeneration) ?? [],
-        },
-        panels,
-        // The main router owns renderer-publication numbering. Zero means no
-        // main publication is claimed by the child baseline itself.
-        publicationHighWatermark: 0,
       };
     });
   }
@@ -2606,9 +2612,10 @@ export function createStateAuthority({
     return value;
   }
 
+  // This is a private forced-shutdown handshake, not a review checkpoint.
+  // Its opaque token only fences the child between main's forced prepare and
+  // confirmation; no renderer-visible state is captured or dumped.
   function prepareClose(force = false) {
-    const currentSnapshot = snapshot();
-    observeSnapshotMutation(currentSnapshot);
     if (force) {
       for (const [intentId, disposition] of activeIntents) {
         if (["custody", "admitting", "consumed"].includes(disposition)) {
@@ -2617,39 +2624,19 @@ export function createStateAuthority({
       }
     }
     const token = crypto.randomUUID();
-    closePreparation = { token, mutationSequence };
-    return {
-      token,
-      mutationSequence,
-      snapshot: currentSnapshot,
-      custody: custody.map((item) => structuredClone(item)),
-      activeIntents: [...activeIntents].map(([intentId, disposition]) => ({
-        intentId,
-        disposition,
-      })),
-      restorations: [...restorations.values()].map((item) => structuredClone(item)),
-      ui: structuredClone(getCheckpoint()),
-    };
+    closePreparation = { token };
+    return { token };
   }
 
   function confirmClose(token) {
-    const currentSnapshot = snapshot();
-    observeSnapshotMutation(currentSnapshot);
-    const valid =
-      closePreparation?.token === token && closePreparation.mutationSequence === mutationSequence;
+    // Main has already installed its ingress fence. A forced close must not
+    // be invalidated by a late child mutation while it is being torn down.
+    const valid = closePreparation?.token === token;
     if (valid) {
       closePreparation.confirmed = true;
-      // The caller is now entitled to dispose the process. Stop accepting any
-      // further authoritative work in the gap before the parent terminates us.
       stopped = true;
     }
-    return { valid, mutationSequence, snapshot: currentSnapshot };
-  }
-
-  function cancelClose(token) {
-    if (closePreparation?.token !== token || closePreparation.confirmed) return false;
-    closePreparation = null;
-    return true;
+    return { valid };
   }
 
   const poll = () => {
@@ -2665,6 +2652,13 @@ export function createStateAuthority({
     },
     get sessionEpoch() {
       return sessionEpoch;
+    },
+    // Main follows the predecessor until the terminal transition batch is
+    // published. SDK replacement may already have adopted the provisional
+    // epoch, but live race responses (notably authorityAttach=transitioning)
+    // must retain the currently published transport owner until that commit.
+    get transportSessionEpoch() {
+      return transition?.priorEpoch ?? sessionEpoch;
     },
     get currentSession() {
       return session;
@@ -2737,7 +2731,6 @@ export function createStateAuthority({
     noteMutation,
     prepareClose,
     confirmClose,
-    cancelClose,
     get isClosing() {
       return closePreparation !== null;
     },

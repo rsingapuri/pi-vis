@@ -157,7 +157,10 @@ describe("fake session host ESC process semantics", () => {
   it("publishes schema-valid authority baselines, frames, and independent presentation cursors", async () => {
     send({ type: "authority_attach", id: "authority-attach", rendererGeneration: 7 });
     const attached = await response("authority-attach");
-    const baseline = AuthorityAttachBaselineSchema.parse(attached.data);
+    expect(attached.data).toMatchObject({ status: "ready" });
+    const baseline = AuthorityAttachBaselineSchema.parse(
+      (attached.data as { baseline: unknown }).baseline,
+    );
     expect(baseline.rendererGeneration).toBe(7);
 
     send({
@@ -288,7 +291,9 @@ describe("fake session host ESC process semantics", () => {
     expect(restoration).toMatchObject({
       steering: [],
       followUp: ["queued for review"],
-      requiresReview: true,
+      // ESC clears the queue before consumption; like real Pi's requestEscape
+      // this is not_processed custody that main always restores to the draft.
+      certainty: "not_processed",
       originalAttachments: [
         {
           images: [{ type: "image", data: "queued-image", mimeType: "image/png" }],

@@ -23,8 +23,12 @@ import fs from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Page, expect, test } from "@playwright/test";
-import { type LaunchedElectronApplication, launchElectron } from "./electron-launch.mjs";
+import type { Page } from "@playwright/test";
+import {
+  type LaunchedElectronApplication,
+  launchElectron,
+} from "./support/instrumented-launch.mjs";
+import { expect, test } from "./support/invariants.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

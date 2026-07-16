@@ -131,6 +131,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
     void querySession(sessionId, { type: "get_available_models" }, readObservation)
       .then((result) => {
         if (
+          result.status !== "ok" ||
           !result.response.success ||
           !sameOwner(result.owner, readObservation.owner) ||
           !observationOwnerIsCurrent(sessionId, readObservation)
@@ -156,6 +157,7 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
       void querySession(sessionId, { type: "get_session_stats" }, capturedObservation)
         .then((result) => {
           if (
+            result.status !== "ok" ||
             !result.response.success ||
             !sameOwner(result.owner, capturedObservation.owner) ||
             !observationOwnerIsCurrent(sessionId, capturedObservation)

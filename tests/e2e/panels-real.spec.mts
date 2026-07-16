@@ -9,8 +9,8 @@ import fs from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
-import { launchElectron } from "./electron-launch.mjs";
+import { launchElectron } from "./support/instrumented-launch.mjs";
+import { expect, test } from "./support/invariants.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

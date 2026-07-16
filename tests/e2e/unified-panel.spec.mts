@@ -18,8 +18,12 @@ import fs from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Page, expect, test } from "@playwright/test";
-import { type LaunchedElectronApplication, launchElectron } from "./electron-launch.mjs";
+import type { Page } from "@playwright/test";
+import {
+  type LaunchedElectronApplication,
+  launchElectron,
+} from "./support/instrumented-launch.mjs";
+import { expect, test } from "./support/invariants.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -134,6 +138,10 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
       //    file proves the wire round-trip, not just a visible cursor). xterm 6.1
       //    emits a release CSI-u after each press (kitty flag 2); strip them so
       //    the assertion targets the press bytes the user intended.
+      // Strict authority mode fences input until the post-mount keyframe has
+      // been acknowledged. Waiting for that boundary tests real key routing,
+      // rather than racing intentionally buffered startup protocol replies.
+      await expect(panel).toHaveAttribute("data-input-enabled", "true", { timeout: 15_000 });
       await panel.locator(".xterm").click();
       await window.keyboard.insertText("xyz");
       await expect
@@ -155,7 +163,7 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
     }
   });
 
-  test("a hanging claimed unified action expires to review and is never dispatched twice", async () => {
+  test("a hanging claimed unified action is silently dropped and never dispatched twice", async () => {
     test.setTimeout(90_000);
     const folders = await makeFolders();
     const { app, window } = await launchApp(folders, {
@@ -171,10 +179,12 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
       await window.keyboard.type("hang exactly once");
       await window.keyboard.press("Enter");
 
-      const review = window.getByText("Review interrupted command", { exact: true });
-      await expect(review).toBeVisible({ timeout: 10_000 });
-      await expect(window.getByText(/hang exactly once/)).toBeVisible();
-      await expect(window.getByRole("button", { name: "Restore to Composer" })).toHaveCount(0);
+      await expect(
+        window.getByText("Interrupted command was not restored.", { exact: true }),
+      ).toBeVisible({
+        timeout: 10_000,
+      });
+      await expect(window.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
 
       await expect
         .poll(() => {
@@ -200,8 +210,6 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
           (entry) => entry.type === "dispatch_intent" && entry.intent?.kind === "submit",
         ).length;
       expect(submitCount).toBe(1);
-      await window.getByRole("button", { name: "Dismiss", exact: true }).click();
-      await expect(review).toHaveCount(0);
     } finally {
       await app.close();
       rmrf(folders.settingsDir);

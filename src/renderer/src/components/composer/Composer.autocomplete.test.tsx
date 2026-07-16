@@ -247,6 +247,7 @@ function authorityAttachResponse() {
   const snapshot = projection.authoritativeSnapshot;
   const cursor = projection.semantic.cursor;
   return {
+    status: "ready" as const,
     baseline: {
       sessionId: SID,
       rendererGeneration: projection.rendererGeneration,
@@ -387,7 +388,7 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
-  it("keeps command custody after an admitted receipt until its authority frame arrives", async () => {
+  it("clears an intent-shaped command once its receipt is admitted", async () => {
     installInvoke(invoke, false);
     const composer = mount();
     type(composer.textarea(), "/compact");
@@ -395,7 +396,7 @@ describe("Composer autocomplete and authority intents", () => {
     await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
     const envelope = intentCalls(invoke)[0]!;
     expect(envelope.intent).toEqual({ kind: "compact" });
-    expect(composer.textarea().value).toBe("/compact ");
+    expect(composer.textarea().value).toBe("");
     publishOutcome(envelope);
     await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
     expect(invoke.mock.calls.some(([channel]) => channel === "session.legacyCommand")).toBe(false);
@@ -427,7 +428,7 @@ describe("Composer autocomplete and authority intents", () => {
     key(composer.textarea(), "Enter");
     await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
     expect(intentCalls(invoke)[0]!.intent).toEqual({ kind: "reload" });
-    expect(composer.textarea().value).toBe("/reload ");
+    expect(composer.textarea().value).toBe("");
     publishOutcome(intentCalls(invoke)[0]!);
     await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
     composer.unmount();
@@ -472,6 +473,41 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
+  it("silently fences queued patches when /new replaces their runtime owner", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    const first = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    invoke.mockImplementation((channel: string) => {
+      if (channel === "session.editorPatch") return first;
+      return Promise.resolve({ success: true });
+    });
+    const composer = mount();
+    type(composer.textarea(), "draft before new");
+    type(composer.textarea(), "draft before new, still local");
+    await vi.waitFor(() =>
+      expect(
+        invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch"),
+      ).toHaveLength(1),
+    );
+    await act(async () =>
+      resolveFirst({
+        accepted: false,
+        revision: 0,
+        text: "",
+        attachments: [],
+        rejection: "runtime_replaced",
+      }),
+    );
+    await Promise.resolve();
+    expect(composer.textarea().value).toBe("draft before new, still local");
+    expect(useSessionsStore.getState().sessions.get(SID)?.toasts).toEqual([]);
+    expect(invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch")).toHaveLength(
+      1,
+    );
+    composer.unmount();
+  });
+
   it("retries a failed editor transport only after a fresh runtime resync", async () => {
     let attempts = 0;
     invoke.mockImplementation((channel: string, payload: unknown) => {
@@ -507,22 +543,35 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
-  it("clears completed and failed command outcomes, but not unknown outcomes", async () => {
+  it("keeps an admission-cleared command cleared when its terminal outcome fails", async () => {
+    // A post-admission failure is a domain error (e.g. real Pi's "Nothing to
+    // compact") that the user already sees in the transcript and toasts.
+    // Re-injecting the command text would be noise, so the clear is final.
     installInvoke(invoke, false);
     const composer = mount();
     type(composer.textarea(), "/compact");
     key(composer.textarea(), "Enter");
     await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
+    expect(composer.textarea().value).toBe("");
     publishOutcome(intentCalls(invoke)[0]!, { state: "failed", error: "Compaction failed" });
-    await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
-    type(composer.textarea(), "/compact again");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(composer.textarea().value).toBe("");
+    expect(useSessionsStore.getState().sessionDrafts.get(SID) ?? "").toBe("");
+    composer.unmount();
+  });
+
+  it("does not restore a failed admission-cleared command over intervening typing", async () => {
+    installInvoke(invoke, false);
+    const composer = mount();
+    type(composer.textarea(), "/compact");
     key(composer.textarea(), "Enter");
-    await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(2));
-    publishOutcome(intentCalls(invoke)[1]!, { state: "outcome_unknown", error: "lost" });
-    await vi.waitFor(() =>
-      expect(useSessionsStore.getState().sessions.get(SID)?.toasts.at(-1)?.message).toBe("lost"),
-    );
-    expect(composer.textarea().value).toBe("/compact again");
+    await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
+    expect(composer.textarea().value).toBe("");
+    type(composer.textarea(), "newer typing");
+    publishOutcome(intentCalls(invoke)[0]!, { state: "failed", error: "Compaction failed" });
+    await Promise.resolve();
+    expect(composer.textarea().value).toBe("newer typing");
     composer.unmount();
   });
 
@@ -545,7 +594,7 @@ describe("Composer autocomplete and authority intents", () => {
     act(() => setSessionField({ sessionEpoch: 1 }));
     publishOutcome(intentCalls(invoke)[1]!);
     await Promise.resolve();
-    expect(second.textarea().value).toBe("/compact stale");
+    expect(second.textarea().value).toBe("");
     second.unmount();
   });
 
@@ -633,7 +682,11 @@ describe("Composer autocomplete and authority intents", () => {
     patchSession({ status: "ready" });
     await vi.waitFor(() =>
       expect(
-        invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch"),
+        invoke.mock.calls.filter(
+          ([channel, payload]) =>
+            channel === "session.editorPatch" &&
+            (payload as { text?: string }).text === "exact restored draft",
+        ),
       ).toHaveLength(1),
     );
     expect(composer.textarea().value).toBe("exact restored draft");
@@ -646,7 +699,11 @@ describe("Composer autocomplete and authority intents", () => {
       invoke.mock.calls.filter(([channel]) => channel === "session.unifiedSubmit"),
     ).toHaveLength(0);
     expect(
-      invoke.mock.calls.find(([channel]) => channel === "session.editorPatch")?.[1],
+      invoke.mock.calls.find(
+        ([channel, payload]) =>
+          channel === "session.editorPatch" &&
+          (payload as { text?: string }).text === "exact restored draft",
+      )?.[1],
     ).toMatchObject({ text: "exact restored draft", attachments: [] });
 
     search.remove();
@@ -663,9 +720,13 @@ describe("Composer autocomplete and authority intents", () => {
     act(() => useSessionsStore.getState().injectEditorText(SID, "host edit wins"));
     await vi.waitFor(() => expect(composer.textarea().value).toBe("host edit wins"));
     expect(document.activeElement).toBe(externalRename);
-    expect(invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch")).toHaveLength(
-      1,
-    );
+    expect(
+      invoke.mock.calls.filter(
+        ([channel, payload]) =>
+          channel === "session.editorPatch" &&
+          (payload as { text?: string }).text === "exact restored draft",
+      ),
+    ).toHaveLength(1);
     externalRename.remove();
     composer.unmount();
   });

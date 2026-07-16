@@ -35,6 +35,7 @@ async function mockInvoke(channel: string, payload: unknown): Promise<unknown> {
       command: envelope.query,
     });
     return {
+      status: "ok",
       queryId: envelope.queryId,
       owner: envelope.expectedOwner,
       queryType: envelope.query.type,
@@ -132,6 +133,7 @@ beforeEach(() => {
   const owner = { hostInstanceId: "tree-host", sessionEpoch: 1 };
   const cursor = { ...owner, transportSequence: 1, snapshotSequence: 1 };
   const authority = {
+    status: "ready" as const,
     baseline: {
       sessionId: SESSION_A,
       rendererGeneration: 0,
@@ -299,6 +301,7 @@ describe("tree-store — open / refresh", () => {
     const owner = { hostInstanceId: "tree-host-successor", sessionEpoch: 2 };
     const cursor = { ...owner, transportSequence: 1, snapshotSequence: 1 };
     useSessionsStore.getState().applyAuthorityAttach(SESSION_A, {
+      status: "ready",
       baseline: {
         sessionId: SESSION_A,
         rendererGeneration: 0,
@@ -404,7 +407,26 @@ describe("tree-store — open / refresh", () => {
     await useTreeStore.getState().openTreeForSession(SESSION_A);
 
     expect(useTreeStore.getState().phase).toBe("error");
-    expect(useTreeStore.getState().errorMessage).toBe("network blip");
+    expect(useTreeStore.getState().errorMessage).toBe(
+      "The operation could not be completed. Please try again.",
+    );
+  });
+
+  it("a typed non-ok query result → retryable 'error' phase, never stuck 'loading'", async () => {
+    // session.query returns { status: "transitioning" } while a /reload or
+    // /new settles. openTreeForSession seeds phase "loading", and nothing
+    // re-runs refresh while the phase stays "loading" — so a silent return
+    // here would strand the overlay on a permanent spinner.
+    (
+      globalThis as unknown as {
+        window: { pivis: { invoke: (channel: string, payload: unknown) => Promise<unknown> } };
+      }
+    ).window.pivis.invoke = async () => ({ status: "transitioning", reason: "host_transition" });
+
+    await useTreeStore.getState().openTreeForSession(SESSION_A);
+
+    expect(useTreeStore.getState().phase).toBe("error");
+    expect(useTreeStore.getState().errorMessage).toBe("Session is busy; retry in a moment.");
   });
 
   it("closeViewer resets open + navigating without touching nodes", () => {

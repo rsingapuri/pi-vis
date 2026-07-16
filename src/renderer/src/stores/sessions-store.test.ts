@@ -1419,6 +1419,7 @@ describe("sessions store - authority model and thinking intents", () => {
       async (channel: string, payload: { queryId?: string; query?: { type: string } }) => {
         if (channel === "session.query")
           return {
+            status: "ok",
             queryId: payload.queryId,
             owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
             queryType: payload.query!.type,
@@ -1459,6 +1460,7 @@ describe("sessions store - authority model and thinking intents", () => {
       async (channel: string, payload: { queryId?: string; query?: { type: string } }) =>
         channel === "session.query"
           ? {
+              status: "ok",
               queryId: payload.queryId,
               owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
               queryType: payload.query!.type,
@@ -1863,7 +1865,7 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
 
     store.setActiveSession(SESSION_B);
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("session.prepareClose", { sessionId: SESSION_A });
+      expect(invoke).toHaveBeenCalledWith("session.close", { sessionId: SESSION_A });
       expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(false);
     });
     expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("discard me");
@@ -1902,7 +1904,7 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     store.setActiveSession(SESSION_B);
     await Promise.resolve();
 
-    expect(invoke).not.toHaveBeenCalledWith("session.prepareClose", { sessionId: SESSION_A });
+    expect(invoke).not.toHaveBeenCalledWith("session.close", { sessionId: SESSION_A });
     expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(true);
   });
 
@@ -2443,6 +2445,7 @@ describe("sessions store - historical cache notices", () => {
       async (channel: string, payload: { queryId?: string; query?: { type: string } }) => {
         if (channel !== "session.query") return {};
         return {
+          status: "ok",
           queryId: payload.queryId,
           owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
           queryType: payload.query?.type,
@@ -2507,76 +2510,33 @@ describe("sessions store - historical cache notices", () => {
   });
 });
 
-describe("sessions store - explicit close review", () => {
-  it("shows the actual checkpoint before force-closing", async () => {
-    const confirm = vi.fn((_message: string) => true);
-    const invoke = vi.fn(async (channel: string) => {
-      if (channel === "session.prepareClose") {
-        return {
-          reviewToken: "close-token",
-          checkpoint: {
-            editor: { text: "host-owned draft" },
-            intents: [{ disposition: "outcome_unknown", text: "ambiguous prompt" }],
-            restorations: [],
-            dialogs: [],
-            panels: [],
-          },
-        };
-      }
-      if (channel === "session.cancelClose") return { cancelled: true };
-      if (channel === "session.confirmClose") return { closed: true };
-      return {};
-    });
-    vi.stubGlobal("window", { pivis: { invoke }, confirm });
+describe("sessions store - silent close", () => {
+  it("closes without a review dialog and removes the tab", async () => {
+    const invoke = vi.fn(async () => ({ closed: true }));
+    vi.stubGlobal("window", { pivis: { invoke }, confirm: vi.fn() });
     useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE);
-    store.setSessionDraft(SESSION_A, "renderer-owned draft");
 
     await store.closeSessionTab(SESSION_A);
 
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(confirm.mock.calls[0]?.[0]).toContain("host-owned draft");
-    expect(confirm.mock.calls[0]?.[0]).toContain("renderer-owned draft");
-    expect(confirm.mock.calls[0]?.[0]).toContain("ambiguous prompt");
-    expect(confirm.mock.calls[0]?.[0]).toContain("permanently discards");
+    expect(invoke).toHaveBeenCalledWith("session.close", { sessionId: SESSION_A });
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(false);
   });
 
-  it("requires close review for an attachment-only editor conflict", async () => {
-    const confirm = vi.fn((_message: string) => false);
-    const invoke = vi.fn(async (channel: string) => {
-      if (channel === "session.prepareClose") {
-        return {
-          reviewToken: "close-token",
-          checkpoint: {
-            editor: {
-              text: "",
-              attachments: [],
-              conflictText: "",
-              conflictAttachments: [{ kind: "file", name: "local-only.txt" }],
-            },
-            intents: [],
-            restorations: [],
-            dialogs: [],
-            panels: [],
-          },
-        };
-      }
-      if (channel === "session.cancelClose") return { cancelled: true };
-      return {};
+  it("removes the tab when the close IPC fails", async () => {
+    const invoke = vi.fn(async () => {
+      throw new Error("host unavailable");
     });
-    vi.stubGlobal("window", { pivis: { invoke }, confirm });
+    vi.stubGlobal("window", { pivis: { invoke } });
     useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
 
-    await useSessionsStore.getState().closeSessionTab(SESSION_A);
+    await store.closeSessionTab(SESSION_A);
 
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(confirm.mock.calls[0]?.[0]).toContain("local-only.txt");
-    expect(invoke).toHaveBeenCalledWith("session.cancelClose", {
-      sessionId: SESSION_A,
-      reviewToken: "close-token",
-    });
+    expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(false);
   });
 });
 
@@ -2597,7 +2557,7 @@ describe("sessions store - queue restoration", () => {
     expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(true);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachmentReads).toBe(1);
     expect(invoke).not.toHaveBeenCalledWith(
-      "session.prepareClose",
+      "session.close",
       expect.objectContaining({ sessionId: SESSION_A }),
     );
     store.endEditorAttachmentRead(SESSION_A);
@@ -2707,32 +2667,31 @@ describe("sessions store - queue restoration", () => {
     expect(invoke).not.toHaveBeenCalledWith("session.acknowledgeRestoration", expect.anything());
   });
 
-  it("keeps original attachments separate and labels restoration for review", () => {
+  it("injects resolved restoration text and attachments directly into the composer", () => {
+    vi.stubGlobal("window", { pivis: { invoke: vi.fn(async () => ({ acknowledged: true })) } });
     useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
 
-    useSessionsStore.getState().applyQueueRestoration(SESSION_A, {
+    useSessionsStore.getState().applyRestoreDraft(SESSION_A, {
       restorationId: "restore-1",
-      steering: ["queued text"],
-      followUp: [],
-      originalAttachments: [
-        { intentId: "intent-1", images: [{ mimeType: "image/png", data: "base64" }] },
-      ],
+      text: "queued text",
+      attachments: [{ mimeType: "image/png", data: "base64" }],
+      disposition: "restore",
     });
 
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.editorInjection?.text).toBe("queued text");
-    expect(session?.queueRestorations).toEqual([
-      {
-        restorationId: "restore-1",
-        steering: ["queued text"],
-        followUp: [],
-        originalAttachments: [
-          { intentId: "intent-1", images: [{ mimeType: "image/png", data: "base64" }] },
-        ],
-      },
-    ]);
-    expect(session?.toasts.at(-1)?.message).toContain("original attachments");
+    expect(session?.editorInjection).toMatchObject({
+      text: "queued text",
+      attachments: [
+        {
+          kind: "image",
+          name: "restored-image-1.png",
+          path: "",
+          dataUrl: "data:image/png;base64,base64",
+        },
+      ],
+    });
+    expect(session?.queueRestorations).toBeUndefined();
   });
 
   it("deduplicates replay and never overwrites newer draft text", () => {
@@ -2756,26 +2715,116 @@ describe("sessions store - queue restoration", () => {
     expect(useSessionsStore.getState().sessionDrafts.get(SESSION_A)).toBe("newer typing");
   });
 
-  it("retires a reviewed restoration through main acknowledgement", async () => {
+  it("acknowledges a resolved restoration after applying it", async () => {
     const invoke = vi.fn(async () => ({ acknowledged: true }));
     vi.stubGlobal("window", { pivis: { invoke } });
     useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE);
-    store.applyQueueRestoration(SESSION_A, {
-      restorationId: "restore-dismiss",
-      steering: [],
-      followUp: ["text"],
-      originalAttachments: [],
+    store.applyRestoreDraft(SESSION_A, {
+      restorationId: "restore-applied",
+      text: "text",
+      attachments: [],
+      disposition: "restore",
     });
 
-    await store.dismissQueueRestoration(SESSION_A, "restore-dismiss");
-
+    await Promise.resolve();
     expect(invoke).toHaveBeenCalledWith("session.acknowledgeRestoration", {
       sessionId: SESSION_A,
-      restorationId: "restore-dismiss",
+      restorationId: "restore-applied",
     });
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.queueRestorations).toEqual([]);
+  });
+
+  it("retries acknowledgement on redelivery without applying the restoration twice", async () => {
+    const invoke = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("transient acknowledgement failure"))
+      .mockResolvedValue({ acknowledged: true });
+    vi.stubGlobal("window", { pivis: { invoke } });
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      sessionDrafts: new Map(),
+    });
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
+    const restoration = {
+      restorationId: "restore-redelivered",
+      text: "restore exactly once",
+      attachments: [],
+      disposition: "restore" as const,
+    };
+
+    store.applyRestoreDraft(SESSION_A, restoration);
+    await Promise.resolve();
+    store.applyRestoreDraft(SESSION_A, restoration);
+    await Promise.resolve();
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke).toHaveBeenNthCalledWith(2, "session.acknowledgeRestoration", {
+      sessionId: SESSION_A,
+      restorationId: "restore-redelivered",
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection?.text).toBe(
+      "restore exactly once",
+    );
+    expect(
+      useSessionsStore
+        .getState()
+        .sessions.get(SESSION_A)
+        ?.appliedRestoreDraftIds?.filter((id) => id === "restore-redelivered"),
+    ).toHaveLength(1);
+  });
+
+  it("retries dropped-restoration acknowledgement without duplicating its outcome", async () => {
+    const invoke = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("transient acknowledgement failure"))
+      .mockResolvedValue({ acknowledged: true });
+    vi.stubGlobal("window", { pivis: { invoke } });
+    useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE);
+    const restoration = {
+      restorationId: "drop-redelivered",
+      text: "do not inject",
+      attachments: [],
+      disposition: "dropped" as const,
+    };
+
+    store.applyRestoreDraft(SESSION_A, restoration);
+    await Promise.resolve();
+    store.applyRestoreDraft(SESSION_A, restoration);
+    await Promise.resolve();
+
+    const session = useSessionsStore.getState().sessions.get(SESSION_A);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(session?.editorInjection).toBeUndefined();
+    expect(session?.appliedRestoreDraftIds).toEqual(["drop-redelivered"]);
+    expect(
+      session?.toasts.filter((toast) => toast.message === "Interrupted command was not restored."),
+    ).toHaveLength(1);
+  });
+
+  it("does not acknowledge restoration custody that an absent renderer session never assumed", () => {
+    const invoke = vi.fn(async () => ({ acknowledged: true }));
+    vi.stubGlobal("window", { pivis: { invoke } });
+    useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
+    const store = useSessionsStore.getState();
+
+    for (const disposition of ["restore", "dropped"] as const) {
+      const restoration = {
+        restorationId: `missing-${disposition}`,
+        text: "retained by main",
+        attachments: [],
+        disposition,
+      };
+      store.applyRestoreDraft(SESSION_A, restoration);
+      store.applyRestoreDraft(SESSION_A, restoration);
+    }
+
+    expect(useSessionsStore.getState().sessions.size).toBe(0);
+    expect(invoke).not.toHaveBeenCalled();
   });
 });
 
@@ -3518,13 +3567,16 @@ function semanticSnapshot(
   };
 }
 
-function authorityAttach(snapshot = semanticSnapshot(1)): AuthorityAttachResponse {
+function authorityAttach(
+  snapshot = semanticSnapshot(1),
+): Extract<AuthorityAttachResponse, { status: "ready" }> {
   const cursor = {
     ...snapshot.owner,
     transportSequence: 1,
     snapshotSequence: snapshot.snapshotSequence,
   };
   return {
+    status: "ready",
     baseline: {
       sessionId: SESSION_A,
       rendererGeneration: 0,
@@ -3599,7 +3651,7 @@ describe("sessions store - authority intent projection", () => {
         steering: [],
         followUp: ["review exact text"],
         originalAttachments: [{ intentId: "intent-image", images: [image] }],
-        requiresReview: true,
+        certainty: "unknown",
       },
     ];
     useSessionsStore.getState().applyAuthorityAttach(SESSION_A, attach);

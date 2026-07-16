@@ -302,6 +302,10 @@ export function initIpc(win: BrowserWindow): void {
     process.env["PIVIS_TEST_UNIFIED_CLAIM_TIMEOUT_MS"] ?? "",
     10,
   );
+  const testAuthorityBufferLimit = Number.parseInt(
+    process.env["PIVIS_TEST_AUTHORITY_BUFFER_LIMIT"] ?? "",
+    10,
+  );
   registry = new SessionRegistry(
     (sessionId: SessionId, event: PiEvent) => {
       eventBatcher?.push(sessionId, event);
@@ -342,7 +346,7 @@ export function initIpc(win: BrowserWindow): void {
     },
     (sessionId, payload) => {
       eventBatcher?.flush(sessionId);
-      safeSend("session.queueRestoration", { sessionId, ...(payload as object) });
+      safeSend("session.restoreDraft", { sessionId, ...(payload as object) });
     },
     (sessionId, operationId) => {
       safeSend("session.uiAcknowledged", { sessionId, operationId });
@@ -354,6 +358,9 @@ export function initIpc(win: BrowserWindow): void {
     {
       ...(Number.isFinite(testUnifiedClaimTimeoutMs) && testUnifiedClaimTimeoutMs > 0
         ? { unifiedClaimTimeoutMs: testUnifiedClaimTimeoutMs }
+        : {}),
+      ...(Number.isFinite(testAuthorityBufferLimit) && testAuthorityBufferLimit > 0
+        ? { authorityPublicationBufferLimit: testAuthorityBufferLimit }
         : {}),
     },
     (publication) => {
@@ -989,29 +996,13 @@ export function initIpc(win: BrowserWindow): void {
     return readPiChangelog(piInfo.path);
   });
 
-  ipcMain.handle(
-    "session.prepareClose",
-    async (_evt, args: { sessionId: SessionId; force?: boolean }) => {
-      if (!registry) throw new Error("Session registry not initialized");
-      return registry.prepareClose(args.sessionId, args.force === true);
-    },
-  );
-
-  ipcMain.handle(
-    "session.cancelClose",
-    async (_evt, args: { sessionId: SessionId; reviewToken: string }) => {
-      if (!registry) throw new Error("Session registry not initialized");
-      return registry.cancelClose(args.sessionId, args.reviewToken);
-    },
-  );
-
-  ipcMain.handle(
-    "session.confirmClose",
-    async (_evt, args: { sessionId: SessionId; reviewToken: string }) => {
-      if (!registry) throw new Error("Session registry not initialized");
-      return registry.confirmClose(args.sessionId, args.reviewToken);
-    },
-  );
+  ipcMain.handle("session.close", async (_evt, args: { sessionId: SessionId }) => {
+    // Closing a renderer tab is deliberately unconditional. The registry
+    // fences ingress, makes a best-effort host shutdown, and always releases
+    // its in-memory runtime; persisted session files are never removed.
+    await registry?.closeSessionGracefully(args.sessionId);
+    return { closed: true as const };
+  });
 
   ipcMain.handle(
     "session.loadHistory",
@@ -1089,8 +1080,49 @@ export function initIpc(win: BrowserWindow): void {
   ipcMain.handle(
     "session.dispatchIntent",
     async (_evt, envelope: IntentEnvelope): Promise<IntentReceipt> => {
+      logTestIpcInvocation("session.dispatchIntent", envelope);
       if (!registry) throw new Error("Session registry not initialized");
       return registry.dispatchIntent(envelope);
+    },
+  );
+
+  // Explicit real-Pi E2E seam. Production launches fail closed even if a
+  // renderer knows this channel name; registry, SessionHost, and child all
+  // independently require the same environment flag.
+  ipcMain.handle(
+    "session.testControl",
+    async (
+      _evt,
+      args: { sessionId?: SessionId; action?: "replacement" | "kill"; timeoutMs?: number },
+    ) => {
+      if (process.env.PIVIS_TEST_REAL_HOST_CONTROL !== "1") {
+        return { status: "disabled" as const };
+      }
+      if (
+        !args ||
+        typeof args.sessionId !== "string" ||
+        (args.action !== "replacement" && args.action !== "kill")
+      ) {
+        return { status: "unavailable" as const };
+      }
+      logTestIpcInvocation("session.testControl", {
+        sessionId: args.sessionId,
+        action: args.action,
+        phase: "requested",
+      });
+      if (!registry) return { status: "unavailable" as const };
+      const result = await registry.testControl(
+        args.sessionId,
+        args.action,
+        Number.isSafeInteger(args.timeoutMs) ? args.timeoutMs : undefined,
+      );
+      logTestIpcInvocation("session.testControl", {
+        sessionId: args.sessionId,
+        action: args.action,
+        phase: "acknowledged",
+        ...result,
+      });
+      return result;
     },
   );
 
@@ -1130,6 +1162,7 @@ export function initIpc(win: BrowserWindow): void {
   ipcMain.handle(
     "session.authorityAttach",
     async (_evt, args: { sessionId: SessionId; rendererGeneration: number }) => {
+      logTestIpcInvocation("session.authorityAttach", args);
       if (!registry) throw new Error("Session registry not initialized");
       return registry.authorityAttach(args.sessionId, args.rendererGeneration);
     },

@@ -30,7 +30,7 @@ import type { SessionId } from "@shared/ids.js";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import type React from "react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { useRoutedEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import {
   type PanelInputIdentity,
@@ -160,7 +160,8 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     const outputSequence = panel.outputSequence;
     if (
       outputSequence !== undefined &&
-      renderedOutputSequenceRef.current !== outputSequence &&
+      (renderedOutputSequenceRef.current === null ||
+        outputSequence > renderedOutputSequenceRef.current) &&
       panel.outputKind
     ) {
       if (panel.outputKind === "reset") {
@@ -313,7 +314,7 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
   // doesn't demand the whole panel object (and its buffer) as a dep.
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: rebuild terminal on panel identity change only, not buffer appends (see comment above)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     const currentPanel = panelRef.current;
@@ -421,34 +422,46 @@ export function CustomPanelHost({ sessionId }: CustomPanelHostProps): React.Reac
     syncRef.current = sizer.scheduleSync;
 
     // ── Write buffered ANSI from the panel's pre-existing buffer ──
-    // panel.buffer is a snapshot at mount; live updates arrive via the
-    // session.panelEvent subscription below. Measure in the write CALLBACK
-    // (fires after xterm parses the bytes) so the first sizing pass reads the
-    // real content height, not a not-yet-parsed buffer.
-    for (const chunk of currentPanel.buffer) term.write(chunk);
-    renderedOutputSequenceRef.current = currentPanel.outputSequence ?? null;
+    // The panel-open reset and its keyframe may arrive in the same React
+    // commit. This effect is keyed only by panel identity, so its closure can
+    // describe that initial empty reset even when the keyframe has already
+    // rendered before xterm exists. Read the live ref after opening xterm so
+    // composer-origin panels cannot mount a permanently blank terminal.
+    const mountedPanel = panelRef.current;
+    const initialPanel =
+      mountedPanel &&
+      mountedPanel.id === currentPanel.id &&
+      mountedPanel.hostInstanceId === currentPanel.hostInstanceId &&
+      mountedPanel.sessionEpoch === currentPanel.sessionEpoch
+        ? mountedPanel
+        : currentPanel;
+    // Measure in the write CALLBACK (fires after xterm parses the bytes) so
+    // the first sizing pass reads the real content height, not a not-yet-parsed
+    // buffer. Live updates after this point arrive through the store effect.
+    for (const chunk of initialPanel.buffer) term.write(chunk);
+    renderedOutputSequenceRef.current = initialPanel.outputSequence ?? null;
     renderedKeyframeRevisionRef.current =
-      currentPanel.outputKind === "keyframe" ? (currentPanel.renderRevision ?? null) : null;
+      initialPanel.outputKind === "keyframe" ? (initialPanel.renderRevision ?? null) : null;
     term.write("", () => {
       if (disposed) return;
       sizer.scheduleSync();
       // An attach may carry a retained forced-repaint keyframe. Its following
       // authority publication, not this acknowledgement, enables input.
-      const ackKey = `${currentPanel.hostInstanceId}:${currentPanel.sessionEpoch}:${currentPanel.id}:${currentPanel.renderRevision ?? 0}`;
+      const ackKey = `${initialPanel.hostInstanceId}:${initialPanel.sessionEpoch}:${initialPanel.id}:${initialPanel.renderRevision ?? 0}`;
       if (
-        currentPanel.authority &&
-        currentPanel.syncState === "synchronizing" &&
-        currentPanel.keyframeReady &&
+        initialPanel.authority &&
+        initialPanel.syncState === "synchronizing" &&
+        initialPanel.keyframeReady &&
         authorityAckRef.current !== ackKey
       ) {
         authorityAckRef.current = ackKey;
         void window.pivis
           .invoke("session.panelRepaintAck", {
             sessionId,
-            expectedHostInstanceId: currentPanel.hostInstanceId,
-            expectedSessionEpoch: currentPanel.sessionEpoch,
-            panelId: currentPanel.id,
-            revision: currentPanel.renderRevision ?? 0,
+            expectedHostInstanceId: initialPanel.hostInstanceId,
+            expectedSessionEpoch: initialPanel.sessionEpoch,
+            panelId: initialPanel.id,
+            revision: initialPanel.renderRevision ?? 0,
           })
           .then((result) => {
             if (!result.acknowledged && authorityAckRef.current === ackKey)

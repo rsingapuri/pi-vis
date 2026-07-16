@@ -366,114 +366,6 @@ const QueuedBubble = memo(function QueuedBubble({
   );
 });
 
-function restoredImageSource(value: unknown): string | undefined {
-  if (typeof value === "string" && /^(data:image\/|file:|https?:)/.test(value)) return value;
-  if (!value || typeof value !== "object") return undefined;
-  const image = value as { data?: unknown; mimeType?: unknown };
-  if (typeof image.data !== "string") return undefined;
-  if (image.data.startsWith("data:image/")) return image.data;
-  const mimeType = typeof image.mimeType === "string" ? image.mimeType : "image/png";
-  return `data:${mimeType};base64,${image.data}`;
-}
-
-const QueueRestorationReview = memo(function QueueRestorationReview({
-  sessionId,
-  restoration,
-}: {
-  sessionId: SessionId;
-  restoration: {
-    restorationId: string;
-    steering: string[];
-    followUp: string[];
-    originalAttachments: Array<{ intentId: string; images: unknown[] }>;
-    commandDescription?: string | undefined;
-  };
-}): React.ReactElement {
-  const dismiss = useSessionsStore((state) => state.dismissQueueRestoration);
-  const restoreText = useSessionsStore((state) => state.restoreQueueRestorationText);
-  const openImages = useImageViewerStore((state) => state.openImages);
-  const text = [...restoration.steering, ...restoration.followUp].join("\n\n");
-  const images = restoration.originalAttachments.flatMap((item) => item.images);
-  const hasText = text.trim().length > 0;
-  const sources = useMemo(
-    () => images.map(restoredImageSource).filter((value): value is string => !!value),
-    [images],
-  );
-  return (
-    <section className="restored-attachments" aria-label="Interrupted message review">
-      <div className="restored-attachments__header">
-        <div className="restored-attachments__heading">
-          <span className="restored-attachments__marker" aria-hidden="true" />
-          <div>
-            <strong>
-              {restoration.commandDescription
-                ? "Review interrupted command"
-                : "Review interrupted message"}
-            </strong>
-            <div className="restored-attachments__warning">
-              {restoration.commandDescription ??
-                "Pi stopped before confirming whether this queued input was processed. Review it before sending again to avoid a duplicate."}
-            </div>
-          </div>
-        </div>
-        <button
-          type="button"
-          className="restored-attachments__dismiss"
-          onClick={() => void dismiss(sessionId, restoration.restorationId)}
-        >
-          Dismiss
-        </button>
-      </div>
-      {hasText && (
-        <div className="restored-attachments__text">
-          <span>Queued text</span>
-          <div>{text}</div>
-        </div>
-      )}
-      {hasText && !restoration.commandDescription && (
-        <button
-          type="button"
-          className="restored-attachments__restore"
-          onClick={() => restoreText(sessionId, restoration.restorationId)}
-        >
-          Restore to Composer
-        </button>
-      )}
-      {restoration.originalAttachments
-        .filter((item) => item.images.length > 0)
-        .map((item) => (
-          <div key={item.intentId} className="restored-attachments__warning">
-            {item.images.length} possible original attachment{item.images.length === 1 ? "" : "s"}—
-            shown separately because an extension may have transformed or consumed the queued input.
-          </div>
-        ))}
-      {sources.length > 0 && (
-        <div className="transcript-block__images">
-          {sources.map((source, index) => (
-            <button
-              // biome-ignore lint/suspicious/noArrayIndexKey: attachment order is authoritative
-              key={index}
-              type="button"
-              className="transcript-block__image-button"
-              onClick={() =>
-                openImages(
-                  sources.map((src, imageIndex) => ({
-                    src,
-                    alt: `Original queued attachment ${imageIndex + 1}`,
-                  })),
-                  index,
-                )
-              }
-            >
-              <img src={source} alt={`Original queued attachment ${index + 1}`} />
-            </button>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-});
-
 const UserBlock = memo(function UserBlock({ data }: { data: UserBlockData }): React.ReactElement {
   const openImages = useImageViewerStore((s) => s.openImages);
   const validImages = useMemo(
@@ -1076,6 +968,7 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
     )
       .then((result) => {
         if (
+          result.status !== "ok" ||
           cancelled ||
           renderedEpochRef.current !== sessionEpoch ||
           result.owner.hostInstanceId !== runtime.hostInstanceId ||
@@ -1578,7 +1471,6 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     [archivedBoundaryGroup, archivedCompactItems],
   );
   const queuedMessages = authoritySnapshotFor(session) ? session?.queuedMessages : undefined;
-  const queueRestorations = session?.queueRestorations ?? [];
   // Show the "Running for …" indicator for real agent work. Prompt-backed
   // extension UI can set isStreaming while merely waiting on the user, so the
   // store helper applies the UI-vs-tool-work distinction.
@@ -1866,13 +1758,6 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
         ))}
         {queuedMessages?.followUp.map((message) => (
           <QueuedBubble key={message.id} text={message.text} kind="followUp" />
-        ))}
-        {queueRestorations.map((restoration) => (
-          <QueueRestorationReview
-            key={restoration.restorationId}
-            sessionId={sessionId}
-            restoration={restoration}
-          />
         ))}
         {showWorking && <WorkingRow sessionId={sessionId} />}
       </div>

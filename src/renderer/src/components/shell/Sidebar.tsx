@@ -13,7 +13,6 @@ import { useSettingsStore } from "../../stores/settings-store.js";
 import { FadeText } from "../common/FadeText.js";
 import { IconChevronRight, IconClose, IconSearch } from "../common/icons.js";
 import { openSessionSearch } from "../session-search/SessionSearchModal.js";
-import { ConfirmDialog } from "./ConfirmDialog.js";
 import "./Sidebar.css";
 
 const VISIBLE_PAGE_SIZE = 30;
@@ -104,13 +103,6 @@ function StreamingIndicator({ isStreaming }: StreamingDotProps): React.ReactElem
   );
 }
 
-interface ArchiveConfirmState {
-  sessionId: SessionId | undefined;
-  filePath: string;
-  workspacePath: string;
-  sessionName: string;
-}
-
 export function Sidebar({
   onOpenSettings,
   sessionSearchAvailable = true,
@@ -186,8 +178,6 @@ export function Sidebar({
 
   // Pagination: visible count per workspace
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
-  // Archive confirm dialog state
-  const [archiveTarget, setArchiveTarget] = useState<ArchiveConfirmState | null>(null);
   const [workspaceListLoaded, setWorkspaceListLoaded] = useState(false);
 
   const getVisibleCount = useCallback(
@@ -418,20 +408,6 @@ export function Sidebar({
     [setActiveSession, updateSettings],
   );
 
-  const handleArchiveConfirm = useCallback(() => {
-    if (!archiveTarget) return;
-    void archiveSession(
-      archiveTarget.sessionId,
-      archiveTarget.filePath,
-      archiveTarget.workspacePath,
-    );
-    setArchiveTarget(null);
-  }, [archiveTarget, archiveSession]);
-
-  const handleArchiveCancel = useCallback(() => {
-    setArchiveTarget(null);
-  }, []);
-
   // Load the ordered workspace list on mount. NOTE: This effect MUST NOT
   // select any workspace. Selection is the sole responsibility of the boot
   // effect below.
@@ -516,17 +492,6 @@ export function Sidebar({
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      {archiveTarget && (
-        <ConfirmDialog
-          title="Archive session"
-          message={`Archive "${archiveTarget.sessionName}"? It will be hidden permanently from the sidebar, but its file will remain on disk.`}
-          confirmLabel="Archive"
-          cancelLabel="Cancel"
-          onConfirm={handleArchiveConfirm}
-          onCancel={handleArchiveCancel}
-        />
-      )}
-
       {/* The drag handle lives in App.tsx, not inside `.sidebar`, so it
           isn't clipped by `.sidebar { overflow: hidden }` (and the fade
           mask) when pushed out into the canvas gap to meet the content card's
@@ -719,12 +684,11 @@ export function Sidebar({
                                   title="Archive session"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    setArchiveTarget({
-                                      sessionId: entry.sessionId,
-                                      filePath: entry.filePath ?? "",
-                                      workspacePath: ws.path,
-                                      sessionName: entry.name,
-                                    });
+                                    void archiveSession(
+                                      entry.sessionId,
+                                      entry.filePath ?? "",
+                                      ws.path,
+                                    );
                                   }}
                                 >
                                   <ArchiveIcon />
@@ -802,12 +766,7 @@ export function Sidebar({
                                 title="Archive session"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setArchiveTarget({
-                                    sessionId: undefined,
-                                    filePath: entry.filePath,
-                                    workspacePath: ws.path,
-                                    sessionName: entry.name,
-                                  });
+                                  void archiveSession(undefined, entry.filePath, ws.path);
                                 }}
                               >
                                 <ArchiveIcon />

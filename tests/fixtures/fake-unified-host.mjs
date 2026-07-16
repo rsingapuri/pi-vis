@@ -345,48 +345,51 @@ function authorityAttach(rendererGeneration) {
   });
   const panelCursor = presentationBaseline(panelTransportSequence);
   return {
-    sessionId: "fake-unified",
-    rendererGeneration,
-    owner,
-    semantic: { sync: { state: "following", cursor: semanticCursor }, snapshot: semantic },
-    operationJournal: [],
-    restorations: [],
-    transcript: {
-      sync: { state: "following", cursor: presentationBaseline(transcriptTransportSequence) },
-      persistedHistoryCursor: null,
-      liveTailCursor: null,
-      overlapBoundary: null,
-    },
-    extensionUi: {
-      sync: { state: "following", cursor: presentationBaseline(extensionUiTransportSequence) },
-      notifications: [],
-      statuses: {},
-      widgets: {},
-      dialogs: [],
-    },
-    panels: [
-      ...(panelOpen ? [panelBaseline(panelCursor)] : []),
-      ...(customPanelOpen
-        ? [
-            {
-              panelKey: CUSTOM_PANEL_KEY,
-              panelId: CUSTOM_PANEL_ID,
-              owner,
-              sync: { state: "following", cursor: panelCursor },
-              overlay: true,
-              unified: false,
-              mode: "viewport",
-              inputAcknowledgedThrough: 0,
-              keyframe: {
-                kind: "keyframe",
-                ansi: customPanelFramebuffer,
-                renderRevision: customPanelRenderRevision,
+    status: "ready",
+    baseline: {
+      sessionId: "fake-unified",
+      rendererGeneration,
+      owner,
+      semantic: { sync: { state: "following", cursor: semanticCursor }, snapshot: semantic },
+      operationJournal: [],
+      restorations: [],
+      transcript: {
+        sync: { state: "following", cursor: presentationBaseline(transcriptTransportSequence) },
+        persistedHistoryCursor: null,
+        liveTailCursor: null,
+        overlapBoundary: null,
+      },
+      extensionUi: {
+        sync: { state: "following", cursor: presentationBaseline(extensionUiTransportSequence) },
+        notifications: [],
+        statuses: {},
+        widgets: {},
+        dialogs: [],
+      },
+      panels: [
+        ...(panelOpen ? [panelBaseline(panelCursor)] : []),
+        ...(customPanelOpen
+          ? [
+              {
+                panelKey: CUSTOM_PANEL_KEY,
+                panelId: CUSTOM_PANEL_ID,
+                owner,
+                sync: { state: "following", cursor: panelCursor },
+                overlay: true,
+                unified: false,
+                mode: "viewport",
+                inputAcknowledgedThrough: 0,
+                keyframe: {
+                  kind: "keyframe",
+                  ansi: customPanelFramebuffer,
+                  renderRevision: customPanelRenderRevision,
+                },
               },
-            },
-          ]
-        : []),
-    ],
-    publicationHighWatermark: 0,
+            ]
+          : []),
+      ],
+      publicationHighWatermark: 0,
+    },
   };
 }
 
@@ -837,29 +840,11 @@ process.on("message", (msg) => {
         break;
       case "prepare_close":
         closeToken = crypto.randomUUID();
-        reply(msg.id, true, {
-          token: closeToken,
-          mutationSequence: snapshotSequence,
-          snapshot: snapshot(),
-          custody: [],
-          activeIntents: [],
-          restorations: [],
-          ui: {
-            editor: { revision: editorRevision, text: editorText, attachments: editorAttachments },
-            unifiedSubmissions: [...pendingSubmits].map(([id, text]) => ({ id, text })),
-            panels: panelOpen ? [{ panelId: PANEL_ID }] : [],
-          },
-        });
+        reply(msg.id, true, { token: closeToken });
         break;
       case "confirm_close":
         reply(msg.id, true, { valid: msg.token === closeToken });
         break;
-      case "cancel_close": {
-        const cancelled = msg.token === closeToken;
-        if (cancelled) closeToken = undefined;
-        reply(msg.id, true, { cancelled });
-        break;
-      }
       case "submit": {
         const submission = msg.submission;
         if (HANG_UNIFIED_SUBMIT && submission.surface === "unified") break;

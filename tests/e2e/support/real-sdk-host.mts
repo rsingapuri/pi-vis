@@ -4,12 +4,19 @@ import os from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Locator, type Page, expect } from "@playwright/test";
-import { type LaunchedElectronApplication, launchElectron } from "../electron-launch.mjs";
+import { type LaunchedElectronApplication, launchElectron } from "./instrumented-launch.mjs";
+import type { ScriptedOpenAILatency } from "./scripted-openai-provider.mjs";
 
 const supportDir = dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = join(supportDir, "../../..");
 export const APP_ENTRY = join(PROJECT_ROOT, "out/main/index.js");
 export const PINNED_PI_VERSION = "0.80.6";
+/** Real-SDK journeys retain realistic, reproducible streaming cadence. */
+export const REAL_SDK_PROVIDER_LATENCY: ScriptedOpenAILatency = {
+  firstByteMs: [10, 40],
+  perChunkMs: [5, 30],
+  seed: 0x50_4956_4953,
+};
 
 const packagePi = join(
   PROJECT_ROOT,
@@ -52,6 +59,12 @@ export interface RealSdkFixtureOptions {
   providerBaseUrl?: string;
   extensionFiles?: string[];
   workspaceDir?: string;
+  /** Per-Electron-process SessionHost fault plan; never inherited globally. */
+  faultPlan?: unknown;
+  authorityBufferLimit?: number;
+  ipcInvocationLog?: string;
+  /** Explicitly enables the real-child authority replacement/kill E2E seam. */
+  realHostControl?: boolean;
   compactionEnabled?: boolean;
   modelInput?: Array<"text" | "image">;
   retry?: {
@@ -157,7 +170,10 @@ function writeModels(agentDir: string, baseUrl: string, input: Array<"text" | "i
   );
 }
 
-function cleanEnvironment(dirs: RealSdkDirectories): NodeJS.ProcessEnv {
+function cleanEnvironment(
+  dirs: RealSdkDirectories,
+  options: RealSdkFixtureOptions,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   // The local model has its own inert key. A developer's credentials, proxy,
   // user Pi resources, and fake-host seams must not participate in this suite.
@@ -176,6 +192,10 @@ function cleanEnvironment(dirs: RealSdkDirectories): NodeJS.ProcessEnv {
     "https_proxy",
     "all_proxy",
     "PIVIS_TEST_HOST_SCRIPT",
+    "PIVIS_TEST_FAULT_PLAN",
+    "PIVIS_TEST_AUTHORITY_BUFFER_LIMIT",
+    "PIVIS_TEST_IPC_INVOCATION_LOG",
+    "PIVIS_TEST_REAL_HOST_CONTROL",
   ]) {
     delete env[key];
   }
@@ -192,6 +212,16 @@ function cleanEnvironment(dirs: RealSdkDirectories): NodeJS.ProcessEnv {
     NO_PROXY: "127.0.0.1,localhost",
     no_proxy: "127.0.0.1,localhost",
     ELECTRON_RENDERER_URL: undefined,
+    ...(options.faultPlan === undefined
+      ? {}
+      : { PIVIS_TEST_FAULT_PLAN: JSON.stringify(options.faultPlan) }),
+    ...(Number.isSafeInteger(options.authorityBufferLimit) && options.authorityBufferLimit! > 0
+      ? { PIVIS_TEST_AUTHORITY_BUFFER_LIMIT: String(options.authorityBufferLimit) }
+      : {}),
+    ...(options.ipcInvocationLog
+      ? { PIVIS_TEST_IPC_INVOCATION_LOG: options.ipcInvocationLog }
+      : {}),
+    ...(options.realHostControl ? { PIVIS_TEST_REAL_HOST_CONTROL: "1" } : {}),
   };
 }
 
@@ -239,7 +269,7 @@ export function createRealSdkFixture(options: RealSdkFixtureOptions = {}): RealS
     launch: async () => {
       const app = await launchElectron({
         args: [APP_ENTRY],
-        env: cleanEnvironment(dirs),
+        env: cleanEnvironment(dirs, options),
       });
       const output: string[] = [];
       app.process().stderr?.on("data", (chunk: Buffer) => output.push(chunk.toString("utf8")));
@@ -321,4 +351,86 @@ export function parseSessionEntries(file: string): Array<Record<string, unknown>
         return [];
       }
     });
+}
+
+/** Fail rather than silently skipping a malformed persisted JSONL record. */
+export function assertValidSessionJsonl(files: readonly string[]): void {
+  if (files.length === 0) throw new Error("real Pi did not create a session JSONL file");
+  for (const file of files) {
+    for (const [index, line] of fs.readFileSync(file, "utf8").split("\n").entries()) {
+      if (!line.trim()) continue;
+      try {
+        JSON.parse(line);
+      } catch (error) {
+        throw new Error(`${file}:${index + 1} is not valid JSONL: ${String(error)}`);
+      }
+    }
+  }
+}
+
+export type RealHostControlAck = {
+  status: "replacement" | "restarted" | "terminal" | "timeout" | "disabled" | "unavailable";
+  owner?: { hostInstanceId: string; sessionEpoch: number };
+};
+
+async function realHostControl(
+  window: Page,
+  sessionId: string,
+  action: "replacement" | "kill",
+): Promise<RealHostControlAck> {
+  // Electron's IPC invoke can remain pending if a deliberately killed child
+  // races the main-process response. Do not let that retain the CDP command:
+  // the registry itself has a 10s bound and this outer guard is the fixture
+  // backstop for a broken/dead Electron connection.
+  const request = window.evaluate(
+    ({ sessionId: target, action: requestedAction }) =>
+      (
+        window as unknown as {
+          pivis: {
+            invoke(
+              channel: "session.testControl",
+              args: { sessionId: string; action: "replacement" | "kill"; timeoutMs: number },
+            ): Promise<RealHostControlAck>;
+          };
+        }
+      ).pivis.invoke("session.testControl", {
+        sessionId: target,
+        action: requestedAction,
+        timeoutMs: 10_000,
+      }),
+    { sessionId, action },
+  );
+  void request.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      request,
+      new Promise<RealHostControlAck>((resolve) => {
+        timer = setTimeout(() => resolve({ status: "timeout" }), 12_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Trigger a real child-owned replacement and await its owner-bound successor ack. */
+export async function replaceRealSdkHost(
+  launch: RealSdkLaunch,
+  sessionId: string,
+): Promise<RealHostControlAck> {
+  return realHostControl(launch.window, sessionId, "replacement");
+}
+
+/**
+ * Kill exactly the active SessionHost selected by the registry, after E2E has
+ * observed child/provider dispatch. The bounded acknowledgement is either a
+ * ready replacement owner or an explicit terminal state; it never kills the
+ * Electron root and therefore does not strand CDP.
+ */
+export async function killRealSdkHost(
+  launch: RealSdkLaunch,
+  sessionId: string,
+): Promise<RealHostControlAck> {
+  return realHostControl(launch.window, sessionId, "kill");
 }

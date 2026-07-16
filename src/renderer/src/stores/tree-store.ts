@@ -11,6 +11,7 @@ import type { FlatTreeNode, GetTreeData, SessionTreeNode } from "@shared/pi-prot
 import type { AuthorityCursor, RuntimeIdentity } from "@shared/pi-protocol/runtime-state.js";
 import { create } from "zustand";
 import { buildNestedTree } from "../components/tree/tree-flatten.js";
+import { describeIpcError } from "../lib/ipc-errors.js";
 import { dispatchSessionIntent, querySession } from "../lib/session-intent.js";
 import { authoritySnapshotFor, isSessionWorking, useSessionsStore } from "./sessions-store.js";
 
@@ -197,9 +198,8 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
       set({ navigating: false, open: false });
     } catch (err) {
       if (!observationIsCurrent(sessionId, observation) || get().sessionId !== sessionId) return;
-      useSessionsStore
-        .getState()
-        .addToast(sessionId, err instanceof Error ? err.message : String(err), "error");
+      const message = describeIpcError(err);
+      if (message) useSessionsStore.getState().addToast(sessionId, message, "error");
       set({ navigating: false });
     }
   },
@@ -232,9 +232,8 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
       await get().refresh();
     } catch (err) {
       if (!observationIsCurrent(sessionId, observation) || get().sessionId !== sessionId) return;
-      useSessionsStore
-        .getState()
-        .addToast(sessionId, err instanceof Error ? err.message : String(err), "error");
+      const message = describeIpcError(err);
+      if (message) useSessionsStore.getState().addToast(sessionId, message, "error");
     }
   },
 
@@ -249,11 +248,19 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
     let res: { success: boolean; error?: string; data?: GetTreeData };
     try {
       const result = await querySession(sessionId, { type: "get_tree" }, observation);
+      // The viewer moved on; leave whatever it is showing now untouched.
+      if (!observationIsCurrent(sessionId, observation) || get().sessionId !== sessionId) return;
+      if (result.status !== "ok") {
+        // A typed lifecycle result must not strand the overlay in "loading":
+        // nothing else re-runs refresh while the phase stays loading. The
+        // retryable "error" phase keeps the explicit Retry affordance and the
+        // ready-transition refetch working.
+        set({ phase: "error", errorMessage: "Session is busy; retry in a moment." });
+        return;
+      }
       if (
         result.owner.hostInstanceId !== observation.owner.hostInstanceId ||
-        result.owner.sessionEpoch !== observation.owner.sessionEpoch ||
-        !observationIsCurrent(sessionId, observation) ||
-        get().sessionId !== sessionId
+        result.owner.sessionEpoch !== observation.owner.sessionEpoch
       )
         return;
       res = result.response as { success: boolean; error?: string; data?: GetTreeData };
@@ -261,13 +268,11 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
       // A thrown command is never a capability gap. Capability gaps return a
       // resolved unsupported response. A throw here is transient — the host
       // may be restarting, activation may still be in progress, or IPC may
-      // have failed. Show the real error in the retryable "error" phase; the
+      // have failed. Show the failure in the retryable "error" phase; the
       // overlay recovers when the session is ready again and `/tree` retries
       // refresh.
-      set({
-        phase: "error",
-        errorMessage: err instanceof Error ? err.message : String(err),
-      });
+      const errorMessage = describeIpcError(err) ?? "Session is busy; retry in a moment.";
+      set({ phase: "error", errorMessage });
       return;
     }
     if (!res.success) {

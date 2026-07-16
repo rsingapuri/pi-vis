@@ -32,6 +32,7 @@ import { AppUpdatePrompt } from "./components/updates/AppUpdatePrompt.js";
 import { UpdateProgress } from "./components/updates/UpdateProgress.js";
 import { useEscapeClaim } from "./hooks/useEscapeClaim.js";
 import { useGlobalEscapeInterrupt } from "./hooks/useGlobalEscapeInterrupt.js";
+import { AuthorityAttachRetry } from "./lib/authority-attach-retry.js";
 import { RENDERER_GENERATION } from "./lib/renderer-generation.js";
 import { useAppUpdatesStore } from "./stores/app-updates-store.js";
 import type { RendererAuthorityState } from "./stores/authority-reducer.js";
@@ -71,7 +72,7 @@ export function App(): React.ReactElement {
   const applyAuthorityAttach = useSessionsStore((s) => s.applyAuthorityAttach);
   const applyAuthorityPublication = useSessionsStore((s) => s.applyAuthorityPublication);
   const markAuthorityUnavailable = useSessionsStore((s) => s.markAuthorityUnavailable);
-  const applyQueueRestoration = useSessionsStore((s) => s.applyQueueRestoration);
+  const applyRestoreDraft = useSessionsStore((s) => s.applyRestoreDraft);
   const applyWorktree = useSessionsStore((s) => s.applyWorktree);
   const applyWorkspace = useSessionsStore((s) => s.applyWorkspace);
   const addUiRequest = useSessionsStore((s) => s.addUiRequest);
@@ -90,44 +91,50 @@ export function App(): React.ReactElement {
   const updateSettings = useSettingsStore((s) => s.update);
   const [piFound, setPiFound] = useState<boolean | null>(null);
   const [sessionSearchAvailable, setSessionSearchAvailable] = useState(false);
-  const authorityAttachInFlightRef = useRef(new Map<SessionId, Promise<void>>());
-  const attachSessionAuthority = useCallback(
-    (sessionId: SessionId): Promise<void> => {
-      const projection = useSessionsStore.getState().sessions.get(sessionId)?.authorityProjection;
-      if (
-        projection?.rendererGeneration === RENDERER_GENERATION &&
-        !authorityNeedsBaseline(projection)
-      ) {
-        return Promise.resolve();
-      }
-      const pending = authorityAttachInFlightRef.current.get(sessionId);
-      if (pending) return pending;
-      const operation = (async () => {
-        try {
-          await window.pivis.invoke("session.rendererAttach", {
-            sessionId,
-            rendererGeneration: RENDERER_GENERATION,
-          });
-          const response = await window.pivis.invoke("session.authorityAttach", {
-            sessionId,
-            rendererGeneration: RENDERER_GENERATION,
-          });
-          applyAuthorityAttach(sessionId, response);
-        } catch (error) {
-          console.warn("Session authority attach failed", error);
-          markAuthorityUnavailable(sessionId, "attach_failed");
-        }
-      })();
-      authorityAttachInFlightRef.current.set(sessionId, operation);
-      void operation.finally(() => {
-        if (authorityAttachInFlightRef.current.get(sessionId) === operation) {
-          authorityAttachInFlightRef.current.delete(sessionId);
-        }
-      });
-      return operation;
-    },
-    [applyAuthorityAttach, markAuthorityUnavailable],
+  const authorityAttachRetryRef = useRef<AuthorityAttachRetry | null>(null);
+  if (!authorityAttachRetryRef.current) {
+    authorityAttachRetryRef.current = new AuthorityAttachRetry({
+      sessionExists: (sessionId) => useSessionsStore.getState().sessions.has(sessionId),
+      needsAttach: (sessionId) => {
+        const projection = useSessionsStore.getState().sessions.get(sessionId)?.authorityProjection;
+        return (
+          projection?.rendererGeneration !== RENDERER_GENERATION ||
+          authorityNeedsBaseline(projection)
+        );
+      },
+      rendererAttach: (sessionId) =>
+        window.pivis.invoke("session.rendererAttach", {
+          sessionId,
+          rendererGeneration: RENDERER_GENERATION,
+        }),
+      authorityAttach: (sessionId) =>
+        window.pivis.invoke("session.authorityAttach", {
+          sessionId,
+          rendererGeneration: RENDERER_GENERATION,
+        }),
+      onReady: (sessionId, response) => applyAuthorityAttach(sessionId, response),
+      onUnavailable: (sessionId) => markAuthorityUnavailable(sessionId, "attach_unavailable"),
+    });
+  }
+  const requestAttach = useCallback(
+    (sessionId: SessionId): Promise<void> => authorityAttachRetryRef.current!.request(sessionId),
+    [],
   );
+
+  // Session removal is synchronous in the store, whereas a React effect for
+  // the changed session list runs later. Subscribe directly so a close stops
+  // an in-flight transition and clears its timer/count bookkeeping immediately.
+  useEffect(() => {
+    const unsubscribe = useSessionsStore.subscribe((state, previousState) => {
+      for (const sessionId of previousState.sessions.keys()) {
+        if (!state.sessions.has(sessionId)) authorityAttachRetryRef.current?.cancel(sessionId);
+      }
+    });
+    return () => {
+      unsubscribe();
+      authorityAttachRetryRef.current?.cancelAll();
+    };
+  }, []);
   // onClose	SettingsView handler
   const [showSettings, setShowSettings] = useState(false);
   // Claim ESC while Settings is open so a background streaming session isn't
@@ -467,7 +474,7 @@ export function App(): React.ReactElement {
       // A publication can fence any plane (and a global routing gap fences
       // all of them). Only a serialized baseline can restore authority.
       if (session?.status === "ready" && authorityNeedsBaseline(session.authorityProjection)) {
-        void attachSessionAuthority(sid);
+        void requestAttach(sid);
       }
     });
 
@@ -482,7 +489,7 @@ export function App(): React.ReactElement {
         const session = useSessionsStore.getState().sessions.get(sid);
         const projection = session?.authorityProjection;
         if (session?.status === "ready" && authorityNeedsBaseline(projection)) {
-          void attachSessionAuthority(sid);
+          void requestAttach(sid);
         }
         return;
       }
@@ -491,8 +498,8 @@ export function App(): React.ReactElement {
       markAuthorityUnavailable(sid, state.reason ?? state.availability);
     });
 
-    const unsubQueueRestoration = window.pivis.on("session.queueRestoration", (restoration) => {
-      applyQueueRestoration(restoration.sessionId as SessionId, restoration);
+    const unsubRestoreDraft = window.pivis.on("session.restoreDraft", (restoration) => {
+      applyRestoreDraft(restoration.sessionId as SessionId, restoration);
     });
 
     const unsubUiReq = window.pivis.on("session.uiRequest", ({ sessionId, request }) => {
@@ -517,7 +524,9 @@ export function App(): React.ReactElement {
         // but a cold start is when the Composer's suggestions are empty
         // and the user is about to type `/`.
         if (status === "ready") {
-          void attachSessionAuthority(sid).then(() => refreshCommands(sid));
+          void requestAttach(sid).then(() => {
+            if (useSessionsStore.getState().sessions.has(sid)) void refreshCommands(sid);
+          });
         }
       },
     );
@@ -606,14 +615,14 @@ export function App(): React.ReactElement {
           const sid = sessionId as SessionId;
           let current = useSessionsStore.getState().sessions.get(sid);
           if (!sessionMatchesRuntime(current, { hostInstanceId, sessionEpoch })) {
-            await attachSessionAuthority(sid);
+            await requestAttach(sid);
             current = useSessionsStore.getState().sessions.get(sid);
           }
           // A predecessor attach may have been in flight when this replacement
           // event arrived. Once that serialized attempt retires, make one fresh
           // successor-baseline attempt before abandoning the event.
           if (!sessionMatchesRuntime(current, { hostInstanceId, sessionEpoch })) {
-            await attachSessionAuthority(sid);
+            await requestAttach(sid);
             current = useSessionsStore.getState().sessions.get(sid);
           }
           if (!sessionMatchesRuntime(current, { hostInstanceId, sessionEpoch })) return;
@@ -677,7 +686,7 @@ export function App(): React.ReactElement {
       unsubEvent();
       unsubPublication();
       unsubRuntime();
-      unsubQueueRestoration();
+      unsubRestoreDraft();
       unsubUiReq();
       unsubUiAck();
       unsubStatus();
@@ -697,9 +706,9 @@ export function App(): React.ReactElement {
     applyEvents,
     applyRuntimeState,
     applyAuthorityPublication,
-    attachSessionAuthority,
+    requestAttach,
     markAuthorityUnavailable,
-    applyQueueRestoration,
+    applyRestoreDraft,
     applyWorktree,
     applyWorkspace,
     addUiRequest,
@@ -724,7 +733,7 @@ export function App(): React.ReactElement {
     const attachReadySessions = (): void => {
       const sessions = useSessionsStore.getState().sessions;
       for (const sid of sessionIds) {
-        if (sessions.get(sid)?.status === "ready") void attachSessionAuthority(sid);
+        if (sessions.get(sid)?.status === "ready") void requestAttach(sid);
       }
     };
     attachReadySessions();
@@ -733,7 +742,7 @@ export function App(): React.ReactElement {
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [liveSessionIdsKey, attachSessionAuthority]);
+  }, [liveSessionIdsKey, requestAttach]);
 
   const handlePiRecheck = useCallback(async () => {
     const info = await window.pivis.invoke("pi.locate", undefined);

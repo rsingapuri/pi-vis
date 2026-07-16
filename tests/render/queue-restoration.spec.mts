@@ -12,65 +12,64 @@ async function waitForStore(page: import("@playwright/test").Page): Promise<void
   await expect(page.locator(".composer__textarea")).toBeEnabled({ timeout: 20_000 });
 }
 
-async function applyRestoration(page: import("@playwright/test").Page, restoration: unknown) {
+async function applyRestoreDraft(page: import("@playwright/test").Page, restoration: unknown) {
   await page.evaluate((value) => {
     const store = (
       window as unknown as {
         __pivisStore: {
           getState: () => {
             activeSessionId: string;
-            applyQueueRestoration: (sessionId: string, restoration: unknown) => void;
+            applyRestoreDraft: (sessionId: string, restoration: unknown) => void;
           };
         };
       }
     ).__pivisStore;
     const state = store.getState();
-    state.applyQueueRestoration(state.activeSessionId, value);
+    state.applyRestoreDraft(state.activeSessionId, value);
   }, restoration);
 }
 
-test("queue restoration shows original attachments separately for review", async ({ page }) => {
+test("automatically restores an interrupted draft and attachments directly into the composer", async ({
+  page,
+}) => {
   await waitForStore(page);
-  await expect(page.locator(".custom-entry")).toBeVisible();
 
-  await applyRestoration(page, {
+  await applyRestoreDraft(page, {
     restorationId: "restore-render",
-    steering: ["review this queued text"],
-    followUp: [],
-    originalAttachments: [
+    text: "queued text restored automatically",
+    attachments: [
       {
-        intentId: "intent-image",
-        images: [
-          {
-            mimeType: "image/png",
-            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-          },
-        ],
+        mimeType: "image/png",
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
       },
     ],
+    disposition: "restore",
   });
 
-  const recovery = page.getByRole("region", { name: "Interrupted message review" });
-  await expect(recovery).toBeVisible();
-  await expect(recovery).toContainText("Review interrupted message");
-  await expect(recovery).toContainText("Pi stopped before confirming");
-  await expect(recovery).toContainText("1 possible original attachment");
-  await expect(recovery.locator("img")).toBeVisible();
-  const colors = await recovery.evaluate((element) => {
-    const probe = document.createElement("div");
-    probe.style.background = "var(--warning-soft)";
-    document.body.appendChild(probe);
-    const warning = getComputedStyle(probe).backgroundColor;
-    probe.style.background = "var(--surface-raised)";
-    const surface = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    return { card: getComputedStyle(element).backgroundColor, surface, warning };
-  });
-  expect(colors.card).toBe(colors.surface);
-  expect(colors.card).not.toBe(colors.warning);
+  await expect(page.locator(".composer__textarea")).toHaveValue(
+    "queued text restored automatically",
+  );
+  await expect(page.locator(".composer__attachment-thumb")).toHaveCount(1);
+  await expect(page.locator(".composer__attachment-thumb")).toHaveAttribute(
+    "alt",
+    "restored-image-1.png",
+  );
+  await expect(page.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Dismiss|Restore to Composer/ })).toHaveCount(0);
+});
 
-  await recovery.getByRole("button", { name: "Dismiss" }).click();
-  await expect(recovery).toHaveCount(0);
+test("dropped command recoveries do not inject executable text or review UI", async ({ page }) => {
+  await waitForStore(page);
+  await applyRestoreDraft(page, {
+    restorationId: "dropped-command",
+    text: "!touch marker",
+    attachments: [],
+    disposition: "dropped",
+  });
+
+  await expect(page.locator(".composer__textarea")).toHaveValue("");
+  await expect(page.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Dismiss|Restore to Composer/ })).toHaveCount(0);
 });
 
 test("failed compaction is not presented as successful", async ({ page }) => {
@@ -97,22 +96,4 @@ test("failed compaction is not presented as successful", async ({ page }) => {
   await expect(page.getByText(/Compaction failed · manual/)).toBeVisible();
   await expect(page.getByText("Nothing to compact", { exact: true })).toBeVisible();
   await expect(page.getByText(/Context compacted/)).toHaveCount(0);
-});
-
-test("ambiguous commands render as non-replayable review", async ({ page }) => {
-  await waitForStore(page);
-  await applyRestoration(page, {
-    restorationId: "ambiguous-command:render-intent",
-    steering: [],
-    followUp: ["!touch marker"],
-    originalAttachments: [],
-    commandDescription:
-      "bash may have completed before its acknowledgement was lost. Review before retrying.",
-  });
-
-  const recovery = page.getByRole("region", { name: "Interrupted message review" });
-  await expect(recovery).toContainText("Review interrupted command");
-  await expect(recovery).toContainText("bash may have completed");
-  await expect(recovery.getByRole("button", { name: "Restore to Composer" })).toHaveCount(0);
-  await expect(page.locator(".composer__textarea")).not.toHaveValue("!touch marker");
 });

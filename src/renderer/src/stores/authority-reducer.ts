@@ -186,7 +186,7 @@ export function unavailableAuthority(
 
 function installBaseline(
   state: RendererAuthorityState,
-  response: AuthorityAttachResponse,
+  response: Extract<AuthorityAttachResponse, { status: "ready" }>,
 ): RendererAuthorityState {
   const { baseline } = response;
   if (
@@ -248,7 +248,7 @@ function installBaseline(
  */
 export function reduceAuthorityAttach(
   state: RendererAuthorityState,
-  response: AuthorityAttachResponse,
+  response: Extract<AuthorityAttachResponse, { status: "ready" }>,
 ): RendererAuthorityState {
   let next = installBaseline(state, response);
   if (next === state) return state;

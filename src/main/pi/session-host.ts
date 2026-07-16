@@ -29,8 +29,8 @@ import type { PiRpcResponse } from "@shared/pi-protocol/responses.js";
 import {
   type AgentSessionSnapshot,
   AgentSessionSnapshotSchema,
-  type AuthorityAttachBaseline,
-  AuthorityAttachBaselineSchema,
+  type AuthorityAttachBaselineResponse,
+  AuthorityAttachBaselineResponseSchema,
   type AuthorityFrame,
   AuthorityFrameSchema,
   type AuthorityPresentationPublication,
@@ -46,6 +46,7 @@ import {
   type TransitionBatch,
 } from "@shared/pi-protocol/runtime-state.js";
 import { z } from "zod";
+import { TestFaultInjector } from "./test-fault-injector.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -296,6 +297,8 @@ type HostWireMessage =
 // biome-ignore lint/suspicious/noUnsafeDeclarationMerging: typed EventEmitter
 export class SessionHost extends EventEmitter {
   private proc: ChildProcess;
+  /** No-op unless PIVIS_TEST_FAULT_PLAN contains a valid JSON plan. */
+  private readonly faultInjector = TestFaultInjector.fromEnvironment();
   private pending = new Map<string, PendingRequest>();
   public stderrLog: string[] = [];
   public readonly sessionFile?: string | undefined;
@@ -414,10 +417,11 @@ export class SessionHost extends EventEmitter {
     });
 
     this.proc.on("message", (msg: HostWireMessage) => {
-      this.handleMessage(msg);
+      this.faultInjector.inbound(msg, () => this.handleMessage(msg));
     });
 
     this.proc.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+      this.faultInjector.dispose();
       this.exitCode = code;
       this.versionTooLow = code === 42;
       if (this.startupTimer) {
@@ -473,7 +477,7 @@ export class SessionHost extends EventEmitter {
             : "/dev/fd/4";
     }
 
-    this.proc.send(initMsg);
+    this.sendChildMessage(initMsg);
 
     this.armStartupTimer();
     this.controlWatchdog = setInterval(() => {
@@ -1189,6 +1193,13 @@ export class SessionHost extends EventEmitter {
    *  two callers (clipboard/submit replies) are best-effort responses to an
    *  async host request; if the host has already exited there is nothing to
    *  reply to, so drop silently rather than spamming the log. */
+  /** The sole main → child IPC seam; test faults wrap the actual `.send()`. */
+  private sendChildMessage(message: object, callback?: (err: Error | null) => void): void {
+    this.faultInjector.outbound(message, () => {
+      this.proc.send(message, callback);
+    });
+  }
+
   private sendToHost(
     msg:
       | {
@@ -1218,7 +1229,7 @@ export class SessionHost extends EventEmitter {
   ): void {
     if (this.proc.exitCode !== null || this.proc.killed || !this.proc.connected) return;
     try {
-      this.proc.send(msg, () => {
+      this.sendChildMessage(msg, () => {
         // Best-effort post-exit/channel-closed response; ignore async send errors.
       });
     } catch {
@@ -1249,7 +1260,7 @@ export class SessionHost extends EventEmitter {
       }
 
       try {
-        this.proc.send({ type: "command", id, command }, (err) => {
+        this.sendChildMessage({ type: "command", id, command }, (err) => {
           if (err) {
             if (pending.timer) clearTimeout(pending.timer);
             this.pending.delete(id);
@@ -1294,7 +1305,7 @@ export class SessionHost extends EventEmitter {
       if (!(suspendForLifecycleUi && this.transitionUiBlockers.size > 0)) {
         this.armPendingTimeout(id, pending);
       }
-      this.proc.send({ ...payload, id }, (err) => {
+      this.sendChildMessage({ ...payload, id }, (err) => {
         if (!err) return;
         if (pending.timer) clearTimeout(pending.timer);
         this.pending.delete(id);
@@ -1302,6 +1313,33 @@ export class SessionHost extends EventEmitter {
         reject(err);
       });
     });
+  }
+
+  /**
+   * Real-host E2E control. This is deliberately double-gated: main IPC only
+   * reaches it when PIVIS_TEST_REAL_HOST_CONTROL=1, and the child rejects the
+   * wire message unless it inherited that same explicit environment flag.
+   */
+  async testControl(action: "replacement"): Promise<RuntimeOwner> {
+    if (process.env.PIVIS_TEST_REAL_HOST_CONTROL !== "1") {
+      throw new Error("Real-host test control is disabled");
+    }
+    const response = await this.requestHost({ type: "test_control", action }, 15_000);
+    const parsed = z
+      .object({ hostInstanceId: z.string().uuid(), sessionEpoch: z.number().int().nonnegative() })
+      .safeParse(response.data);
+    if (!response.success || !parsed.success) {
+      throw new Error(response.error ?? "Invalid real-host test-control response");
+    }
+    return parsed.data;
+  }
+
+  /** Test-only hard kill used after an observed real child/provider dispatch. */
+  killForTests(): boolean {
+    if (process.env.PIVIS_TEST_REAL_HOST_CONTROL !== "1") {
+      throw new Error("Real-host test control is disabled");
+    }
+    return this.proc.kill("SIGKILL");
   }
 
   async dispatchIntent(envelope: {
@@ -1356,7 +1394,9 @@ export class SessionHost extends EventEmitter {
     return response.data as EscapeResult;
   }
 
-  async requestAuthorityAttach(rendererGeneration: number): Promise<AuthorityAttachBaseline> {
+  async requestAuthorityAttach(
+    rendererGeneration: number,
+  ): Promise<AuthorityAttachBaselineResponse> {
     const response = await this.requestHost(
       { type: "authority_attach", rendererGeneration },
       10_000,
@@ -1364,16 +1404,17 @@ export class SessionHost extends EventEmitter {
     if (!response.success || !response.data) {
       throw new Error(response.error ?? "Authority attach failed");
     }
-    const baseline = AuthorityAttachBaselineSchema.safeParse(response.data);
-    if (!baseline.success)
-      throw new Error(`Invalid authority attach baseline: ${baseline.error.message}`);
+    const parsed = AuthorityAttachBaselineResponseSchema.safeParse(response.data);
+    if (!parsed.success)
+      throw new Error(`Invalid authority attach response: ${parsed.error.message}`);
     if (
-      baseline.data.owner.hostInstanceId !== this.hostInstanceId ||
-      baseline.data.owner.sessionEpoch !== this.sessionEpoch
+      parsed.data.status === "ready" &&
+      (parsed.data.baseline.owner.hostInstanceId !== this.hostInstanceId ||
+        parsed.data.baseline.owner.sessionEpoch !== this.sessionEpoch)
     ) {
       throw new Error("Authority attach baseline runtime identity mismatch");
     }
-    return baseline.data;
+    return parsed.data;
   }
 
   async requestLifecyclePermit(
@@ -1399,28 +1440,27 @@ export class SessionHost extends EventEmitter {
     return snapshot.data;
   }
 
-  async prepareClose(force = false): Promise<Record<string, unknown>> {
-    const response = await this.requestHost({ type: "prepare_close", force }, 5_000);
-    if (!response.success || !response.data) {
+  /** Main-only forced-shutdown handshake; never exposed through renderer IPC. */
+  async forceClose(): Promise<void> {
+    const { token } = await this.prepareForcedClose();
+    await this.confirmForcedClose(token);
+  }
+
+  private async prepareForcedClose(): Promise<{ token: string }> {
+    const response = await this.requestHost({ type: "prepare_close", force: true }, 2_000);
+    const token = (response.data as { token?: unknown } | undefined)?.token;
+    if (!response.success || typeof token !== "string") {
       throw new Error(response.error ?? "Host close preparation failed");
     }
-    return response.data as Record<string, unknown>;
+    return { token };
   }
 
-  async confirmClose(token: string): Promise<{ valid: boolean; mutationSequence?: number }> {
-    const response = await this.requestHost({ type: "confirm_close", token }, 5_000);
-    if (!response.success || !response.data) {
+  /** Main-only counterpart to prepareForcedClose. */
+  private async confirmForcedClose(token: string): Promise<void> {
+    const response = await this.requestHost({ type: "confirm_close", token }, 2_000);
+    if (!response.success || (response.data as { valid?: unknown } | undefined)?.valid !== true) {
       throw new Error(response.error ?? "Host close confirmation failed");
     }
-    return response.data as { valid: boolean; mutationSequence?: number };
-  }
-
-  async cancelClose(token: string): Promise<boolean> {
-    const response = await this.requestHost({ type: "cancel_close", token }, 5_000);
-    if (!response.success || !response.data) {
-      throw new Error(response.error ?? "Host close cancellation failed");
-    }
-    return (response.data as { cancelled?: boolean }).cancelled === true;
   }
 
   async reloadInPlace(): Promise<void> {
@@ -1448,7 +1488,7 @@ export class SessionHost extends EventEmitter {
 
   sendRendererDetached(rendererGeneration: number): void {
     if (!this.proc.connected) return;
-    this.proc.send({ type: "renderer_detached", rendererGeneration });
+    this.sendChildMessage({ type: "renderer_detached", rendererGeneration });
   }
 
   sendEditorPatch(patch: {
@@ -1465,7 +1505,7 @@ export class SessionHost extends EventEmitter {
 
   acknowledgeRestoration(restorationId: string): void {
     if (!this.proc.connected) return;
-    this.proc.send({ type: "restoration_ack", restorationId });
+    this.sendChildMessage({ type: "restoration_ack", restorationId });
   }
 
   sendUiResponse(responseJson: string): void {
@@ -1559,6 +1599,7 @@ export class SessionHost extends EventEmitter {
 
   stop(): void {
     if (this.killTimer) return;
+    this.faultInjector.dispose();
     // Clear startup/dialog timers so a pending waitForReady doesn't fire its
     // timeout after an explicit stop (and so the timers don't leak).
     if (this.startupTimer) {

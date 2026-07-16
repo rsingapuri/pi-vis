@@ -51,6 +51,42 @@ describe("scripted OpenAI provider", () => {
     provider.assertExhausted();
   });
 
+  it("applies seeded latency and lets steps and responses override the default profile", async () => {
+    provider = await createScriptedOpenAIProvider(
+      [
+        {
+          latency: { firstByteMs: 90, perChunkMs: 90 },
+          response: {
+            type: "text",
+            chunks: ["first", "second"],
+            latency: { firstByteMs: [20, 20], perChunkMs: [20, 20], seed: 7 },
+          },
+        },
+        {
+          latency: { firstByteMs: 0, perChunkMs: 0, seed: 7 },
+          response: { type: "text", chunks: ["step-override"] },
+        },
+      ],
+      { latency: { firstByteMs: 90, perChunkMs: 90, seed: 99 } },
+    );
+
+    const started = performance.now();
+    const response = await completion();
+    expect(performance.now() - started).toBeGreaterThanOrEqual(15);
+    const reader = response.body!.getReader();
+    await reader.read();
+    const beforeSecond = performance.now();
+    const second = await reader.read();
+    expect(new TextDecoder().decode(second.value)).toContain("second");
+    expect(performance.now() - beforeSecond).toBeGreaterThanOrEqual(15);
+    await reader.cancel();
+
+    const stepStarted = performance.now();
+    await (await completion()).text();
+    expect(performance.now() - stepStarted).toBeLessThan(75);
+    provider.assertExhausted();
+  });
+
   it("blocks on a named gate until a test releases it", async () => {
     provider = await createScriptedOpenAIProvider([
       { response: { type: "text", chunks: ["released"], gate: "allow-response" } },

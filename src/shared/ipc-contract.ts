@@ -266,6 +266,19 @@ export interface IpcInvokeContract {
   };
   /** Owner-bound mutation admission; terminal outcomes arrive in authority frames. */
   "session.dispatchIntent": { req: IntentEnvelope; res: IntentReceipt };
+  /**
+   * Explicitly environment-gated real-host E2E control. The main handler
+   * rejects this channel unless PIVIS_TEST_REAL_HOST_CONTROL=1.
+   */
+  "session.testControl": {
+    req: { sessionId: SessionId; action: "replacement" | "kill"; timeoutMs?: number };
+    res:
+      | {
+          status: "replacement" | "restarted" | "terminal" | "timeout";
+          owner?: { hostInstanceId: string; sessionEpoch: number };
+        }
+      | { status: "disabled" | "unavailable" };
+  };
   /** Serialized multi-plane baseline plus publications buffered after its high-water mark. */
   "session.authorityAttach": {
     req: AuthorityAttachRequest;
@@ -309,6 +322,8 @@ export interface IpcInvokeContract {
       attachments: unknown[];
       conflictText?: string;
       conflictAttachments?: unknown[];
+      /** Expected lifecycle boundary; not an Electron IPC exception. */
+      rejection?: "runtime_unavailable" | "runtime_replaced";
     };
   };
   "session.respondToUiRequest": {
@@ -379,19 +394,8 @@ export interface IpcInvokeContract {
     };
     res: { acknowledged: boolean };
   };
-  /** Two-phase close: checkpoint first, then confirm the current mutation token. */
-  "session.prepareClose": {
-    req: { sessionId: SessionId; force?: boolean };
-    res: { reviewToken: string; checkpoint: unknown };
-  };
-  "session.cancelClose": {
-    req: { sessionId: SessionId; reviewToken: string };
-    res: { cancelled: boolean };
-  };
-  "session.confirmClose": {
-    req: { sessionId: SessionId; reviewToken: string };
-    res: { closed: boolean; reason?: string };
-  };
+  /** Silently dispose the live host and remove this renderer tab's session. */
+  "session.close": { req: { sessionId: SessionId }; res: { closed: true } };
   /** Respond to a unified-TUI editor submit (host→renderer round-trip).
    *  The host's `editor.onSubmit` sends the text to the renderer, which runs
    *  the shared submit pipeline (`submitFromText`). `ok:false` + `bailed:true`
@@ -525,16 +529,13 @@ export interface IpcEventContract {
     state: RuntimeStateUpdate;
   };
   "session.submissionDisposition": { sessionId: SessionId; result: SubmissionResult };
-  "session.queueRestoration": {
+  /** Main-resolved, one-way draft recovery instruction. */
+  "session.restoreDraft": {
     sessionId: SessionId;
     restorationId: string;
-    steering: string[];
-    followUp: string[];
-    originalAttachments: Array<{ intentId: string; images: unknown[] }>;
-    /** GUI-owned queue intents cleared before a late optimistic echo can settle. */
-    clearedIntentIds?: string[];
-    commandDescription?: string;
-    requiresReview: true;
+    text: string;
+    attachments: unknown[];
+    disposition: "restore" | "dropped";
   };
   "session.uiAcknowledged": { sessionId: SessionId; operationId: string };
   "session.uiRequest": { sessionId: SessionId; request: ExtensionUiRequest };
