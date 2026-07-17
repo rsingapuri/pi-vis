@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import installedPiPackage from "../node_modules/@earendil-works/pi-coding-agent/package.json";
 import projectPackage from "../package.json";
 
-const PINNED_PI_VERSION = "0.80.6";
+const PINNED_PI_VERSION = "0.80.10";
 
 describe("test-only real Pi runtime pin", () => {
   it("keeps the manifest, installed package, and executable layout pinned exactly", () => {

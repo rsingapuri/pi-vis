@@ -10,7 +10,7 @@ import type { ScriptedOpenAILatency } from "./scripted-openai-provider.mjs";
 const supportDir = dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = join(supportDir, "../../..");
 export const APP_ENTRY = join(PROJECT_ROOT, "out/main/index.js");
-export const PINNED_PI_VERSION = "0.80.6";
+export const PINNED_PI_VERSION = "0.80.10";
 /** Real-SDK journeys retain realistic, reproducible streaming cadence. */
 export const REAL_SDK_PROVIDER_LATENCY: ScriptedOpenAILatency = {
   firstByteMs: [10, 40],
@@ -325,7 +325,12 @@ export function createRealSdkFixture(options: RealSdkFixtureOptions = {}): RealS
 export async function openNewRealSession(window: Page): Promise<Locator> {
   await window.getByRole("button", { name: "New session" }).click();
   const textarea = window.locator(".composer__textarea");
-  await expect(textarea).toBeEnabled({ timeout: 60_000 });
+  // The textarea intentionally stays usable before authority so renderer-local
+  // `/tree` remains available. The attachment control is runtime-backed and is
+  // enabled only after the first following semantic baseline, making it the
+  // readiness gate before these journeys press Enter.
+  await expect(window.locator(".composer__attach-btn")).toBeEnabled({ timeout: 60_000 });
+  await expect(textarea).toBeEnabled();
   await expect(window.getByText(/Host process exited/)).toHaveCount(0);
   return textarea;
 }

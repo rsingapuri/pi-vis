@@ -39,6 +39,6 @@ This table documents the deployed policy/settlement compatibility contract. Unde
 - Renderer tests prove all direct command call sites construct the mandatory request and stale continuations do not write state.
 - Bridge tests prove each command reaches the intended public SDK operation or an explicit structured capability/domain failure.
 - Electron fake-host tests cover first-use, picker, command, delayed-history, unified-claim, and ESC cancellation/queue-restoration behavior without model/network nondeterminism.
-- The Pi 0.80.6 localhost-provider smoke proves a real successful model-backed compaction by asserting the HTTP summarization request, `Context compacted`, a persisted `compaction` JSONL entry, Composer clearing, and continued host liveness.
+- The Pi 0.80.10 localhost-provider smoke proves a real successful model-backed compaction by asserting the HTTP summarization request, `Context compacted`, a persisted `compaction` JSONL entry, Composer clearing, and continued host liveness.
 
 External provider aliases, credentials, and backend availability remain integration dependencies. A dispatch, cleared editor, or surfaced provider failure is never recorded as successful operation evidence.

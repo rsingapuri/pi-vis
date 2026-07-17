@@ -53,7 +53,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
-    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-coding-agent": "0.80.10",
     "@electron-toolkit/preload": "^3.0.0",
     "@electron-toolkit/utils": "^3.0.0",
     "@electron/notarize": "^3.1.1",

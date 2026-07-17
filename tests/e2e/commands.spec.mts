@@ -526,7 +526,8 @@ test.describe("Slash commands", () => {
     try {
       await first.window.getByRole("button", { name: "New session" }).click();
       const textarea = first.window.locator(".composer__textarea");
-      await expect(textarea).toBeEnabled({ timeout: 15_000 });
+      await expect(first.window.locator(".composer__attach-btn")).toBeEnabled({ timeout: 15_000 });
+      await expect(textarea).toBeEnabled();
       await textarea.fill("hello history owner");
       await textarea.press("Enter");
       await expect(first.window.locator(".transcript-block--assistant")).toContainText(

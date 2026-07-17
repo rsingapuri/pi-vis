@@ -123,7 +123,9 @@ test.describe("workspace saved-session search", () => {
       });
       const page = await app.firstWindow();
       await page.waitForLoadState("domcontentloaded");
-      await expect(page.locator(".composer__textarea")).toBeEnabled({ timeout: 20_000 });
+      // The textarea is intentionally available before authority for local
+      // `/tree`; wait on a runtime-backed control before resetting host logs.
+      await expect(page.locator(".composer__attach-btn")).toBeEnabled({ timeout: 20_000 });
       await expect(
         page.locator(".sidebar__workspace--active .sidebar__workspace-name"),
       ).toContainText("workspace-beta");
@@ -316,7 +318,9 @@ test.describe("workspace saved-session search", () => {
       });
       const page = await app.firstWindow();
       await page.waitForLoadState("domcontentloaded");
-      await expect(page.locator(".composer__textarea")).toBeEnabled({ timeout: 20_000 });
+      // Wait for boot activation to settle before resetting the evidence that
+      // this journey uses to count search-triggered hosts.
+      await expect(page.locator(".composer__attach-btn")).toBeEnabled({ timeout: 20_000 });
       await expect(
         page.locator(".sidebar__workspace--active .sidebar__workspace-name"),
       ).toContainText("workspace-beta");

@@ -341,6 +341,20 @@ describe("Composer autocomplete and authority intents", () => {
     document.body.innerHTML = "";
   });
 
+  it("keeps /tree invokable before initial authority attachment", async () => {
+    setSessionField({ status: "starting", authorityProjection: undefined });
+    const composer = mount();
+    expect(composer.textarea().disabled).toBe(false);
+
+    type(composer.textarea(), "/tree");
+    key(composer.textarea(), "Enter");
+    await vi.waitFor(() =>
+      expect(useTreeStore.getState()).toMatchObject({ open: true, sessionId: SID }),
+    );
+    expect(intentCalls(invoke)).toHaveLength(0);
+    composer.unmount();
+  });
+
   it.each(["compaction repair", "abort repair"])(
     "keeps /tree invokable during %s while runtime-backed controls stay fenced",
     async () => {

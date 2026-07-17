@@ -356,7 +356,8 @@ test.describe("Real SDK-host smoke", () => {
     try {
       await window.getByRole("button", { name: "New session" }).click();
       const textarea = window.locator(".composer__textarea");
-      await expect(textarea).toBeEnabled({ timeout: 60_000 });
+      await expect(window.locator(".composer__attach-btn")).toBeEnabled({ timeout: 60_000 });
+      await expect(textarea).toBeEnabled();
 
       await textarea.fill("/session");
       await textarea.press("Enter");

@@ -114,7 +114,7 @@ async function assertDockNeverFlashed(page: Page): Promise<void> {
     .toBe(false);
 }
 
-test.describe("Pinned real Pi 0.80.6 regressions", () => {
+test.describe("Pinned real Pi 0.80.10 regressions", () => {
   test("real factory widgets, unified draft custody, and custom Escape share one live authority", async () => {
     test.setTimeout(180_000);
     const fixture = createRealSdkFixture({ extensionFiles: [EXTENSION] });

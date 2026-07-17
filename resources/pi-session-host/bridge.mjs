@@ -13,8 +13,64 @@ import { createStateAuthority } from "./state-authority.mjs";
  * Every command the renderer emits is handled here; method signatures are
  * verified against the installed
  * pi's .d.ts (AgentSession getters/methods, ExtensionRunner.getRegisteredCommands,
- * SessionManager.getLeafId, ModelRegistry.getAvailable).
+ * SessionManager.getLeafId, and the public model runtime/registry surfaces).
  */
+
+/**
+ * Pi 0.80.8 replaced AgentSession.modelRegistry with modelRuntime. Production
+ * still supports the public 0.80.6 SDK, so keep that release difference behind
+ * one bridge-local adapter rather than importing either implementation's
+ * internals or forcing the test-only pin to become the production minimum.
+ */
+function modelAccess(session) {
+  if (session?.modelRuntime) {
+    const runtime = session.modelRuntime;
+    return {
+      getAvailable: () => runtime.getAvailable(),
+      getModel: (provider, modelId) => runtime.getModel(provider, modelId),
+      refresh: () => runtime.refresh(),
+      logout: (provider) => runtime.logout(provider),
+      listCredentials: () => runtime.listCredentials(),
+      getProviderName: (provider) => {
+        try {
+          return runtime.getProvider?.(provider)?.name ?? provider;
+        } catch {
+          return provider;
+        }
+      },
+    };
+  }
+
+  const registry = session?.modelRegistry;
+  return {
+    getAvailable: () => registry.getAvailable(),
+    getModel: (provider, modelId) => registry.find(provider, modelId),
+    refresh: async () => registry.refresh(),
+    logout: async (provider) => {
+      registry.authStorage.logout(provider);
+      registry.refresh();
+    },
+    listCredentials: async () => {
+      const credentials = [];
+      for (const providerId of registry.authStorage.list()) {
+        try {
+          const credential = registry.authStorage.get(providerId);
+          if (credential) credentials.push({ providerId, type: credential.type });
+        } catch {
+          // One unreadable credential must not hide other logout options.
+        }
+      }
+      return credentials;
+    },
+    getProviderName: (provider) => {
+      try {
+        return registry.getProviderDisplayName?.(provider) ?? provider;
+      } catch {
+        return provider;
+      }
+    },
+  };
+}
 
 /**
  * Fail fast if the installed pi is missing any SDK surface this bridge calls.
@@ -59,7 +115,18 @@ export function assertHostCapabilities(session, runtime) {
   ]) {
     fn(session, m, `session.${m}`);
   }
-  fn(session?.modelRegistry, "getAvailable", "session.modelRegistry.getAvailable");
+  if (session?.modelRuntime) {
+    for (const m of ["getAvailable", "getModel", "refresh", "logout", "listCredentials"]) {
+      fn(session.modelRuntime, m, `session.modelRuntime.${m}`);
+    }
+  } else {
+    for (const m of ["getAvailable", "find", "refresh"]) {
+      fn(session?.modelRegistry, m, `session.modelRegistry.${m}`);
+    }
+    for (const m of ["logout", "list", "get"]) {
+      fn(session?.modelRegistry?.authStorage, m, `session.modelRegistry.authStorage.${m}`);
+    }
+  }
   fn(session?.extensionRunner, "getCommand", "session.extensionRunner.getCommand");
   fn(
     session?.extensionRunner,
@@ -702,11 +769,11 @@ export function setupCommandBridge({
     if (isDiscovered) return { handled: false };
     const words = args ? args.split(/\s+/) : [];
     const modelResponse = async () => {
-      const models = await _session.modelRegistry.getAvailable();
+      const models = await modelAccess(_session).getAvailable();
       return { response: { models } };
     };
     const setModelByReference = async (reference) => {
-      const models = await _session.modelRegistry.getAvailable();
+      const models = await modelAccess(_session).getAvailable();
       const slash = reference.indexOf("/");
       const provider = slash >= 0 ? reference.slice(0, slash) : "";
       const modelId = slash >= 0 ? reference.slice(slash + 1) : reference;
@@ -771,7 +838,7 @@ export function setupCommandBridge({
         };
       case "models": {
         if (!args) {
-          const models = await _session.modelRegistry.getAvailable();
+          const models = await modelAccess(_session).getAvailable();
           return {
             handled: true,
             result: { response: { models, enabledIds: resolveEnabledModelIds(_session, models) } },
@@ -780,7 +847,7 @@ export function setupCommandBridge({
         const [verb, csv = ""] = args.split(/\s+/, 2);
         if (verb !== "apply" && verb !== "save")
           throw new Error("Usage: /models [apply|save] [provider/model,...]");
-        const models = await _session.modelRegistry.getAvailable();
+        const models = await modelAccess(_session).getAvailable();
         const enabledIds = csv ? csv.split(",").filter(Boolean) : null;
         const scoped = buildScopedModels(_session, models, enabledIds);
         _session.setScopedModels(scoped);
@@ -798,8 +865,7 @@ export function setupCommandBridge({
             result: { response: { providers: await collectLogoutProviders(_session) } },
           };
         if (words.length !== 1) throw new Error("Usage: /logout <provider>");
-        _session.modelRegistry.authStorage.logout(words[0]);
-        await _session.modelRegistry.refresh();
+        await modelAccess(_session).logout(words[0]);
         return { handled: true, result: { response: { provider: words[0] } } };
       case "label": {
         const targetId = words.shift();
@@ -1047,7 +1113,7 @@ export function setupCommandBridge({
           return { deferredOutcome: navigationOperation };
         }
         case "setModel": {
-          const models = await _session.modelRegistry.getAvailable();
+          const models = await modelAccess(_session).getAvailable();
           const model = models.find(
             (candidate) =>
               candidate.provider === intent.provider && candidate.id === intent.modelId,
@@ -1163,9 +1229,9 @@ export function setupCommandBridge({
 
         // ── Model / thinking ───────────────────────────────────────────
         // setModel takes a Model object, not provider/modelId — resolve via
-        // the registry exactly as rpc-mode does.
+        // Pi's public model surface exactly as rpc-mode does.
         case "set_model": {
-          const models = await _session.modelRegistry.getAvailable();
+          const models = await modelAccess(_session).getAvailable();
           const provider = typeof command.provider === "string" ? command.provider : "";
           const candidates = models.filter((m) => m.id === command.modelId);
           const model = provider
@@ -1248,7 +1314,7 @@ export function setupCommandBridge({
             send({ type: "response", id, success: true, data: { models: scopedModels } });
             break;
           }
-          const models = await _session.modelRegistry.getAvailable();
+          const models = await modelAccess(_session).getAvailable();
           let effective = models;
           const settingsPatterns = _session.settingsManager?.getEnabledModels?.();
           if (Array.isArray(settingsPatterns) && settingsPatterns.length > 0) {
@@ -1271,17 +1337,18 @@ export function setupCommandBridge({
         // the SDK host's public session APIs.
         case "get_scoped_models": {
           // Refresh so a freshly-added credential (e.g. /login) is reflected
-          // immediately — mirrors pi's showModelsSelector, which calls
-          // modelRegistry.refresh() before getAvailable().
-          await _session.modelRegistry.refresh?.();
-          const models = await _session.modelRegistry.getAvailable();
+          // immediately — refresh Pi's public model surface before reading the
+          // current available-model snapshot.
+          const modelsApi = modelAccess(_session);
+          await modelsApi.refresh();
+          const models = await modelsApi.getAvailable();
           const enabledIds = resolveEnabledModelIds(_session, models);
           send({ type: "response", id, success: true, data: { models, enabledIds } });
           break;
         }
 
         case "set_scoped_models": {
-          const models = await _session.modelRegistry.getAvailable();
+          const models = await modelAccess(_session).getAvailable();
           const scoped = buildScopedModels(_session, models, command.enabledIds);
           _session.setScopedModels(scoped);
           send({ type: "response", id, success: true });
@@ -1296,7 +1363,7 @@ export function setupCommandBridge({
         // onPersist following its live onChange updates). patterns=undefined
         // clears the settings filter (all enabled / empty / == all).
         case "save_scoped_models": {
-          const models = await _session.modelRegistry.getAvailable();
+          const models = await modelAccess(_session).getAvailable();
           const isAll =
             command.enabledIds === null ||
             command.enabledIds.length === 0 ||
@@ -1317,8 +1384,7 @@ export function setupCommandBridge({
         }
 
         case "logout_provider": {
-          _session.modelRegistry.authStorage.logout(command.provider);
-          await _session.modelRegistry.refresh();
+          await modelAccess(_session).logout(command.provider);
           send({ type: "response", id, success: true });
           break;
         }
@@ -1810,7 +1876,7 @@ function detectCacheMissNotice(session, message, previous) {
     paidTokens > 0
       ? (usageNumber(cost, "input") + usageNumber(cost, "cacheWrite")) / paidTokens
       : 0;
-  const model = session.modelRegistry?.find?.(message.provider, message.model);
+  const model = modelAccess(session).getModel(message.provider, message.model);
   const readPerToken =
     cacheRead > 0
       ? usageNumber(cost, "cacheRead") / cacheRead
@@ -2034,32 +2100,18 @@ function buildScopedModels(session, models, enabledIds) {
  * (pi's provider display names aren't a public export).
  */
 async function collectLogoutProviders(session) {
-  // Mirror pi's getLogoutProviderOptions (interactive-mode.js:3868):
-  // iterate authStorage.list() — the authoritative set of stored
-  // credentials — rather than scanning available models. A provider with
+  // Mirror Pi's public getLogoutProviderOptions path: list stored credentials
+  // from the version-appropriate model surface rather than scanning available
+  // models. A provider with
   // stored auth but no currently-listed model (e.g. expired key) is still
-  // surfaced. Name comes from modelRegistry.getProviderDisplayName()
-  // (pi's BUILT_IN_PROVIDER_DISPLAY_NAMES), not a hand-rolled title-case.
-  const modelRegistry = session.modelRegistry;
-  const authStorage = modelRegistry?.authStorage;
-  if (!authStorage || typeof authStorage.list !== "function") return [];
-  const out = [];
-  for (const providerId of authStorage.list()) {
-    let credential;
-    try {
-      credential = authStorage.get?.(providerId);
-    } catch {
-      continue;
-    }
-    if (!credential) continue;
-    let name = providerId;
-    try {
-      name = modelRegistry.getProviderDisplayName?.(providerId) ?? providerId;
-    } catch {
-      /* fall back to the raw id */
-    }
-    out.push({ id: providerId, name, authType: credential.type });
-  }
+  // surfaced.
+  const models = modelAccess(session);
+  const credentials = await models.listCredentials();
+  const out = credentials.map(({ providerId, type }) => ({
+    id: providerId,
+    name: models.getProviderName(providerId),
+    authType: type,
+  }));
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
 }

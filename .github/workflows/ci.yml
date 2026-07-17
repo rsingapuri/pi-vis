@@ -19,6 +19,6 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: xvfb-run -a npm run test:render
-      # Includes the repository-pinned Pi 0.80.6 SDK-host suites. They use only
+      # Includes the repository-pinned Pi 0.80.10 SDK-host suites. They use only
       # an isolated loopback provider and require no developer Pi or API key.
       - run: xvfb-run -a npm run test:e2e

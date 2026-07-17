@@ -73,10 +73,15 @@ function makeSession(overrides = {}) {
     setSessionName: vi.fn(() => {}),
     bindExtensions: vi.fn(async () => {}),
     reload: vi.fn(async () => {}),
-    modelRegistry: {
+    modelRuntime: {
       getAvailable: vi.fn(async () => [
         { provider: "anthropic", id: "claude-x", name: "Claude X" },
       ]),
+      getModel: vi.fn(),
+      refresh: vi.fn(async () => {}),
+      logout: vi.fn(async () => {}),
+      listCredentials: vi.fn(async () => []),
+      getProvider: vi.fn(),
     },
     extensionRunner: {
       getCommand: vi.fn(() => undefined),
@@ -882,10 +887,9 @@ describe("setupCommandBridge — target intent dispatch", () => {
         getLeafId: vi.fn(() => "leaf-9"),
         appendLabelChange: vi.fn(),
       },
-      modelRegistry: {
+      modelRuntime: {
         getAvailable: vi.fn(async () => [{ provider: "anthropic", id: "claude-x" }]),
-        authStorage: { logout: vi.fn() },
-        refresh: vi.fn(async () => {}),
+        logout: vi.fn(async () => {}),
       },
     });
     const commands = [
@@ -908,9 +912,68 @@ describe("setupCommandBridge — target intent dispatch", () => {
     await vi.waitFor(() => expect(session.sessionManager.appendLabelChange).toHaveBeenCalled());
     expect(session.exportToHtml).toHaveBeenCalledWith("/tmp/out.html");
     expect(session.setScopedModels).toHaveBeenCalledTimes(1);
-    expect(session.modelRegistry.authStorage.logout).toHaveBeenCalledWith("anthropic");
+    expect(session.modelRuntime.logout).toHaveBeenCalledWith("anthropic");
     expect(session.sessionManager.appendLabelChange).toHaveBeenCalledWith("entry-1", "checkpoint");
     expect(session.prompt).not.toHaveBeenCalled();
+  });
+
+  it("lists stored logout credentials through Pi's public model runtime", async () => {
+    const { run } = setup({
+      modelRuntime: {
+        listCredentials: vi.fn(async () => [
+          { providerId: "z-local", type: "api_key" },
+          { providerId: "anthropic", type: "oauth" },
+        ]),
+        getProvider: vi.fn((providerId) =>
+          providerId === "anthropic" ? { name: "Anthropic" } : undefined,
+        ),
+      },
+    });
+
+    await expect(run({ type: "get_logout_providers" })).resolves.toMatchObject({
+      success: true,
+      data: {
+        providers: [
+          { id: "anthropic", name: "Anthropic", authType: "oauth" },
+          { id: "z-local", name: "z-local", authType: "api_key" },
+        ],
+      },
+    });
+  });
+
+  it("adapts Pi 0.80.6's public model registry for selection and logout", async () => {
+    const logout = vi.fn();
+    const refresh = vi.fn();
+    const model = { provider: "anthropic", id: "claude-x", name: "Claude X" };
+    const { session, run } = setup({
+      modelRuntime: undefined,
+      modelRegistry: {
+        getAvailable: vi.fn(() => [model]),
+        find: vi.fn((provider, modelId) =>
+          provider === model.provider && modelId === model.id ? model : undefined,
+        ),
+        refresh,
+        getProviderDisplayName: vi.fn(() => "Anthropic"),
+        authStorage: {
+          logout,
+          list: vi.fn(() => ["anthropic"]),
+          get: vi.fn(() => ({ type: "oauth" })),
+        },
+      },
+    });
+
+    await expect(
+      run({ type: "set_model", provider: "anthropic", modelId: "claude-x" }),
+    ).resolves.toMatchObject({ success: true });
+    expect(session.setModel).toHaveBeenCalledWith(model);
+    await expect(run({ type: "get_logout_providers" })).resolves.toMatchObject({
+      data: { providers: [{ id: "anthropic", name: "Anthropic", authType: "oauth" }] },
+    });
+    await expect(run({ type: "logout_provider", provider: "anthropic" })).resolves.toMatchObject({
+      success: true,
+    });
+    expect(logout).toHaveBeenCalledWith("anthropic");
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it("leaves a template that shadows a builtin on Pi's prompt path", async () => {
@@ -1025,7 +1088,7 @@ describe("setupCommandBridge — command mapping", () => {
 
   it("set_model resolves providerless models by id", async () => {
     const { session, run } = setup({
-      modelRegistry: {
+      modelRuntime: {
         getAvailable: vi.fn(async () => [{ id: "local-model", name: "Local Model" }]),
       },
     });
@@ -1044,7 +1107,7 @@ describe("setupCommandBridge — command mapping", () => {
 
   it("save_scoped_models persists patterns to settingsManager and applies to session", async () => {
     const { session, run } = setup({
-      modelRegistry: {
+      modelRuntime: {
         getAvailable: vi.fn(async () => [
           { provider: "anthropic", id: "claude-x", name: "Claude X" },
           { provider: "openai", id: "gpt-5", name: "GPT-5" },
@@ -1063,7 +1126,7 @@ describe("setupCommandBridge — command mapping", () => {
 
   it("save_scoped_models clears settings (undefined) when all are enabled", async () => {
     const { session, run } = setup({
-      modelRegistry: {
+      modelRuntime: {
         getAvailable: vi.fn(async () => [
           { provider: "anthropic", id: "claude-x", name: "Claude X" },
           { provider: "openai", id: "gpt-5", name: "GPT-5" },
@@ -1088,15 +1151,15 @@ describe("setupCommandBridge — command mapping", () => {
     const res = await run({ type: "get_available_models" });
     expect(res.success).toBe(true);
     expect(res.data.models).toEqual([{ provider: "anthropic", id: "claude-x", name: "Claude X" }]);
-    // modelRegistry.getAvailable() must NOT be called when a scope is active.
-    expect(session.modelRegistry.getAvailable).not.toHaveBeenCalled();
+    // modelRuntime.getAvailable() must NOT be called when a scope is active.
+    expect(session.modelRuntime.getAvailable).not.toHaveBeenCalled();
   });
 
-  it("get_available_models returns all from registry when no scope is set", async () => {
+  it("get_available_models returns all from the model runtime when no scope is set", async () => {
     const { session, run } = setup();
     const res = await run({ type: "get_available_models" });
     expect(res.success).toBe(true);
-    expect(session.modelRegistry.getAvailable).toHaveBeenCalled();
+    expect(session.modelRuntime.getAvailable).toHaveBeenCalled();
     expect(res.data.models).toEqual([{ provider: "anthropic", id: "claude-x", name: "Claude X" }]);
   });
 
@@ -1106,7 +1169,7 @@ describe("setupCommandBridge — command mapping", () => {
     // So a SAVED scope (save_scoped_models) must still narrow the dropdown on
     // a fresh session via this settings fallback.
     const { session, run } = setup({
-      modelRegistry: {
+      modelRuntime: {
         getAvailable: vi.fn(async () => [
           { provider: "anthropic", id: "claude-x", name: "Claude X" },
           { provider: "openai", id: "gpt-5", name: "GPT-5" },
@@ -1119,13 +1182,13 @@ describe("setupCommandBridge — command mapping", () => {
     });
     const res = await run({ type: "get_available_models" });
     expect(res.success).toBe(true);
-    expect(session.modelRegistry.getAvailable).toHaveBeenCalled();
+    expect(session.modelRuntime.getAvailable).toHaveBeenCalled();
     expect(res.data.models).toEqual([{ provider: "anthropic", id: "claude-x", name: "Claude X" }]);
   });
 
   it("strips Pi 0.80.6's :max suffix from saved model-scope patterns", async () => {
     const { run } = setup({
-      modelRegistry: {
+      modelRuntime: {
         getAvailable: vi.fn(async () => [
           { provider: "openai", id: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
           { provider: "anthropic", id: "claude-x", name: "Claude X" },
@@ -1151,7 +1214,7 @@ describe("setupCommandBridge — command mapping", () => {
       { provider: "openai", id: "gpt-5", name: "GPT-5" },
     ];
     const { run } = setup({
-      modelRegistry: { getAvailable: vi.fn(async () => all) },
+      modelRuntime: { getAvailable: vi.fn(async () => all) },
       settingsManager: {
         setEnabledModels: vi.fn(),
         getEnabledModels: vi.fn(() => ["anthropic/claude-x", "openai/gpt-5"]),
@@ -1305,9 +1368,9 @@ describe("setupCommandBridge — command mapping", () => {
       resolveModels = resolve;
     });
     const { session, runtime, run } = setup();
-    session.modelRegistry.getAvailable.mockReturnValueOnce(models);
+    session.modelRuntime.getAvailable.mockReturnValueOnce(models);
     const settingModel = run({ type: "set_model", provider: "anthropic", modelId: "claude-x" });
-    await vi.waitFor(() => expect(session.modelRegistry.getAvailable).toHaveBeenCalled());
+    await vi.waitFor(() => expect(session.modelRuntime.getAvailable).toHaveBeenCalled());
 
     await expect(run({ type: "new_session" })).resolves.toMatchObject({
       success: false,
@@ -1772,6 +1835,24 @@ describe("conversation-tree commands (get_tree / navigate_tree / set_label)", ()
 describe("assertHostCapabilities", () => {
   it("passes for a complete session + runtime", () => {
     const session = makeSession();
+    const runtime = makeRuntime(session);
+    expect(() => assertHostCapabilities(session, runtime)).not.toThrow();
+  });
+
+  it("passes with Pi 0.80.6's complete public model registry", () => {
+    const session = makeSession({
+      modelRuntime: undefined,
+      modelRegistry: {
+        getAvailable: vi.fn(() => []),
+        find: vi.fn(),
+        refresh: vi.fn(),
+        authStorage: {
+          logout: vi.fn(),
+          list: vi.fn(() => []),
+          get: vi.fn(),
+        },
+      },
+    });
     const runtime = makeRuntime(session);
     expect(() => assertHostCapabilities(session, runtime)).not.toThrow();
   });

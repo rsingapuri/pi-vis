@@ -6,7 +6,7 @@
 Renderer (React)  ⇄ typed Electron IPC ⇄  Main process  ⇄ child IPC ⇄  SDK-host AgentSession
 ```
 
-Each active session has exactly one live authority: a `SessionHost` fork of `resources/pi-session-host/host.mjs`. The host imports the installed pi public SDK, creates the `AgentSession`, runs extensions and pi-tui surfaces, and owns command admission and state snapshots. There is no `pi --mode rpc` session path or fallback.
+Each active session has exactly one live authority: a `SessionHost` fork of `resources/pi-session-host/host.mjs`. The host imports the installed pi public SDK, creates the `AgentSession`, uses its public model/auth surface (`ModelRuntime` on current Pi, with a public `ModelRegistry` adapter for the supported 0.80.6–0.80.7 range), runs extensions and pi-tui surfaces, and owns command admission and state snapshots. There is no `pi --mode rpc` session path or fallback.
 
 Main owns process lifecycle, session-file advisory locks, IPC validation, activation-visit retirement, and forwarding. The renderer owns presentation and sends typed requests through preload; it never reads Electron APIs directly.
 
