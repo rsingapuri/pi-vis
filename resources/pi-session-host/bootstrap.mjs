@@ -5,7 +5,7 @@
  * the main process) so imports are resolved from that exact runtime.
  */
 
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -51,8 +51,22 @@ export function resolvePiDependency(piPath, depName) {
   const realPi = realpathSync(piPath);
   const distDir = path.dirname(realPi); // .../pi-coding-agent/dist
   const pkgDir = path.dirname(distDir); // .../pi-coding-agent
-  const piNodeModules = path.join(pkgDir, "node_modules");
-  return path.join(piNodeModules, depName);
+  // Standard upward node_modules search starting at the pi package dir. A
+  // global/dev install keeps pi's shrinkwrapped deps NESTED
+  // (pi-coding-agent/node_modules/<dep>), but electron-builder re-hoists that
+  // tree to the app's top-level node_modules at package time, so the packaged
+  // app only has the HOISTED copy — the nested path alone 404s in dist.
+  let dir = pkgDir;
+  for (let depth = 0; depth < 10; depth++) {
+    const candidate = path.join(dir, "node_modules", depName);
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // Preserve the old behavior as the not-found result so callers fail with a
+  // path that names what was being looked for.
+  return path.join(pkgDir, "node_modules", depName);
 }
 
 /**

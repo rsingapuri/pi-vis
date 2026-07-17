@@ -20,18 +20,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PI_PACKAGE_SEGMENTS = ["node_modules", "@earendil-works", "pi-coding-agent"] as const;
 
-// Same dev/production resolution shape as resolveHostScript() in
-// session-host.ts. The bundled package must live on the real filesystem —
-// the SDK host is forked (possibly under system Node) and pty spawns cli.js
-// directly, neither of which can read inside app.asar — so electron-builder.yml
-// asarUnpacks node_modules/@earendil-works/**.
+// The bundled package must live on the real filesystem — the SDK host is
+// forked (possibly under system Node) and pty spawns cli.js directly, neither
+// of which can read inside app.asar — so electron-builder.yml asarUnpacks
+// node_modules/@earendil-works/**. Electron's patched fs makes existsSync
+// succeed for paths INSIDE app.asar, so any asar hit from the walk below must
+// be remapped to its app.asar.unpacked mirror before children consume it.
+function toUnpackedPath(p: string): string {
+  return p.includes(`app.asar${path.sep}`)
+    ? p.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`)
+    : p;
+}
+
 function resolvePiPackageDir(): string {
-  // Dev/tests: walk up from this module (out/main in a build, src/main/pi
-  // under vitest) to the repo root's node_modules.
+  // Walk up from this module (app.asar/out/main in production, out/main in a
+  // dev build, src/main/pi under vitest) to the nearest node_modules holding
+  // the package. In production the hit is inside app.asar (visible through
+  // Electron's patched fs) and is remapped to the unpacked mirror.
   let dir = __dirname;
   for (let depth = 0; depth < 6; depth++) {
     const candidate = path.join(dir, ...PI_PACKAGE_SEGMENTS);
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(candidate)) return toUnpackedPath(candidate);
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -45,10 +54,7 @@ function resolvePiPackageDir(): string {
   } catch {
     asarRoot = path.join(__dirname, "..", "..");
   }
-  const unpackedRoot = asarRoot.includes("app.asar")
-    ? asarRoot.replace(/app\.asar(?=$|\/)/, "app.asar.unpacked")
-    : asarRoot;
-  return path.join(unpackedRoot, ...PI_PACKAGE_SEGMENTS);
+  return path.join(toUnpackedPath(path.join(asarRoot, path.sep)), ...PI_PACKAGE_SEGMENTS);
 }
 
 let cached: { path: string; version: string } | null = null;

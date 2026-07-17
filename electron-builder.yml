@@ -18,17 +18,17 @@ files:
   - "!{.mocharc,.prettierrc}.{js,cjs,yml,yaml}"
 asarUnpack:
   - resources/**
-  # The pinned pi runtime must be real files: the SDK host is forked (possibly
-  # under system Node) and pty spawns dist/cli.js directly — neither can read
-  # inside app.asar.
-  - node_modules/@earendil-works/**
+  # ALL of node_modules must be real files, not asar entries: the pinned pi
+  # runtime (SDK host fork under system Node, pty spawning dist/cli.js) reads
+  # its dependency tree with plain-node fs, and electron-builder re-hoists
+  # pi's shrinkwrapped nested deps to top-level node_modules at package time —
+  # so unpacking only @earendil-works/** leaves a broken module graph inside
+  # the asar. Renderer deps are vite-bundled into out/, so the packaged
+  # node_modules exists only for subprocess/native consumption anyway.
+  - node_modules/**
   - out/resources/pi-session-host/**
   - out/main/session-search-worker.js
   - out/main/chunks/**
-  - node_modules/@homebridge/node-pty-prebuilt-multiarch/**/*.node
-  - node_modules/@homebridge/node-pty-prebuilt-multiarch/build/**
-  - node_modules/proper-lockfile/**
-  - node_modules/zod/**
 mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
