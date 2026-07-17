@@ -20,8 +20,16 @@ test.describe("workspace session search", () => {
     await expect(page.locator(".composer__textarea")).toBeEnabled({ timeout: 20_000 });
   });
 
-  test("workspace action is always visible, scoped, and restores focus", async ({ page }) => {
+  test("workspace actions reveal on hover, preserve slots, and restore focus", async ({ page }) => {
+    const workspaceHeader = page
+      .locator(".sidebar__workspace-header")
+      .filter({ hasText: "pi-vis" });
     const button = page.getByRole("button", { name: "Search sessions in pi-vis" });
+    const chevron = workspaceHeader.locator(".sidebar__workspace-chevron");
+    await expect(button).toHaveCSS("width", "0px");
+    await expect(chevron).toHaveCSS("width", "0px");
+    await expect(button).toHaveCSS("opacity", "0");
+    await workspaceHeader.hover();
     await expect(button).toBeVisible();
     await expect(button.evaluate((node) => getComputedStyle(node).opacity)).resolves.not.toBe("0");
     const order = await button.evaluate((node) => ({
@@ -99,6 +107,9 @@ test.describe("workspace session search", () => {
   test("default-on setting persists but launch availability changes only after restart", async ({
     page,
   }) => {
+    const workspaceHeader = page
+      .locator(".sidebar__workspace-header")
+      .filter({ hasText: "pi-vis" });
     await page.getByRole("button", { name: "Settings" }).click();
     const row = page.locator(".settings-row").filter({ hasText: "Saved session search" });
     const toggle = page.getByRole("button", { name: "Saved session search" });
@@ -119,6 +130,7 @@ test.describe("workspace session search", () => {
       )
       .toBe(false);
     await page.getByRole("button", { name: "Close settings" }).click();
+    await workspaceHeader.hover();
     await expect(page.getByRole("button", { name: "Search sessions in pi-vis" })).toBeVisible();
   });
 

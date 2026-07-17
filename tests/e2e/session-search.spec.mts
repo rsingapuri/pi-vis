@@ -136,6 +136,10 @@ test.describe("workspace saved-session search", () => {
       fs.writeFileSync(ipcLog, "");
 
       const searchA = page.getByRole("button", { name: "Search sessions in workspace-alpha" });
+      await page
+        .locator(".sidebar__workspace-header")
+        .filter({ hasText: "workspace-alpha" })
+        .hover();
       await searchA.click();
       await expect(
         page.getByRole("dialog", { name: "Search sessions in workspace-alpha" }),
@@ -327,6 +331,10 @@ test.describe("workspace saved-session search", () => {
       fs.writeFileSync(spawnLog, "");
       fs.writeFileSync(ipcLog, "");
 
+      await page
+        .locator(".sidebar__workspace-header")
+        .filter({ hasText: "workspace-alpha" })
+        .hover();
       await page.getByRole("button", { name: "Search sessions in workspace-alpha" }).click();
       await page.getByRole("combobox").fill("juniper");
       const result = page.getByRole("option", { name: /Ancient lifecycle investigation/u });

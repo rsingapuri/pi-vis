@@ -708,6 +708,29 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
+  it("clears a new session's first direct prompt when its untagged user echo promotes it", async () => {
+    installInvoke(invoke, false);
+    const composer = mount();
+    type(composer.textarea(), "first direct prompt");
+    key(composer.textarea(), "Enter");
+    await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
+
+    // Idle prompts are delivered directly, so Pi does not expose a queue
+    // identity on their user echo. The exact echo still proves this untouched
+    // first-session draft was delivered.
+    act(() =>
+      useSessionsStore.getState().applyEvent(SID, {
+        type: "message_start",
+        message: { role: "user", content: "first direct prompt" },
+      }),
+    );
+
+    await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
+    expect(useSessionsStore.getState().sessions.get(SID)?.isNewPending).toBe(false);
+    expect(useSessionsStore.getState().sessionDrafts.get(SID)).toBeUndefined();
+    composer.unmount();
+  });
+
   it("preserves a newer draft when the first prompt echo promotes the session", async () => {
     installInvoke(invoke, false);
     const composer = mount();

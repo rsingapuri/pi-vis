@@ -331,8 +331,10 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
       // Wait for xterm to ANSWER the handshake the fake host pushed on open.
       // A nonzero kitty-flags reply (\x1b[?<n>u, n>0) proves xterm granted kitty.
       await expect.poll(() => readInput(folders), { timeout: 15_000 }).toMatch(/\x1b\[\?[1-9]\d*u/);
-      // And a Device Attributes reply (terminator 'c') arrived too.
-      expect(readInput(folders)).toMatch(/\x1b\[\?[\d;]+c/);
+      // And a Device Attributes reply (terminator 'c') arrives too. The host
+      // can record the two handshake replies in separate writes, so wait for
+      // this second response instead of sampling the file once.
+      await expect.poll(() => readInput(folders), { timeout: 15_000 }).toMatch(/\x1b\[\?[\d;]+c/);
 
       // Focus the terminal and drive real DOM keys through real xterm 6.1.
       await panel.locator(".xterm").click();

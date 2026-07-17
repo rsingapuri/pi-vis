@@ -510,7 +510,9 @@ export function initIpc(win: BrowserWindow): void {
       const settings = getSettings();
       const piInfo = getPinnedPi(settings.piBinaryPath);
       if (!piInfo) throw new Error("Bundled pi runtime not found (broken install)");
-      const loginShellEnv = await getHostEnv();
+      // Pass the environment promise into the registry so activation fences
+      // cold-owner reads before this asynchronous lookup settles.
+      const loginShellEnv = getHostEnv();
       const record = registry?.getSession(args.sessionId);
       if (record?.status === "cold" && record.worktreePath) {
         const persistedPath = record.worktreePath;
@@ -567,7 +569,12 @@ export function initIpc(win: BrowserWindow): void {
           });
         }
       }
-      await registry?.activateSession(
+      // Environment/worktree discovery above can yield while a renderer closes
+      // the cold record. Re-read immediately before the synchronous registry
+      // call so a superseded activation becomes a silent no-op instead of
+      // trying to activate a record that no longer exists.
+      if (!registry?.getSession(args.sessionId)) return;
+      await registry.activateSession(
         args.sessionId,
         piInfo.path,
         loginShellEnv,

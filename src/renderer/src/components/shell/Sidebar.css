@@ -164,49 +164,57 @@
   opacity: 1;
 }
 
-/* Workspace actions have fixed hit-target slots. Search and collapse are
-   always visible; remove reserves the trailing slot and only fades in so it
-   can never push either control when the header is hovered or focused. */
+/* Workspace actions collapse horizontally until the workspace row is hovered
+   or keyboard-focused. Their hit-target height stays fixed so revealing them
+   does not change the workspace row's vertical layout, while the name keeps
+   the horizontal room when the controls are invisible. */
 .sidebar__workspace-actions {
   display: flex;
   align-items: center;
-  gap: 0.286rem;
+  gap: 0;
   flex: 0 0 auto;
 }
 .sidebar__workspace-actions .icon {
   width: 0.857rem;
   height: 0.857rem;
 }
-
-/* Search is a first-class, always-visible workspace capability. */
-.sidebar__workspace-search {
-  color: var(--text-ghost);
-  opacity: 0.7;
-}
-.sidebar__workspace-search:hover,
-.sidebar__workspace-search:focus-visible {
-  color: var(--text);
-  opacity: 1;
-}
-
-.sidebar__workspace-chevron {
-  color: var(--text-ghost);
-}
-.sidebar__workspace-chevron:hover,
-.sidebar__workspace-chevron:focus-visible {
-  color: var(--text);
-}
-
-/* The remove slot remains in the flex layout at rest, preserving the search
-   and chevron positions. Opacity keeps it keyboard-focusable; focusing it
-   reveals the control through the header's :has(:focus-visible) state. */
-.sidebar__remove-workspace {
+.sidebar__workspace-actions > .icon-btn {
+  width: 0;
+  height: 1.714rem;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
   color: var(--text-ghost);
   opacity: 0;
-  transition: opacity 0.12s ease, background 0.1s ease, color 0.12s ease;
+  transition: width 0.12s ease, margin 0.12s ease, opacity 0.12s ease, background 0.1s ease, color
+    0.12s ease;
 }
-.sidebar__workspace-header:is(:hover, :has(:focus-visible)) .sidebar__remove-workspace {
+.sidebar__workspace-actions > .icon-btn .icon {
+  opacity: 0;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.sidebar__workspace-header:is(:hover, :has(:focus-visible))
+  .sidebar__workspace-actions
+  > .icon-btn {
+  width: 1.714rem;
+  height: 1.714rem;
   opacity: 1;
+}
+.sidebar__workspace-header:is(:hover, :has(:focus-visible))
+  .sidebar__workspace-actions
+  > .icon-btn
+  .icon {
+  opacity: 1;
+}
+.sidebar__workspace-header:is(:hover, :has(:focus-visible))
+  .sidebar__workspace-actions
+  > .icon-btn
+  + .icon-btn {
+  margin-left: 0.286rem;
+}
+.sidebar__workspace-actions > .icon-btn:hover,
+.sidebar__workspace-actions > .icon-btn:focus-visible {
+  color: var(--text);
 }
 .sidebar__remove-workspace:hover,
 .sidebar__remove-workspace:focus-visible {

@@ -42,7 +42,7 @@ Opening the search surface and preview never contact `SessionRegistry`, create a
 
 ## Consequences
 
-A default-on, restart-scoped `sessionSearchEnabled` setting is the operational escape hatch; when disabled at launch, main creates no search service, catalog, or worker and renderer search affordances are absent. Otherwise, the workspace-row search icon and `Cmd/Ctrl+Shift+F` open a scoped modal. The modal preview is separate from live transcript UI; ESC closes/backs out under its claim and never interrupts the underlying host. Explicit opening is the only search action that may focus a workspace/session or activate a host.
+A default-on, restart-scoped `sessionSearchEnabled` setting is the operational escape hatch; when disabled at launch, main creates no search service, catalog, or worker and renderer search affordances are absent. Otherwise, the workspace-row search icon (revealed on workspace hover or keyboard focus, with no resting name-width reservation) and `Cmd/Ctrl+Shift+F` open a scoped modal. The modal preview is separate from live transcript UI; ESC closes/backs out under its claim and never interrupts the underlying host. Explicit opening is the only search action that may focus a workspace/session or activate a host.
 
 Acceptance gates: warm-query p95 <150 ms; first initial-index result <500 ms; a completed appended entry searchable <2 s; stale UI suppression <100 ms; no search-caused main-thread task >16 ms; worker RSS <192 MiB for a 500 MiB corpus; batches <=50 results and <=128 KiB; preview creates no host.
 

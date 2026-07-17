@@ -479,7 +479,7 @@ export class SessionRegistry {
   async activateSession(
     sessionId: SessionId,
     piPath: string,
-    env?: Record<string, string>,
+    env?: Record<string, string> | Promise<Record<string, string>>,
     activationVisitId?: string,
   ): Promise<void> {
     const record = this.sessions.get(sessionId);
@@ -512,7 +512,7 @@ export class SessionRegistry {
       record._resolveActivationDone = resolve;
     });
     record._piPath = piPath;
-    record._env = env;
+    record._env = undefined;
     record.error = undefined;
     record.status = "starting";
     record.availability = "transitioning";
@@ -520,6 +520,9 @@ export class SessionRegistry {
     this.publishRuntime(record, "transitioning", "Host startup");
 
     try {
+      const resolvedEnv = env ? await env : undefined;
+      if (record._dead) return;
+      record._env = resolvedEnv;
       await this.acquireLock(record);
       if (record._dead) return;
       const { execPath } = await resolveHostExecPath();
@@ -569,7 +572,7 @@ export class SessionRegistry {
         piPath,
         record.worktreePath ?? record.workspacePath,
         record.sessionFile,
-        env,
+        resolvedEnv,
         execPath,
         record._confinedSessionDescriptor,
         record._confinedSessionAlias,

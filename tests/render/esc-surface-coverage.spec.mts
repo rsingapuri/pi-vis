@@ -29,7 +29,13 @@ type PreviewHooks = {
 type PreviewStore = {
   getState: () => {
     activeSessionId: string | null;
-    sessions: Map<string, { runtimeSnapshot?: { isStreaming: boolean } }>;
+    sessions: Map<
+      string,
+      {
+        runtimeSnapshot?: { isStreaming: boolean };
+        authorityProjection?: { semantic?: { state?: string } };
+      }
+    >;
     addUserMessage: (sessionId: string, content: string, images?: string[]) => void;
   };
 };
@@ -58,11 +64,27 @@ async function waitForAbort(
 }
 
 async function startStreaming(page: import("@playwright/test").Page): Promise<void> {
+  // The preview's initial authority attach can arrive after the Composer is
+  // enabled. Wait for that baseline before publishing the fake turn so the
+  // baseline cannot overwrite its streaming snapshot.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const store = (window as unknown as { __pivisStore?: PreviewStore }).__pivisStore;
+          const state = store?.getState();
+          const sid = state?.activeSessionId;
+          return sid
+            ? state.sessions.get(sid)?.authorityProjection?.semantic?.state === "following"
+            : false;
+        }),
+      { timeout: 10_000 },
+    )
+    .toBe(true);
   await page.evaluate(() => {
     (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview.startStreaming();
   });
-  // Wait for the active session's authoritative streaming snapshot. Boot-time
-  // activation can settle after the composer becomes visible.
+  // Wait for the active session's authoritative streaming snapshot.
   await expect
     .poll(
       () =>
@@ -224,10 +246,10 @@ test.describe("ESC surface coverage — claims prevent abort", () => {
 
   test("no surface open + streaming: ESC DOES abort (the positive case)", async ({ page }) => {
     await startStreaming(page);
+    await waitForNoEscapeClaim(page);
     const before = await abortCount(page);
     await page.evaluate(() => {
-      const ta = document.querySelector<HTMLTextAreaElement>(".composer__textarea")!;
-      ta.dispatchEvent(
+      window.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
       );
     });

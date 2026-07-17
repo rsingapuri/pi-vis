@@ -534,10 +534,17 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
       const store = useSessionsStore.getState();
       const current = store.sessions.get(sessionId);
       const submitted = pendingOrdinaryPromptRef.current;
+      // Idle prompts are delivered directly rather than through Pi's queue,
+      // so their first user echo has no queue intent ID. In a brand-new
+      // session an exact untagged echo is sufficient delivery evidence for
+      // the still-visible payload; the generation/attachment fences below
+      // still preserve any newer local draft.
       const matchingFirstEcho =
         submitted &&
         current?.transcript.authoritativeUserEchoes.some(
-          (echo) => echo.intentId === submitted.intentId,
+          (echo) =>
+            echo.intentId === submitted.intentId ||
+            (echo.intentId === undefined && echo.content === submitted.text),
         );
       const submittedPayloadStillVisible =
         submitted &&

@@ -24,7 +24,13 @@ type PreviewHooks = {
 type PreviewStore = {
   getState: () => {
     activeSessionId: string | null;
-    sessions: Map<string, { runtimeSnapshot?: { isStreaming: boolean } }>;
+    sessions: Map<
+      string,
+      {
+        runtimeSnapshot?: { isStreaming: boolean };
+        authorityProjection?: { semantic?: { state?: string } };
+      }
+    >;
   };
 };
 
@@ -35,13 +41,27 @@ async function getHooks(page: import("@playwright/test").Page): Promise<PreviewH
 }
 
 async function startStreaming(page: import("@playwright/test").Page): Promise<void> {
+  // Wait for the initial authority baseline before publishing the fake turn;
+  // otherwise a late baseline can overwrite its streaming snapshot.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const store = (window as unknown as { __pivisStore?: PreviewStore }).__pivisStore;
+          const state = store?.getState();
+          const sid = state?.activeSessionId;
+          return sid
+            ? state.sessions.get(sid)?.authorityProjection?.semantic?.state === "following"
+            : false;
+        }),
+      { timeout: 10_000 },
+    )
+    .toBe(true);
   await page.evaluate(() => {
     (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview.startStreaming();
   });
   // Wait until the ACTIVE session is actually interruptible — the global ESC
-  // handler aborts only the active session, and boot-time activation can
-  // settle after the composer paints. Dispatching ESC before the armed state
-  // was a latent race that made the abort assertions flaky.
+  // handler aborts only the active session.
   await expect
     .poll(
       () =>
