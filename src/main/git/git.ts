@@ -878,6 +878,13 @@ export async function getChanges(
 ): Promise<GitChangesResult> {
   if (range) {
     try {
+      if (range.includeUncommitted) {
+        // The pseudo uncommitted endpoint extends the selected first-parent
+        // band from start^ through the live checkout, so it remains editable.
+        const validated = await validateRange(root, base, range);
+        if ("kind" in validated) return validated;
+        return await getChanges(root, validated.parent);
+      }
       return await getHistoricalChanges(root, base, range, historicalContext);
     } catch (err) {
       return { kind: "error", message: errorMessage(err) };
@@ -1211,8 +1218,19 @@ export async function getFileDiff(
   range?: GitCommitRange,
   historicalContext?: GitHistoricalContext,
 ): Promise<GitFileDiffResult> {
-  if (range)
+  if (range) {
+    if (range.includeUncommitted) {
+      const validated = await validateRange(root, base, range);
+      if ("kind" in validated) {
+        return {
+          kind: "error",
+          message: validated.kind === "error" ? validated.message : "Unable to validate commit range.",
+        };
+      }
+      return getFileDiff(root, file, validated.parent, maxFileSizeBytes);
+    }
     return getHistoricalFileDiff(root, file, base, maxFileSizeBytes, range, historicalContext);
+  }
   // GIT_OPTIONAL_LOCKS=0: these are read-only commands; don't take
   // index.lock (avoids contention with concurrent git reads and a stray
   // index write).

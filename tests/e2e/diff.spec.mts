@@ -391,9 +391,9 @@ test.describe("Diff viewer", () => {
     const viewer = window.locator(".diff-viewer");
     await expect(viewer).toBeVisible({ timeout: 5_000 });
 
-    // The base and range stay separate. Selecting the first endpoint applies
-    // its one-commit comparison immediately; a second endpoint applies the
-    // inclusive range without an Apply/Cancel step.
+    // The base and range stay separate. A plain click applies a one-commit
+    // comparison and closes the picker; Shift-click extends from it while
+    // keeping the chosen range visible in the picker.
     const base = viewer.getByRole("button", { name: "Compare against base branch" });
     await base.click();
     await window.keyboard.press("Escape");
@@ -410,7 +410,10 @@ test.describe("Diff viewer", () => {
     await range.click();
     await viewer.getByRole("option", { name: /Second feature commit/ }).click();
     await expect(range).toContainText("1 commit");
-    await viewer.getByRole("option", { name: /First feature commit/ }).click();
+    await expect(viewer.getByRole("dialog", { name: "Commit range" })).toHaveCount(0);
+    await range.click();
+    await viewer.getByRole("option", { name: /First feature commit/ }).click({ modifiers: ["Shift"] });
+    await expect(viewer.getByRole("dialog", { name: "Commit range" })).toBeVisible();
 
     await expect(viewer.locator(".diff-tree__row--file")).toHaveCount(2, { timeout: 10_000 });
     await expect(viewer.locator('[data-testid="diff-section-first.ts"]')).toContainText(
@@ -423,6 +426,16 @@ test.describe("Diff viewer", () => {
     );
     await expect(viewer.locator("[data-testid='diff-comment-button']")).toHaveCount(0);
     await expect(range).toContainText("2 commits");
+
+    // Uncommitted changes are a pseudo-commit endpoint and can extend the
+    // selected historical band through the live working tree.
+    await viewer.getByRole("button", { name: "Uncommitted changes" }).click({ modifiers: ["Shift"] });
+    await expect(range).toContainText("2 commits + uncommitted");
+    await expect(viewer.getByRole("dialog", { name: "Commit range" })).toBeVisible();
+    await expect(viewer.locator(".diff-tree__row--file")).toHaveCount(3, { timeout: 10_000 });
+    await expect(viewer.locator('[data-testid="diff-section-working-only.ts"]')).toContainText(
+      "export const working = true;",
+    );
 
     await viewer.getByRole("button", { name: "Close diff viewer" }).click();
     await expect(viewer).toBeHidden({ timeout: 5_000 });

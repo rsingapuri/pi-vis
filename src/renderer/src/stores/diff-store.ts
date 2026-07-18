@@ -474,7 +474,7 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         return;
       }
       if (isStale(generation, myGen) || comparisonGeneration !== myComparison) return;
-      handleChangesResult(set, get, res, isFirst, rangeAtStart !== null);
+      handleChangesResult(set, get, res, isFirst, rangeAtStart !== null && !rangeAtStart.includeUncommitted);
       // Keep the spinner going for at least one rotation even if the fetch
       // was near-instant. If a newer refresh has superseded this one, leave
       // `refreshing` alone — the newer call owns the flag.
@@ -766,7 +766,8 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         current.selectedBase === base &&
         current.workingTreeScope === workingTreeScope &&
         current.commitRange?.start === range?.start &&
-        current.commitRange?.end === range?.end
+        current.commitRange?.end === range?.end &&
+        current.commitRange?.includeUncommitted === range?.includeUncommitted
       ) {
         return;
       }

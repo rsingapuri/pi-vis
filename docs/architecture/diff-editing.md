@@ -24,19 +24,24 @@ branch/HEAD name. The range trigger contains only **Working tree**,
 changes** (HEAD through the live checkout) rows followed by the newest-first,
 virtualized 500-candidate commit list; it has no header, guidance dead-end, or
 Apply/Cancel footer. Both live scopes apply immediately without discarding the
-selected base. The first commit click
-immediately applies a one-commit range and remains as the optional second-click
-anchor; the second click applies the normalized inclusive `{start, end}` range.
-Outside click and Escape only dismiss the popup and never roll back or otherwise
-change the committed comparison. `git.commits` returns immutable full object
+selected base. A plain commit click applies a one-commit range and closes the
+popup. Reopen it and Shift-click another commit to extend from the selected
+range's start into a normalized inclusive `{start, end}` band; that range stays
+open for inspection. Shift-clicking **Uncommitted changes** instead uses it as a
+pseudo-commit endpoint, extending from the anchor's parent through the live
+working tree (`{start, end, includeUncommitted: true}`), and likewise leaves the
+popup open. This live extended-range mode is editable; ordinary historical
+ranges are not. Outside click and Escape only dismiss the popup and never roll
+back or otherwise change the committed comparison. `git.commits` returns immutable full object
 IDs plus short SHA, subject, author, and author time, oldest-to-newest
 internally.
 
 `setComparison({base, range})` remains the single store transition: one equality
 guard, invalidation/generation bump, per-session base persistence update, and
 refresh. The compatibility `setBase` and `setCommitRange` methods delegate to
-it. A range compares `start^` through `end`, so both endpoint commits are
-included.
+it. An ordinary range compares `start^` through `end`, so both endpoint commits
+are included; an `includeUncommitted` range instead compares `start^` through
+the live working tree.
 
 Historical range mode is deliberately separate from working-tree mode:
 

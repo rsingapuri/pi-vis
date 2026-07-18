@@ -117,9 +117,7 @@ export function CommitRangePicker(): React.ReactElement | null {
       ? workingTreeScope === "uncommitted"
         ? "Uncommitted"
         : "Working tree"
-      : count === 1
-        ? "1 commit"
-        : `${count} commits`;
+      : `${count === 1 ? "1 commit" : `${count} commits`}${range.includeUncommitted ? " + uncommitted" : ""}`;
   const selectedIndices = range
     ? [
         commits.findIndex((commit) => commit.sha === range.start),
@@ -133,22 +131,42 @@ export function CommitRangePicker(): React.ReactElement | null {
     if (open) virtual.ensureIndexVisible(highlightedIndex);
   }, [highlightedIndex, open, virtual.ensureIndexVisible]);
 
-  const chooseCommit = (sha: string): void => {
-    if (first === null) {
-      // The initial click is a complete one-commit comparison, and becomes the
-      // in-popup anchor only if the user chooses another endpoint.
+  const chooseCommit = (sha: string, selectRange: boolean): void => {
+    const anchor = first ?? range?.start ?? null;
+    if (!selectRange || anchor === null) {
+      // A plain click is a complete one-commit comparison. Shift-click uses
+      // the current selection's start as its anchor and keeps this popup open.
       setCommitRange({ start: sha, end: sha });
-      setFirst(sha);
+      close();
       return;
     }
-    const start = commits.findIndex((commit) => commit.sha === first);
+    const start = commits.findIndex((commit) => commit.sha === anchor);
     const end = commits.findIndex((commit) => commit.sha === sha);
     if (start < 0 || end < 0) return;
+    const normalizedStart = commits[Math.min(start, end)]!.sha;
     setCommitRange({
-      start: commits[Math.min(start, end)]!.sha,
+      start: normalizedStart,
       end: commits[Math.max(start, end)]!.sha,
     });
-    close();
+    setFirst(normalizedStart);
+  };
+
+  const chooseUncommitted = (selectRange: boolean): void => {
+    const anchor = first ?? range?.start ?? null;
+    if (!selectRange || anchor === null) {
+      showUncommittedChanges();
+      close();
+      return;
+    }
+    const start = commits.findIndex((commit) => commit.sha === anchor);
+    if (start < 0 || commits.length === 0) return;
+    const normalizedStart = commits[start]!.sha;
+    setCommitRange({
+      start: normalizedStart,
+      end: commits[commits.length - 1]!.sha,
+      includeUncommitted: true,
+    });
+    setFirst(normalizedStart);
   };
 
   const handleListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
@@ -175,7 +193,7 @@ export function CommitRangePicker(): React.ReactElement | null {
       case "Enter":
       case " ": {
         const commit = list[highlightedIndex];
-        if (commit) chooseCommit(commit.sha);
+        if (commit) chooseCommit(commit.sha, event.shiftKey);
         event.preventDefault();
         event.stopPropagation();
         return;
@@ -201,7 +219,14 @@ export function CommitRangePicker(): React.ReactElement | null {
         aria-expanded={open}
         aria-label="Choose commit range"
         title={editing ? "Finish editing before changing the comparison" : "Choose commit range"}
-        onClick={() => (open ? close() : setOpen(true))}
+        onClick={() => {
+          if (open) {
+            close();
+          } else {
+            setFirst(range?.start ?? null);
+            setOpen(true);
+          }
+        }}
       >
         <FadeText>{label}</FadeText>
         <IconChevronDown className="commit-range-picker__caret" />
@@ -228,12 +253,9 @@ export function CommitRangePicker(): React.ReactElement | null {
             </button>
             <button
               type="button"
-              className={`commit-range-picker__working${range === null && workingTreeScope === "uncommitted" ? " commit-range-picker__working--selected" : ""}`}
-              aria-pressed={range === null && workingTreeScope === "uncommitted"}
-              onClick={() => {
-                showUncommittedChanges();
-                close();
-              }}
+              className={`commit-range-picker__working${(range?.includeUncommitted || (range === null && workingTreeScope === "uncommitted")) ? " commit-range-picker__working--selected" : ""}`}
+              aria-pressed={range?.includeUncommitted || (range === null && workingTreeScope === "uncommitted")}
+              onClick={(event) => chooseUncommitted(event.shiftKey)}
             >
               Uncommitted changes
             </button>
@@ -281,9 +303,9 @@ export function CommitRangePicker(): React.ReactElement | null {
                       tabIndex={-1}
                       aria-selected={inBand}
                       className={`commit-range-picker__commit${inBand ? " commit-range-picker__commit--selected" : ""}${first === commit.sha ? " commit-range-picker__commit--first" : ""}${index === highlightedIndex ? " commit-range-picker__commit--highlighted" : ""}`}
-                      onClick={() => {
+                      onClick={(event) => {
                         setHighlightedIndex(index);
-                        chooseCommit(commit.sha);
+                        chooseCommit(commit.sha, event.shiftKey);
                       }}
                     >
                       <span className="commit-range-picker__sha">{commit.shortSha}</span>
