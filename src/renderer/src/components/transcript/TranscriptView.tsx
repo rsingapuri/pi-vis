@@ -1156,7 +1156,6 @@ type TranscriptRenderItem =
 interface CompactGroupStats {
   hasThinking: boolean;
   toolCalls: number;
-  notices: number;
 }
 
 type CompactRenderItem =
@@ -1191,7 +1190,7 @@ function renderItemStreaming(item: TranscriptRenderItem): boolean {
 }
 
 function compactGroupStats(items: readonly TranscriptRenderItem[]): CompactGroupStats {
-  const stats: CompactGroupStats = { hasThinking: false, toolCalls: 0, notices: 0 };
+  const stats: CompactGroupStats = { hasThinking: false, toolCalls: 0 };
   for (const item of items) {
     if (item.kind === "assistant_segment") {
       if (item.segment.kind === "thinking") stats.hasThinking = true;
@@ -1199,12 +1198,6 @@ function compactGroupStats(items: readonly TranscriptRenderItem[]): CompactGroup
     }
     if (item.block.type === "tool_call" || item.block.type === "bash") {
       stats.toolCalls += 1;
-    } else if (
-      item.block.type === "compaction" ||
-      item.block.type === "custom_message" ||
-      item.block.type === "custom_entry"
-    ) {
-      stats.notices += 1;
     }
   }
   return stats;
@@ -1218,7 +1211,6 @@ function mergeCompactGroupStats(
   return {
     hasThinking: archived.hasThinking || live.hasThinking,
     toolCalls: archived.toolCalls + live.toolCalls,
-    notices: archived.notices + live.notices,
   };
 }
 
@@ -1227,8 +1219,6 @@ function summarizeCompactGroup(stats: CompactGroupStats): string {
   if (stats.hasThinking) parts.push("Thinking");
   if (stats.toolCalls > 0)
     parts.push(`${stats.toolCalls.toLocaleString()} tool call${stats.toolCalls === 1 ? "" : "s"}`);
-  if (stats.notices > 0)
-    parts.push(`${stats.notices.toLocaleString()} notice${stats.notices === 1 ? "" : "s"}`);
   return parts.length > 0 ? parts.join(", ") : "Activity";
 }
 
