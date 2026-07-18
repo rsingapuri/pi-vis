@@ -70,11 +70,41 @@ export const SetEditorTextUiRequestSchema = BaseUiRequest.extend({
   text: z.string(),
 });
 
+// Native provider authentication is app-owned, not an extension dialog. Updates
+// reuse the same id/operationId so the authority plane replaces its surface.
+export const ProviderAuthUiRequestSchema = BaseUiRequest.extend({
+  method: z.literal("providerAuth"),
+  providerName: z.string().max(160),
+  authType: z.enum(["oauth", "api_key"]),
+  phase: z.enum(["waiting", "oauth", "device", "info", "prompt", "error"]),
+  authUrl: z.string().max(4096).optional(),
+  deviceCode: z.string().max(512).optional(),
+  message: z.string().max(1000).optional(),
+  prompt: z.string().max(1000).optional(),
+  promptType: z.enum(["text", "secret", "manual_code", "select"]).optional(),
+  placeholder: z.string().max(240).optional(),
+  options: z
+    .array(
+      z.object({
+        id: z.string().max(240),
+        label: z.string().max(240),
+        description: z.string().max(500).optional(),
+      }),
+    )
+    .max(100)
+    .optional(),
+  links: z
+    .array(z.object({ url: z.string().max(4096), label: z.string().max(240).optional() }))
+    .max(20)
+    .optional(),
+});
+
 export const ExtensionUiRequestSchema = z.discriminatedUnion("method", [
   SelectUiRequestSchema,
   ConfirmUiRequestSchema,
   InputUiRequestSchema,
   EditorUiRequestSchema,
+  ProviderAuthUiRequestSchema,
   NotifyUiRequestSchema,
   SetStatusUiRequestSchema,
   SetWidgetUiRequestSchema,
@@ -87,6 +117,7 @@ export type SelectUiRequest = z.infer<typeof SelectUiRequestSchema>;
 export type ConfirmUiRequest = z.infer<typeof ConfirmUiRequestSchema>;
 export type InputUiRequest = z.infer<typeof InputUiRequestSchema>;
 export type EditorUiRequest = z.infer<typeof EditorUiRequestSchema>;
+export type ProviderAuthUiRequest = z.infer<typeof ProviderAuthUiRequestSchema>;
 export type NotifyUiRequest = z.infer<typeof NotifyUiRequestSchema>;
 export type SetStatusUiRequest = z.infer<typeof SetStatusUiRequestSchema>;
 export type SetWidgetUiRequest = z.infer<typeof SetWidgetUiRequestSchema>;
@@ -101,16 +132,19 @@ export const ExtensionUiResponseSchema = z.union([
   z.object({
     type: z.literal("extension_ui_response"),
     id: z.string(),
+    operationId: z.string().optional(),
     value: z.string(),
   }),
   z.object({
     type: z.literal("extension_ui_response"),
     id: z.string(),
+    operationId: z.string().optional(),
     confirmed: z.boolean(),
   }),
   z.object({
     type: z.literal("extension_ui_response"),
     id: z.string(),
+    operationId: z.string().optional(),
     cancelled: z.literal(true),
   }),
 ]);

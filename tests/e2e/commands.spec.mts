@@ -161,6 +161,42 @@ test.describe("Slash commands", () => {
     rmrf(folders.piSessionsDir);
   });
 
+  test("/login uses the active host provider and keeps API keys out of projections and diagnostics", async () => {
+    test.setTimeout(60_000);
+    const folders = await makeFolders();
+    const ipcLog = join(folders.settingsDir, "ipc.log");
+    const { app, window } = await launchApp(folders, {
+      PIVIS_TEST_IPC_INVOCATION_LOG: ipcLog,
+    });
+
+    await window.getByRole("button", { name: "New session" }).click();
+    await expect(window.locator(".session-header__model-btn")).toContainText("Fake Model [fake]", {
+      timeout: 15_000,
+    });
+    const textarea = window.locator(".composer__textarea");
+    await textarea.fill("/login");
+    await textarea.press("Enter");
+    const picker = window.locator(".picker--login");
+    await expect(picker).toBeVisible();
+    await picker.getByRole("option").filter({ hasText: "API key" }).click();
+
+    const dialog = window.getByRole("dialog", { name: "Sign in to Fake Provider" });
+    const input = dialog.locator('input[type="password"]');
+    await expect(input).toHaveAttribute("autocomplete", "off");
+    const secret = "e2e-provider-secret-must-not-persist";
+    await input.fill(secret);
+    await dialog.getByRole("button", { name: "Continue" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(textarea).toBeVisible();
+    await expect(window.locator("body")).not.toContainText(secret);
+    if (fs.existsSync(ipcLog)) expect(fs.readFileSync(ipcLog, "utf8")).not.toContain(secret);
+
+    await app.close();
+    rmrf(folders.settingsDir);
+    rmrf(folders.workspaceDir);
+    rmrf(folders.piSessionsDir);
+  });
+
   test("a first prompt renders once in either host-echo/custody ordering", async () => {
     test.setTimeout(60_000);
     const folders = await makeFolders();

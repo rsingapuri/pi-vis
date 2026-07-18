@@ -17,8 +17,9 @@ import { useSessionsStore } from "../../stores/sessions-store.js";
 import { type TreeFilterMode, isTreeUnsupported, useTreeStore } from "../../stores/tree-store.js";
 import { FadeText } from "../common/FadeText.js";
 import { ScrollFadeFrame } from "../common/ScrollFadeFrame.js";
-import { IconChevronRight, IconClose } from "../common/icons.js";
-import { type VisibleRow, flattenVisible } from "./tree-flatten.js";
+import { IconCheck, IconChevronRight, IconClose, IconCopy } from "../common/icons.js";
+import { canCopyTreeSelection } from "./tree-copy.js";
+import { type VisibleRow, entryCopyText, flattenVisible } from "./tree-flatten.js";
 import "../common/viewer-header.css";
 import "./TreeViewer.css";
 
@@ -143,6 +144,27 @@ export function TreeViewerHost({ sessionId }: TreeViewerHostProps): React.ReactE
     });
   }, [nodes, foldedIds, filterMode, search, leafId]);
 
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copyResetTimerRef = useRef<number | null>(null);
+  const copyEntry = useCallback(async (entry: VisibleRow["entry"]): Promise<void> => {
+    const text = entryCopyText(entry);
+    if (!text) return;
+    try {
+      await window.pivis.invoke("clipboard.writeText", { text });
+      setCopiedId(entry.id);
+      if (copyResetTimerRef.current !== null) window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = window.setTimeout(() => setCopiedId(null), 1200);
+    } catch {
+      // Clipboard failure is deliberately quiet; success gets only the check icon.
+    }
+  }, []);
+  useEffect(
+    () => () => {
+      if (copyResetTimerRef.current !== null) window.clearTimeout(copyResetTimerRef.current);
+    },
+    [],
+  );
+
   // Auto-select the first visible row if selection becomes invalid.
   useEffect(() => {
     if (!visible) return;
@@ -172,6 +194,21 @@ export function TreeViewerHost({ sessionId }: TreeViewerHostProps): React.ReactE
           setFilterMode(filterMode === match.id ? "default" : match.id);
           return;
         }
+      }
+
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        e.key.toLowerCase() === "c" &&
+        canCopyTreeSelection(target, hasNativeTextSelection())
+      ) {
+        const selected = visibleRows.find((row) => row.entry.id === selectedId);
+        if (selected) {
+          e.preventDefault();
+          void copyEntry(selected.entry);
+        }
+        return;
       }
 
       if (isInSearch) {
@@ -241,6 +278,7 @@ export function TreeViewerHost({ sessionId }: TreeViewerHostProps): React.ReactE
     setSearch,
     filterMode,
     setFilterMode,
+    copyEntry,
   ]);
 
   const [labelEditing, setLabelEditing] = useState<{ id: string; text: string } | null>(null);
@@ -332,6 +370,8 @@ export function TreeViewerHost({ sessionId }: TreeViewerHostProps): React.ReactE
               onToggleFold={toggleFold}
               onNavigate={(id) => void navigateTo(id)}
               onEditLabel={(id, currentLabel) => setLabelEditing({ id, text: currentLabel ?? "" })}
+              copiedId={copiedId}
+              onCopy={copyEntry}
             />
           )}
         </div>
@@ -384,6 +424,8 @@ function TreeList({
   onToggleFold,
   onNavigate,
   onEditLabel,
+  copiedId,
+  onCopy,
 }: {
   rows: VisibleRow[];
   selectedId: string | null;
@@ -392,6 +434,8 @@ function TreeList({
   onToggleFold: (id: string) => void;
   onNavigate: (id: string) => void;
   onEditLabel: (id: string, currentLabel: string | undefined) => void;
+  copiedId: string | null;
+  onCopy: (entry: VisibleRow["entry"]) => Promise<void>;
 }): React.ReactElement {
   const treeRef = useRef<HTMLDivElement | null>(null);
   const didInitialScrollRef = useRef(false);
@@ -440,6 +484,8 @@ function TreeList({
           onToggleFold={() => onToggleFold(row.entry.id)}
           onNavigate={() => onNavigate(row.entry.id)}
           onEditLabel={() => onEditLabel(row.entry.id, row.label)}
+          copied={copiedId === row.entry.id}
+          onCopy={() => void onCopy(row.entry)}
         />
       ))}
     </ScrollFadeFrame>
@@ -454,6 +500,8 @@ function TreeRow({
   onToggleFold,
   onNavigate,
   onEditLabel,
+  copied,
+  onCopy,
 }: {
   row: VisibleRow;
   selected: boolean;
@@ -462,6 +510,8 @@ function TreeRow({
   onToggleFold: () => void;
   onNavigate: () => void;
   onEditLabel: () => void;
+  copied: boolean;
+  onCopy: () => void;
 }): React.ReactElement {
   return (
     <div
@@ -514,6 +564,20 @@ function TreeRow({
       <FadeText className={`tree-viewer__row-text tree-viewer__row-text--${row.kind}`}>
         {row.text}
       </FadeText>
+      <button
+        type="button"
+        className="icon-btn tree-viewer__copy"
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect();
+          onCopy();
+        }}
+        title="Copy entry"
+        aria-label={copied ? "Copied entry" : "Copy entry"}
+        disabled={!entryCopyText(row.entry)}
+      >
+        {copied ? <IconCheck /> : <IconCopy />}
+      </button>
       {row.label && (
         <button
           type="button"
@@ -637,6 +701,11 @@ function LabelEditor({
       </div>
     </div>
   );
+}
+
+function hasNativeTextSelection(): boolean {
+  const selection = window.getSelection();
+  return !!selection && selection.rangeCount > 0 && !selection.isCollapsed;
 }
 
 function moveSelection(

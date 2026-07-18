@@ -948,6 +948,19 @@ async function handleCommand(id, command) {
     case "get_session_stats":
       reply(id, true, statsData());
       break;
+    case "get_login_providers":
+      reply(id, true, {
+        native: true,
+        providers: [
+          {
+            id: "fake-provider",
+            name: "Fake Provider",
+            configured: false,
+            methods: ["api_key", "oauth"],
+          },
+        ],
+      });
+      break;
     case "get_available_models":
       reply(id, true, { models: fakeModels, currentModelId });
       break;
@@ -1281,6 +1294,46 @@ async function executeAuthorityIntent(entry) {
       publishSnapshot();
       finishAuthorityIntent(entry, "completed", { level: intent.level });
       return;
+    case "loginProvider": {
+      const requestId = `provider-auth-${entry.intentId}`;
+      await new Promise((resolve, reject) => {
+        const request = {
+          type: "extension_ui_request",
+          id: requestId,
+          operationId: `${requestId}:1`,
+          method: "providerAuth",
+          providerName: "Fake Provider",
+          authType: intent.authType,
+          ...(intent.authType === "api_key"
+            ? {
+                phase: "prompt",
+                promptType: "secret",
+                prompt: "API key",
+                placeholder: "Paste your API key",
+              }
+            : {
+                phase: "device",
+                authUrl: "https://example.com/device",
+                deviceCode: "FAKE-80",
+                message: "Enter this code in your browser, then return here.",
+              }),
+        };
+        pendingDialogs.set(requestId, {
+          request,
+          onAnswer: async (response) => {
+            if (response?.cancelled === true) reject(new Error("Sign in cancelled"));
+            else resolve();
+          },
+        });
+        send(request);
+        publishSnapshot();
+      });
+      finishAuthorityIntent(entry, "completed", {
+        providerId: intent.providerId,
+        authType: intent.authType,
+      });
+      return;
+    }
     case "rename":
       sessionName = intent.name;
       appendEntry({ type: "session_info", name: sessionName });
@@ -1642,17 +1695,29 @@ async function handleMessage(message) {
               ? { commands: commandCatalog() }
               : query?.type === "get_available_models"
                 ? { models: fakeModels, currentModelId }
-                : query?.type === "get_fork_messages"
-                  ? { messages: userMessagesForForking }
-                  : query?.type === "get_last_assistant_text"
-                    ? { text: lastAssistantText }
-                    : query?.type === "get_messages"
-                      ? { messages: [] }
-                      : query?.type === "get_tree"
-                        ? { nodes: [], leafId: null }
-                        : query?.type === "get_cache_miss_notices"
-                          ? { notices: [] }
-                          : undefined;
+                : query?.type === "get_login_providers"
+                  ? {
+                      native: true,
+                      providers: [
+                        {
+                          id: "fake-provider",
+                          name: "Fake Provider",
+                          configured: false,
+                          methods: ["api_key", "oauth"],
+                        },
+                      ],
+                    }
+                  : query?.type === "get_fork_messages"
+                    ? { messages: userMessagesForForking }
+                    : query?.type === "get_last_assistant_text"
+                      ? { text: lastAssistantText }
+                      : query?.type === "get_messages"
+                        ? { messages: [] }
+                        : query?.type === "get_tree"
+                          ? { nodes: [], leafId: null }
+                          : query?.type === "get_cache_miss_notices"
+                            ? { notices: [] }
+                            : undefined;
       reply(message.id, true, {
         queryId: envelope?.queryId,
         owner: authorityOwner(),
@@ -1806,7 +1871,10 @@ async function handleMessage(message) {
       const pending = response?.id ? pendingDialogs.get(response.id) : undefined;
       if (pending) {
         pendingDialogs.delete(response.id);
-        send({ type: "ui_ack", operationId: response.id });
+        send({ type: "ui_ack", operationId: response.operationId ?? response.id });
+        if (response.operationId && response.operationId !== response.id) {
+          send({ type: "ui_ack", operationId: response.id });
+        }
         await pending.onAnswer(response);
         publishSnapshot();
       }

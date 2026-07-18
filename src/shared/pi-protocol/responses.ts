@@ -216,6 +216,30 @@ export const LogoutProvidersDataSchema = z
 
 export type LogoutProvidersData = z.infer<typeof LogoutProvidersDataSchema>;
 
+export const LoginProvidersDataSchema = z
+  .object({
+    native: z.boolean(),
+    providers: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(160),
+            name: z.string().min(1).max(160),
+            configured: z.boolean(),
+            source: z.string().max(120).optional(),
+            methods: z
+              .array(z.enum(["oauth", "api_key"]))
+              .min(1)
+              .max(2),
+          })
+          .strict(),
+      )
+      .max(100),
+  })
+  .strict();
+export type LoginProvidersData = z.infer<typeof LoginProvidersDataSchema>;
+export type LoginProvider = LoginProvidersData["providers"][number];
+
 // Conversation-tree response schemas. `SessionTreeEntrySchema` is intentionally
 // loose — the renderer only needs `id`, `parentId`, `type`, `timestamp` plus
 // enough per-type fields to render the preview text. The discriminated shapes

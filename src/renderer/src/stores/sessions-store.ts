@@ -58,6 +58,7 @@ import {
 } from "../lib/panel-input-sequence.js";
 import { RENDERER_GENERATION } from "../lib/renderer-generation.js";
 import { dispatchSessionIntent, querySession } from "../lib/session-intent.js";
+
 import {
   type RendererAuthorityState,
   createRendererAuthorityState,
@@ -66,6 +67,15 @@ import {
   unavailableAuthority,
 } from "./authority-reducer.js";
 import { useChangelogStore } from "./changelog-store.js";
+
+interface ModelRefreshFlight {
+  owner: RuntimeIdentity;
+  promise: Promise<boolean>;
+}
+
+// Coalesce only work for the same authority owner. A successor must never be
+// held behind the predecessor's delayed refresh/outcome timeout.
+const modelRefreshFlights = new Map<SessionId, ModelRefreshFlight>();
 import { openDiffForSession } from "./diff-store.js";
 import { useSettingsStore } from "./settings-store.js";
 import {
@@ -181,6 +191,8 @@ export interface SessionViewState {
   notificationPanelOpen?: boolean | undefined;
   stats?: SessionStats | undefined;
   availableModels: ModelInfo[];
+  /** Owner-scoped automatic catalog refresh failure; enables a discreet retry. */
+  modelRefreshFailure?: RuntimeIdentity | undefined;
   currentModel?: string | undefined;
   /** Provider of the active model (when known). Paired with `currentModel` so the
    *  dropdown can disambiguate same-id models offered by different providers
@@ -1391,12 +1403,15 @@ interface SessionsStore {
    *  non-empty. Same fetch + parse dance `bootstrapModelState` runs in
    *  step 1; factored out so both callers stay in sync. Returns the parsed
    *  models so the bootstrap caller can reuse them for its last-used match
-   *  without a second fetch. Best-effort: swallows fetch errors (the
-   *  dropdown keeps whatever it had) and returns []. */
+   *  without a second fetch. Best-effort failures preserve the prior cache;
+   *  `success` distinguishes a valid (including empty) catalog from failed or
+   *  malformed readback. */
   refreshAvailableModels: (
     sessionId: SessionId,
     expectedRuntime?: { hostInstanceId: string; sessionEpoch: number },
-  ) => Promise<ModelInfo[]>;
+  ) => Promise<{ models: ModelInfo[]; success: boolean }>;
+  /** Silent stale-while-revalidate catalog refresh. Never activates a cold session. */
+  refreshModelsSilently: (sessionId: SessionId) => Promise<boolean>;
   setCurrentModel: (sessionId: SessionId, model: string, provider?: string) => void;
   setThinkingLevel: (sessionId: SessionId, level: ThinkingLevel) => void;
   /**
@@ -3028,7 +3043,14 @@ const buildSessionsStore = (
 
       // Dialog requests — queue them. Build the clone only when we mutate.
       const sessions = new Map(state.sessions);
-      sessions.set(sessionId, { ...s, pendingDialogs: [...s.pendingDialogs, request] });
+      // Provider auth is a persistent, updatable surface: retain one entry per
+      // stable dialog id instead of stacking stale OAuth/device progress cards.
+      const existing = s.pendingDialogs.findIndex((dialog) => dialog.id === request.id);
+      const pendingDialogs =
+        existing < 0
+          ? [...s.pendingDialogs, request]
+          : s.pendingDialogs.map((dialog, index) => (index === existing ? request : dialog));
+      sessions.set(sessionId, { ...s, pendingDialogs });
       return { sessions };
     });
   },
@@ -3840,10 +3862,11 @@ const buildSessionsStore = (
   },
 
   refreshAvailableModels: async (sessionId, expectedRuntime) => {
-    if (typeof window === "undefined" || !window.pivis) return [];
     const currentModels = () => get().sessions.get(sessionId)?.availableModels ?? [];
+    const failed = () => ({ models: currentModels(), success: false });
+    if (typeof window === "undefined" || !window.pivis) return failed();
     const session = get().sessions.get(sessionId);
-    if (!session) return currentModels();
+    if (!session) return failed();
     const observation = authorityObservation(session);
     if (
       !observation ||
@@ -3851,7 +3874,7 @@ const buildSessionsStore = (
         (observation.owner.hostInstanceId !== expectedRuntime.hostInstanceId ||
           observation.owner.sessionEpoch !== expectedRuntime.sessionEpoch))
     ) {
-      return currentModels();
+      return failed();
     }
     try {
       const result = await querySession(sessionId, { type: "get_available_models" }, observation);
@@ -3860,20 +3883,111 @@ const buildSessionsStore = (
         !result.response.success ||
         !sessionMatchesRuntime(get().sessions.get(sessionId), observation.owner)
       ) {
-        return currentModels();
+        return failed();
       }
-      const raw = result.response.data as { models?: unknown[] } | undefined;
-      const models = (Array.isArray(raw?.models) ? raw.models : [])
-        .map((model) => {
-          const parsed = ModelInfoSchema.safeParse(model);
-          return parsed.success ? parsed.data : null;
-        })
-        .filter((model): model is ModelInfo => model !== null);
+      const raw = result.response.data as { models?: unknown } | undefined;
+      if (!Array.isArray(raw?.models)) return failed();
+      const parsed = raw.models.map((model) => ModelInfoSchema.safeParse(model));
+      // One malformed row means this is not a trustworthy replacement
+      // snapshot. Preserve the complete prior cache rather than silently
+      // dropping a provider/model and calling the read successful.
+      if (parsed.some((result) => !result.success)) return failed();
+      const models = parsed.map((result) => result.data as ModelInfo);
+      if (!sessionMatchesRuntime(get().sessions.get(sessionId), observation.owner)) return failed();
       get().setAvailableModels(sessionId, models);
-      return models;
+      return { models, success: true };
     } catch {
-      return currentModels();
+      return failed();
     }
+  },
+
+  refreshModelsSilently: (sessionId) => {
+    const session = get().sessions.get(sessionId);
+    const observation = session ? authorityObservation(session) : undefined;
+    // Do not turn a picker/auth notification into cold-session activation.
+    if (!observation) return Promise.resolve(false);
+    const owner = observation.owner;
+    const existing = modelRefreshFlights.get(sessionId);
+    if (
+      existing &&
+      existing.owner.hostInstanceId === owner.hostInstanceId &&
+      existing.owner.sessionEpoch === owner.sessionEpoch
+    ) {
+      return existing.promise;
+    }
+    const flight = (async (): Promise<boolean> => {
+      const intentId = crypto.randomUUID();
+      let receiptFailed = false;
+      try {
+        const receipt = await dispatchSessionIntent(
+          sessionId,
+          { kind: "refreshModels" },
+          observation,
+          intentId,
+        );
+        receiptFailed = receipt.status === "not_admitted";
+      } catch {
+        // A receipt can be lost after dispatch; the owner-bound frame decides.
+      }
+      const outcome = receiptFailed
+        ? undefined
+        : await new Promise<IntentOutcome | undefined>((resolve) => {
+            const find = () =>
+              get()
+                .sessions.get(sessionId)
+                ?.authorityProjection?.authoritativeSnapshot?.recentIntentOutcomes.find(
+                  (item) =>
+                    item.intentId === intentId &&
+                    item.owner.hostInstanceId === owner.hostInstanceId &&
+                    item.owner.sessionEpoch === owner.sessionEpoch,
+                );
+            const immediate = find();
+            if (immediate) return resolve(immediate);
+            const timer = setTimeout(() => finish(undefined), 10_000);
+            const unsubscribe = useSessionsStore.subscribe(() => {
+              const next = find();
+              if (next) finish(next);
+              else if (!sessionMatchesRuntime(get().sessions.get(sessionId), owner)) {
+                finish(undefined);
+              }
+            });
+            function finish(value: IntentOutcome | undefined): void {
+              clearTimeout(timer);
+              unsubscribe();
+              resolve(value);
+            }
+          });
+      const settled = outcome;
+      const succeeded =
+        !receiptFailed && settled?.kind === "refreshModels" && settled.state === "completed";
+      if (succeeded && sessionMatchesRuntime(get().sessions.get(sessionId), owner)) {
+        const readback = await get().refreshAvailableModels(sessionId, owner);
+        if (readback.success && sessionMatchesRuntime(get().sessions.get(sessionId), owner)) {
+          set((state) => {
+            const sessions = new Map(state.sessions);
+            const current = sessions.get(sessionId);
+            if (current) sessions.set(sessionId, { ...current, modelRefreshFailure: undefined });
+            return { sessions };
+          });
+          return true;
+        }
+      }
+      if (sessionMatchesRuntime(get().sessions.get(sessionId), owner)) {
+        set((state) => {
+          const sessions = new Map(state.sessions);
+          const current = sessions.get(sessionId);
+          if (current) sessions.set(sessionId, { ...current, modelRefreshFailure: owner });
+          return { sessions };
+        });
+      }
+      return false;
+    })().finally(() => {
+      if (modelRefreshFlights.get(sessionId)?.promise === flight) {
+        modelRefreshFlights.delete(sessionId);
+      }
+    });
+    modelRefreshFlights.set(sessionId, { owner, promise: flight });
+    return flight;
   },
 
   // Retained as compatibility no-ops for legacy consumers. Canonical model
@@ -3895,7 +4009,7 @@ const buildSessionsStore = (
       return { sessions };
     });
 
-    const models = await get().refreshAvailableModels(sessionId);
+    const { models } = await get().refreshAvailableModels(sessionId);
     const current = get().sessions.get(sessionId);
     const observation = current ? authorityObservation(current) : undefined;
     if (!current || !observation || current.resumed) return;

@@ -409,6 +409,16 @@ function reduceExtensionUi(
             inputPending: true,
             acknowledged: false,
           });
+        } else if (request.method === "providerAuth") {
+          const dialog = {
+            request,
+            rendererGeneration: state.rendererGeneration ?? 0,
+            inputPending: true,
+            acknowledged: false,
+          };
+          const index = next.dialogs.findIndex((candidate) => candidate.request.id === request.id);
+          if (index < 0) next.dialogs.push(dialog);
+          else next.dialogs[index] = dialog;
         }
         return next;
       })()

@@ -38,15 +38,17 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
   const pending = new Map();
   const outcomes = new Map();
 
-  const finish = (id, response) => {
+  const finish = (id, response, { retainOutcome = true, acknowledge = id } = {}) => {
     const d = pending.get(id);
     if (!d) return outcomes.get(id);
     pending.delete(id);
     d.cleanup?.();
-    outcomes.set(id, response);
-    if (outcomes.size > 100) outcomes.delete(outcomes.keys().next().value);
-    d.resolve(response);
-    onAcknowledged(id);
+    if (retainOutcome) {
+      outcomes.set(id, response);
+      if (outcomes.size > 100) outcomes.delete(outcomes.keys().next().value);
+    }
+    d.resolve?.(response);
+    onAcknowledged(acknowledge);
     return response;
   };
 
@@ -58,6 +60,8 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
     }
     const resolvedId = id ?? (pending.size ? pending.keys().next().value : undefined);
     if (!resolvedId) return;
+    const entry = pending.get(resolvedId);
+    if (entry?.handleResponse) return entry.handleResponse(response);
     return finish(resolvedId, response);
   };
 
@@ -100,14 +104,190 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
   };
 
   const cancelAll = () => {
-    for (const id of [...pending.keys()]) {
-      finish(id, { type: "extension_ui_response", id, cancelled: true });
+    for (const [id, entry] of [...pending.entries()]) {
+      if (entry.cancel) entry.cancel();
+      else finish(id, { type: "extension_ui_response", id, cancelled: true });
     }
+  };
+
+  /**
+   * Persistent app-owned surface for public ModelRuntime.login interactions.
+   * Updates replace one request by id. Prompt values are resolved directly to
+   * Pi and are never retained in replay outcomes or the pending snapshot.
+   */
+  const createProviderAuthSurface = (providerName, authType, signal, onCancel = () => {}) => {
+    const id = `provider-auth_${Date.now()}_${++nextDialogId}`;
+    let revision = 0;
+    let currentPrompt;
+    let closed = false;
+    let cancelling = false;
+
+    const baseRequest = {
+      type: "extension_ui_request",
+      id,
+      method: "providerAuth",
+      providerName,
+      authType,
+    };
+
+    const publish = (update) => {
+      if (closed) return;
+      const request = {
+        ...baseRequest,
+        operationId: `${id}:${++revision}`,
+        ...update,
+      };
+      const entry = pending.get(id);
+      if (entry) entry.request = request;
+      sendToMain(request);
+    };
+
+    const rejectPrompt = () => {
+      const prompt = currentPrompt;
+      currentPrompt = undefined;
+      prompt?.cleanup?.();
+      prompt?.reject?.(new Error("Login cancelled"));
+    };
+
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      rejectPrompt();
+      signal?.removeEventListener?.("abort", cancel);
+      // Auth responses can contain credentials. Never place one in the
+      // resolver's duplicate-response cache.
+      finish(
+        id,
+        { type: "extension_ui_response", id, cancelled: true },
+        { retainOutcome: false, acknowledge: id },
+      );
+    };
+
+    const cancel = () => {
+      if (closed || cancelling) return;
+      cancelling = true;
+      onCancel();
+      close();
+    };
+
+    const handleResponse = (response) => {
+      const request = pending.get(id)?.request;
+      if (
+        typeof response?.operationId === "string" &&
+        response.operationId !== request?.operationId
+      ) {
+        // A renderer can answer an old prompt revision after the provider has
+        // advanced. Acknowledge that stale operation without resolving the
+        // current prompt.
+        onAcknowledged(response.operationId);
+        return undefined;
+      }
+      if (request?.operationId) onAcknowledged(request.operationId);
+      if (response?.cancelled === true) {
+        cancel();
+        return response;
+      }
+      if (!currentPrompt || typeof response?.value !== "string") return undefined;
+      const prompt = currentPrompt;
+      currentPrompt = undefined;
+      prompt.cleanup?.();
+      prompt.resolve(response.value);
+      publish({ phase: "waiting", message: "Waiting for sign-in…" });
+      return response;
+    };
+
+    pending.set(id, {
+      resolve: () => {},
+      cleanup: () => signal?.removeEventListener?.("abort", cancel),
+      cancel,
+      handleResponse,
+      request: { ...baseRequest, operationId: `${id}:0`, phase: "waiting" },
+    });
+    signal?.addEventListener?.("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
+    else publish({ phase: "waiting", message: "Starting sign-in…" });
+
+    const prompt = (authPrompt) => {
+      if (closed || signal?.aborted || authPrompt?.signal?.aborted) {
+        return Promise.reject(new Error("Login cancelled"));
+      }
+      rejectPrompt();
+      return new Promise((resolveFn, rejectFn) => {
+        const onPromptAbort = () => {
+          if (currentPrompt?.resolve !== resolveFn) return;
+          currentPrompt = undefined;
+          rejectFn(new Error("Login cancelled"));
+          publish({ phase: "waiting", message: "Waiting for sign-in…" });
+        };
+        const cleanup = () => authPrompt?.signal?.removeEventListener?.("abort", onPromptAbort);
+        currentPrompt = { resolve: resolveFn, reject: rejectFn, cleanup };
+        authPrompt?.signal?.addEventListener?.("abort", onPromptAbort, { once: true });
+        publish({
+          phase: "prompt",
+          promptType: authPrompt?.type,
+          prompt: String(authPrompt?.message ?? "Continue sign-in"),
+          ...(authPrompt?.placeholder ? { placeholder: String(authPrompt.placeholder) } : {}),
+          ...(Array.isArray(authPrompt?.options)
+            ? {
+                options: authPrompt.options.map((option) => ({
+                  id: String(option.id),
+                  label: String(option.label),
+                  ...(option.description ? { description: String(option.description) } : {}),
+                })),
+              }
+            : {}),
+        });
+      });
+    };
+
+    const notify = (event) => {
+      if (!event || closed) return;
+      if (event.type === "auth_url") {
+        publish({
+          phase: "oauth",
+          authUrl: String(event.url),
+          ...(event.instructions ? { message: String(event.instructions) } : {}),
+        });
+      } else if (event.type === "device_code") {
+        publish({
+          phase: "device",
+          authUrl: String(event.verificationUri),
+          deviceCode: String(event.userCode),
+          message: "Enter this code in your browser, then return here.",
+        });
+      } else if (event.type === "info") {
+        publish({
+          phase: "info",
+          message: String(event.message),
+          ...(Array.isArray(event.links)
+            ? {
+                links: event.links.map((link) => ({
+                  url: String(link.url),
+                  ...(link.label ? { label: String(link.label) } : {}),
+                })),
+              }
+            : {}),
+        });
+      } else if (event.type === "progress") {
+        publish({ phase: "waiting", message: String(event.message) });
+      }
+    };
+
+    return {
+      interaction: { signal, prompt, notify },
+      complete: close,
+      fail: () => {
+        rejectPrompt();
+        publish({ phase: "error", message: "Sign in could not be completed. Try again." });
+      },
+      cancel,
+    };
   };
 
   return {
     resolve,
     createDialog,
+    createProviderAuthSurface,
     cancelAll,
     get pendingCount() {
       return pending.size;

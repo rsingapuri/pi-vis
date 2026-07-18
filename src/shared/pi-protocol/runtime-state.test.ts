@@ -249,6 +249,58 @@ describe("authority protocol schemas", () => {
     ).toBe(false);
   });
 
+  it("models catalog refresh as a bounded mutation rather than a query", () => {
+    const envelope = {
+      sessionId: "session-a",
+      intentId: "refresh-a",
+      rendererGeneration: 1,
+      expectedOwner: owner,
+      intent: { kind: "refreshModels" },
+    };
+    expect(IntentEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    expect(
+      IntentOutcomeSchema.safeParse({
+        intentId: "refresh-a",
+        owner,
+        kind: "refreshModels",
+        state: "completed",
+        result: { refreshed: true },
+      }).success,
+    ).toBe(true);
+    expect(SessionQuerySchema.safeParse({ type: "refreshModels" }).success).toBe(false);
+  });
+
+  it("keeps runtime login intents and outcomes bounded and non-secret", () => {
+    const envelope = {
+      sessionId: "session-a",
+      intentId: "login-a",
+      rendererGeneration: 1,
+      expectedOwner: owner,
+      intent: { kind: "loginProvider", providerId: "project-provider", authType: "api_key" },
+    };
+    expect(IntentEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    expect(
+      IntentEnvelopeSchema.safeParse({
+        ...envelope,
+        intent: { ...envelope.intent, authType: "password" },
+      }).success,
+    ).toBe(false);
+    const outcome = {
+      intentId: "login-a",
+      owner,
+      kind: "loginProvider",
+      state: "completed",
+      result: { providerId: "project-provider", authType: "api_key" },
+    };
+    expect(IntentOutcomeSchema.safeParse(outcome).success).toBe(true);
+    expect(
+      IntentOutcomeSchema.safeParse({
+        ...outcome,
+        result: { ...outcome.result, credential: "secret" },
+      }).success,
+    ).toBe(false);
+  });
+
   it("admits only explicit read operations as owner-bound queries", () => {
     const query = { type: "render_entry", entryId: "entry-a", cols: 80, expanded: true };
     expect(SessionQuerySchema.safeParse(query).success).toBe(true);
@@ -267,6 +319,7 @@ describe("authority protocol schemas", () => {
       "get_commands",
       "get_fork_messages",
       "get_last_assistant_text",
+      "get_login_providers",
       "get_logout_providers",
       "get_messages",
       "get_scoped_models",

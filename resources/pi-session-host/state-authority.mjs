@@ -378,7 +378,14 @@ export function createStateAuthority({
     const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0;
     switch (intent.kind) {
       case "interrupt":
+      case "refreshModels":
         return isStrictObject(intent, ["kind"]);
+      case "loginProvider":
+        return (
+          isStrictObject(intent, ["kind", "providerId", "authType"]) &&
+          nonEmpty(intent.providerId) &&
+          ["oauth", "api_key"].includes(intent.authType)
+        );
       case "reload":
         return (
           Object.keys(intent).every((key) =>
@@ -1249,6 +1256,14 @@ export function createStateAuthority({
         return { name: value.name ?? intent?.name ?? "" };
       case "reload":
         return value.successorIdentity ? { successorIdentity: value.successorIdentity } : {};
+      case "refreshModels":
+        return value.refreshed === true ? { refreshed: true } : undefined;
+      case "loginProvider":
+        return typeof value.providerId === "string" &&
+          value.providerId.length > 0 &&
+          ["oauth", "api_key"].includes(value.authType)
+          ? { providerId: value.providerId, authType: value.authType }
+          : undefined;
       default:
         return undefined;
     }
@@ -1933,9 +1948,17 @@ export function createStateAuthority({
       settleDispatchedIntent(intentId, owner, intent.kind, state, result);
     };
     const settleFromError = (error) => {
-      settleDispatchedIntent(intentId, owner, intent.kind, "failed", {
-        message: error instanceof Error ? error.message : String(error),
-      });
+      // Authentication failures may contain provider responses or credential
+      // hints. Its authority outcome is intentionally non-secret and bounded.
+      settleDispatchedIntent(
+        intentId,
+        owner,
+        intent.kind,
+        "failed",
+        intent.kind === "loginProvider"
+          ? undefined
+          : { message: error instanceof Error ? error.message : String(error) },
+      );
     };
     // commitTransition already emitted the single successor baseline.
     // A trailing snapshot would create a second empty successor frame for

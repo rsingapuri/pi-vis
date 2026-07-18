@@ -396,12 +396,56 @@ function extractContent(content: unknown): string {
         c !== null &&
         (c as Record<string, unknown>)["type"] === "text"
       ) {
-        out += String((c as Record<string, unknown>)["text"] ?? "");
+        const text = (c as Record<string, unknown>)["text"];
+        if (typeof text === "string") out += text;
       }
     }
     return out;
   }
   return "";
+}
+
+/**
+ * Full clipboard text for one flat tree entry. This deliberately does not use
+ * `entryDisplayText`: that function is a compact, single-line UI summary.
+ * Tree entries already carry their complete message/summary payload across the
+ * flat IPC boundary, so copying must preserve it verbatim.
+ */
+export function entryCopyText(entry: SessionTreeEntry): string {
+  switch (entry.type) {
+    case "message": {
+      const message = entry.message as
+        | {
+            role?: unknown;
+            content?: unknown;
+            command?: unknown;
+            errorMessage?: unknown;
+          }
+        | undefined;
+      if (message?.role === "bashExecution" && typeof message.command === "string") {
+        return message.command;
+      }
+      const content = extractContent(message?.content);
+      if (content) return content;
+      return message?.role === "assistant" && typeof message.errorMessage === "string"
+        ? message.errorMessage
+        : "";
+    }
+    case "custom_message":
+      return extractContent((entry as { content?: unknown }).content);
+    case "compaction":
+    case "branch_summary":
+      return stringEntryField(entry, "summary");
+    default:
+      // Bookkeeping rows (labels, model/thinking changes, session info) have
+      // no message body in Pi's tree-copy behavior.
+      return "";
+  }
+}
+
+function stringEntryField(entry: SessionTreeEntry, key: string): string {
+  const value = (entry as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : "";
 }
 
 /**

@@ -1,6 +1,6 @@
 import type { SessionId } from "@shared/ids.js";
 import type { SessionSummary } from "@shared/ipc-contract.js";
-import type { ModelInfo } from "@shared/pi-protocol/responses.js";
+import type { LoginProvider, ModelInfo } from "@shared/pi-protocol/responses.js";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
@@ -209,6 +209,26 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           }}
         />
       )}
+      {picker.kind === "login" && (
+        <LoginPicker
+          providers={picker.providers}
+          onClose={() => closePicker(sessionId)}
+          onPick={async (provider, authType) => {
+            const observation = requirePickerObservation();
+            const receipt = await dispatchSessionIntent(
+              sessionId,
+              { kind: "loginProvider", providerId: provider.id, authType },
+              observation,
+            );
+            if (!pickerRuntimeIsCurrent()) return;
+            if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+              addToast(sessionId, "Couldn't start sign-in", "error");
+              return;
+            }
+            closePicker(sessionId);
+          }}
+        />
+      )}
       {picker.kind === "logout" && (
         <LogoutPicker
           providers={picker.providers}
@@ -271,10 +291,21 @@ function ModelPicker({
   onPick: (model: ModelInfo) => void;
 }): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
+  const refreshModelsSilently = useSessionsStore((s) => s.refreshModelsSilently);
   const semanticSnapshot = authoritySnapshotFor(session);
+  const modelOwner =
+    session?.authorityProjection?.semantic.state === "following"
+      ? session.authorityProjection.semantic.cursor
+      : undefined;
   const availableModels = semanticSnapshot ? (session?.availableModels ?? []) : [];
   const currentModel = semanticSnapshot?.model?.id;
   const currentProvider = semanticSnapshot?.model?.provider;
+  const refreshFailed = Boolean(
+    session?.modelRefreshFailure &&
+      modelOwner &&
+      session.modelRefreshFailure.hostInstanceId === modelOwner.hostInstanceId &&
+      session.modelRefreshFailure.sessionEpoch === modelOwner.sessionEpoch,
+  );
   // Resolve the single active entry once and compare items by key — so that
   // when the provider is unknown and duplicate same-id entries exist, at most
   // ONE row is marked selected (not every same-id copy).
@@ -285,10 +316,11 @@ function ModelPicker({
   const highlightSourceRef = useRef<"keyboard" | "pointer" | "programmatic">("programmatic");
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Pin focus on the search input the moment the picker mounts.
+  // Pin focus on the search input and silently revalidate the cached catalog.
   useEffect(() => {
     setTimeout(() => searchRef.current?.focus(), 10);
-  }, []);
+    void refreshModelsSilently(sessionId);
+  }, [refreshModelsSilently, sessionId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -407,6 +439,15 @@ function ModelPicker({
         )}
       </ScrollFadeFrame>
       <div className="picker__footer">
+        {refreshFailed && (
+          <button
+            type="button"
+            className="picker__btn"
+            onClick={() => void refreshModelsSilently(sessionId)}
+          >
+            {availableModels.length === 0 ? "Try again" : "Refresh models"}
+          </button>
+        )}
         <button type="button" className="picker__btn picker__btn--cancel" onClick={onClose}>
           Cancel
         </button>
@@ -823,6 +864,121 @@ function ScopedModelsPicker({
           onClick={() => handleApply(true)}
         >
           Save to settings
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── /login picker ───────────────────────────────────────────────────────────
+function LoginPicker({
+  providers,
+  onClose,
+  onPick,
+}: {
+  providers: LoginProvider[];
+  onClose: () => void;
+  onPick: (provider: LoginProvider, authType: "oauth" | "api_key") => void;
+}): React.ReactElement {
+  const [query, setQuery] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
+  const choices = useMemo(
+    () =>
+      providers.flatMap((provider) => provider.methods.map((authType) => ({ provider, authType }))),
+    [providers],
+  );
+  const filtered = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return choices;
+    return choices.filter(({ provider, authType }) =>
+      `${provider.name} ${provider.id} ${authType === "oauth" ? "oauth" : "api key"}`
+        .toLowerCase()
+        .includes(normalized),
+    );
+  }, [choices, query]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => searchRef.current?.focus(), 10);
+    return () => window.clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    setHighlightedIndex((index) =>
+      filtered.length === 0 ? 0 : Math.min(index, filtered.length - 1),
+    );
+  }, [filtered.length]);
+  useEffect(() => {
+    itemRefs.current.get(highlightedIndex)?.scrollIntoView({ block: "nearest" });
+  }, [highlightedIndex]);
+
+  const choose = (index: number): void => {
+    const choice = filtered[index];
+    if (choice) onPick(choice.provider, choice.authType);
+  };
+
+  return (
+    <div className="picker picker--login">
+      <div className="picker__title">Sign in</div>
+      <div className="picker__search">
+        <input
+          ref={searchRef}
+          className="picker__search-input"
+          placeholder="Search providers…"
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setHighlightedIndex(0);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setHighlightedIndex((index) => Math.min(index + 1, filtered.length - 1));
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setHighlightedIndex((index) => Math.max(index - 1, 0));
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              choose(highlightedIndex);
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              onClose();
+            }
+          }}
+        />
+      </div>
+      <ScrollFadeFrame
+        frameClassName="picker__list-frame"
+        className="picker__list"
+        role="listbox"
+        fill
+      >
+        {filtered.length === 0 && <div className="picker__empty">No providers found</div>}
+        {filtered.map(({ provider, authType }, index) => (
+          <button
+            type="button"
+            key={`${provider.id}:${authType}`}
+            ref={(element) => {
+              if (element) itemRefs.current.set(index, element);
+              else itemRefs.current.delete(index);
+            }}
+            className={`picker__item fade-scope ${index === highlightedIndex ? "picker__item--highlighted" : ""}`}
+            onClick={() => choose(index)}
+            onMouseEnter={() => setHighlightedIndex(index)}
+            role="option"
+            aria-selected={index === highlightedIndex}
+          >
+            <FadeText className="picker__item-name">{provider.name}</FadeText>
+            {provider.configured && <span className="picker__badge">Connected</span>}
+            <span className={`picker__badge picker__badge--${authType}`}>
+              {authType === "oauth" ? "OAuth" : "API key"}
+            </span>
+          </button>
+        ))}
+      </ScrollFadeFrame>
+      <div className="picker__footer">
+        <button type="button" className="picker__btn picker__btn--cancel" onClick={onClose}>
+          Cancel
         </button>
       </div>
     </div>

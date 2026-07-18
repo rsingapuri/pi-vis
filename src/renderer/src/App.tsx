@@ -649,7 +649,14 @@ export function App(): React.ReactElement {
 
     // Auth changed events
     const unsubAuthChanged = window.pivis.on("auth.changed", () => {
-      // Auth changes are handled by the SettingsView component
+      // Auth UI owns login state. A catalog refresh is a separate, owner-bound
+      // mutation and only applies to the already-following active session.
+      const state = useSessionsStore.getState();
+      const sid = state.activeSessionId;
+      const session = sid ? state.sessions.get(sid) : undefined;
+      if (sid && session?.authorityProjection?.semantic.state === "following") {
+        void state.refreshModelsSilently(sid);
+      }
     });
 
     // Fullscreen transitions: drop the title bar's traffic-light clearance

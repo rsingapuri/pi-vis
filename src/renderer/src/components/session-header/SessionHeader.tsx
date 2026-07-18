@@ -345,6 +345,7 @@ export function SessionControls({
 }): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
   const addToast = useSessionsStore((s) => s.addToast);
+  const refreshModelsSilently = useSessionsStore((s) => s.refreshModelsSilently);
   const groupModelsByProvider = useSettingsStore((s) => s.settings.groupModelsByProvider);
   const observation = observationForSession(session);
   const semanticSnapshot = session?.authorityProjection?.authoritativeSnapshot;
@@ -425,7 +426,9 @@ export function SessionControls({
     setActiveProviderKey(null);
     setGroupedHighlight(null);
     setTimeout(() => searchInputRef.current?.focus(), 10);
-  }, [modelOpen]);
+    // Silent SWR: preserve the cached catalog while the public runtime refreshes.
+    void refreshModelsSilently(sessionId);
+  }, [modelOpen, refreshModelsSilently, sessionId]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: depends on search value
   useEffect(() => {
@@ -912,6 +915,18 @@ export function SessionControls({
                 aria-autocomplete="list"
               />
             </div>
+            {session?.modelRefreshFailure &&
+              observation &&
+              session.modelRefreshFailure.hostInstanceId === observation.owner.hostInstanceId &&
+              session.modelRefreshFailure.sessionEpoch === observation.owner.sessionEpoch && (
+                <button
+                  type="button"
+                  className="session-header__refresh-models"
+                  onClick={() => void refreshModelsSilently(sessionId)}
+                >
+                  Retry models
+                </button>
+              )}
             {showProviderGroups ? (
               <ScrollFadeFrame
                 frameClassName="session-header__provider-menu"

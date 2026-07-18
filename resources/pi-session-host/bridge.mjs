@@ -31,6 +31,10 @@ function modelAccess(session) {
       refresh: () => runtime.refresh(),
       logout: (provider) => runtime.logout(provider),
       listCredentials: () => runtime.listCredentials(),
+      getProviders: () => runtime.getProviders?.() ?? [],
+      checkAuth: (providerId) => runtime.checkAuth(providerId),
+      login: (providerId, authType, interaction) =>
+        runtime.login(providerId, authType, interaction),
       getProviderName: (provider) => {
         try {
           return runtime.getProvider?.(provider)?.name ?? provider;
@@ -62,6 +66,11 @@ function modelAccess(session) {
       }
       return credentials;
     },
+    getProviders: () => [],
+    checkAuth: async () => undefined,
+    login: async () => {
+      throw new Error("Native provider login is unavailable");
+    },
     getProviderName: (provider) => {
       try {
         return registry.getProviderDisplayName?.(provider) ?? provider;
@@ -70,6 +79,16 @@ function modelAccess(session) {
       }
     },
   };
+}
+
+function hasNativeProviderLogin(session) {
+  const runtime = session?.modelRuntime;
+  return Boolean(
+    runtime &&
+      typeof runtime.getProviders === "function" &&
+      typeof runtime.checkAuth === "function" &&
+      typeof runtime.login === "function",
+  );
 }
 
 /**
@@ -206,6 +225,7 @@ export function setupCommandBridge({
   panelBridge,
   disposeUnifiedTui,
   cancelDialogs = () => {},
+  createProviderAuthSurface,
   runWithInvocationSurface,
   pi,
   agentDir,
@@ -993,6 +1013,67 @@ export function setupCommandBridge({
       switch (intent.kind) {
         case "interrupt":
           return authority.requestEscape(envelope.intentId);
+        case "refreshModels":
+          // ModelRuntime.refresh is a mutation, never a read query. Settle it
+          // off-scheduler so provider network refresh cannot freeze ingress;
+          // the renderer owner-fenced read obtains the catalog afterward.
+          return {
+            deferredOutcome: Promise.resolve(modelAccess(_session).refresh()).then(() => ({
+              refreshed: true,
+            })),
+          };
+        case "loginProvider": {
+          // Re-read the live runtime immediately before crossing the SDK
+          // boundary; picker metadata is advisory and may be stale.
+          if (
+            !hasNativeProviderLogin(_session) ||
+            _session.settingsManager?.isProjectTrusted?.() === false ||
+            typeof createProviderAuthSurface !== "function"
+          ) {
+            throw new Error("Sign in is unavailable for this session");
+          }
+          const provider = modelAccess(_session)
+            .getProviders()
+            .find((item) => item?.id === intent.providerId);
+          const authMethod =
+            intent.authType === "oauth"
+              ? provider?.auth?.oauth?.login
+              : provider?.auth?.apiKey?.login;
+          if (!provider || typeof authMethod !== "function") {
+            throw new Error("This sign-in method is no longer available");
+          }
+          const controller = new AbortController();
+          const surface = createProviderAuthSurface(
+            String(provider.name ?? provider.id),
+            intent.authType,
+            controller.signal,
+            () => controller.abort(),
+          );
+          const operation = trackInterruptibleOperation(
+            "login",
+            () => controller.abort(),
+            async () => {
+              try {
+                // Deliberately discard Credential. The bounded intent result
+                // proves only which public login method completed.
+                await modelAccess(_session).login(
+                  intent.providerId,
+                  intent.authType,
+                  surface.interaction,
+                );
+                surface.complete();
+                return { providerId: intent.providerId, authType: intent.authType };
+              } catch {
+                if (controller.signal.aborted) surface.complete();
+                else surface.fail();
+                // Never forward provider-native errors: they can include a URL,
+                // code, header, or provider-supplied secret.
+                throw new Error("Sign in could not be completed");
+              }
+            },
+          );
+          return { deferredOutcome: operation };
+        }
         case "submit":
           return submission(intent.text);
         case "manageQueue":
@@ -1309,6 +1390,46 @@ export function setupCommandBridge({
         case "set_follow_up_mode": {
           _session.setFollowUpMode(command.mode);
           send({ type: "response", id, success: true });
+          break;
+        }
+
+        case "get_login_providers": {
+          // Runtime-native only. Legacy ModelRegistry intentionally reports
+          // native:false so the embedded terminal remains its fallback.
+          if (!hasNativeProviderLogin(_session)) {
+            send({ type: "response", id, success: true, data: { native: false, providers: [] } });
+            break;
+          }
+          const access = modelAccess(_session);
+          const candidates = access
+            .getProviders()
+            .slice(0, 100)
+            .flatMap((provider) => {
+              if (!provider || typeof provider.id !== "string") return [];
+              const methods = [];
+              if (typeof provider.auth?.oauth?.login === "function") methods.push("oauth");
+              if (typeof provider.auth?.apiKey?.login === "function") methods.push("api_key");
+              return methods.length ? [{ provider, methods }] : [];
+            });
+          const providers = await Promise.all(
+            candidates.map(async ({ provider, methods }) => {
+              let auth;
+              try {
+                auth = await access.checkAuth(provider.id);
+              } catch {
+                auth = undefined;
+              }
+              return {
+                id: provider.id.slice(0, 160),
+                name: String(provider.name ?? provider.id).slice(0, 160),
+                configured: auth !== undefined,
+                ...(typeof auth?.source === "string" ? { source: auth.source.slice(0, 120) } : {}),
+                methods,
+              };
+            }),
+          );
+          providers.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+          send({ type: "response", id, success: true, data: { native: true, providers } });
           break;
         }
 

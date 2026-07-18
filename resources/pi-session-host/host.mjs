@@ -509,7 +509,7 @@ async function handleInit(msg) {
     const resolver = createDialogResolver(sendUiRequest, (operationId) => {
       send({ type: "ui_ack", operationId });
     });
-    const { createDialog } = resolver;
+    const { createDialog, createProviderAuthSurface } = resolver;
     dialogResolver = resolver;
 
     // Trust prompt: a blocking select dialog offering pi's full choice set
@@ -641,6 +641,7 @@ async function handleInit(msg) {
       panelBridge,
       disposeUnifiedTui: unifiedCtrl.dispose,
       cancelDialogs: () => dialogResolver?.cancelAll(),
+      createProviderAuthSurface,
       runWithInvocationSurface,
       pi,
       agentDir,

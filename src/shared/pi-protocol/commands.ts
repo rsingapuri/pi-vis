@@ -64,6 +64,10 @@ export const GetAvailableModelsCommandSchema = BaseCommand.extend({
   type: z.literal("get_available_models"),
 });
 
+export const GetLoginProvidersCommandSchema = BaseCommand.extend({
+  type: z.literal("get_login_providers"),
+});
+
 export const GetScopedModelsCommandSchema = BaseCommand.extend({
   type: z.literal("get_scoped_models"),
 });
@@ -260,6 +264,7 @@ export const PiRpcCommandSchema = z.discriminatedUnion("type", [
   SetModelCommandSchema,
   CycleModelCommandSchema,
   GetAvailableModelsCommandSchema,
+  GetLoginProvidersCommandSchema,
   GetScopedModelsCommandSchema,
   SetScopedModelsCommandSchema,
   SaveScopedModelsCommandSchema,
@@ -318,6 +323,7 @@ export const PI_COMMAND_POLICY = {
   set_model: { class: "idempotent" },
   cycle_model: { class: "effectful" },
   get_available_models: { class: "read_only" },
+  get_login_providers: { class: "read_only" },
   get_scoped_models: { class: "read_only" },
   set_scoped_models: { class: "idempotent" },
   save_scoped_models: { class: "idempotent" },

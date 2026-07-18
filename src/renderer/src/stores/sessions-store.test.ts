@@ -3266,6 +3266,107 @@ describe("sessions store - historical cache notices", () => {
   });
 });
 
+describe("sessions store - model catalog readback", () => {
+  const originalWindow = (globalThis as { window?: unknown }).window;
+
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: new Map(),
+      activeSessionId: null,
+      workspaces: new Map(),
+      activeWorkspacePath: null,
+      diffComments: new Map(),
+    });
+    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
+    installAuthority();
+    useSessionsStore
+      .getState()
+      .setAvailableModels(SESSION_A, [
+        { id: "cached", provider: "cached-provider", name: "Cached" },
+      ]);
+  });
+
+  afterEach(() => {
+    if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+    else (globalThis as { window: unknown }).window = originalWindow;
+  });
+
+  it.each([
+    ["unavailable", { status: "unavailable", reason: "host unavailable" }],
+    [
+      "domain failure",
+      {
+        status: "ok",
+        queryId: "models-query",
+        owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        queryType: "get_available_models",
+        response: {
+          type: "response",
+          command: "get_available_models",
+          success: false,
+          error: "failed",
+        },
+      },
+    ],
+    [
+      "malformed model row",
+      {
+        status: "ok",
+        queryId: "models-query",
+        owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        queryType: "get_available_models",
+        response: {
+          type: "response",
+          command: "get_available_models",
+          success: true,
+          data: { models: [{ provider: "broken-without-id" }] },
+        },
+      },
+    ],
+  ])("preserves the complete cache on %s", async (_label, queryResult) => {
+    const invoke = vi.fn(async (channel: string) =>
+      channel === "session.query" ? queryResult : undefined,
+    );
+    (globalThis as { window: unknown }).window = { pivis: { invoke } };
+
+    const readback = await useSessionsStore.getState().refreshAvailableModels(SESSION_A);
+
+    expect(readback).toEqual({
+      success: false,
+      models: [{ id: "cached", provider: "cached-provider", name: "Cached" }],
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.availableModels).toEqual(
+      readback.models,
+    );
+  });
+
+  it("commits a valid empty catalog as a successful read", async () => {
+    const invoke = vi.fn(async (channel: string, payload: { queryId?: string }) =>
+      channel === "session.query"
+        ? {
+            status: "ok",
+            queryId: payload.queryId,
+            owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+            queryType: "get_available_models",
+            response: {
+              type: "response",
+              command: "get_available_models",
+              success: true,
+              data: { models: [] },
+            },
+          }
+        : undefined,
+    );
+    (globalThis as { window: unknown }).window = { pivis: { invoke } };
+
+    await expect(useSessionsStore.getState().refreshAvailableModels(SESSION_A)).resolves.toEqual({
+      success: true,
+      models: [],
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.availableModels).toEqual([]);
+  });
+});
+
 describe("sessions store - silent close", () => {
   it("closes without a review dialog and removes the tab", async () => {
     const invoke = vi.fn(async () => ({ closed: true }));

@@ -43,6 +43,68 @@ describe("createDialogResolver", () => {
     await expect(first).resolves.toMatchObject({ value: "first" });
     await expect(second).resolves.toMatchObject({ value: "second" });
   });
+
+  it("keeps one provider-auth surface while resolving secret prompts without replaying values", async () => {
+    const sent = [];
+    const acknowledged = [];
+    const controller = new AbortController();
+    const resolver = createDialogResolver(
+      (message) => sent.push(message),
+      (operationId) => acknowledged.push(operationId),
+    );
+    const surface = resolver.createProviderAuthSurface(
+      "Dynamic Provider",
+      "api_key",
+      controller.signal,
+      () => controller.abort(),
+    );
+
+    surface.interaction.notify({ type: "progress", message: "Preparing" });
+    const prompt = surface.interaction.prompt({
+      type: "secret",
+      message: "API key",
+      placeholder: "sk-…",
+    });
+    const current = resolver.pendingSnapshot(3)[0].request;
+    expect(current).toMatchObject({
+      method: "providerAuth",
+      phase: "prompt",
+      promptType: "secret",
+      prompt: "API key",
+    });
+
+    resolver.resolve({ type: "extension_ui_response", id: current.id, value: "secret-value" });
+    await expect(prompt).resolves.toBe("secret-value");
+    const snapshot = resolver.pendingSnapshot(3);
+    expect(snapshot).toHaveLength(1);
+    expect(snapshot[0].request.phase).toBe("waiting");
+    expect(JSON.stringify(snapshot)).not.toContain("secret-value");
+    expect(acknowledged).toContain(current.operationId);
+
+    surface.complete();
+    expect(resolver.pendingCount).toBe(0);
+    expect(acknowledged).toContain(current.id);
+  });
+
+  it("cancels a provider-auth surface and its pending prompt once", async () => {
+    const sent = [];
+    const controller = new AbortController();
+    const onCancel = vi.fn(() => controller.abort());
+    const resolver = createDialogResolver((message) => sent.push(message));
+    const surface = resolver.createProviderAuthSurface(
+      "Dynamic Provider",
+      "oauth",
+      controller.signal,
+      onCancel,
+    );
+    const prompt = surface.interaction.prompt({ type: "manual_code", message: "Paste code" });
+    const request = resolver.pendingSnapshot()[0].request;
+
+    resolver.resolve({ type: "extension_ui_response", id: request.id, cancelled: true });
+    await expect(prompt).rejects.toThrow("Login cancelled");
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(resolver.pendingCount).toBe(0);
+  });
 });
 
 describe("uiContext dialog return-value contract", () => {

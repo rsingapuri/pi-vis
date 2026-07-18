@@ -608,6 +608,227 @@ describe("setupCommandBridge — wiring", () => {
 // ─── Command mapping ─────────────────────────────────────────────────────────
 
 describe("setupCommandBridge — target intent dispatch", () => {
+  it("refreshModels is an intent mutation with a bounded outcome", async () => {
+    const { session, send, dispatchIntent } = setup();
+    await expect(
+      dispatchIntent({
+        intentId: "refresh-models",
+        expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+        intent: { kind: "refreshModels" },
+      }),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() => expect(session.modelRuntime.refresh).toHaveBeenCalledTimes(1));
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "intent_outcome",
+        outcome: expect.objectContaining({
+          intentId: "refresh-models",
+          kind: "refreshModels",
+          state: "completed",
+          result: { refreshed: true },
+        }),
+      }),
+    );
+  });
+
+  it("lists dynamic runtime login methods and ambient auth without hardcoding providers", async () => {
+    const modelRuntime = {
+      ...makeSession().modelRuntime,
+      getProviders: vi.fn(() => [
+        {
+          id: "project-dynamic",
+          name: "Project Dynamic",
+          auth: {
+            oauth: { login: vi.fn() },
+            apiKey: { login: vi.fn() },
+          },
+        },
+        {
+          id: "ambient-only",
+          name: "Ambient Only",
+          auth: { apiKey: {} },
+        },
+      ]),
+      checkAuth: vi.fn(async (providerId) =>
+        providerId === "project-dynamic" ? { type: "oauth", source: "OAuth" } : undefined,
+      ),
+      login: vi.fn(),
+    };
+    const { run } = setup({ modelRuntime });
+
+    const result = await run({ type: "get_login_providers" });
+
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        native: true,
+        providers: [
+          {
+            id: "project-dynamic",
+            name: "Project Dynamic",
+            configured: true,
+            source: "OAuth",
+            methods: ["oauth", "api_key"],
+          },
+        ],
+      },
+    });
+  });
+
+  it("runs public runtime login with an app-owned interaction and emits no credential", async () => {
+    const login = vi.fn(async () => ({ type: "api_key", key: "never-publish-this" }));
+    const modelRuntime = {
+      ...makeSession().modelRuntime,
+      getProviders: vi.fn(() => [
+        {
+          id: "project-dynamic",
+          name: "Project Dynamic",
+          auth: { apiKey: { login: vi.fn() } },
+        },
+      ]),
+      checkAuth: vi.fn(async () => undefined),
+      login,
+    };
+    const surface = {
+      interaction: { signal: new AbortController().signal, prompt: vi.fn(), notify: vi.fn() },
+      complete: vi.fn(),
+      fail: vi.fn(),
+    };
+    const createProviderAuthSurface = vi.fn(() => surface);
+    const { send, dispatchIntent } = setup({ modelRuntime }, { createProviderAuthSurface });
+
+    await expect(
+      dispatchIntent({
+        intentId: "login-provider",
+        expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+        intent: {
+          kind: "loginProvider",
+          providerId: "project-dynamic",
+          authType: "api_key",
+        },
+      }),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(surface.complete).toHaveBeenCalledTimes(1));
+    const outcome = send.mock.calls
+      .map(([message]) => message)
+      .find(
+        (message) =>
+          message.type === "intent_outcome" && message.outcome.intentId === "login-provider",
+      );
+    expect(outcome.outcome).toMatchObject({
+      state: "completed",
+      result: { providerId: "project-dynamic", authType: "api_key" },
+    });
+    expect(JSON.stringify(outcome)).not.toContain("never-publish-this");
+  });
+
+  it("aborts the active public login without publishing provider errors", async () => {
+    const login = vi.fn(
+      async (_providerId, _authType, interaction) =>
+        new Promise((_resolve, reject) => {
+          interaction.signal.addEventListener(
+            "abort",
+            () => reject(new Error("secret-provider-detail")),
+            { once: true },
+          );
+        }),
+    );
+    const modelRuntime = {
+      ...makeSession().modelRuntime,
+      getProviders: vi.fn(() => [
+        {
+          id: "cancel-me",
+          name: "Cancel Me",
+          auth: { oauth: { login: vi.fn() } },
+        },
+      ]),
+      checkAuth: vi.fn(async () => undefined),
+      login,
+    };
+    const surface = {
+      interaction: undefined,
+      complete: vi.fn(),
+      fail: vi.fn(),
+    };
+    const createProviderAuthSurface = vi.fn((_name, _type, signal) => {
+      surface.interaction = { signal, prompt: vi.fn(), notify: vi.fn() };
+      return surface;
+    });
+    const { send, dispatchIntent, interruptActiveOperation } = setup(
+      { modelRuntime },
+      { createProviderAuthSurface },
+    );
+    await dispatchIntent({
+      intentId: "cancel-login",
+      expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+      intent: { kind: "loginProvider", providerId: "cancel-me", authType: "oauth" },
+    });
+    await vi.waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+
+    await interruptActiveOperation();
+
+    await vi.waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({ intentId: "cancel-login", state: "failed" }),
+        }),
+      ),
+    );
+    expect(surface.complete).toHaveBeenCalledTimes(1);
+    expect(surface.fail).not.toHaveBeenCalled();
+    expect(JSON.stringify(send.mock.calls)).not.toContain("secret-provider-detail");
+  });
+
+  it("revalidates trust and the selected login method before entering public login", async () => {
+    const login = vi.fn();
+    const modelRuntime = {
+      ...makeSession().modelRuntime,
+      getProviders: vi.fn(() => [{ id: "changed", name: "Changed", auth: { apiKey: {} } }]),
+      checkAuth: vi.fn(async () => undefined),
+      login,
+    };
+    const surfaceFactory = vi.fn();
+    const denied = setup(
+      {
+        modelRuntime,
+        settingsManager: { isProjectTrusted: vi.fn(() => false) },
+      },
+      { createProviderAuthSurface: surfaceFactory },
+    );
+
+    await denied.dispatchIntent({
+      intentId: "untrusted-login",
+      expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+      intent: { kind: "loginProvider", providerId: "changed", authType: "api_key" },
+    });
+    await vi.waitFor(() =>
+      expect(denied.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({ intentId: "untrusted-login", state: "failed" }),
+        }),
+      ),
+    );
+
+    const changed = setup({ modelRuntime }, { createProviderAuthSurface: surfaceFactory });
+    await changed.dispatchIntent({
+      intentId: "stale-login",
+      expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+      intent: { kind: "loginProvider", providerId: "changed", authType: "api_key" },
+    });
+    await vi.waitFor(() =>
+      expect(changed.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({ intentId: "stale-login", state: "failed" }),
+        }),
+      ),
+    );
+    expect(login).not.toHaveBeenCalled();
+    expect(surfaceFactory).not.toHaveBeenCalled();
+  });
   function envelope(intentId, intent) {
     return {
       intentId,

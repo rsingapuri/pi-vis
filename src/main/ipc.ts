@@ -15,7 +15,7 @@ import type {
   SessionSubmission,
 } from "@shared/pi-protocol/runtime-state.js";
 import { resolveActiveColorScheme } from "@shared/settings.js";
-import { app, clipboard, ipcMain, nativeTheme } from "electron";
+import { app, clipboard, ipcMain, nativeTheme, shell } from "electron";
 import type { BrowserWindow } from "electron";
 import {
   checkForAppUpdate,
@@ -1477,6 +1477,20 @@ export function initIpc(win: BrowserWindow): void {
   // so clipboard writes go through the main process's clipboard module.
   ipcMain.handle("clipboard.writeText", async (_evt, args: { text: string }) => {
     clipboard.writeText(args.text);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle("app.openExternal", async (_evt, args: { url: string }) => {
+    const url = new URL(args.url);
+    const loopback =
+      url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+      throw new Error("Only secure web links can be opened");
+    }
+    if (url.username || url.password) {
+      throw new Error("Links containing credentials are not allowed");
+    }
+    await shell.openExternal(url.toString());
     return { ok: true as const };
   });
 

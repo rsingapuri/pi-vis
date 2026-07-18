@@ -1,9 +1,11 @@
 import type { SessionId } from "@shared/ids.js";
 import type { SessionSummary } from "@shared/ipc-contract.js";
 import type { ProjectTrustOption } from "@shared/pi-protocol/commands.js";
+import { LoginProvidersDataSchema } from "@shared/pi-protocol/responses.js";
 import type {
   ForkMessagesData,
   LastAssistantTextData,
+  LoginProvidersData,
   LogoutProvidersData,
   ModelInfo,
   ScopedModelsData,
@@ -111,6 +113,10 @@ export type PickerRequest = (
   | {
       kind: "logout";
       providers: Array<{ id: string; name: string; authType: "oauth" | "api_key" }>;
+    }
+  | {
+      kind: "login";
+      providers: LoginProvidersData["providers"];
     }
   | {
       kind: "trust";
@@ -238,7 +244,7 @@ export async function executeAction(
       deps.openAppSettings();
       return;
     case "open-login":
-      deps.openLogin();
+      await executeLogin(sessionId, deps);
       return;
     case "git-diff":
       deps.openDiffViewer(sessionId);
@@ -520,6 +526,25 @@ async function executeScopedModels(sessionId: SessionId, deps: ExecuteDeps): Pro
     deps.addToast(sessionId, error instanceof Error ? error.message : String(error), "error");
   }
 }
+async function executeLogin(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
+  try {
+    const catalog = LoginProvidersDataSchema.parse(
+      queryData<unknown>(await deps.query!(sessionId, { type: "get_login_providers" })),
+    );
+    if (!catalog.native) {
+      deps.openLogin();
+      return;
+    }
+    if (catalog.providers.length === 0) {
+      deps.addToast(sessionId, "No providers offer interactive sign-in.", "warning");
+      return;
+    }
+    deps.openPicker(sessionId, { kind: "login", providers: catalog.providers });
+  } catch (error) {
+    deps.addToast(sessionId, error instanceof Error ? error.message : String(error), "error");
+  }
+}
+
 async function executeLogout(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
   try {
     const providers =

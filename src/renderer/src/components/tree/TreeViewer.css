@@ -352,6 +352,19 @@
   color: var(--text-secondary);
 }
 
+/* Copy is shared icon-button chrome, revealed with the row's other quiet
+   affordances on hover or keyboard focus. */
+.tree-viewer__copy {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 100ms ease-out;
+}
+
+.tree-viewer__row:hover .tree-viewer__copy,
+.tree-viewer__row:focus-within .tree-viewer__copy {
+  opacity: 1;
+}
+
 /* Role-tinted text, mirroring pi's colored prefixes. */
 .tree-viewer__row-text--user {
   color: var(--text);

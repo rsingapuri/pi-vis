@@ -55,6 +55,8 @@ function defaultQueryData(query: SessionQuery): unknown {
       return { text: null };
     case "get_scoped_models":
       return { models: [], enabledIds: null };
+    case "get_login_providers":
+      return { native: true, providers: [] };
     case "get_logout_providers":
       return { providers: [] };
     case "get_trust_state":
@@ -447,6 +449,42 @@ describe("Composer intent execution — read-only queries", () => {
       }),
     );
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("opens the runtime-derived sign-in picker and retains terminal fallback for legacy hosts", async () => {
+    const providerCatalog = {
+      native: true,
+      providers: [
+        {
+          id: "project-provider",
+          name: "Project Provider",
+          configured: false,
+          methods: ["oauth", "api_key"],
+        },
+      ],
+    };
+    const { deps } = depsFor({
+      query: vi.fn(async (_sid: SessionId, request: SessionQuery) =>
+        queryResult(request, providerCatalog),
+      ),
+    });
+
+    await executeAction(SID, { kind: "open-login" }, deps);
+
+    expect(deps.openPicker).toHaveBeenCalledWith(SID, {
+      kind: "login",
+      providers: providerCatalog.providers,
+    });
+    expect(deps.openLogin).not.toHaveBeenCalled();
+
+    const legacy = depsFor({
+      query: vi.fn(async (_sid: SessionId, request: SessionQuery) =>
+        queryResult(request, { native: false, providers: [] }),
+      ),
+    }).deps;
+    await executeAction(SID, { kind: "open-login" }, legacy);
+    expect(legacy.openLogin).toHaveBeenCalledTimes(1);
+    expect(legacy.openPicker).not.toHaveBeenCalled();
   });
 
   it("does not fabricate pickers when authoritative reads are empty", async () => {

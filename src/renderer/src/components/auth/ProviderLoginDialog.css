@@ -1,0 +1,189 @@
+.provider-login-dialog {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.857rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 0.714rem;
+  min-height: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+  font-family: var(--font-display);
+}
+
+.provider-login-dialog:focus {
+  outline: none;
+}
+
+.provider-login-dialog__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.143rem;
+}
+
+.provider-login-dialog__eyebrow {
+  color: var(--text-ghost);
+  font-size: var(--font-size-tiny);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.provider-login-dialog h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: var(--leading-label);
+}
+
+.provider-login-dialog__message {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-small);
+  line-height: var(--leading-body);
+  overflow-wrap: anywhere;
+}
+
+.provider-login-dialog__message--error {
+  color: var(--color-error);
+}
+
+.provider-login-dialog__primary,
+.provider-login-dialog__cancel,
+.provider-login-dialog__link,
+.provider-login-dialog__option {
+  appearance: none;
+  border-radius: var(--radius-md);
+  font-family: var(--font-display);
+  cursor: pointer;
+}
+
+.provider-login-dialog__primary {
+  align-self: flex-start;
+  border: 1px solid var(--accent-fill);
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  padding: 0.429rem 0.714rem;
+  font-size: var(--font-size-small);
+  font-weight: 600;
+}
+
+.provider-login-dialog__primary:disabled,
+.provider-login-dialog__cancel:disabled,
+.provider-login-dialog__option:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.provider-login-dialog__code-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.286rem;
+  color: var(--text-secondary);
+  font-size: var(--font-size-tiny);
+  font-weight: 600;
+}
+
+.provider-login-dialog__code-row {
+  display: flex;
+  align-items: center;
+  gap: 0.571rem;
+  align-self: flex-start;
+  padding: 0.571rem 0.714rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.provider-login-dialog__code-row code {
+  color: var(--text);
+  font-family: var(--font-code);
+  font-size: 1.286rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.provider-login-dialog__link {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0;
+  font-size: var(--font-size-small);
+}
+
+.provider-login-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.357rem;
+  color: var(--text-muted);
+  font-size: var(--font-size-small);
+}
+
+.provider-login-dialog__field input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-family: var(--font-code);
+  font-size: var(--font-size-base);
+  padding: 0.571rem 0.714rem;
+}
+
+.provider-login-dialog__field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.provider-login-dialog__options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.286rem;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
+.provider-login-dialog__option {
+  display: flex;
+  flex-direction: column;
+  gap: 0.143rem;
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--text);
+  padding: 0.571rem 0.714rem;
+  text-align: left;
+}
+
+.provider-login-dialog__option:hover,
+.provider-login-dialog__option:focus-visible {
+  border-color: var(--accent);
+}
+
+.provider-login-dialog__option small {
+  color: var(--text-muted);
+}
+
+.provider-login-dialog__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.571rem;
+}
+
+.provider-login-dialog__cancel {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.429rem 0.571rem;
+  font-size: var(--font-size-small);
+}
+
+.provider-login-dialog__cancel:hover {
+  color: var(--text);
+}

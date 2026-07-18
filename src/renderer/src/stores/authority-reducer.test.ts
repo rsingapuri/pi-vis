@@ -296,6 +296,45 @@ describe("authority reducer", () => {
     ]);
   });
 
+  it("replaces provider-auth revisions without stacking stale secret prompts", () => {
+    const attached = reduceAuthorityAttach(createRendererAuthorityState(), baseline());
+    const request = (transportSequence: number, phase: "waiting" | "prompt") =>
+      ({
+        sessionId: "session-a",
+        rendererGeneration: 7,
+        publicationSequence: 9 + transportSequence,
+        plane: "extensionUi",
+        owner,
+        payload: {
+          kind: "request",
+          cursor: { ...owner, transportSequence, snapshotSequence: 2 },
+          request: {
+            type: "extension_ui_request",
+            id: "provider-auth-1",
+            operationId: `provider-auth-1:${transportSequence}`,
+            method: "providerAuth",
+            providerName: "Project Provider",
+            authType: "api_key",
+            phase,
+            ...(phase === "prompt"
+              ? { promptType: "secret", prompt: "API key" }
+              : { message: "Starting sign-in…" }),
+          },
+        },
+      }) as RendererPublication;
+
+    const waiting = reduceAuthorityPublication(attached, request(2, "waiting"));
+    const prompted = reduceAuthorityPublication(waiting, request(3, "prompt"));
+
+    expect(prompted.extensionUiBaseline?.dialogs).toHaveLength(1);
+    expect(prompted.extensionUiBaseline?.dialogs[0]?.request).toMatchObject({
+      id: "provider-auth-1",
+      operationId: "provider-auth-1:3",
+      phase: "prompt",
+      promptType: "secret",
+    });
+  });
+
   it("marks only a transcript source gap synchronizing", () => {
     const attached = reduceAuthorityAttach(createRendererAuthorityState(), baseline());
     const state = reduceAuthorityPublication(attached, {

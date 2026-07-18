@@ -471,6 +471,7 @@ export interface IpcInvokeContract {
   // (it silently no-ops when the window isn't focused / under certain
   // security contexts), which left clicks that "copied" nothing.
   "clipboard.writeText": { req: { text: string }; res: { ok: true } };
+  "app.openExternal": { req: { url: string }; res: { ok: true } };
 
   // Git diff viewer (WP1). The requests take an explicit `root` (the
   // tree being diffed) — never a sessionId — so the renderer can swap
