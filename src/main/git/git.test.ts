@@ -550,6 +550,25 @@ describe("commit ranges", () => {
     expect(diff.newText).toBe("second\n");
   });
 
+  it("extends a commit range through uncommitted working-tree changes", async () => {
+    makeRepo();
+    git(workDir, ["checkout", "-b", "feature"]);
+    write(path.join(workDir, "committed.ts"), "committed\n");
+    const selected = commit("selected");
+    write(path.join(workDir, "working.ts"), "working\n");
+
+    const range = { start: selected, end: selected, includeUncommitted: true };
+    const changes = await getChanges(workDir, "main", range);
+    expect(changes.kind).toBe("ok");
+    if (changes.kind !== "ok") return;
+    expect(changes.files.map((file) => file.path)).toEqual(["committed.ts", "working.ts"]);
+    expect(changes.historicalContext).toBeUndefined();
+    const working = changes.files.find((file) => file.path === "working.ts")!;
+    const diff = await getFileDiff(workDir, working, "main", undefined, range);
+    expect(diff.kind).toBe("ok");
+    if (diff.kind === "ok") expect(diff.newText).toBe("working\n");
+  });
+
   it("bounds historical browsing and search manifests", async () => {
     makeRepo();
     git(workDir, ["checkout", "-b", "feature"]);

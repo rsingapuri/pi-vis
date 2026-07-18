@@ -16,10 +16,12 @@ export interface GitCommitMetadata {
   authoredAt: number;
 }
 
-/** Inclusive immutable commit endpoints. Both values are full object IDs. */
+/** Inclusive immutable commit endpoints. Both values are full object IDs.
+ * `includeUncommitted` extends the selected band through the live working tree. */
 export interface GitCommitRange {
   start: string;
   end: string;
+  includeUncommitted?: boolean;
 }
 
 /** Concrete objects captured when a historical manifest is created. Lazy file
