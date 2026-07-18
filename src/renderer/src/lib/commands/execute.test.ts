@@ -149,16 +149,9 @@ describe("Composer intent execution — prompts and effects", () => {
       }),
     );
     await execution;
-    expect(deps.addUserMessage).toHaveBeenCalledWith(
-      SID,
-      "hello",
-      ["data:image/png;base64,bytes"],
-      {
-        registerEcho: true,
-        afterUserMessageSequence: 7,
-        intentId,
-      },
-    );
+    // A queued submission remains in the pending queue manager until Pi emits
+    // the authoritative user message; it must not look delivered in history.
+    expect(deps.addUserMessage).not.toHaveBeenCalled();
   });
 
   it("uses invokeCommand for discovered slash text and never creates a prompt echo", async () => {

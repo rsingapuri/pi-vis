@@ -6,6 +6,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary.js";
 import { ChangelogModal } from "./components/changelog/ChangelogModal.js";
 import { ImageLightbox } from "./components/common/ImageLightbox.js";
 import { Composer } from "./components/composer/Composer.js";
+import { QueuedMessagesTraySlot } from "./components/composer/QueuedMessagesTray.js";
 import { WorktreeBar } from "./components/composer/WorktreeBar.js";
 import { DiffViewerHost } from "./components/diff/DiffViewerHost.js";
 import {
@@ -783,10 +784,9 @@ export function App(): React.ReactElement {
                 <TranscriptView sessionId={activeSessionId} />
                 <NotificationStack sessionId={activeSessionId} />
               </div>
-              {/* Custom panel resize handle. It is visually attached to the
-                  top of the dock / widget tray (rather than hidden on the
-                  custom view edge below the tray), which makes the tray feel
-                  like the grab point for the whole below-transcript stack. */}
+              {/* Custom panel resize handle sits above the pending-message
+                  boundary and dock, so it remains attached to the custom view
+                  rather than competing with an instruction bubble. */}
               {customPanelSlotActive && (
                 <div
                   className="custom-panel-dock-resize"
@@ -797,10 +797,11 @@ export function App(): React.ReactElement {
                   onDoubleClick={handleCustomPanelResizeReset}
                 />
               )}
-              {/* Session dock — the rigid (non-shrinking) stack of bars that
-                  sits between the scrolling transcript and the composer. The
-                  WorktreeBar + Dock (above-composer tray) stack as ordered,
-                  in-flow column rows here. See `.session-dock` in App.css. */}
+              <QueuedMessagesTraySlot sessionId={activeSessionId} />
+              {/* Session dock — the rigid (non-shrinking) stack of bars below
+                  the pending-message boundary and above the composer. The
+                  WorktreeBar + Dock stack as ordered, in-flow column rows
+                  here. See `.session-dock` in App.css. */}
               <div className="session-dock">
                 {/* WorktreeBar — appears only in new sessions (first-send bar) */}
                 <WorktreeBar sessionId={activeSessionId} />

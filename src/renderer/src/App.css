@@ -278,8 +278,8 @@
   overflow: hidden;
 }
 
-/* Session dock — the fixed-height stack (Dock chip rail + WorktreeBar) wedged
-   between the scrolling transcript and the composer. `flex: 0 0 auto` makes it
+/* Session dock — the fixed-height stack (Dock chip rail + WorktreeBar) below
+   pending message bubbles and above the composer. `flex: 0 0 auto` makes it
    rigid so the transcript is the *only* flex item that absorbs vertical
    pressure — the dock's rows can never be compressed into one another. Its
    children stack as ordered, in-flow column boxes. */
@@ -291,9 +291,10 @@
 }
 
 /* Custom-panel resize handle. Rendered as its own non-overlapping gutter
-   immediately above `.session-dock`, so it cannot steal clicks from dock/widget
-   controls. The gutter stays transparent, with a subtle centered pill so the
-   resize affordance is discoverable without adding visual weight. */
+   above the pending-message boundary and `.session-dock`, so it cannot steal
+   clicks from queued-message or dock/widget controls. The gutter stays
+   transparent, with a subtle centered pill so the resize affordance is
+   discoverable without adding visual weight. */
 .custom-panel-dock-resize {
   position: relative;
   z-index: 4;

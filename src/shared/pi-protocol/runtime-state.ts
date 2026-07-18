@@ -337,6 +337,25 @@ export const AuthorityCursorSchema = RuntimeIdentitySchema.extend({
 }).strict();
 export type AuthorityCursor = z.infer<typeof AuthorityCursorSchema>;
 
+export const QueueManagementAvailabilitySchema = z
+  .object({
+    /** The host has proved that every queue slot can be safely rebuilt. */
+    available: z.boolean(),
+    /** Human-readable reason when a mutable queue operation is unsafe. */
+    message: z.string().optional(),
+  })
+  .strict()
+  .superRefine((availability, ctx) => {
+    if (!availability.available && !availability.message) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["message"],
+        message: "an unavailable queue manager needs an explanatory message",
+      });
+    }
+  });
+export type QueueManagementAvailability = z.infer<typeof QueueManagementAvailabilitySchema>;
+
 export const AuthoritativeQueuesSchema = z
   .object({
     steering: z.array(z.string()),
@@ -344,6 +363,8 @@ export const AuthoritativeQueuesSchema = z
     /** Parallel ownership slots. Null is an extension/external queue entry. */
     steeringIntentIds: z.array(NonEmptyIdSchema.nullable()),
     followUpIntentIds: z.array(NonEmptyIdSchema.nullable()),
+    /** Optional only for persisted/older-host compatibility; new hosts always publish it. */
+    management: QueueManagementAvailabilitySchema.optional(),
   })
   .strict()
   .superRefine((queues, ctx) => {
@@ -582,9 +603,16 @@ export type SessionQueryResult = z.infer<typeof SessionQueryResultSchema>;
 export const QueryResultSchema = SessionQueryResultSchema;
 export type QueryResult = SessionQueryResult;
 
+export const QueueManagementOperationSchema = z.enum(["remove", "update", "move", "clear"]);
+export type QueueManagementOperation = z.infer<typeof QueueManagementOperationSchema>;
+
+export const QueueMoveDirectionSchema = z.enum(["earlier", "later"]);
+export type QueueMoveDirection = z.infer<typeof QueueMoveDirectionSchema>;
+
 export const SessionIntentKindSchema = z.enum([
   "interrupt",
   "submit",
+  "manageQueue",
   "compact",
   "invokeCommand",
   "runBash",
@@ -597,7 +625,7 @@ export const SessionIntentKindSchema = z.enum([
 ]);
 export type SessionIntentKind = z.infer<typeof SessionIntentKindSchema>;
 
-export const SessionIntentSchema = z.discriminatedUnion("kind", [
+export const SessionIntentSchema = z.union([
   z.object({ kind: z.literal("interrupt") }).strict(),
   z
     .object({
@@ -609,6 +637,84 @@ export const SessionIntentSchema = z.discriminatedUnion("kind", [
       surface: SubmissionSurfaceSchema,
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("manageQueue"),
+      operation: QueueManagementOperationSchema,
+      targetIntentId: NonEmptyIdSchema.optional(),
+      text: z.string().min(1).optional(),
+      direction: QueueMoveDirectionSchema.optional(),
+      expectedSteeringIntentIds: z.array(NonEmptyIdSchema).optional(),
+      expectedFollowUpIntentIds: z.array(NonEmptyIdSchema).optional(),
+    })
+    .strict()
+    .superRefine((intent, ctx) => {
+      const targetRequired = ["remove", "update", "move"].includes(intent.operation);
+      if (targetRequired && !intent.targetIntentId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["targetIntentId"],
+          message: `${intent.operation} requires a target queue intent`,
+        });
+      }
+      if (intent.operation === "update" && intent.text === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["text"],
+          message: "update requires replacement text",
+        });
+      }
+      if (intent.operation === "move" && intent.direction === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["direction"],
+          message: "move requires a direction",
+        });
+      }
+      if (
+        intent.operation === "clear" &&
+        (intent.expectedSteeringIntentIds === undefined ||
+          intent.expectedFollowUpIntentIds === undefined)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["expectedSteeringIntentIds"],
+          message: "clear requires an exact queue expectation",
+        });
+      }
+      if (
+        intent.operation !== "clear" &&
+        (intent.expectedSteeringIntentIds !== undefined ||
+          intent.expectedFollowUpIntentIds !== undefined)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["expectedSteeringIntentIds"],
+          message: "only clear accepts a queue expectation",
+        });
+      }
+      if (intent.operation !== "update" && intent.text !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["text"],
+          message: "only update accepts replacement text",
+        });
+      }
+      if (intent.operation !== "move" && intent.direction !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["direction"],
+          message: "only move accepts a direction",
+        });
+      }
+      if (intent.operation === "clear" && intent.targetIntentId !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["targetIntentId"],
+          message: "clear does not target one queue item",
+        });
+      }
+    }),
   z.object({ kind: z.literal("compact"), instructions: z.string().optional() }).strict(),
   z
     .object({
@@ -789,6 +895,15 @@ export const SubmitIntentResultSchema = z
     message: z.string().optional(),
   })
   .strict();
+export const QueueManagementIntentResultSchema = z
+  .object({
+    operation: QueueManagementOperationSchema,
+    targetIntentId: NonEmptyIdSchema.optional(),
+    queue: z.enum(["steer", "followUp"]).optional(),
+    message: z.string().optional(),
+  })
+  .strict();
+
 export const CompactIntentResultSchema = z
   .object({
     compactionId: NonEmptyIdSchema.optional(),
@@ -847,6 +962,10 @@ export const IntentOutcomeSchema = z.discriminatedUnion("kind", [
   OutcomeBaseSchema.extend({
     kind: z.literal("submit"),
     result: SubmitIntentResultSchema.optional(),
+  }).strict(),
+  OutcomeBaseSchema.extend({
+    kind: z.literal("manageQueue"),
+    result: QueueManagementIntentResultSchema.optional(),
   }).strict(),
   OutcomeBaseSchema.extend({
     kind: z.literal("compact"),

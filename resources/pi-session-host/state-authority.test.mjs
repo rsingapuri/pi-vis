@@ -457,7 +457,213 @@ describe("state authority", () => {
     promptDone.resolve();
   });
 
-  it("retires a handled extension command claim before a later prompt queues", async () => {
+  it("rebuilds a strictly owned queue to remove, edit, and reorder one pending instruction", async () => {
+    let steering = [];
+    let followUp = [];
+    const { authority, session } = setup({
+      isStreaming: true,
+      isIdle: false,
+      getSteeringMessages: vi.fn(() => steering),
+      getFollowUpMessages: vi.fn(() => followUp),
+      prompt: vi.fn((text, options) => {
+        const queue = options.streamingBehavior === "steer" ? steering : followUp;
+        queue.push(text);
+        options.preflightResult(true);
+        return Promise.resolve();
+      }),
+      clearQueue: vi.fn(() => {
+        const cleared = { steering: [...steering], followUp: [...followUp] };
+        steering = [];
+        followUp = [];
+        return cleared;
+      }),
+      steer: vi.fn(async (text) => {
+        steering.push(text);
+      }),
+      followUp: vi.fn(async (text) => {
+        followUp.push(text);
+      }),
+    });
+
+    await authority.submit(makeRequest("queue-one", { text: "first", requestedMode: "steer" }));
+    await authority.submit(makeRequest("queue-two", { text: "second", requestedMode: "steer" }));
+    expect(authority.snapshot().steeringIntentIds).toEqual(["queue-one", "queue-two"]);
+
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "move",
+        targetIntentId: "queue-two",
+        direction: "earlier",
+      }),
+    ).resolves.toMatchObject({ applied: true, queue: "steer", targetIntentId: "queue-two" });
+    expect(steering).toEqual(["second", "first"]);
+    expect(authority.snapshot().steeringIntentIds).toEqual(["queue-two", "queue-one"]);
+
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "update",
+        targetIntentId: "queue-one",
+        text: "first revised",
+      }),
+    ).resolves.toMatchObject({ applied: true, queue: "steer", targetIntentId: "queue-one" });
+    expect(steering).toEqual(["second", "first revised"]);
+
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "remove",
+        targetIntentId: "queue-two",
+      }),
+    ).resolves.toMatchObject({ applied: true, queue: "steer", targetIntentId: "queue-two" });
+    expect(steering).toEqual(["first revised"]);
+    expect(authority.snapshot().steeringIntentIds).toEqual(["queue-one"]);
+    expect(session.clearQueue).toHaveBeenCalledTimes(3);
+
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "clear",
+        expectedSteeringIntentIds: ["queue-two"],
+        expectedFollowUpIntentIds: [],
+      }),
+    ).resolves.toMatchObject({ message: expect.stringContaining("changed") });
+    expect(session.clearQueue).toHaveBeenCalledTimes(3);
+
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "clear",
+        expectedSteeringIntentIds: ["queue-one"],
+        expectedFollowUpIntentIds: [],
+      }),
+    ).resolves.toMatchObject({ applied: true, operation: "clear" });
+    expect(steering).toEqual([]);
+    expect(authority.snapshot().steeringIntentIds).toEqual([]);
+    expect(session.clearQueue).toHaveBeenCalledTimes(4);
+  });
+
+  it("removes only the targeted duplicate-text queue item", async () => {
+    let steering = [];
+    const { authority } = setup({
+      isStreaming: true,
+      isIdle: false,
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((text, options) => {
+        steering.push(text);
+        options.preflightResult(true);
+        return Promise.resolve();
+      }),
+      clearQueue: vi.fn(() => {
+        steering = [];
+      }),
+      steer: vi.fn(async (text) => {
+        steering.push(text);
+      }),
+      followUp: vi.fn(async () => {}),
+    });
+
+    await authority.submit(
+      makeRequest("duplicate-first", { text: "same text", requestedMode: "steer" }),
+    );
+    await authority.submit(
+      makeRequest("duplicate-second", { text: "same text", requestedMode: "steer" }),
+    );
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "remove",
+        targetIntentId: "duplicate-second",
+      }),
+    ).resolves.toMatchObject({ applied: true, targetIntentId: "duplicate-second" });
+
+    expect(steering).toEqual(["same text"]);
+    expect(authority.snapshot().steeringIntentIds).toEqual(["duplicate-first"]);
+  });
+
+  it("refuses to rebuild a queue that contains an external or transformed item", async () => {
+    const steering = [];
+    const { authority, session } = setup({
+      isStreaming: true,
+      isIdle: false,
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((text, options) => {
+        steering.push(text);
+        options.preflightResult(true);
+        return Promise.resolve();
+      }),
+      clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
+      steer: vi.fn(async () => {}),
+      followUp: vi.fn(async () => {}),
+    });
+
+    await authority.submit(makeRequest("owned", { text: "plain", requestedMode: "steer" }));
+    steering.push("extension-owned");
+    authority.snapshot();
+
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "remove",
+        targetIntentId: "owned",
+      }),
+    ).resolves.toMatchObject({
+      operation: "remove",
+      message: expect.stringContaining("outside Pi-Vis"),
+    });
+    expect(session.clearQueue).not.toHaveBeenCalled();
+  });
+
+  it("refuses to rebuild transformed or attached GUI queue entries", async () => {
+    for (const scenario of [
+      {
+        queuedText: "extension transformed text",
+        images: [],
+        expectedMessage: "transformed before queuing",
+      },
+      {
+        queuedText: "plain text",
+        images: [{ type: "image", data: "AAE=", mimeType: "image/png" }],
+        expectedMessage: "has attachments",
+      },
+    ]) {
+      const steering = [];
+      const { authority, session } = setup({
+        isStreaming: true,
+        isIdle: false,
+        getSteeringMessages: vi.fn(() => steering),
+        prompt: vi.fn((_text, options) => {
+          steering.push(scenario.queuedText);
+          options.preflightResult(true);
+          return Promise.resolve();
+        }),
+      });
+
+      await authority.submit(
+        makeRequest(`unsafe-${scenario.expectedMessage}`, {
+          text: "plain text",
+          requestedMode: "steer",
+          images: scenario.images,
+        }),
+      );
+      expect(authority.semanticSnapshot().queues.management).toMatchObject({
+        available: false,
+        message: expect.stringContaining(scenario.expectedMessage),
+      });
+      await expect(
+        authority.manageQueue({
+          kind: "manageQueue",
+          operation: "remove",
+          targetIntentId: `unsafe-${scenario.expectedMessage}`,
+        }),
+      ).resolves.toMatchObject({ message: expect.stringContaining(scenario.expectedMessage) });
+      expect(session.clearQueue).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not let a pending handled extension command claim a later prompt queue slot", async () => {
+    const extensionDone = deferred();
     const normalDone = deferred();
     let steering = [];
     const { authority, sendRecord } = setup({
@@ -468,7 +674,7 @@ describe("state authority", () => {
       },
       prompt: vi.fn((text, options) => {
         options.preflightResult(true);
-        if (text === "/e2e-notify") return Promise.resolve();
+        if (text === "/e2e-notify") return extensionDone.promise;
         steering = ["transformed ordinary queue"];
         return normalDone.promise;
       }),
@@ -480,7 +686,6 @@ describe("state authority", () => {
         requestedMode: "steer",
       }),
     );
-    await flush();
     expect(authority.snapshot().steeringIntentIds).toEqual([]);
 
     await authority.submit(
@@ -505,6 +710,7 @@ describe("state authority", () => {
       },
     });
     normalDone.resolve();
+    extensionDone.resolve();
   });
 
   it("does not assign a GUI intent when preflight adds multiple ambiguous slots", async () => {

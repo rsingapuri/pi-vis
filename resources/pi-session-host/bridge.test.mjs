@@ -631,6 +631,10 @@ describe("setupCommandBridge — target intent dispatch", () => {
           surface: "composer",
         },
       ],
+      [
+        "manageQueue",
+        { operation: "clear", expectedSteeringIntentIds: [], expectedFollowUpIntentIds: [] },
+      ],
       ["compact", { instructions: "brief" }],
       ["runBash", { command: "pwd", excludeFromContext: true }],
       ["navigate", { targetId: "leaf-9", summarize: true }],

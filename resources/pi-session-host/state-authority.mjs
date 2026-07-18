@@ -95,6 +95,12 @@ export function createStateAuthority({
   const activeIntents = new Map();
   const restorations = new Map();
   const attachmentLedger = new Map();
+  // Original GUI payloads retained only while their public queue slot remains
+  // attributable. Pi exposes transformed text but no stable queue-item IDs;
+  // an exact, attachment-free plain-text payload is the only kind the host may
+  // rebuild atomically for user-requested remove/edit/reorder operations.
+  const queuedPayloads = new Map();
+  let queueMutationActive = false;
   // Positional identities parallel Pi's public transformed-text queues. Text is
   // presentation only: GUI ownership survives extension rewrites by following
   // FIFO queue slots and decorating the corresponding delivery event.
@@ -154,6 +160,41 @@ export function createStateAuthority({
     }
   }
 
+  function forgetQueuedPayloads(intentIds) {
+    for (const intentId of intentIds) {
+      if (typeof intentId === "string") queuedPayloads.delete(intentId);
+    }
+  }
+
+  function ownsQueuedIntent(intentId) {
+    return queueIdentity.steer.includes(intentId) || queueIdentity.followUp.includes(intentId);
+  }
+
+  function retainQueuedPayload(request) {
+    if (typeof request?.intentId !== "string" || request.intentId.length === 0) return;
+    queuedPayloads.set(request.intentId, {
+      intentId: request.intentId,
+      requestedMode: request.requestedMode === "steer" ? "steer" : "followUp",
+      text: request.text,
+      images: structuredClone(request.images ?? []),
+      surface: request.surface ?? "composer",
+      // Queued slash commands may be expanded or extension-dispatched by Pi.
+      // Replaying one through the public SDK would not preserve its original
+      // semantics, so only ordinary prompts are eligible for queue mutation.
+      replayable: typeof request.text === "string" && !request.text.startsWith("/"),
+    });
+  }
+
+  function setQueueProjection(steering, followUp, steeringIntentIds, followUpIntentIds) {
+    queueIdentity = {
+      steer: [...steeringIntentIds],
+      followUp: [...followUpIntentIds],
+    };
+    queueLengths = { steer: steering.length, followUp: followUp.length };
+    queueValues = { steer: [...steering], followUp: [...followUp] };
+    pendingQueueClaims.clear();
+  }
+
   function reconcileQueueIdentity(steering, followUp, deliveryExpected = false) {
     const deliveredQueueIntentIds = [];
     for (const [mode, queue] of [
@@ -177,14 +218,22 @@ export function createStateAuthority({
           const intentId = removed[0];
           if (intentId) deliveredQueueIntentIds.push(intentId);
         }
-        if (!retainedSuffixUnchanged) identities.fill(null);
+        forgetQueuedPayloads(removed);
+        if (!retainedSuffixUnchanged) {
+          forgetQueuedPayloads(identities);
+          identities.fill(null);
+        }
       } else if (queue.length > priorLength) {
         const priorPrefixUnchanged = priorValues.every((value, index) => value === queue[index]);
-        if (!priorPrefixUnchanged) identities.fill(null);
+        if (!priorPrefixUnchanged) {
+          forgetQueuedPayloads(identities);
+          identities.fill(null);
+        }
         identities.push(...Array(queue.length - priorLength).fill(null));
       } else if (queue.some((value, index) => value !== priorValues[index])) {
         // Equal-length replacement has no public provenance. Invalidate all
         // mappings rather than letting a replacement inherit a GUI identity.
+        forgetQueuedPayloads(identities);
         identities.fill(null);
       }
       queueLengths[mode] = queue.length;
@@ -226,7 +275,18 @@ export function createStateAuthority({
     const mode = request.requestedMode === "steer" ? "steer" : "followUp";
     const queue = mode === "steer" ? steering : followUp;
     const identities = queueIdentity[mode];
+    // Slash input can be an extension command, skill, or template whose
+    // asynchronous expansion/handling has no public queue provenance. It is
+    // never replayable by the queue manager, so it must not retain a deferred
+    // positional claim that could later steal a normal prompt's queue slot.
+    // A resulting public slot remains intentionally unowned/uneditable.
+    if (request.text.startsWith("/")) {
+      pendingQueueClaims.delete(request.intentId);
+      queuedPayloads.delete(request.intentId);
+      return;
+    }
     if (identities.includes(request.intentId)) {
+      retainQueuedPayload(request);
       pendingQueueClaims.delete(request.intentId);
       return;
     }
@@ -236,10 +296,12 @@ export function createStateAuthority({
     // ambiguous and must never inherit this GUI intent.
     if (queue.length === priorLength + 1 && baselineUnchanged && identities[priorLength] === null) {
       identities[priorLength] = request.intentId;
+      retainQueuedPayload(request);
       pendingQueueClaims.delete(request.intentId);
       return;
     }
     if (queue.length === priorLength && baselineUnchanged) {
+      retainQueuedPayload(request);
       pendingQueueClaims.set(request.intentId, {
         mode,
         priorLength,
@@ -257,6 +319,7 @@ export function createStateAuthority({
     // must never steal a later ordinary prompt's slot.
     registerQueuedIntent(request, priorLength, priorValues);
     pendingQueueClaims.delete(request.intentId);
+    if (!ownsQueuedIntent(request.intentId)) queuedPayloads.delete(request.intentId);
   }
 
   function resetQueueIdentity() {
@@ -264,6 +327,7 @@ export function createStateAuthority({
     queueLengths = { steer: 0, followUp: 0 };
     queueValues = { steer: [], followUp: [] };
     pendingQueueClaims.clear();
+    queuedPayloads.clear();
   }
 
   function reconcileAttachmentLedger(steering, followUp) {
@@ -340,6 +404,47 @@ export function createStateAuthority({
           ["steer", "followUp"].includes(intent.requestedMode) &&
           ["composer", "unified"].includes(intent.surface)
         );
+      case "manageQueue": {
+        const operation = intent.operation;
+        const allowed = [
+          "kind",
+          "operation",
+          "targetIntentId",
+          "text",
+          "direction",
+          "expectedSteeringIntentIds",
+          "expectedFollowUpIntentIds",
+        ];
+        if (
+          !Object.keys(intent).every((key) => allowed.includes(key)) ||
+          !["remove", "update", "move", "clear"].includes(operation)
+        ) {
+          return false;
+        }
+        const queueIds = (value) =>
+          Array.isArray(value) &&
+          value.every((item) => typeof item === "string" && item.length > 0);
+        const hasTarget =
+          typeof intent.targetIntentId === "string" && intent.targetIntentId.length > 0;
+        const hasText = typeof intent.text === "string" && intent.text.length > 0;
+        const hasDirection = ["earlier", "later"].includes(intent.direction);
+        const hasExpectation =
+          intent.expectedSteeringIntentIds !== undefined ||
+          intent.expectedFollowUpIntentIds !== undefined;
+        if (operation === "clear") {
+          return (
+            intent.targetIntentId === undefined &&
+            intent.text === undefined &&
+            intent.direction === undefined &&
+            queueIds(intent.expectedSteeringIntentIds) &&
+            queueIds(intent.expectedFollowUpIntentIds)
+          );
+        }
+        if (!hasTarget || hasExpectation) return false;
+        if (operation === "update") return hasText && intent.direction === undefined;
+        if (operation === "move") return intent.text === undefined && hasDirection;
+        return intent.text === undefined && intent.direction === undefined;
+      }
       case "compact":
         return (
           Object.keys(intent).every((key) => ["kind", "instructions"].includes(key)) &&
@@ -932,6 +1037,7 @@ export function createStateAuthority({
         followUp: value.followUp,
         steeringIntentIds: value.steeringIntentIds ?? value.steering.map(() => null),
         followUpIntentIds: value.followUpIntentIds ?? value.followUp.map(() => null),
+        management: queueManagementAvailability(value.steering, value.followUp),
       },
       custody: custody.map((item) => ({
         custodyId: item.custodyId,
@@ -1076,6 +1182,15 @@ export function createStateAuthority({
           ...(typeof value.custodyId === "string" ? { custodyId: value.custodyId } : {}),
           ...(typeof value.message === "string" ? { message: value.message } : {}),
         };
+      case "manageQueue":
+        return {
+          operation: intent?.operation ?? "remove",
+          ...(typeof value.targetIntentId === "string"
+            ? { targetIntentId: value.targetIntentId }
+            : {}),
+          ...(value.queue === "steer" || value.queue === "followUp" ? { queue: value.queue } : {}),
+          ...(typeof value.message === "string" ? { message: value.message } : {}),
+        };
       case "invokeCommand": {
         const commandType =
           typeof intent?.text === "string"
@@ -1179,7 +1294,7 @@ export function createStateAuthority({
     if (!entry || entry.outcome) return entry?.outcome;
     const normalizedResult = typedIntentResult(entry.intent, kind, result);
     const error =
-      state === "failed" || state === "outcome_unknown"
+      state === "failed" || state === "outcome_unknown" || state === "rejected"
         ? typeof result?.message === "string"
           ? result.message
           : undefined
@@ -1803,6 +1918,16 @@ export function createStateAuthority({
         settleDispatchedIntent(intentId, owner, intent.kind, state, result);
         return;
       }
+      if (intent.kind === "manageQueue") {
+        const state =
+          result?.uncertain === true
+            ? "outcome_unknown"
+            : result?.applied === true
+              ? "completed"
+              : "rejected";
+        settleDispatchedIntent(intentId, owner, intent.kind, state, result);
+        return;
+      }
       const state =
         result?.cancelled === true || result?.aborted === true ? "cancelled" : "completed";
       settleDispatchedIntent(intentId, owner, intent.kind, state, result);
@@ -2004,6 +2129,11 @@ export function createStateAuthority({
   }
 
   function observeEvent(event) {
+    // clearQueue() and the public requeue methods synchronously emit one
+    // queue_update each. A management transaction rebuilds the complete queue
+    // in the same JS turn, so publishing those transient empty/partial states
+    // would make a single atomic user operation visibly flicker.
+    if (queueMutationActive && event?.type === "queue_update") return undefined;
     let publishedEvent = event;
     if (event?.type === "message_start" && event.message?.role === "user") {
       const { deliveredQueueIntentIds } = readQueues(true);
@@ -2195,6 +2325,245 @@ export function createStateAuthority({
       publishSnapshot();
       if (shouldDrain || navigationDepth === 0) scheduleCustodyDrain();
     }
+  }
+
+  function sameQueueIntentIds(actual, expected) {
+    return (
+      actual.length === expected.length &&
+      actual.every((intentId, index) => intentId === expected[index])
+    );
+  }
+
+  function queueManagementAvailability(steering, followUp) {
+    if (pendingQueueClaims.size > 0) {
+      return {
+        available: false,
+        message: "A queued prompt is still being admitted; try again once it appears.",
+      };
+    }
+    const inspect = (mode, texts, intentIds) => {
+      if (texts.length !== intentIds.length) {
+        return "Queue ownership is synchronizing; try again once it settles.";
+      }
+      for (const [index, text] of texts.entries()) {
+        const intentId = intentIds[index];
+        if (typeof intentId !== "string") {
+          return "This queue also contains an instruction managed outside Pi-Vis, so it cannot be safely changed here.";
+        }
+        const payload = queuedPayloads.get(intentId);
+        if (!payload || payload.requestedMode !== mode || payload.replayable !== true) {
+          return "Only plain Pi-Vis prompts can be changed while queued.";
+        }
+        // Pi only exposes transformed queue text, and it does not expose queued
+        // image identities. Replaying either through steer()/followUp() could
+        // change delivery, so only an exact original plain-text payload is safe.
+        if (payload.text !== text) {
+          return "A pending instruction was transformed before queuing and cannot be safely changed here.";
+        }
+        if (payload.images.length > 0) {
+          return "A pending instruction has attachments and cannot be safely changed here.";
+        }
+      }
+      return undefined;
+    };
+    const steeringMessage = inspect("steer", steering, queueIdentity.steer);
+    if (steeringMessage) return { available: false, message: steeringMessage };
+    const followUpMessage = inspect("followUp", followUp, queueIdentity.followUp);
+    if (followUpMessage) return { available: false, message: followUpMessage };
+    return { available: true };
+  }
+
+  function inspectManageableQueues() {
+    const { steering, followUp } = readQueues();
+    const availability = queueManagementAvailability(steering, followUp);
+    if (!availability.available) return availability;
+    const entries = (mode, texts, intentIds) =>
+      texts.map((text, index) => {
+        const intentId = intentIds[index];
+        return {
+          intentId,
+          text,
+          payload: structuredClone(queuedPayloads.get(intentId)),
+        };
+      });
+    return {
+      ...availability,
+      steering,
+      followUp,
+      steeringEntries: entries("steer", steering, queueIdentity.steer),
+      followUpEntries: entries("followUp", followUp, queueIdentity.followUp),
+    };
+  }
+
+  function queueManagementResult(operation, extra = {}) {
+    return { operation, ...extra };
+  }
+
+  /**
+   * Pi's public SDK exposes queue reads and clearQueue(), but no per-item
+   * mutation. Under the strict ownership proof above, clear-and-rebuild is
+   * safe: all queue mutations happen synchronously in this host's JS turn,
+   * so the agent loop cannot consume an intermediate empty/partial queue.
+   */
+  async function manageQueue(intent) {
+    const operation = intent.operation;
+    const current = inspectManageableQueues();
+    if (!current.steeringEntries || !current.followUpEntries) {
+      return queueManagementResult(operation, { message: current.message });
+    }
+
+    if (
+      operation === "clear" &&
+      (!sameQueueIntentIds(queueIdentity.steer, intent.expectedSteeringIntentIds ?? []) ||
+        !sameQueueIntentIds(queueIdentity.followUp, intent.expectedFollowUpIntentIds ?? []))
+    ) {
+      return queueManagementResult(operation, {
+        message: "The pending queue changed before it could be cleared. Review it and try again.",
+      });
+    }
+
+    const steeringEntries = current.steeringEntries.map((entry) => structuredClone(entry));
+    const followUpEntries = current.followUpEntries.map((entry) => structuredClone(entry));
+    const allEntries = [...steeringEntries, ...followUpEntries];
+    const targetIntentId = intent.targetIntentId;
+    let targetQueue;
+    let targetIndex = -1;
+    if (operation !== "clear") {
+      targetQueue = steeringEntries.findIndex((entry) => entry.intentId === targetIntentId);
+      if (targetQueue >= 0) {
+        targetIndex = targetQueue;
+        targetQueue = "steer";
+      } else {
+        const followUpIndex = followUpEntries.findIndex(
+          (entry) => entry.intentId === targetIntentId,
+        );
+        if (followUpIndex < 0) {
+          return queueManagementResult(operation, {
+            ...(targetIntentId ? { targetIntentId } : {}),
+            message: "That instruction was already delivered or removed.",
+          });
+        }
+        targetIndex = followUpIndex;
+        targetQueue = "followUp";
+      }
+    }
+
+    if (operation === "remove") {
+      const entries = targetQueue === "steer" ? steeringEntries : followUpEntries;
+      entries.splice(targetIndex, 1);
+    } else if (operation === "update") {
+      const entries = targetQueue === "steer" ? steeringEntries : followUpEntries;
+      const entry = entries[targetIndex];
+      if (!entry) {
+        return queueManagementResult(operation, {
+          ...(targetIntentId ? { targetIntentId } : {}),
+          message: "That instruction was already delivered or removed.",
+        });
+      }
+      entry.payload.text = intent.text;
+    } else if (operation === "move") {
+      const entries = targetQueue === "steer" ? steeringEntries : followUpEntries;
+      const replacementIndex = intent.direction === "earlier" ? targetIndex - 1 : targetIndex + 1;
+      if (replacementIndex < 0 || replacementIndex >= entries.length) {
+        return queueManagementResult(operation, {
+          ...(targetIntentId ? { targetIntentId } : {}),
+          queue: targetQueue,
+          message:
+            intent.direction === "earlier"
+              ? "That instruction is already next."
+              : "That instruction is already last.",
+        });
+      }
+      const [entry] = entries.splice(targetIndex, 1);
+      entries.splice(replacementIndex, 0, entry);
+    } else if (operation === "clear") {
+      steeringEntries.length = 0;
+      followUpEntries.length = 0;
+    }
+
+    const nextEntries = [...steeringEntries, ...followUpEntries];
+    const enqueue = (entry) =>
+      runWithSurface(
+        entry.payload.surface,
+        () =>
+          entry.payload.requestedMode === "steer"
+            ? session.steer(entry.payload.text, entry.payload.images)
+            : session.followUp(entry.payload.text, entry.payload.images),
+        entry.intentId,
+      );
+    const queueIds = (entries) => entries.map((entry) => entry.intentId);
+    const allCurrentIntentIds = allEntries.map((entry) => entry.intentId);
+
+    queueMutationActive = true;
+    let enqueuePromises = [];
+    try {
+      session.clearQueue();
+      if (
+        session.getSteeringMessages().length !== 0 ||
+        session.getFollowUpMessages().length !== 0
+      ) {
+        throw new Error("The SDK did not clear its pending queue");
+      }
+      // Call every public enqueue method before awaiting any promise. Their
+      // bodies synchronously push into Pi's queue, preserving the complete
+      // queue before the event loop can run an agent-loop continuation.
+      enqueuePromises = nextEntries.map((entry) => Promise.resolve(enqueue(entry)));
+      const steering = [...session.getSteeringMessages()];
+      const followUp = [...session.getFollowUpMessages()];
+      if (
+        steering.length !== steeringEntries.length ||
+        followUp.length !== followUpEntries.length
+      ) {
+        throw new Error("The SDK queue changed while it was being rebuilt");
+      }
+      setQueueProjection(steering, followUp, queueIds(steeringEntries), queueIds(followUpEntries));
+    } catch (error) {
+      // A partial public rebuild has no stable provenance. Do not let a later
+      // queue shrink decorate the wrong transcript event or invite a retry.
+      resetQueueIdentity();
+      return queueManagementResult(operation, {
+        ...(targetIntentId ? { targetIntentId } : {}),
+        ...(targetQueue ? { queue: targetQueue } : {}),
+        uncertain: true,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      queueMutationActive = false;
+    }
+
+    try {
+      await Promise.all(enqueuePromises);
+    } catch (error) {
+      // The public methods already changed Pi's queue synchronously, but an
+      // asynchronous rejection means their final semantics are unknown. Keep
+      // the actual queue visible and fence future item-level mutations.
+      resetQueueIdentity();
+      return queueManagementResult(operation, {
+        ...(targetIntentId ? { targetIntentId } : {}),
+        ...(targetQueue ? { queue: targetQueue } : {}),
+        uncertain: true,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (operation === "remove" && targetIntentId) {
+      queuedPayloads.delete(targetIntentId);
+      attachmentLedger.delete(targetIntentId);
+    } else if (operation === "update" && targetIntentId) {
+      const entry = nextEntries.find((candidate) => candidate.intentId === targetIntentId);
+      if (entry && ownsQueuedIntent(targetIntentId)) {
+        queuedPayloads.set(targetIntentId, structuredClone(entry.payload));
+      }
+    } else if (operation === "clear") {
+      forgetQueuedPayloads(allCurrentIntentIds);
+      for (const intentId of allCurrentIntentIds) attachmentLedger.delete(intentId);
+    }
+
+    return queueManagementResult(operation, {
+      applied: true,
+      ...(targetIntentId ? { targetIntentId } : {}),
+      ...(targetQueue ? { queue: targetQueue } : {}),
+    });
   }
 
   function attachmentsForClearedQueue() {
@@ -2834,6 +3203,7 @@ export function createStateAuthority({
     publishExtensionUi,
     publishPanel,
     submit,
+    manageQueue,
     dispatchIntent,
     beginCompactionInvocation,
     settleCompactionInvocation,

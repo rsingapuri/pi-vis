@@ -143,6 +143,9 @@ export interface SessionViewState {
         additionalCandidates?: Array<{ text: string; attachments: unknown[] }> | undefined;
       }
     | undefined;
+  /** Canonical pending queue projection for the Composer queue manager. */
+  pendingQueueMessages?: { steering: QueuedMessage[]; followUp: QueuedMessage[] } | undefined;
+  /** Legacy transcript ownership projection retained while queued messages are in flight. */
   queuedMessages?: { steering: QueuedMessage[]; followUp: QueuedMessage[] } | undefined;
   /** Queued records are retained solely to suppress late optimistic echoes. */
   queueRestorations?:
@@ -924,7 +927,7 @@ function queuedMessagesFromSnapshot(
   followUp: string[],
   steeringIntentIds: Array<string | null> | undefined,
   followUpIntentIds: Array<string | null> | undefined,
-  pendingEchoes: TranscriptState["pendingEchoes"],
+  pendingEchoes: TranscriptState["pendingEchoes"] = [],
 ): SessionViewState["queuedMessages"] {
   let queuedMessages: SessionViewState["queuedMessages"] =
     steering.length === 0 && followUp.length === 0
@@ -1004,6 +1007,7 @@ function applyAuthoritySemanticProjection(
       ...current,
       hostInstanceId: undefined,
       runningSince: undefined,
+      pendingQueueMessages: undefined,
       queuedMessages: undefined,
       ...extensionPresentation,
       editorInjection: undefined,
@@ -1060,6 +1064,12 @@ function applyAuthoritySemanticProjection(
         : priorStreaming && !snapshot.sdk.isStreaming
           ? undefined
           : current.runningSince,
+    pendingQueueMessages: queuedMessagesFromSnapshot(
+      snapshot.queues.steering,
+      snapshot.queues.followUp,
+      snapshot.queues.steeringIntentIds,
+      snapshot.queues.followUpIntentIds,
+    ),
     queuedMessages: queuedMessagesFromSnapshot(
       snapshot.queues.steering,
       snapshot.queues.followUp,
@@ -1078,6 +1088,7 @@ function resetRuntimeState(session: SessionViewState): SessionViewState {
     availability: "unavailable",
     runtimeSnapshot: undefined,
     runningSince: undefined,
+    pendingQueueMessages: undefined,
     queuedMessages: undefined,
   };
 }

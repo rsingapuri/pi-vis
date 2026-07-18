@@ -416,7 +416,28 @@ test("terminal archived activity stays active until visible live output", async 
   await expect(boundarySummary.locator(".compact-transcript-group__spinner")).toHaveCount(0);
 });
 
-test("queued steering has exactly one visible projection", async ({ page }) => {
+test("a pending bubble removes its exact instruction", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });
+
+  await page.evaluate(() => {
+    (
+      window as unknown as {
+        __pivisPreview: { setQueuedSteering: (text: string, intentId: string) => void };
+      }
+    ).__pivisPreview.setQueuedSteering("remove this stale instruction", "remove-intent");
+  });
+
+  const queuedBubble = page
+    .locator(".queued-messages__bubble")
+    .filter({ hasText: "remove this stale instruction" });
+  await expect(queuedBubble).toHaveCount(1);
+  await expect(queuedBubble.locator(".queued-messages__actions")).toHaveCSS("opacity", "1");
+  await queuedBubble.getByRole("button", { name: "Remove queued instruction" }).click();
+  await expect(queuedBubble).toHaveCount(0);
+});
+
+test("queued steering stays as a compact bubble above widgets until delivery", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });
 
@@ -428,40 +449,38 @@ test("queued steering has exactly one visible projection", async ({ page }) => {
     ).__pivisPreview.setQueuedSteering("extension prefix exactly once", "render-intent");
   });
 
-  const queuedProjection = page.locator(".queued-bubble__content", {
-    hasText: "extension prefix exactly once",
-  });
+  const queuedProjection = page
+    .locator(".queued-messages__bubble")
+    .filter({ hasText: "extension prefix exactly once" });
   const deliveredProjection = page
     .locator(".transcript-block--user")
     .filter({ hasText: "exactly once" });
   await expect(queuedProjection).toHaveCount(1);
   await expect(deliveredProjection).toHaveCount(0);
-  await expect(page.getByText("Steering — queued", { exact: true })).toBeVisible();
-
   await page.evaluate(() => {
-    type PreviewState = {
-      activeSessionId: string;
-      addUserMessage: (
-        sessionId: string,
-        text: string,
-        images: undefined,
-        options: Record<string, unknown>,
-      ) => void;
-      applyEvent: (sessionId: string, event: Record<string, unknown>) => void;
+    type PreviewSession = { widgets: Map<string, string[]> };
+    type PreviewStore = {
+      getState: () => { activeSessionId: string; sessions: Map<string, PreviewSession> };
+      setState: (partial: unknown) => void;
     };
-    const state = (
-      window as unknown as { __pivisStore: { getState: () => PreviewState } }
-    ).__pivisStore.getState();
-    state.addUserMessage(state.activeSessionId, "exactly once", undefined, {
-      registerEcho: true,
-      afterUserMessageSequence: 0,
-      intentId: "render-intent",
+    const store = (window as unknown as { __pivisStore: PreviewStore }).__pivisStore;
+    const state = store.getState();
+    const sessions = new Map(state.sessions);
+    const session = sessions.get(state.activeSessionId)!;
+    sessions.set(state.activeSessionId, {
+      ...session,
+      widgets: new Map([["preview-widget", ["widget"]]]),
     });
+    store.setState({ sessions });
   });
-
-  await expect(queuedProjection).toHaveCount(0);
-  await expect(deliveredProjection).toHaveCount(1);
-  await expect(page.getByText("Steering — queued", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".dock")).toHaveCount(1);
+  await expect(page.getByText("Pending instructions", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Steer current run", { exact: true })).toHaveCount(0);
+  const bubbleBox = await queuedProjection.boundingBox();
+  const dockBox = await page.locator(".dock").boundingBox();
+  expect(bubbleBox).not.toBeNull();
+  expect(dockBox).not.toBeNull();
+  expect(bubbleBox!.y + bubbleBox!.height).toBeLessThanOrEqual(dockBox!.y + 1);
 
   await page.evaluate(() => {
     type PreviewState = {
@@ -473,8 +492,6 @@ test("queued steering has exactly one visible projection", async ({ page }) => {
       __pivisStore: { getState: () => PreviewState };
     };
     // Real Pi removes the public queue slot before its delivered user event.
-    // Keep the preview authority in that same state so a later read-only query
-    // cannot legitimately replay the stale queued projection.
     target.__pivisPreview.clearQueuedSteering();
     const state = target.__pivisStore.getState();
     state.applyEvent(state.activeSessionId, {

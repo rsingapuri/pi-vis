@@ -695,31 +695,6 @@ button.tool-card__header {
   transform: rotate(180deg);
 }
 
-.transcript-block--queued-user {
-  justify-content: flex-end;
-}
-
-.transcript-block__bubble--queued {
-  border: 1px dashed var(--border-strong);
-  opacity: 0.72;
-  max-height: 10rem;
-  overflow: hidden;
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.5rem), transparent);
-}
-
-.queued-bubble__caption {
-  margin-bottom: var(--space-1);
-  color: var(--text-faint);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-}
-
-.queued-bubble__content {
-  white-space: pre-wrap;
-}
-
 .restored-attachments {
   display: flex;
   flex-direction: column;

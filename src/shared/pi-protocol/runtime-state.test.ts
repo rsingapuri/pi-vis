@@ -34,7 +34,13 @@ function snapshot(overrides: Record<string, unknown> = {}) {
       isBashRunning: false,
     },
     activity: {},
-    queues: { steering: [], followUp: [], steeringIntentIds: [], followUpIntentIds: [] },
+    queues: {
+      steering: [],
+      followUp: [],
+      steeringIntentIds: [],
+      followUpIntentIds: [],
+      management: { available: true },
+    },
     custody: [],
     editor: { revision: 0, text: "", attachments: [] },
     activeIntents: [],
@@ -126,6 +132,19 @@ describe("authority protocol schemas", () => {
     expect(
       SemanticSnapshotSchema.safeParse(
         snapshot({
+          queues: {
+            steering: [],
+            followUp: [],
+            steeringIntentIds: [],
+            followUpIntentIds: [],
+            management: { available: false },
+          },
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      SemanticSnapshotSchema.safeParse(
+        snapshot({
           sdk: {
             isStreaming: true,
             isIdle: true,
@@ -198,6 +217,34 @@ describe("authority protocol schemas", () => {
         owner,
         expectedPayloadFingerprint: "same",
         receivedPayloadFingerprint: "same",
+      }).success,
+    ).toBe(false);
+
+    const manageQueue = {
+      ...envelope,
+      intent: {
+        kind: "manageQueue",
+        operation: "clear",
+        expectedSteeringIntentIds: ["steer-a"],
+        expectedFollowUpIntentIds: ["follow-a"],
+      },
+    };
+    expect(IntentEnvelopeSchema.safeParse(manageQueue).success).toBe(true);
+    expect(
+      IntentEnvelopeSchema.safeParse({
+        ...manageQueue,
+        intent: { kind: "manageQueue", operation: "update", targetIntentId: "steer-a" },
+      }).success,
+    ).toBe(false);
+    expect(
+      IntentEnvelopeSchema.safeParse({
+        ...manageQueue,
+        intent: {
+          kind: "manageQueue",
+          operation: "remove",
+          targetIntentId: "steer-a",
+          expectedSteeringIntentIds: ["steer-a"],
+        },
       }).success,
     ).toBe(false);
   });
@@ -283,6 +330,15 @@ describe("authority protocol schemas", () => {
         result: { provider: "openai" },
       }).success,
     ).toBe(false);
+    expect(
+      IntentOutcomeSchema.safeParse({
+        intentId: "queue-edit",
+        owner,
+        kind: "manageQueue",
+        state: "completed",
+        result: { operation: "update", targetIntentId: "queued-a", queue: "steer" },
+      }).success,
+    ).toBe(true);
   });
 
   it("carries only validated public post-navigation tree data", () => {

@@ -995,6 +995,8 @@ export function setupCommandBridge({
           return authority.requestEscape(envelope.intentId);
         case "submit":
           return submission(intent.text);
+        case "manageQueue":
+          return authority.manageQueue(intent);
         case "invokeCommand": {
           if (typeof intent.text !== "string" || !intent.text.startsWith("/")) {
             throw new Error("invokeCommand requires slash command text");

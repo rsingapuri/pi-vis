@@ -20,6 +20,8 @@ export type ComposerAction =
       text: string;
       commandSource?: "extension" | "prompt" | "skill";
       images?: Array<{ data: string; mimeType: string; dataUrl: string }>;
+      /** User delivery preference carried into the host-owned submit intent. */
+      deliveryMode?: "steer" | "followUp";
     }
   // Bash: "!" runs normally, "!!" runs with excludeFromContext (TUI parity).
   | { kind: "bash"; command: string; excludeFromContext: boolean }

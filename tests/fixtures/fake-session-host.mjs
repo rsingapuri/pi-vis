@@ -158,6 +158,16 @@ function authorityOwner() {
 function semanticSnapshot() {
   const value = snapshot();
   const owner = authorityOwner();
+  const queuedItems = [...steeringQueue, ...followUpQueue];
+  const management = queuedItems.every(
+    (item) => typeof item.intentId === "string" && (item.images?.length ?? 0) === 0,
+  )
+    ? { available: true }
+    : {
+        available: false,
+        message:
+          "Some pending instructions are managed outside Pi-Vis or have attachments and cannot be changed here.",
+      };
   const outcomes = authorityOutcomes.filter(
     (outcome) =>
       outcome.owner.hostInstanceId === owner.hostInstanceId &&
@@ -195,6 +205,7 @@ function semanticSnapshot() {
       followUp: value.followUp,
       steeringIntentIds: steeringQueue.map((item) => item.intentId ?? null),
       followUpIntentIds: followUpQueue.map((item) => item.intentId ?? null),
+      management,
     },
     custody: [],
     editor: value.editor,
@@ -1112,6 +1123,84 @@ async function executeAuthorityIntent(entry) {
         disposition: "completed",
         editorRevision: submission.editorRevision,
         queued: false,
+      });
+      return;
+    }
+    case "manageQueue": {
+      const queues = [
+        ["steer", steeringQueue],
+        ["followUp", followUpQueue],
+      ];
+      const reject = (message) => {
+        finishAuthorityIntent(
+          entry,
+          "rejected",
+          {
+            operation: intent.operation,
+            ...(intent.targetIntentId ? { targetIntentId: intent.targetIntentId } : {}),
+            message,
+          },
+          message,
+        );
+      };
+      if (queues.some(([, queue]) => queue.some((item) => typeof item.intentId !== "string"))) {
+        reject("This queue contains an instruction managed outside Pi-Vis.");
+        return;
+      }
+      if (queues.some(([, queue]) => queue.some((item) => (item.images?.length ?? 0) > 0))) {
+        reject("A pending instruction has attachments and cannot be safely changed here.");
+        return;
+      }
+      if (intent.operation === "clear") {
+        const steeringIds = steeringQueue.map((item) => item.intentId);
+        const followUpIds = followUpQueue.map((item) => item.intentId);
+        if (
+          JSON.stringify(steeringIds) !== JSON.stringify(intent.expectedSteeringIntentIds) ||
+          JSON.stringify(followUpIds) !== JSON.stringify(intent.expectedFollowUpIntentIds)
+        ) {
+          reject("The pending queue changed before it could be cleared.");
+          return;
+        }
+        steeringQueue.length = 0;
+        followUpQueue.length = 0;
+        finishAuthorityIntent(entry, "completed", { operation: "clear" });
+        return;
+      }
+      let targetQueue;
+      let targetIndex = -1;
+      for (const [kind, queue] of queues) {
+        const index = queue.findIndex((item) => item.intentId === intent.targetIntentId);
+        if (index >= 0) {
+          targetQueue = kind;
+          targetIndex = index;
+          break;
+        }
+      }
+      if (targetIndex < 0 || !targetQueue) {
+        reject("That instruction was already delivered or removed.");
+        return;
+      }
+      const queue = targetQueue === "steer" ? steeringQueue : followUpQueue;
+      if (intent.operation === "remove") {
+        queue.splice(targetIndex, 1);
+      } else if (intent.operation === "update") {
+        queue[targetIndex].text = intent.text;
+      } else if (intent.operation === "move") {
+        const nextIndex = intent.direction === "earlier" ? targetIndex - 1 : targetIndex + 1;
+        if (nextIndex < 0 || nextIndex >= queue.length) {
+          reject("That instruction cannot move farther in that direction.");
+          return;
+        }
+        const [target] = queue.splice(targetIndex, 1);
+        queue.splice(nextIndex, 0, target);
+      } else {
+        reject("Unsupported queue operation.");
+        return;
+      }
+      finishAuthorityIntent(entry, "completed", {
+        operation: intent.operation,
+        targetIntentId: intent.targetIntentId,
+        queue: targetQueue,
       });
       return;
     }

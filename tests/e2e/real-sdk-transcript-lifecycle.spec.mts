@@ -478,11 +478,22 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
       await expect(window.getByText("e2e lifecycle notification", { exact: true })).toBeVisible();
       expect(provider.requests).toHaveLength(1);
 
+      const staleQueuedText = "remove this queued steering before delivery";
+      await textarea.fill(staleQueuedText);
+      await textarea.press("Enter");
+      const staleQueuedItem = window
+        .locator(".queued-messages__bubble")
+        .filter({ hasText: staleQueuedText });
+      await expect(staleQueuedItem).toHaveCount(1, { timeout: 30_000 });
+      await staleQueuedItem.getByRole("button", { name: "Remove queued instruction" }).click();
+      await expect(staleQueuedItem).toHaveCount(0, { timeout: 30_000 });
+      expect(provider.requests).toHaveLength(1);
+
       const queuedText = "queued steering must have one owner";
       await textarea.fill(queuedText);
       await textarea.press("Enter");
       const visibleOwners = window
-        .locator(".transcript-block--user, .queued-bubble__content")
+        .locator(".queued-messages__bubble")
         .filter({ hasText: queuedText });
       await expect(visibleOwners).toHaveCount(1, { timeout: 30_000 });
       expect(provider.requests).toHaveLength(1);

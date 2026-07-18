@@ -274,6 +274,15 @@ function semanticSnapshot(sessionId: SessionId): SemanticSnapshot {
       followUp: [...runtime.followUp],
       steeringIntentIds: [...runtime.steeringIntentIds],
       followUpIntentIds: [...runtime.followUpIntentIds],
+      management: [...runtime.steeringIntentIds, ...runtime.followUpIntentIds].every(
+        (intentId) => intentId !== null,
+      )
+        ? { available: true }
+        : {
+            available: false,
+            message:
+              "Some pending instructions are managed outside Pi-Vis and cannot be changed here.",
+          },
     },
     custody: [],
     editor: { revision: 0, text: "", attachments: [] },
@@ -1125,6 +1134,15 @@ function outcomeFor(
           editorRevision: intent.editorRevision,
         },
       };
+    case "manageQueue":
+      return {
+        ...base,
+        kind: "manageQueue",
+        result: {
+          operation: intent.operation,
+          ...(intent.targetIntentId ? { targetIntentId: intent.targetIntentId } : {}),
+        },
+      };
     case "compact":
       return { ...base, kind: "compact", result: {} };
     case "invokeCommand":
@@ -1153,6 +1171,7 @@ function outcomeFor(
 async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
   let state: IntentOutcome["state"] = "completed";
   let error: string | undefined;
+  const runtime = runtimeFor(envelope.sessionId);
   try {
     const intent: SessionIntent = envelope.intent;
     switch (intent.kind) {
@@ -1165,6 +1184,44 @@ async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
       case "submit":
         await streamPromptResponse(intent.text);
         break;
+      case "manageQueue": {
+        const queues = [
+          [runtime.steering, runtime.steeringIntentIds],
+          [runtime.followUp, runtime.followUpIntentIds],
+        ] as const;
+        const findTarget = () => {
+          for (const [texts, intentIds] of queues) {
+            const index = intentIds.findIndex((id) => id === intent.targetIntentId);
+            if (index >= 0) return { texts, intentIds, index };
+          }
+          return undefined;
+        };
+        if (intent.operation === "clear") {
+          runtime.steering = [];
+          runtime.followUp = [];
+          runtime.steeringIntentIds = [];
+          runtime.followUpIntentIds = [];
+        } else {
+          const target = findTarget();
+          if (!target) throw new Error("Queued instruction was already delivered or removed");
+          if (intent.operation === "remove") {
+            target.texts.splice(target.index, 1);
+            target.intentIds.splice(target.index, 1);
+          } else if (intent.operation === "update") {
+            target.texts[target.index] = intent.text!;
+          } else {
+            const nextIndex = intent.direction === "earlier" ? target.index - 1 : target.index + 1;
+            if (nextIndex < 0 || nextIndex >= target.texts.length) {
+              throw new Error("Queued instruction cannot move farther in that direction");
+            }
+            const [text] = target.texts.splice(target.index, 1);
+            const [intentId] = target.intentIds.splice(target.index, 1);
+            target.texts.splice(nextIndex, 0, text!);
+            target.intentIds.splice(nextIndex, 0, intentId!);
+          }
+        }
+        break;
+      }
       case "compact":
         await sleep(100);
         break;

@@ -60,6 +60,7 @@ type FileWithLegacyPath = File & { path?: string };
 
 const IMAGE_FILE_EXTENSION = /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|webp)$/i;
 const MAX_IMAGE_ATTACHMENTS = 8;
+type QueueDeliveryMode = "steer" | "followUp";
 
 function isImageFile(file: File): boolean {
   return file.type.startsWith("image/") || IMAGE_FILE_EXTENSION.test(file.name);
@@ -1181,7 +1182,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   // ── Submit ─────────────────────────────────────────────────────────
 
   const handleSubmit = useCallback(
-    async (overrideContent?: string) => {
+    async (overrideContent?: string, deliveryMode: QueueDeliveryMode = "steer") => {
       // A prompt is already in flight and the input is frozen as "sending";
       // any Enter that still reaches here is a no-op until it settles.
       if (submitPendingRef.current) return;
@@ -1196,7 +1197,8 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         pendingDiffComments.length === 0
       )
         return;
-      const parsedAction = parseComposerInput(content, { discovered });
+      const parsed = parseComposerInput(content, { discovered });
+      const parsedAction = parsed.kind === "send-prompt" ? { ...parsed, deliveryMode } : parsed;
 
       // Opening the tree is renderer-local. It is intentionally classified
       // before every runtime/editor gate so `/tree` can always open, even while
@@ -1788,9 +1790,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
               clearEditorInjection(sessionId);
             }
             setSlashIndex(0);
-            void handleSubmit(completed);
+            void handleSubmit(completed, e.altKey ? "followUp" : "steer");
           } else {
-            void handleSubmit();
+            void handleSubmit(undefined, e.altKey ? "followUp" : "steer");
           }
           return;
         }
@@ -1809,7 +1811,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
         // composition end from the user.
         if (e.nativeEvent.isComposing || e.keyCode === 229) return;
         e.preventDefault();
-        void handleSubmit();
+        void handleSubmit(undefined, e.altKey ? "followUp" : "steer");
       }
     },
     [

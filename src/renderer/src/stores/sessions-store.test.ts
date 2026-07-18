@@ -4751,6 +4751,7 @@ describe("sessions store - authority intent projection", () => {
         sessionTitle: "Shown title",
         hostInstanceId: undefined,
         runningSince: undefined,
+        pendingQueueMessages: undefined,
         queuedMessages: undefined,
         editorInjection: undefined,
       });
@@ -4843,6 +4844,7 @@ describe("sessions store - authority intent projection", () => {
       editorAttachments: ["attachment"],
       sessionTitle: "Authority title",
     });
+    expect(session?.pendingQueueMessages?.steering[0]?.text).toBe("steer");
     expect(session?.queuedMessages?.steering[0]?.text).toBe("steer");
     expect(session?.statusSegments.get("mode")).toBeUndefined();
     expect(session?.widgets.get("widget")).toBeUndefined();

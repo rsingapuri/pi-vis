@@ -359,25 +359,6 @@ function ToolCardShell({
 // every other block's `data` reference stable. Complete persisted/compacted
 // history is isolated behind the archive memo boundary below, while unchanged
 // blocks in the normally small live tail skip their component render.
-const QueuedBubble = memo(function QueuedBubble({
-  text,
-  kind,
-}: {
-  text: string;
-  kind: "steering" | "followUp";
-}): React.ReactElement {
-  return (
-    <div className="transcript-block transcript-block--queued-user">
-      <div className="transcript-block__bubble transcript-block__bubble--queued user-content">
-        <div className="queued-bubble__caption">
-          {kind === "steering" ? "Steering — queued" : "Follow-up — queued"}
-        </div>
-        <div className="transcript-block__content queued-bubble__content">{text}</div>
-      </div>
-    </div>
-  );
-});
-
 const UserBlock = memo(function UserBlock({ data }: { data: UserBlockData }): React.ReactElement {
   const openImages = useImageViewerStore((s) => s.openImages);
   const validImages = useMemo(
@@ -1728,7 +1709,6 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     () => (archivedBoundaryGroup ? archivedCompactItems.slice(0, -1) : archivedCompactItems),
     [archivedBoundaryGroup, archivedCompactItems],
   );
-  const queuedMessages = authoritySnapshotFor(session) ? session?.queuedMessages : undefined;
   // Show the "Running for …" indicator for real agent work. Prompt-backed
   // extension UI can set isStreaming while merely waiting on the user, so the
   // store helper applies the UI-vs-tool-work distinction.
@@ -2018,12 +1998,6 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
                 preserveScroll={preserveScroll}
               />
             ))}
-        {queuedMessages?.steering.map((message) => (
-          <QueuedBubble key={message.id} text={message.text} kind="steering" />
-        ))}
-        {queuedMessages?.followUp.map((message) => (
-          <QueuedBubble key={message.id} text={message.text} kind="followUp" />
-        ))}
         {showWorking && <WorkingRow sessionId={sessionId} />}
         {showHistoryLoading && (
           <div className="history-loading-row" role="status">

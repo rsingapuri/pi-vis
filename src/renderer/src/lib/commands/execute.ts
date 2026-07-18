@@ -271,6 +271,7 @@ async function executePrompt(
   deps: ExecuteDeps,
 ): Promise<IntentCompletion> {
   const observation = deps.getIntentObservation?.(sessionId);
+  const deliveryMode = action.deliveryMode ?? "steer";
   if (!observation)
     return dispatchAndAwait(
       sessionId,
@@ -279,7 +280,7 @@ async function executePrompt(
         editorRevision: 0,
         text: action.text,
         images: [],
-        requestedMode: "steer",
+        requestedMode: deliveryMode,
         surface: deps.uiSurface ?? "composer",
       },
       deps,
@@ -295,7 +296,7 @@ async function executePrompt(
           data,
           mimeType,
         })),
-        requestedMode: "steer",
+        requestedMode: deliveryMode,
         surface: deps.uiSurface ?? "composer",
       };
   const completion = await dispatchAndAwait(sessionId, intent, deps);
@@ -308,24 +309,10 @@ async function executePrompt(
           : "Skill";
     deps.addToast(sessionId, completion.outcome.error ?? `${sourceLabel} command failed.`, "error");
   }
-  if (
-    completion.outcome.kind === "submit" &&
-    completion.outcome.state === "completed" &&
-    completion.outcome.result?.queued &&
-    !action.commandSource &&
-    !action.text.startsWith("/")
-  ) {
-    deps.addUserMessage(
-      sessionId,
-      action.text,
-      action.images?.map((image) => image.dataUrl),
-      {
-        registerEcho: true,
-        afterUserMessageSequence: observation.userMessageSequence,
-        intentId: completion.intentId,
-      },
-    );
-  }
+  // A queued prompt belongs exclusively to the Composer queue manager until
+  // Pi emits its authoritative user message. Do not create an optimistic
+  // transcript bubble here: it would make a not-yet-delivered instruction
+  // look like chat history and duplicate the pending queue item.
   return completion;
 }
 

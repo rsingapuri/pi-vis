@@ -1,0 +1,94 @@
+/* Pending instructions continue the transcript immediately above the dock. */
+.queued-messages {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: var(--space-2) clamp(var(--space-5), 6cqi, var(--space-8));
+}
+
+.queued-messages__list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  width: min(100%, var(--transcript-measure));
+  max-height: min(14rem, 28vh);
+  margin: 0 auto;
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.queued-messages__item {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  min-width: 0;
+}
+
+.queued-messages__bubble {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: fit-content;
+  max-width: 85%;
+  min-width: 0;
+  padding: 0.643rem 0.857rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-sm);
+  font-family: var(--font-display);
+  font-size: var(--font-size-base);
+  line-height: var(--leading-body);
+}
+
+.queued-messages__bubble--editing {
+  border-color: var(--border-strong);
+}
+
+.queued-messages__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.queued-messages__actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  gap: 0.071rem;
+  margin: -0.286rem -0.5rem -0.286rem 0;
+}
+
+.queued-messages__action {
+  width: 1.571rem;
+  height: 1.571rem;
+  color: var(--text-faint);
+}
+
+.queued-messages__action--remove:hover:not(:disabled),
+.queued-messages__action--remove:focus-visible {
+  color: var(--danger);
+}
+
+.queued-messages__edit {
+  display: block;
+  width: min(32rem, 60vw);
+  min-height: 3.25rem;
+  max-height: 8rem;
+  resize: vertical;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  line-height: var(--leading-body);
+  padding: var(--space-2);
+}
+
+.queued-messages__edit:focus {
+  border-color: var(--accent);
+  outline: none;
+}

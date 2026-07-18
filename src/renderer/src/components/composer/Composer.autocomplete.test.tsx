@@ -101,6 +101,12 @@ function outcomeFor(envelope: Envelope, patch: Partial<IntentOutcome> = {}): Int
         kind: "submit",
         result: { disposition: "consumed", editorRevision: envelope.intent.editorRevision },
       };
+    case "manageQueue":
+      return {
+        ...base,
+        kind: "manageQueue",
+        result: { operation: envelope.intent.operation },
+      };
     case "invokeCommand":
       return { ...base, kind: "invokeCommand", result: {} };
     case "compact":
@@ -675,6 +681,22 @@ describe("Composer autocomplete and authority intents", () => {
     type(composer.textarea(), "/log");
     expect(suggestionCount(composer.container)).toBeGreaterThan(0);
     composer.unmount();
+  });
+
+  it("uses Alt+Enter to run a prompt after the current task", async () => {
+    const mounted = mount();
+    type(mounted.textarea(), "after this task");
+    key(mounted.textarea(), "Enter", { altKey: true });
+
+    await vi.waitFor(() => {
+      const calls = intentCalls(invoke);
+      expect(calls.at(-1)?.intent).toMatchObject({
+        kind: "submit",
+        text: "after this task",
+        requestedMode: "followUp",
+      });
+    });
+    mounted.unmount();
   });
 
   it("completes an extension command, patches it first, then dispatches an invokeCommand intent", async () => {
