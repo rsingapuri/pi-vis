@@ -1821,6 +1821,9 @@ const buildSessionsStore = (
           status,
           error,
           transcript,
+          ...(status === "failed" || status === "exited"
+            ? { activationVisitId: undefined, activationVisitReleasePending: undefined }
+            : {}),
           ...(piVersion !== undefined ? { piVersion } : {}),
         });
       }

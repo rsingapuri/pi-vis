@@ -1263,9 +1263,33 @@ export class SessionHost extends EventEmitter {
    *  reply to, so drop silently rather than spamming the log. */
   /** The sole main → child IPC seam; test faults wrap the actual `.send()`. */
   private sendChildMessage(message: object, callback?: (err: Error | null) => void): void {
-    this.faultInjector.outbound(message, () => {
-      this.proc.send(message, callback);
-    });
+    // `connected` can change between the caller's check and the actual send
+    // while a host is exiting. Treat that window as ordinary transport loss:
+    // best-effort messages are dropped, while request callers receive the
+    // callback error and can settle their pending operation.
+    const unavailable = (): HostRequestUnavailableError =>
+      new HostRequestUnavailableError("Host process IPC channel unavailable");
+    if (this.proc.exitCode !== null || this.proc.killed || !this.proc.connected) {
+      callback?.(unavailable());
+      return;
+    }
+    try {
+      this.faultInjector.outbound(message, () => {
+        if (this.proc.exitCode !== null || this.proc.killed || !this.proc.connected) {
+          callback?.(unavailable());
+          return;
+        }
+        try {
+          // Supplying a callback keeps a late child-IPC error on this
+          // best-effort path from becoming an unhandled ChildProcess error.
+          this.proc.send(message, callback ?? (() => {}));
+        } catch (error) {
+          callback?.(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    } catch (error) {
+      callback?.(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   private sendToHost(

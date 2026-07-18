@@ -542,6 +542,18 @@ describe("SessionHost", () => {
       expect(errors).toHaveLength(0);
     });
 
+    it("drops a best-effort send when disconnect races the channel check", () => {
+      const errors: Error[] = [];
+      host.on("error", (err) => errors.push(err));
+      fake.send = (() => {
+        fake.connected = false;
+        throw Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+      }) as typeof fake.send;
+
+      expect(() => host.sendPanelResize(1, 80, 24)).not.toThrow();
+      expect(errors).toHaveLength(0);
+    });
+
     it("rejects acknowledged panel input when the channel closes", async () => {
       const errors: Error[] = [];
       host.on("error", (err) => errors.push(err));

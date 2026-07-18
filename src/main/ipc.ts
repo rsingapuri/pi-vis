@@ -93,6 +93,18 @@ const lastWorktreeOperationErrors = new Map<SessionId, string>();
 const reservedCreatedWorktrees = new Map<string, SessionId>();
 let sessionSearchService: SessionSearchService | null = null;
 
+function isClosedHostTransportError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return (
+    code === "EPIPE" ||
+    code === "ERR_IPC_CHANNEL_CLOSED" ||
+    /(?:write EPIPE|IPC channel (?:is )?closed|Host process IPC channel unavailable)/i.test(
+      error.message,
+    )
+  );
+}
+
 // A main-only OS effect is keyed by the child export intent. Retransmission
 // returns the original promise and can never create a second gist.
 const shareEffects = new OwnerBoundShareEffects();
@@ -577,12 +589,27 @@ export function initIpc(win: BrowserWindow): void {
       // call so a superseded activation becomes a silent no-op instead of
       // trying to activate a record that no longer exists.
       if (!registry?.getSession(args.sessionId)) return;
-      await registry.activateSession(
-        args.sessionId,
-        piInfo.path,
-        loginShellEnv,
-        args.activationVisitId,
-      );
+      try {
+        await registry.activateSession(
+          args.sessionId,
+          piInfo.path,
+          loginShellEnv,
+          args.activationVisitId,
+        );
+      } catch (error) {
+        // A renderer activation can lose its child exactly as shutdown or a
+        // host failure is being published. The registry has already fenced
+        // the runtime and emitted its failed/unavailable state; do not turn
+        // that expected transport race into an Electron handler exception.
+        const current = registry?.getSession(args.sessionId);
+        if (
+          isClosedHostTransportError(error) &&
+          (!current || current.status === "failed" || current.status === "exited")
+        ) {
+          return;
+        }
+        throw error;
+      }
     },
   );
 

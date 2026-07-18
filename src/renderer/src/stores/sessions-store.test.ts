@@ -1363,6 +1363,31 @@ describe("sessions store - workspace expand / reorder model", () => {
     vi.unstubAllGlobals();
   });
 
+  it("terminal status retires an activation visit so recovery can retry", () => {
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WS_A, "/f/a.jsonl", undefined, undefined, "starting");
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      const session = sessions.get(SESSION_A);
+      if (session) {
+        sessions.set(SESSION_A, {
+          ...session,
+          activationVisitId: "visit-a",
+          activationVisitReleasePending: true,
+        });
+      }
+      return { sessions };
+    });
+
+    store.setSessionStatus(SESSION_A, "failed", "host transport closed");
+
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      status: "failed",
+      activationVisitId: undefined,
+      activationVisitReleasePending: undefined,
+    });
+  });
+
   it("reactivateSession retries activation only for a dead already-active session", async () => {
     const invoke = vi.fn((_channel: string) => Promise.resolve(undefined));
     vi.stubGlobal("window", { pivis: { invoke } });
