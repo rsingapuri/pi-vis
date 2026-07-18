@@ -249,6 +249,27 @@ describe("authority protocol schemas", () => {
     ).toBe(false);
   });
 
+  it("models catalog refresh as a bounded mutation rather than a query", () => {
+    const envelope = {
+      sessionId: "session-a",
+      intentId: "refresh-a",
+      rendererGeneration: 1,
+      expectedOwner: owner,
+      intent: { kind: "refreshModels" },
+    };
+    expect(IntentEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    expect(
+      IntentOutcomeSchema.safeParse({
+        intentId: "refresh-a",
+        owner,
+        kind: "refreshModels",
+        state: "completed",
+        result: { refreshed: true },
+      }).success,
+    ).toBe(true);
+    expect(SessionQuerySchema.safeParse({ type: "refreshModels" }).success).toBe(false);
+  });
+
   it("admits only explicit read operations as owner-bound queries", () => {
     const query = { type: "render_entry", entryId: "entry-a", cols: 80, expanded: true };
     expect(SessionQuerySchema.safeParse(query).success).toBe(true);

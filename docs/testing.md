@@ -33,6 +33,8 @@ Search tests use a generated isolated JSONL corpus: two workspaces, a mapped wor
 
 Before release, run `PIVIS_SEARCH_BENCH_MIB=500 npm run bench:session-search`, build the `.app`, then run `node scripts/verify-packaged-session-search.mjs <path-to-Pi-Vis.app>`. The packaged check launches the asar-unpacked worker under the packaged Electron Node runtime and requires SQLite/FTS initialization. The benchmark drives the production service, catalog, and compiled worker against an isolated corpus, samples process RSS from the unblocked parent during indexing, and gates relevance, cold progressive first result, warm-query p95, and end-to-end completed-append detection from an early source while a bulk source is still reconciling. Gates: warm query p95 <150 ms; first initial-index result <500 ms; complete append <2 s; stale UI suppression <100 ms; no search-caused main-thread task >16 ms; worker RSS <192 MiB for 500 MiB sources; IPC batches <=50 results and <=128 KiB; preview creates no host.
 
+Model-catalog SWR coverage must prove that `refreshModels` emits no catalog payload, only a same-owner terminal outcome permits the follow-up `get_available_models` read, failures preserve the cache and expose retry only for that owner, and auth/picker triggers never activate a cold session.
+
 Run the focused tests while changing these surfaces:
 
 ```sh

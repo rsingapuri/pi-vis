@@ -608,6 +608,28 @@ describe("setupCommandBridge — wiring", () => {
 // ─── Command mapping ─────────────────────────────────────────────────────────
 
 describe("setupCommandBridge — target intent dispatch", () => {
+  it("refreshModels is an intent mutation with a bounded outcome", async () => {
+    const { session, send, dispatchIntent } = setup();
+    await expect(
+      dispatchIntent({
+        intentId: "refresh-models",
+        expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+        intent: { kind: "refreshModels" },
+      }),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() => expect(session.modelRuntime.refresh).toHaveBeenCalledTimes(1));
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "intent_outcome",
+        outcome: expect.objectContaining({
+          intentId: "refresh-models",
+          kind: "refreshModels",
+          state: "completed",
+          result: { refreshed: true },
+        }),
+      }),
+    );
+  });
   function envelope(intentId, intent) {
     return {
       intentId,

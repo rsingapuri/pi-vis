@@ -137,6 +137,8 @@ function outcomeFor(envelope: Envelope, patch: Partial<IntentOutcome> = {}): Int
       return { ...base, kind: "interrupt", result: { target: "editor", interrupted: true } };
     case "navigate":
       return { ...base, kind: "navigate", result: { targetId: envelope.intent.targetId } };
+    case "refreshModels":
+      return { ...base, kind: "refreshModels", result: { refreshed: true } };
   }
 }
 

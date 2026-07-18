@@ -378,6 +378,7 @@ export function createStateAuthority({
     const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0;
     switch (intent.kind) {
       case "interrupt":
+      case "refreshModels":
         return isStrictObject(intent, ["kind"]);
       case "reload":
         return (
@@ -1249,6 +1250,8 @@ export function createStateAuthority({
         return { name: value.name ?? intent?.name ?? "" };
       case "reload":
         return value.successorIdentity ? { successorIdentity: value.successorIdentity } : {};
+      case "refreshModels":
+        return value.refreshed === true ? { refreshed: true } : undefined;
       default:
         return undefined;
     }

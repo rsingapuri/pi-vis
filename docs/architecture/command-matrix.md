@@ -12,6 +12,7 @@ This table documents the deployed policy/settlement compatibility contract. Unde
 |---|---|---|---|
 | `prompt`, `steer`, `follow_up` | effectful, submission-only | Composer, unified editor, extensions | `session.submit` dispositions; host admission and queue custody tests |
 | `get_available_models`, `get_scoped_models`, `get_logout_providers` | read-only | model/scope/logout pickers | identity-bound response; picker/store tests |
+| `refreshModels` intent | mutation | silent model-picker/auth SWR | bounded authority-frame outcome, then same-owner `get_available_models`; failure retains cache |
 | `get_commands` | read-only | ready-time command discovery | identity-bound catalog update; store tests |
 | `get_state`, `get_session_stats` | read-only | bootstrap, `/session`, reconciliation, header/tree stats | identity-bound read and stale-write fencing; executor/store/header tests |
 | `get_messages`, `get_fork_messages`, `get_last_assistant_text` | read-only | SDK integrations, `/fork`, `/copy` | bridge response plus executor outcome tests |
