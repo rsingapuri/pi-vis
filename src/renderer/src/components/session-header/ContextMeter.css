@@ -23,7 +23,7 @@
   transition: background 0.12s ease, color 0.12s ease;
 }
 
-.context-ring:hover {
+.context-ring:is(:hover, :focus-visible) {
   background: var(--surface-2);
 }
 

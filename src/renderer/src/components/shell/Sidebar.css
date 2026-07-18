@@ -537,13 +537,11 @@
   display: block;
 }
 
-.sidebar__settings-btn:hover {
+.sidebar__settings-btn:is(:hover, :focus-visible) {
   color: var(--accent);
 }
 
-/* Chrome icon buttons signal interaction via the hover color change; the
-   global :focus-visible ring is just noise here (and re-appears when focus
-   returns to the button after a modal is closed with Escape). */
+/* Chrome icon buttons use their contained color/surface state for focus. */
 .sidebar__settings-btn:focus-visible,
 .sidebar__add-workspace:focus-visible {
   outline: none;
@@ -561,7 +559,7 @@
   flex-shrink: 0;
 }
 
-.sidebar__statusbar-toggle:hover {
+.sidebar__statusbar-toggle:is(:hover, :focus-visible) {
   color: var(--accent);
 }
 

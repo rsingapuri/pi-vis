@@ -8,7 +8,8 @@
  */
 import { expect, test } from "@playwright/test";
 
-const RESTICK_PX = 24;
+const BOTTOM_EPSILON_PX = 1;
+const SMALL_SCROLL_PX = 12;
 
 type Page = import("@playwright/test").Page;
 
@@ -22,6 +23,24 @@ async function bottomDistance(page: Page): Promise<number> {
     const el = document.querySelector(".transcript-view") as HTMLElement;
     return el.scrollHeight - el.scrollTop - el.clientHeight;
   });
+}
+
+async function scrollTop(page: Page): Promise<number> {
+  return page.evaluate(() => (document.querySelector(".transcript-view") as HTMLElement).scrollTop);
+}
+
+async function simulateSmallArrowUp(page: Page): Promise<void> {
+  await page.evaluate((amount) => {
+    const el = document.querySelector(".transcript-view") as HTMLElement;
+    // Keep this deterministic while exercising the same capture-phase intent
+    // path as a real ArrowUp. Assigning scrollTop stands in for the browser's
+    // native scroll, whose exact timing and step vary across platforms.
+    el.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowUp" }),
+    );
+    el.scrollTop = Math.max(0, el.scrollTop - amount);
+    el.dispatchEvent(new Event("scroll", { bubbles: true }));
+  }, SMALL_SCROLL_PX);
 }
 
 async function appendAssistantText(page: Page, text: string): Promise<void> {
@@ -41,7 +60,9 @@ async function appendAssistantText(page: Page, text: string): Promise<void> {
 }
 
 async function waitPinned(page: Page): Promise<void> {
-  await expect.poll(() => bottomDistance(page), { timeout: 5_000 }).toBeLessThanOrEqual(RESTICK_PX);
+  await expect
+    .poll(() => bottomDistance(page), { timeout: 5_000 })
+    .toBeLessThanOrEqual(BOTTOM_EPSILON_PX);
 }
 
 async function expectPinnedScrollbar(page: Page, pinned: boolean): Promise<void> {
@@ -111,21 +132,21 @@ test.describe("Transcript bottom pinning across Composer replacements", () => {
     await expectPinnedScrollbar(page, true);
     const pinnedGeometry = await readingColumnGeometry(page);
 
-    // Simulate a browser/layout scrollTop correction without any wheel/touch/key
-    // input. This used to be enough to clear pinnedRef, after which streaming
-    // tokens no longer followed the bottom.
-    await page.evaluate(() => {
+    // A layout-only movement must be corrected even when it is the same small
+    // distance that would unpin after explicit user input.
+    await page.evaluate((amount) => {
       const el = document.querySelector(".transcript-view") as HTMLElement;
-      el.scrollTop = Math.max(0, el.scrollTop - 120);
+      el.scrollTop = Math.max(0, el.scrollTop - amount);
       el.dispatchEvent(new Event("scroll", { bubbles: true }));
-    });
+    }, SMALL_SCROLL_PX);
     await waitPinned(page);
     await expectPinnedScrollbar(page, true);
 
-    const transcript = page.locator(".transcript-view");
-    await transcript.hover();
-    await page.mouse.wheel(0, -500);
-    await expect.poll(() => bottomDistance(page), { timeout: 5_000 }).toBeGreaterThan(RESTICK_PX);
+    await simulateSmallArrowUp(page);
+    await expect
+      .poll(() => bottomDistance(page), { timeout: 5_000 })
+      .toBeGreaterThan(BOTTOM_EPSILON_PX);
+    expect(await bottomDistance(page)).toBeLessThan(24);
     await expectPinnedScrollbar(page, false);
     await expect
       .poll(
@@ -162,10 +183,12 @@ test.describe("Transcript bottom pinning across Composer replacements", () => {
     expect(scrollbackGeometry.width).toBeCloseTo(pinnedGeometry.width, 5);
 
     const before = await bottomDistance(page);
+    const readingAnchor = await scrollTop(page);
     await appendAssistantText(page, `\n\nUser-scrolled follow-up ${"more text ".repeat(80)}`);
     await expect
       .poll(() => bottomDistance(page), { timeout: 2_000 })
-      .toBeGreaterThan(Math.min(RESTICK_PX + 1, before));
+      .toBeGreaterThan(Math.min(BOTTOM_EPSILON_PX + 1, before));
+    await expect.poll(() => scrollTop(page), { timeout: 2_000 }).toBeCloseTo(readingAnchor, 0);
     await expectPinnedScrollbar(page, false);
 
     await page.evaluate(() => {

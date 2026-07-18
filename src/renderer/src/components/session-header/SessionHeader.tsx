@@ -3,7 +3,7 @@ import type { ModelInfo, SessionStats } from "@shared/pi-protocol/responses.js";
 import { ModelInfoSchema, SessionStatsSchema } from "@shared/pi-protocol/responses.js";
 import { THINKING_LEVELS, type ThinkingLevel } from "@shared/pi-protocol/thinking.js";
 import type React from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { useVirtualList } from "../../hooks/useVirtualList.js";
 import { findCurrentModel, modelDisplayName, modelKey } from "../../lib/model-utils.js";
@@ -573,7 +573,9 @@ export function SessionControls({
 
   // ── Thinking level picker state ───────────────────────────────────
   const [thinkingOpen, setThinkingOpen] = useState(false);
+  const [thinkingHighlightedIndex, setThinkingHighlightedIndex] = useState(0);
   const thinkingPickerRef = useRef<HTMLDivElement>(null);
+  const thinkingListboxId = useId();
 
   // Claim ESC while either the model or thinking dropdown is open so a
   // background streaming session isn't aborted (each dropdown's own
@@ -628,6 +630,14 @@ export function SessionControls({
     [currentModelInfo],
   );
   const thinkingDisabled = thinkingOptions.length <= 1;
+  const selectedThinkingIndex = Math.max(0, thinkingOptions.indexOf(currentThinkingLevel ?? "off"));
+
+  useEffect(() => {
+    if (!thinkingOpen) return;
+    setThinkingHighlightedIndex(
+      Math.max(0, thinkingOptions.indexOf(currentThinkingLevel ?? "off")),
+    );
+  }, [currentThinkingLevel, thinkingOpen, thinkingOptions]);
 
   const handleThinkingLevel = useCallback(
     async (level: ThinkingLevel) => {
@@ -651,6 +661,72 @@ export function SessionControls({
       }
     },
     [addToast, observation, sessionId],
+  );
+
+  const moveThinkingHighlight = useCallback(
+    (index: number, focusOption: boolean) => {
+      if (thinkingOptions.length === 0) return;
+      const nextIndex = (index + thinkingOptions.length) % thinkingOptions.length;
+      setThinkingHighlightedIndex(nextIndex);
+      if (focusOption) {
+        queueMicrotask(() => {
+          document.getElementById(`${thinkingListboxId}-option-${nextIndex}`)?.focus();
+        });
+      }
+    },
+    [thinkingListboxId, thinkingOptions.length],
+  );
+
+  const handleThinkingKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      const optionOwnsFocus = event.currentTarget.getAttribute("role") === "option";
+      switch (event.key) {
+        case "ArrowDown":
+          event.preventDefault();
+          if (!thinkingOpen) {
+            setThinkingHighlightedIndex(selectedThinkingIndex);
+            setThinkingOpen(true);
+            return;
+          }
+          moveThinkingHighlight(thinkingHighlightedIndex + 1, optionOwnsFocus);
+          return;
+        case "ArrowUp":
+          event.preventDefault();
+          if (!thinkingOpen) {
+            setThinkingHighlightedIndex(selectedThinkingIndex);
+            setThinkingOpen(true);
+            return;
+          }
+          moveThinkingHighlight(thinkingHighlightedIndex - 1, optionOwnsFocus);
+          return;
+        case "Home":
+          if (!thinkingOpen) return;
+          event.preventDefault();
+          moveThinkingHighlight(0, optionOwnsFocus);
+          return;
+        case "End":
+          if (!thinkingOpen) return;
+          event.preventDefault();
+          moveThinkingHighlight(thinkingOptions.length - 1, optionOwnsFocus);
+          return;
+        case "Enter": {
+          if (!thinkingOpen) return;
+          const level = thinkingOptions[thinkingHighlightedIndex];
+          if (!level) return;
+          event.preventDefault();
+          void handleThinkingLevel(level);
+          return;
+        }
+      }
+    },
+    [
+      handleThinkingLevel,
+      moveThinkingHighlight,
+      selectedThinkingIndex,
+      thinkingHighlightedIndex,
+      thinkingOpen,
+      thinkingOptions,
+    ],
   );
 
   useEffect(() => {
@@ -990,8 +1066,15 @@ export function SessionControls({
         <button
           type="button"
           className="session-header__picker-btn"
-          onClick={() => setThinkingOpen((v) => !v)}
+          onClick={() => {
+            if (!thinkingOpen) setThinkingHighlightedIndex(selectedThinkingIndex);
+            setThinkingOpen((v) => !v);
+          }}
+          onKeyDown={handleThinkingKeyDown}
           disabled={thinkingDisabled || !observation}
+          aria-haspopup="listbox"
+          aria-expanded={thinkingOpen}
+          aria-controls={thinkingListboxId}
           title={
             currentModelInfo?.reasoning === false
               ? "Current model does not support reasoning."
@@ -1007,17 +1090,26 @@ export function SessionControls({
             <ScrollFadeFrame
               frameClassName="session-header__dropdown-list-frame"
               className="session-header__dropdown-list"
+              role="listbox"
+              id={thinkingListboxId}
+              aria-label="Thinking level"
               fill
             >
-              {thinkingOptions.map((l) => {
+              {thinkingOptions.map((l, index) => {
                 const selected = currentThinkingLevel === l;
+                const highlighted = thinkingHighlightedIndex === index;
                 return (
                   <button
                     type="button"
                     key={l}
+                    id={`${thinkingListboxId}-option-${index}`}
                     role="option"
                     aria-selected={selected}
-                    className={`session-header__dropdown-item${selected ? " session-header__dropdown-item--active" : ""}`}
+                    tabIndex={highlighted ? 0 : -1}
+                    className={`session-header__dropdown-item${highlighted ? " session-header__dropdown-item--highlighted" : ""}${selected ? " session-header__dropdown-item--active" : ""}`}
+                    onMouseEnter={() => setThinkingHighlightedIndex(index)}
+                    onFocus={() => setThinkingHighlightedIndex(index)}
+                    onKeyDown={handleThinkingKeyDown}
                     onClick={() => {
                       void handleThinkingLevel(l);
                       setThinkingOpen(false);

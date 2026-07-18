@@ -242,7 +242,7 @@ body {
    `.icon` scales with the surrounding type and sits on the text baseline,
    so an inline check reads like a character, not a sticker. `.icon-btn` is
    the ghost icon-button chrome every ×/▾/✓ control shares: square hit
-   target, no resting fill, quiet surface lift on hover. Components add
+   target, no resting fill, quiet surface lift on hover or keyboard focus. Components add
    their BEM class alongside for placement-specific tweaks only. */
 .icon {
   width: 1em;
@@ -267,9 +267,13 @@ body {
   transition: background 0.12s ease, color 0.12s ease;
 }
 
-.icon-btn:hover:not(:disabled) {
+.icon-btn:is(:hover, :focus-visible):not(:disabled) {
   background: var(--surface-2);
   color: var(--text);
+}
+
+.icon-btn:focus-visible {
+  outline: none;
 }
 
 .icon-btn:disabled {

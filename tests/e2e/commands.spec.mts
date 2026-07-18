@@ -519,6 +519,74 @@ test.describe("Slash commands", () => {
     rmrf(folders.piSessionsDir);
   });
 
+  test("composer focuses and preserves drafts before pending and saved sessions attach", async () => {
+    test.setTimeout(90_000);
+    const folders = await makeFolders();
+    const pendingDraft = "drafted before pending host attach";
+    const savedDraft = "drafted before saved host attach";
+
+    try {
+      const first = await launchApp(folders, { PIVIS_TEST_HOST_READY_DELAY_MS: "3000" });
+      try {
+        // Boot creates the pending-new record. Clicking its selected entry is
+        // the deliberate focus request a user makes before beginning to type.
+        await first.window.getByRole("button", { name: "New session" }).click();
+        const textarea = first.window.locator(".composer__textarea");
+        const attach = first.window.locator(".composer__attach-btn");
+
+        await expect(attach).toBeDisabled();
+        await expect(textarea).toBeFocused();
+        await first.window.keyboard.type(pendingDraft);
+        await expect(textarea).toHaveValue(pendingDraft);
+
+        // The authority baseline rebases the renderer-owned draft instead of
+        // replacing it with the host's initially empty editor.
+        await expect(attach).toBeEnabled({ timeout: 15_000 });
+        await expect(textarea).toHaveValue(pendingDraft);
+
+        // Persist one ordinary turn so the second launch can exercise the same
+        // invariant when a cold saved-session row is selected.
+        await textarea.press("Enter");
+        await expect(first.window.locator(".transcript-block--user")).toContainText(pendingDraft);
+        await expect(first.window.locator(".transcript-block--assistant")).toContainText(
+          `Echo: ${pendingDraft}`,
+          { timeout: 15_000 },
+        );
+        await expect(first.window.locator(".status-dot--streaming")).toHaveCount(0, {
+          timeout: 5_000,
+        });
+        await expect.poll(() => countJsonlFiles(folders.piSessionsDir)).toBe(1);
+      } finally {
+        await first.app.close();
+      }
+
+      const second = await launchApp(folders, { PIVIS_TEST_HOST_READY_DELAY_MS: "3000" });
+      try {
+        const stored = second.window.getByRole("button", {
+          name: new RegExp(`Not running ${pendingDraft}`),
+        });
+        await expect(stored).toBeVisible({ timeout: 15_000 });
+        await stored.click();
+
+        const textarea = second.window.locator(".composer__textarea");
+        const attach = second.window.locator(".composer__attach-btn");
+        await expect(attach).toBeDisabled();
+        await expect(textarea).toBeFocused();
+        await second.window.keyboard.type(savedDraft);
+        await expect(textarea).toHaveValue(savedDraft);
+
+        await expect(attach).toBeEnabled({ timeout: 15_000 });
+        await expect(textarea).toHaveValue(savedDraft);
+      } finally {
+        await second.app.close();
+      }
+    } finally {
+      rmrf(folders.settingsDir);
+      rmrf(folders.workspaceDir);
+      rmrf(folders.piSessionsDir);
+    }
+  });
+
   test("delayed same-file history cannot cross activation and retries against the live owner", async () => {
     test.setTimeout(90_000);
     const folders = await makeFolders();

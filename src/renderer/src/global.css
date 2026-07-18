@@ -55,18 +55,23 @@ button {
   font-family: inherit;
 }
 
-/* ── Focus rings ────────────────────────────────────────────────────────
-   Chromium shows its default outline (color follows the macOS system accent,
-   hence the orange) whenever an element holds focus — including after a plain
-   mouse click.  Suppress the ring for pointer-driven focus, but keep it for
-   keyboard navigation (:focus-visible) so the app stays accessible. */
+/* ── Keyboard focus ─────────────────────────────────────────────────────
+   Keyboard focus must remain visible, but an exterior outline is the wrong
+   primitive for this UI: most controls live in rounded, clipped cards, so an
+   offset ring is either cropped or forces every container to reserve dead
+   space. Components with a richer focus language (surface lift, highlighted
+   row, focused border, terminal cursor) suppress this fallback and paint that
+   state themselves. Unclassified controls receive a quiet one-pixel inset
+   edge that cannot change geometry or escape a clipping ancestor. Pointer
+   focus remains undecorated. The Composer intentionally owns its larger
+   focus-within halo in Composer.css. */
 :focus:not(:focus-visible) {
   outline: none;
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent-soft);
-  outline-offset: 2px;
+  outline: 1px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline-offset: -1px;
 }
 
 /* Text fields show a blinking caret (and most have their own focus border,
@@ -137,6 +142,10 @@ pre i {
 .markdown-image:hover,
 .markdown-image:focus-visible {
   border-color: var(--accent);
+}
+
+.markdown-image:focus-visible {
+  outline: none;
 }
 
 .markdown-image:hover {

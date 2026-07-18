@@ -15,6 +15,31 @@ describe("global CSS", () => {
     );
   });
 
+  it("keeps keyboard focus inside component geometry", () => {
+    const rendererRoot = dirname(__filename);
+    const globalCss = readFileSync(join(__dirname, "global.css"), "utf8");
+    const themeCss = readFileSync(join(__dirname, "theme/theme.css"), "utf8");
+    const cssFiles = readdirSync(rendererRoot, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".css"))
+      .map((entry) => join(entry.parentPath, entry.name));
+
+    expect(globalCss).toMatch(
+      /:focus-visible\s*{[^}]*outline:\s*1px solid[^}]*outline-offset:\s*-1px;/s,
+    );
+    expect(themeCss).toMatch(
+      /\.icon-btn:is\(:hover, :focus-visible\):not\(:disabled\)\s*{[^}]*background:\s*var\(--surface-2\);[^}]*color:\s*var\(--text\);/s,
+    );
+
+    for (const file of cssFiles) {
+      const relative = file.slice(rendererRoot.length + 1);
+      const css = readFileSync(file, "utf8");
+      expect(css, relative).not.toMatch(/outline-offset:\s*(?:[1-9]|\d{2,})(?:px|rem|em)\b/u);
+      expect(css, relative).not.toMatch(
+        /\.(?:picker-slot|ext-dialog-slot|custom-panel)\s+:focus-visible\s*\{/u,
+      );
+    }
+  });
+
   it("keeps visible scrollbar chrome app-wide with only sanctioned hidden-thumb exceptions", () => {
     const rendererRoot = dirname(__filename);
     const cssFiles = readdirSync(rendererRoot, { recursive: true, withFileTypes: true })

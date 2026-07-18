@@ -1317,7 +1317,15 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
-  it("focuses the enabled Composer for an explicit focus request from a button", async () => {
+  it("focuses a cold saved-session Composer immediately for an explicit request", async () => {
+    setSessionField({
+      status: "cold",
+      availability: "unavailable",
+      authorityProjection: undefined,
+      sessionFile: "/tmp/saved-session.jsonl",
+      isNewPending: false,
+      resumed: true,
+    });
     const composer = mount();
     const button = document.createElement("button");
     document.body.appendChild(button);
@@ -1325,11 +1333,25 @@ describe("Composer autocomplete and authority intents", () => {
 
     act(() => useSessionsStore.getState().requestComposerFocus(SID));
     await vi.waitFor(() => expect(document.activeElement).toBe(composer.textarea()));
+    expect(useSessionsStore.getState().composerFocusRequest).toBeUndefined();
+
+    type(composer.textarea(), "typed before authority");
+    expect(composer.textarea().value).toBe("typed before authority");
+    expect(useSessionsStore.getState().sessionDrafts.get(SID)).toBe("typed before authority");
+    expect(invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch")).toHaveLength(
+      0,
+    );
+    expect(intentCalls(invoke)).toHaveLength(0);
     button.remove();
     composer.unmount();
   });
 
   it("does not steal focus from an external input for an explicit focus request", async () => {
+    setSessionField({
+      status: "cold",
+      availability: "unavailable",
+      authorityProjection: undefined,
+    });
     const composer = mount();
     const input = document.createElement("input");
     document.body.appendChild(input);
@@ -1341,7 +1363,37 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
-  it("autofocuses normally when body owns focus as Composer becomes live", () => {
+  it("consumes a cold-session focus request without stealing through an overlay", async () => {
+    setSessionField({
+      status: "cold",
+      availability: "unavailable",
+      authorityProjection: undefined,
+    });
+    const claim = useOverlayStore.getState()._acquire();
+    const button = document.createElement("button");
+    document.body.appendChild(button);
+    button.focus();
+    const composer = mount();
+
+    act(() => useSessionsStore.getState().requestComposerFocus(SID));
+    await vi.waitFor(() =>
+      expect(useSessionsStore.getState().composerFocusRequest).toBeUndefined(),
+    );
+    expect(document.activeElement).toBe(button);
+
+    act(() => useOverlayStore.getState()._release(claim));
+    await Promise.resolve();
+    expect(document.activeElement).toBe(button);
+    button.remove();
+    composer.unmount();
+  });
+
+  it("autofocuses a pending-new Composer before initial authority", () => {
+    setSessionField({
+      status: "cold",
+      availability: "unavailable",
+      authorityProjection: undefined,
+    });
     document.body.focus();
     const composer = mount();
     expect(document.activeElement).toBe(composer.textarea());

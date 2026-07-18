@@ -45,14 +45,6 @@
   }
 }
 
-/* Suppress the global keyboard-focus ring inside the picker slot — the
-   picker's own search field and highlighted option are the focus
-   affordances (mirrors `.ext-dialog-slot :focus-visible` and
-   `.custom-panel :focus-visible`). */
-.picker-slot :focus-visible {
-  outline: none;
-}
-
 /* The picker sub-components (`ModelPicker`, `ForkPicker`, `ResumePicker`)
    each render a `.picker` card. In the slot it behaves as an in-flow card
    (no absolute positioning, no scrim, no elevation-3 modal shadow) — a
@@ -223,9 +215,15 @@
   padding: 0.429rem 1rem;
 }
 
-.picker__btn--cancel:hover {
+.picker__btn--cancel:is(:hover, :focus-visible) {
   background: var(--surface-3);
   color: var(--text);
+}
+
+.picker__btn--cancel:focus-visible,
+.picker__btn--primary:focus-visible,
+.picker__btn--save:focus-visible {
+  outline: none;
 }
 
 /* ── /trust picker ───────────────────────────────────────────────────── */
@@ -296,7 +294,7 @@
   color: var(--on-accent);
 }
 
-.picker__btn--primary:hover {
+.picker__btn--primary:is(:hover, :focus-visible) {
   filter: brightness(1.08);
 }
 
@@ -309,7 +307,7 @@
   color: var(--bg);
 }
 
-.picker__btn--save:hover {
+.picker__btn--save:is(:hover, :focus-visible) {
   filter: brightness(1.08);
 }
 

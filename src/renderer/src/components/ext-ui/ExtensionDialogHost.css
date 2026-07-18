@@ -15,16 +15,8 @@
    visible. The slot is the parent flex child that previously held
    the Composer; the inner `.ext-dialog` is the form card.
 
-   Focus rings: the Composer's mauve input box is the *only* focus
-   affordance in this slot. The dialog card replaces the Composer,
-   so internal elements (buttons, options, text fields, the card
-   itself) deliberately carry no focus indicators — the card's
-   visual presence in the slot is the focus context. The
-   `.ext-dialog-slot :focus-visible` rule below suppresses the
-   browser's lavender keyboard-focus ring on any focusable
-   element inside the slot (the Composer's slot also suppresses
-   these via the global rule on input/textarea, but this rule
-   covers buttons + options too). */
+   Focus remains local to each control: highlighted options, focused field
+   borders, and contained action-button states. */
 
 .ext-dialog-slot {
   background: var(--color-bg);
@@ -52,18 +44,6 @@
      gentle slide + fade tells the eye "something just asked for your
      attention" without resorting to a scrim. */
   animation: ext-dialog-slot-in 0.18s ease-out;
-}
-
-/* No focus rings on internal elements — the dialog card is the focus
-   context (it replaces the Composer's mauve input ring in the same
-   slot), so its buttons, options, text fields, and the card itself
-   carry no focus indicators. The Composer's input box is the *only*
-   focus affordance in this slot. The dialog's own interactions stay
-   discoverable via the JavaScript-managed highlight on the selected
-   option (`.ext-dialog__option--highlighted`) and the caret on text
-   fields — both of which are intent-revealing, not focus-revealing. */
-.ext-dialog-slot :focus-visible {
-  outline: none;
 }
 
 @keyframes ext-dialog-slot-in {
@@ -229,6 +209,11 @@
   box-sizing: border-box;
 }
 
+.ext-dialog__input:focus,
+.ext-dialog__editor:focus {
+  border-color: var(--accent);
+}
+
 .ext-dialog__actions {
   display: flex;
   gap: 0.571rem;
@@ -251,7 +236,7 @@
   color: var(--on-accent);
 }
 
-.ext-dialog__btn--confirm:hover {
+.ext-dialog__btn--confirm:is(:hover, :focus-visible) {
   background: var(--accent-soft);
 }
 
@@ -260,6 +245,10 @@
   color: var(--text-muted);
 }
 
-.ext-dialog__btn--cancel:hover {
+.ext-dialog__btn--cancel:is(:hover, :focus-visible) {
   background: var(--surface-3);
+}
+
+.ext-dialog__btn:focus-visible {
+  outline: none;
 }

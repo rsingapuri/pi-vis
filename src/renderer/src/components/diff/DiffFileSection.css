@@ -362,6 +362,10 @@
   color: var(--text);
 }
 
+.diff-row__comment-btn:focus-visible {
+  outline: none;
+}
+
 .diff-row__comment-btn--has-comment,
 .diff-row__comment-btn--open {
   color: var(--info);

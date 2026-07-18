@@ -95,6 +95,12 @@ function pointerClick(button: HTMLButtonElement): void {
   });
 }
 
+function pressKey(button: HTMLButtonElement, key: string): KeyboardEvent {
+  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+  act(() => button.dispatchEvent(event));
+  return event;
+}
+
 describe("thinkingLevelsForModel", () => {
   it("exposes max only for models that opt in and filters null mappings", () => {
     expect(
@@ -151,6 +157,97 @@ describe("SessionControls dropdown toggles", () => {
 
     pointerClick(button!);
     expect(container.querySelector(".session-header__dropdown")).toBeNull();
+    unmount();
+  });
+
+  it("shares one thinking highlight across selection, pointer, and DOM focus", () => {
+    setSession();
+    const { container, unmount } = mount(<SessionControls sessionId={sessionId} />);
+    const trigger = container.querySelector<HTMLButtonElement>(
+      ".session-header__thinking > .session-header__picker-btn",
+    );
+    expect(trigger).toBeTruthy();
+
+    pointerClick(trigger!);
+    const listbox = container.querySelector<HTMLElement>('[role="listbox"]');
+    const options = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        ".session-header__thinking .session-header__dropdown-item",
+      ),
+    );
+    const option = (label: string): HTMLButtonElement => {
+      const match = options.find((candidate) => candidate.textContent === label);
+      if (!match) throw new Error(`Missing thinking option: ${label}`);
+      return match;
+    };
+    const highlighted = (): HTMLButtonElement[] =>
+      options.filter((candidate) =>
+        candidate.classList.contains("session-header__dropdown-item--highlighted"),
+      );
+
+    expect(trigger?.getAttribute("aria-haspopup")).toBe("listbox");
+    expect(trigger?.getAttribute("aria-expanded")).toBe("true");
+    expect(trigger?.getAttribute("aria-controls")).toBe(listbox?.id);
+    expect(listbox?.getAttribute("aria-label")).toBe("Thinking level");
+    expect(highlighted()).toEqual([option("medium")]);
+    expect(option("medium").classList).toContain("session-header__dropdown-item--active");
+
+    act(() => option("high").dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    expect(highlighted()).toEqual([option("high")]);
+    expect(option("medium").classList).toContain("session-header__dropdown-item--active");
+    expect(option("high").classList).not.toContain("session-header__dropdown-item--active");
+
+    act(() => option("low").focus());
+    expect(highlighted()).toEqual([option("low")]);
+    expect(option("low").tabIndex).toBe(0);
+    expect(options.filter((candidate) => candidate.tabIndex === 0)).toEqual([option("low")]);
+    unmount();
+  });
+
+  it("navigates and selects the thinking highlight from the keyboard", async () => {
+    setSession();
+    const { container, unmount } = mount(<SessionControls sessionId={sessionId} />);
+    const trigger = container.querySelector<HTMLButtonElement>(
+      ".session-header__thinking > .session-header__picker-btn",
+    );
+    expect(trigger).toBeTruthy();
+    pointerClick(trigger!);
+
+    const highlightedText = (): string | null =>
+      container.querySelector(".session-header__dropdown-item--highlighted")?.textContent ?? null;
+
+    expect(highlightedText()).toBe("medium");
+    expect(pressKey(trigger!, "ArrowDown").defaultPrevented).toBe(true);
+    expect(highlightedText()).toBe("high");
+    expect(pressKey(trigger!, "ArrowDown").defaultPrevented).toBe(true);
+    expect(highlightedText()).toBe("off");
+    expect(pressKey(trigger!, "ArrowUp").defaultPrevented).toBe(true);
+    expect(highlightedText()).toBe("high");
+    expect(pressKey(trigger!, "Home").defaultPrevented).toBe(true);
+    expect(highlightedText()).toBe("off");
+    expect(pressKey(trigger!, "End").defaultPrevented).toBe(true);
+    expect(highlightedText()).toBe("high");
+
+    const enter = new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => {
+      trigger!.dispatchEvent(enter);
+      await Promise.resolve();
+    });
+    expect(enter.defaultPrevented).toBe(true);
+    expect(
+      container.querySelector(".session-header__thinking .session-header__dropdown"),
+    ).toBeNull();
+    expect(
+      (globalThis.window as unknown as { pivis: { invoke: ReturnType<typeof vi.fn> } }).pivis
+        .invoke,
+    ).toHaveBeenCalledWith(
+      "session.dispatchIntent",
+      expect.objectContaining({ intent: { kind: "setThinking", level: "high" } }),
+    );
     unmount();
   });
 

@@ -169,7 +169,7 @@
   -webkit-app-region: no-drag;
 }
 
-.session-header__picker-btn:hover {
+.session-header__picker-btn:is(:hover, :focus-visible) {
   background: var(--surface-2);
   color: var(--text);
 }
@@ -214,9 +214,7 @@
   max-width: 10rem;
 }
 
-/* These chrome buttons signal interaction via their hover border/color; the
-   global :focus-visible ring is just noise (and re-appears when focus returns
-   to the button after closing its dropdown/the diff viewer with Escape). */
+/* Picker focus uses the same contained surface lift as hover. */
 .session-header__picker-btn:focus-visible {
   outline: none;
 }
@@ -446,10 +444,15 @@
   color: var(--accent);
 }
 
-.session-header__dropdown-item--highlighted {
+.session-header__dropdown-item--highlighted,
+.session-header__dropdown-item:focus-visible {
   background: var(--surface-2);
   border-color: var(--surface-3);
   color: var(--text);
+}
+
+.session-header__dropdown-item:focus-visible {
+  outline: none;
 }
 
 .session-header__match {

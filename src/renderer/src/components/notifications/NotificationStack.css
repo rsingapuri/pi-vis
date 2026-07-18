@@ -304,6 +304,12 @@
   opacity: 1;
 }
 
+.notification-card__dismiss:focus-visible {
+  outline: none;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
 .notification-card__dismiss:hover {
   color: var(--text);
 }

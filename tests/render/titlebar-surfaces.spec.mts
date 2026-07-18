@@ -1,4 +1,25 @@
-import { expect, test } from "@playwright/test";
+import { type Locator, expect, test } from "@playwright/test";
+
+async function expectHighlightedPaint(option: Locator): Promise<void> {
+  const paint = await option.evaluate((element) => {
+    const probe = document.createElement("span");
+    probe.style.background = "var(--surface-2)";
+    probe.style.border = "1px solid var(--surface-3)";
+    document.body.appendChild(probe);
+    const actual = getComputedStyle(element);
+    const expected = getComputedStyle(probe);
+    const result = {
+      background: actual.backgroundColor,
+      border: actual.borderTopColor,
+      expectedBackground: expected.backgroundColor,
+      expectedBorder: expected.borderTopColor,
+    };
+    probe.remove();
+    return result;
+  });
+  expect(paint.background).toBe(paint.expectedBackground);
+  expect(paint.border).toBe(paint.expectedBorder);
+}
 
 test.describe("Title-bar surfaces", () => {
   test("rename input preserves the clicked label geometry", async ({ page }) => {
@@ -47,6 +68,40 @@ test.describe("Title-bar surfaces", () => {
     expect(Math.abs(after.width - before.width)).toBeLessThan(1);
     expect(Math.abs(afterContent.x - before.contentX)).toBeLessThan(1);
     expect(Math.abs(afterContent.width - before.contentWidth)).toBeLessThan(1);
+  });
+
+  test("thinking options share one painted highlight across pointer and keyboard", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.waitForLoadState("domcontentloaded");
+    await expect(page.locator(".composer__textarea")).toBeEnabled();
+
+    const trigger = page.locator(".session-header__thinking > .session-header__picker-btn");
+    await expect(trigger).toBeEnabled();
+    await trigger.click();
+    await expect(trigger).toBeFocused();
+
+    const dropdown = page.locator(".session-header__thinking .session-header__dropdown");
+    const highlighted = dropdown.locator(".session-header__dropdown-item--highlighted");
+    const pointerOption = dropdown.locator('[role="option"][aria-selected="false"]').last();
+    await expect(pointerOption).toBeVisible();
+    await pointerOption.hover();
+
+    await expect(highlighted).toHaveCount(1);
+    await expect(pointerOption).toHaveClass(/session-header__dropdown-item--highlighted/);
+    await expect(pointerOption).toHaveAttribute("aria-selected", "false");
+    const pointerId = await pointerOption.getAttribute("id");
+    if (!pointerId) throw new Error("thinking option has no stable id");
+
+    await expectHighlightedPaint(pointerOption);
+
+    await page.keyboard.press("ArrowDown");
+    await expect(highlighted).toHaveCount(1);
+    await expect(highlighted).not.toHaveAttribute("id", pointerId);
+    await expect(trigger).toBeFocused();
+
+    await expectHighlightedPaint(highlighted);
   });
 
   test("title, context, and Workspace popups rise above an open viewer", async ({ page }) => {

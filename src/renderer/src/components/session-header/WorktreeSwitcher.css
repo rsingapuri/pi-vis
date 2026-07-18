@@ -27,14 +27,15 @@
 }
 
 .worktree-switcher__trigger:hover,
+.worktree-switcher__trigger:focus-visible,
 .worktree-switcher__trigger[aria-expanded="true"] {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--text);
 }
 
 .worktree-switcher__trigger:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 1px;
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 .worktree-switcher__trigger .icon,

@@ -225,6 +225,10 @@
   border-color: var(--accent);
 }
 
+.transcript-block__image-button:focus-visible {
+  outline: none;
+}
+
 .transcript-block__image-button:hover {
   transform: translateY(-1px);
 }

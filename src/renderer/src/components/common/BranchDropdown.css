@@ -23,7 +23,7 @@
   max-width: 18rem;
 }
 
-.branch-dropdown__trigger:hover {
+.branch-dropdown__trigger:is(:hover, :focus-visible) {
   border-color: var(--border-strong);
   color: var(--text);
 }

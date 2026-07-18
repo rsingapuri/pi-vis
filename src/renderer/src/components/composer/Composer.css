@@ -122,6 +122,10 @@
   transform: scale(1.03);
 }
 
+.composer__attachment-preview:focus-visible {
+  outline: none;
+}
+
 .composer__attachment-remove {
   position: absolute;
   top: 0.143rem;

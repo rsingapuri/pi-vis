@@ -1,11 +1,7 @@
 /* CustomPanelHost — inline xterm.js overlay for extension custom() panels.
 
-   Focus rings: the panel replaces the Composer in the same slot, so it
-   inherits no focus affordances from the global `:focus-visible` rule.
-   The Composer's mauve input box is the *only* focus indicator in this
-   slot; the panel card's visual presence is the focus context. The
-   xterm.js cursor (managed by the terminal itself) and the close
-   button's hover state are the user's affordances inside the panel. */
+   The xterm cursor is the terminal focus affordance; the close button uses
+   the same contained surface lift for pointer and keyboard focus. */
 
 .custom-panel {
   /* The card is both the root element and the bordered card (unlike
@@ -61,10 +57,14 @@
   transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
 }
 
-.custom-panel__close:hover {
+.custom-panel__close:is(:hover, :focus-visible) {
   opacity: 1;
   color: var(--text);
   background: var(--surface-2);
+}
+
+.custom-panel__close:focus-visible {
+  outline: none;
 }
 
 /* The scroll wrapper is the JS-sized, scrolling box (the sizer's panelEl):
@@ -101,14 +101,6 @@
 /* Overflow case (content taller than the cap): the card/scroll-wrapper
    scrolls, not xterm's own viewport — it inherits the app-wide scrollbar
    treatment from theme.css. */
-
-/* No focus rings on internal elements — the panel card is the focus
-   context (it replaces the Composer's mauve input ring in the same
-   slot), so its close button, any focusable xterm wrapper, and the
-   card itself carry no focus indicators. */
-.custom-panel :focus-visible {
-  outline: none;
-}
 
 /* ── Unified-TUI panel (UnifiedTuiHost) ──────────────────────────────────────
    Same content-hugging model as the custom() panel, but the CARD itself is the

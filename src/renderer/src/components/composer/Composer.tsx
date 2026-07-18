@@ -7,7 +7,7 @@ import type {
   SessionQuery,
 } from "@shared/pi-protocol/runtime-state.js";
 import type React from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import {
   BUILTIN_COMMANDS,
@@ -740,41 +740,37 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
 
   // Focus the composer so the user can type right away on app open, session
   // switch, and new-session — all of which mount a fresh Composer (the
-  // session subtree is keyed on the active session id).
-  //
-  // The catch: the textarea is `disabled` until the session is `live`
-  // (starting/ready), and `.focus()` is a no-op on a disabled element. A
-  // just-opened session mounts as "cold", so focusing on mount alone silently
-  // fails for every freshly opened/created session and only happened to work
-  // when switching to an already-ready one. So we wait for the enabled
-  // (`live`) transition instead of focusing once on mount.
+  // session subtree is keyed on the active session id). The textarea owns a
+  // renderer-local draft before semantic authority attaches, so focus must not
+  // wait for `live`; runtime-backed attachment and submission paths keep their
+  // independent authority fences below.
   //
   // `didAutofocusRef` makes this fire at most once per mount, so we never yank
   // focus back to the composer mid-session; the "typing elsewhere" guard
   // avoids stealing focus from another field the user already moved to.
   const didAutofocusRef = useRef(false);
-  useEffect(() => {
-    if (didAutofocusRef.current || !live) return;
-    // Live is a one-shot autofocus opportunity. Consume it before inspecting
+  useLayoutEffect(() => {
+    if (didAutofocusRef.current) return;
+    // Mount is a one-shot autofocus opportunity. Consume it before inspecting
     // overlays or focus so closing an overlay later can never steal focus.
     didAutofocusRef.current = true;
     if (escapeClaimCount > 0) return;
     const el = textareaRef.current;
-    if (!el || !mayFocusComposer(el)) return;
+    if (!el || el.disabled || !mayFocusComposer(el)) return;
     el.focus();
-  }, [live, escapeClaimCount]);
+  }, [escapeClaimCount]);
 
   // Explicit entry focus is deliberately separate from ordinary selection.
-  // Consume the matching request at its first live native-Composer chance,
+  // Consume the matching request at its first native-Composer chance,
   // even when an overlay or a typing control means focus must be declined.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const request = composerFocusRequest;
-    if (!request || request.sessionId !== sessionId || !live) return;
+    if (!request || request.sessionId !== sessionId) return;
     consumeComposerFocus(sessionId, request.nonce);
     if (escapeClaimCount > 0) return;
     const el = textareaRef.current;
-    if (el && mayExplicitlyFocusComposer(el)) el.focus();
-  }, [composerFocusRequest, consumeComposerFocus, escapeClaimCount, live, sessionId]);
+    if (el && !el.disabled && mayExplicitlyFocusComposer(el)) el.focus();
+  }, [composerFocusRequest, consumeComposerFocus, escapeClaimCount, sessionId]);
 
   // Accepted custody/consumption feedback is presentation-only, but it lets
   // the originating prompt transport clear its command text before the terminal

@@ -42,9 +42,10 @@ const OUTPUT_VIRTUAL_OVERSCAN = 8;
 const OUTPUT_DEFAULT_ROW_HEIGHT = 18;
 const DIFF_PREVIEW_LINES = 12;
 const ACTIVITY_PREVIEW_CHARS = 420;
-// Any upward scroll unsticks; scrolling back to within this distance of the
-// bottom re-sticks.
-const SCROLL_RESTICK_PX = 24;
+// Treat only the browser's sub-pixel rounding fringe as the bottom. A small
+// intentional scroll must leave bottom-follow immediately instead of sitting
+// in a fuzzy zone that later layout/streaming work can snap back down.
+const SCROLL_BOTTOM_EPSILON_PX = 1;
 // Scroll events can be caused by layout (e.g. a custom/unified panel replacing
 // the Composer and shrinking the transcript viewport) as well as by the user.
 // Only an actual user scroll input may break bottom-follow.
@@ -1629,8 +1630,8 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     const next = {
-      top: el.scrollTop > 1,
-      bottom: distance > 1,
+      top: el.scrollTop > SCROLL_BOTTOM_EPSILON_PX,
+      bottom: distance > SCROLL_BOTTOM_EPSILON_PX,
     };
     setScrollFades((prev) => (prev.top === next.top && prev.bottom === next.bottom ? prev : next));
   }, []);
@@ -1645,7 +1646,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     const el = scrollRef.current;
     if (!el) return;
     const target = Math.max(0, el.scrollHeight - el.clientHeight);
-    el.scrollTop = target;
+    if (Math.abs(el.scrollTop - target) > SCROLL_BOTTOM_EPSILON_PX) el.scrollTop = target;
     lastPinnedTopRef.current = el.scrollTop;
     prevScrollHeightRef.current = el.scrollHeight;
     prevClientHeightRef.current = el.clientHeight;
@@ -1791,7 +1792,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     updateScrollFades();
-    if (distance <= SCROLL_RESTICK_PX) {
+    if (distance <= SCROLL_BOTTOM_EPSILON_PX) {
       // At/near bottom: re-pin (covers shrink-clamps, growth-clamps, and
       // the user actively returning to the bottom).
       setPinned(true);
@@ -1799,7 +1800,7 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
       prevScrollHeightRef.current = el.scrollHeight;
       prevClientHeightRef.current = el.clientHeight;
       prevScrollTopRef.current = el.scrollTop;
-    } else if (el.scrollTop < lastPinnedTopRef.current - SCROLL_RESTICK_PX) {
+    } else if (el.scrollTop < lastPinnedTopRef.current - SCROLL_BOTTOM_EPSILON_PX) {
       // A layout-only viewport change can also move scrollTop upward (for
       // example when a custom/unified TUI panel replaces the Composer). That
       // must NOT break the "follow bottom unless the user actively scrolled"
@@ -1915,7 +1916,8 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
     // detection purely about CONTENT position: a real scroll-up still
     // moves `scrollTop` below the prior bottom and reads as "not at
     // bottom", while a pure viewport change leaves it pinned.
-    const measuredAtBottom = prevHeight - el.scrollTop - prevClientHeight <= SCROLL_RESTICK_PX;
+    const measuredAtBottom =
+      prevHeight - el.scrollTop - prevClientHeight <= SCROLL_BOTTOM_EPSILON_PX;
     const userInitiated = performance.now() <= userScrollIntentUntilRef.current;
     const shouldFollow = measuredAtBottom || (pinnedRef.current && !userInitiated);
     setPinned(shouldFollow);

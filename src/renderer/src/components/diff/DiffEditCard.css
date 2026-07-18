@@ -291,6 +291,10 @@
   filter: drop-shadow(0 0 0.429rem color-mix(in srgb, var(--accent) 62%, transparent));
 }
 
+.diff-edit-bubble:focus-visible {
+  outline: none;
+}
+
 .diff-content:has(.diff-edit-bubble)
   .diff-row--edit-selection
   .diff-row__comment-btn:not(.diff-row__comment-btn--has-comment) {

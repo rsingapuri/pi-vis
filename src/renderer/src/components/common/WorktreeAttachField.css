@@ -33,7 +33,6 @@
 
 .worktree-attach-field__input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .worktree-attach-field__input:disabled,
@@ -59,14 +58,13 @@
   transition: background-color 0.12s ease, border-color 0.12s ease;
 }
 
-.worktree-attach-field__browse:hover:not(:disabled) {
+.worktree-attach-field__browse:is(:hover, :focus-visible):not(:disabled) {
   border-color: var(--accent);
   background: var(--surface-3);
 }
 
 .worktree-attach-field__browse:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 1px;
+  outline: none;
 }
 
 .worktree-attach-field__browse .spinner,
