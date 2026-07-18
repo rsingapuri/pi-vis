@@ -58,6 +58,10 @@ import {
 } from "../lib/panel-input-sequence.js";
 import { RENDERER_GENERATION } from "../lib/renderer-generation.js";
 import { dispatchSessionIntent, querySession } from "../lib/session-intent.js";
+
+// One SWR mutation per live session. The key is deliberately session-local:
+// each invocation rechecks its captured authority owner before writing.
+const modelRefreshFlights = new Map<SessionId, Promise<boolean>>();
 import {
   type RendererAuthorityState,
   createRendererAuthorityState,
@@ -181,6 +185,8 @@ export interface SessionViewState {
   notificationPanelOpen?: boolean | undefined;
   stats?: SessionStats | undefined;
   availableModels: ModelInfo[];
+  /** Owner-scoped automatic catalog refresh failure; enables a discreet retry. */
+  modelRefreshFailure?: RuntimeIdentity | undefined;
   currentModel?: string | undefined;
   /** Provider of the active model (when known). Paired with `currentModel` so the
    *  dropdown can disambiguate same-id models offered by different providers
@@ -1385,6 +1391,8 @@ interface SessionsStore {
     sessionId: SessionId,
     expectedRuntime?: { hostInstanceId: string; sessionEpoch: number },
   ) => Promise<ModelInfo[]>;
+  /** Silent stale-while-revalidate catalog refresh. Never activates a cold session. */
+  refreshModelsSilently: (sessionId: SessionId) => Promise<boolean>;
   setCurrentModel: (sessionId: SessionId, model: string, provider?: string) => void;
   setThinkingLevel: (sessionId: SessionId, level: ThinkingLevel) => void;
   /**
@@ -3846,6 +3854,81 @@ const buildSessionsStore = (
     } catch {
       return currentModels();
     }
+  },
+
+  refreshModelsSilently: (sessionId) => {
+    const existing = modelRefreshFlights.get(sessionId);
+    if (existing) return existing;
+    const flight = (async (): Promise<boolean> => {
+      const session = get().sessions.get(sessionId);
+      const observation = session ? authorityObservation(session) : undefined;
+      // Do not turn a picker/auth notification into cold-session activation.
+      if (!observation) return false;
+      const owner = observation.owner;
+      const intentId = crypto.randomUUID();
+      let receiptFailed = false;
+      try {
+        const receipt = await dispatchSessionIntent(
+          sessionId,
+          { kind: "refreshModels" },
+          observation,
+          intentId,
+        );
+        receiptFailed = receipt.status === "not_admitted";
+      } catch {
+        // A receipt can be lost after dispatch; the owner-bound frame decides.
+      }
+      const outcome = await new Promise<IntentOutcome | undefined>((resolve) => {
+        const find = () =>
+          get()
+            .sessions.get(sessionId)
+            ?.authorityProjection?.authoritativeSnapshot?.recentIntentOutcomes.find(
+              (item) =>
+                item.intentId === intentId &&
+                item.owner.hostInstanceId === owner.hostInstanceId &&
+                item.owner.sessionEpoch === owner.sessionEpoch,
+            );
+        const immediate = find();
+        if (immediate) return resolve(immediate);
+        const timer = setTimeout(() => finish(undefined), 10_000);
+        const unsubscribe = useSessionsStore.subscribe(() => {
+          const next = find();
+          if (next) finish(next);
+          else if (!sessionMatchesRuntime(get().sessions.get(sessionId), owner)) finish(undefined);
+        });
+        function finish(value: IntentOutcome | undefined): void {
+          clearTimeout(timer);
+          unsubscribe();
+          resolve(value);
+        }
+      });
+      const settled = await outcome;
+      const succeeded =
+        !receiptFailed && settled?.kind === "refreshModels" && settled.state === "completed";
+      if (succeeded && sessionMatchesRuntime(get().sessions.get(sessionId), owner)) {
+        await get().refreshAvailableModels(sessionId, owner);
+        if (sessionMatchesRuntime(get().sessions.get(sessionId), owner)) {
+          set((state) => {
+            const sessions = new Map(state.sessions);
+            const current = sessions.get(sessionId);
+            if (current) sessions.set(sessionId, { ...current, modelRefreshFailure: undefined });
+            return { sessions };
+          });
+        }
+        return true;
+      }
+      if (sessionMatchesRuntime(get().sessions.get(sessionId), owner)) {
+        set((state) => {
+          const sessions = new Map(state.sessions);
+          const current = sessions.get(sessionId);
+          if (current) sessions.set(sessionId, { ...current, modelRefreshFailure: owner });
+          return { sessions };
+        });
+      }
+      return false;
+    })().finally(() => modelRefreshFlights.delete(sessionId));
+    modelRefreshFlights.set(sessionId, flight);
+    return flight;
   },
 
   // Retained as compatibility no-ops for legacy consumers. Canonical model

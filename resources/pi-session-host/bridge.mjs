@@ -993,6 +993,12 @@ export function setupCommandBridge({
       switch (intent.kind) {
         case "interrupt":
           return authority.requestEscape(envelope.intentId);
+        case "refreshModels":
+          // ModelRuntime.refresh is a mutation, never a read query. Keep its
+          // authority outcome bounded; the renderer owner-fenced read obtains
+          // the catalog only after this settles.
+          await modelAccess(_session).refresh();
+          return { refreshed: true };
         case "submit":
           return submission(intent.text);
         case "manageQueue":

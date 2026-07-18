@@ -13,7 +13,7 @@ Audited against upstream `v0.80.3` through `v0.80.10` on 2026-07-16. Production 
 | Optional session name metadata | `session_info_changed.name` remains optional and can clear renderer state. |
 | `ThinkingLevel.max` | Typed in command, event, settings, and controls; model capability maps remain authoritative. |
 | Public model/scope/session exports | Consumed only through public SDK APIs. |
-| `ModelRuntime` replaces SDK auth/model options | On Pi 0.80.8+, the host uses `AgentSession.modelRuntime` for available-model reads, catalog refresh, model lookup, stored-credential listing, provider labels, and logout. A bridge-local adapter retains the equivalent public `modelRegistry`/`authStorage` calls for the supported Pi 0.80.6–0.80.7 range; no private API is imported. |
+| `ModelRuntime` replaces SDK auth/model options | On Pi 0.80.8+, the host uses `AgentSession.modelRuntime` for available-model reads, catalog refresh, model lookup, stored-credential listing, provider labels, and logout. Catalog refresh is dispatched as the stable `refreshModels` intent (not a read); its bounded outcome is followed by an owner-fenced available-model read. A bridge-local adapter retains the equivalent public `modelRegistry`/`authStorage` calls for the supported Pi 0.80.6–0.80.7 range; no private API is imported. |
 | Dynamic provider catalogs | Fixture model/auth discovery stays isolated and offline; scoped-model refresh uses the public runtime and the tests use only the loopback provider. |
 | Project-local resources | Loaded through the deny-by-default trust resolver; reload reinitializes resources in the host transition. |
 

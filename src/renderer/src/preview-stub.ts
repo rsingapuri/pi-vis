@@ -1165,6 +1165,8 @@ function outcomeFor(
       return { ...base, kind: "reload", result: {} };
     case "export":
       return { ...base, kind: "export", result: { path: "/tmp/pi-vis-preview-export.html" } };
+    case "refreshModels":
+      return { ...base, kind: "refreshModels", result: { refreshed: true } };
   }
 }
 
@@ -1175,6 +1177,8 @@ async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
   try {
     const intent: SessionIntent = envelope.intent;
     switch (intent.kind) {
+      case "refreshModels":
+        break;
       case "interrupt":
         previewHooks.abortCalls++;
         cancelPreviewStream();

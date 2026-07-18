@@ -35,6 +35,8 @@ Before release, run `PIVIS_SEARCH_BENCH_MIB=500 npm run bench:session-search`, b
 
 Conversation-tree copy changes also run `npx vitest run src/renderer/src/components/tree/tree-flatten.test.ts src/renderer/src/components/tree/tree-copy.test.ts` and `npm run test:render -- tree-copy.spec.mts`; the render flow pins the exact clipboard payload plus input/native-selection non-interference.
 
+Model-catalog SWR coverage must prove that `refreshModels` emits no catalog payload, only a same-owner terminal outcome permits the follow-up `get_available_models` read, failures preserve the cache and expose retry only for that owner, and auth/picker triggers never activate a cold session.
+
 Run the focused tests while changing these surfaces:
 
 ```sh

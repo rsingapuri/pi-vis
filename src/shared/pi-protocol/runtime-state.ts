@@ -622,6 +622,7 @@ export const SessionIntentKindSchema = z.enum([
   "rename",
   "reload",
   "export",
+  "refreshModels",
 ]);
 export type SessionIntentKind = z.infer<typeof SessionIntentKindSchema>;
 
@@ -751,6 +752,11 @@ export const SessionIntentSchema = z.union([
     })
     .strict(),
   z.object({ kind: z.literal("export"), outputPath: z.string().optional() }).strict(),
+  // Refresh mutates Pi's ModelRuntime; the catalog itself is deliberately
+  // read separately after this bounded terminal outcome.
+  z
+    .object({ kind: z.literal("refreshModels") })
+    .strict(),
 ]);
 export type SessionIntent = z.infer<typeof SessionIntentSchema>;
 
@@ -953,6 +959,8 @@ export const ReloadIntentResultSchema = z
   .strict();
 /** The child-authoritative file produced by an export effect. */
 export const ExportIntentResultSchema = z.object({ path: z.string().min(1) }).strict();
+/** Refresh completion intentionally carries no model catalog payload. */
+export const RefreshModelsIntentResultSchema = z.object({ refreshed: z.literal(true) }).strict();
 
 export const IntentOutcomeSchema = z.discriminatedUnion("kind", [
   OutcomeBaseSchema.extend({
@@ -1002,6 +1010,10 @@ export const IntentOutcomeSchema = z.discriminatedUnion("kind", [
   OutcomeBaseSchema.extend({
     kind: z.literal("export"),
     result: ExportIntentResultSchema.optional(),
+  }).strict(),
+  OutcomeBaseSchema.extend({
+    kind: z.literal("refreshModels"),
+    result: RefreshModelsIntentResultSchema.optional(),
   }).strict(),
 ]);
 export type IntentOutcome = z.infer<typeof IntentOutcomeSchema>;

@@ -271,7 +271,12 @@ function ModelPicker({
   onPick: (model: ModelInfo) => void;
 }): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
+  const refreshModelsSilently = useSessionsStore((s) => s.refreshModelsSilently);
   const semanticSnapshot = authoritySnapshotFor(session);
+  const modelOwner =
+    session?.authorityProjection?.semantic.state === "following"
+      ? session.authorityProjection.semantic.cursor
+      : undefined;
   const availableModels = semanticSnapshot ? (session?.availableModels ?? []) : [];
   const currentModel = semanticSnapshot?.model?.id;
   const currentProvider = semanticSnapshot?.model?.provider;
@@ -285,10 +290,11 @@ function ModelPicker({
   const highlightSourceRef = useRef<"keyboard" | "pointer" | "programmatic">("programmatic");
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Pin focus on the search input the moment the picker mounts.
+  // Pin focus on the search input and silently revalidate the cached catalog.
   useEffect(() => {
     setTimeout(() => searchRef.current?.focus(), 10);
-  }, []);
+    void refreshModelsSilently(sessionId);
+  }, [refreshModelsSilently, sessionId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -407,6 +413,18 @@ function ModelPicker({
         )}
       </ScrollFadeFrame>
       <div className="picker__footer">
+        {session?.modelRefreshFailure &&
+          modelOwner &&
+          session.modelRefreshFailure.hostInstanceId === modelOwner.hostInstanceId &&
+          session.modelRefreshFailure.sessionEpoch === modelOwner.sessionEpoch && (
+            <button
+              type="button"
+              className="picker__btn"
+              onClick={() => void refreshModelsSilently(sessionId)}
+            >
+              Refresh models
+            </button>
+          )}
         <button type="button" className="picker__btn picker__btn--cancel" onClick={onClose}>
           Cancel
         </button>
