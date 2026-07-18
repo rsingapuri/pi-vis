@@ -1224,7 +1224,8 @@ export async function getFileDiff(
       if ("kind" in validated) {
         return {
           kind: "error",
-          message: validated.kind === "error" ? validated.message : "Unable to validate commit range.",
+          message:
+            validated.kind === "error" ? validated.message : "Unable to validate commit range.",
         };
       }
       return getFileDiff(root, file, validated.parent, maxFileSizeBytes);

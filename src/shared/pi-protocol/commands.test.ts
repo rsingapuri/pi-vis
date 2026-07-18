@@ -11,6 +11,7 @@ const COMMAND_TYPES = [
   "set_model",
   "cycle_model",
   "get_available_models",
+  "get_login_providers",
   "get_scoped_models",
   "set_scoped_models",
   "save_scoped_models",

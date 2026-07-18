@@ -58,25 +58,40 @@
 }
 
 .commit-range-picker__working {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   width: 100%;
   padding: 0.5rem 0.571rem;
   border-radius: var(--radius-md);
-  font: 0.857em / 1.4 var(--font-code);
+  font: 0.857em / 1.4 var(--font-display);
 }
 
 .commit-range-picker__scopes {
   display: flex;
   flex-direction: column;
   gap: 0.143rem;
-  padding: 0.286rem var(--space-2);
+  padding: 0.286rem var(--space-2) 0;
 }
 
+.commit-range-picker__working:focus-visible,
 .commit-range-picker__working:hover,
 .commit-range-picker__working--selected,
 .commit-range-picker__commit:hover,
-.commit-range-picker__commit--highlighted {
+.commit-range-picker__commit--highlighted,
+.commit-range-picker__commit--selected {
   border-color: var(--surface-3);
   background: var(--surface-2);
+  outline: none;
+}
+
+/* A quiet menu command, separated from comparison endpoints rather than
+   presented as another selectable scope. */
+.commit-range-picker__select-all {
+  margin-bottom: 0.143rem;
+  border-bottom-color: var(--border);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  color: var(--text-muted);
 }
 
 .commit-range-picker__list-shell {
@@ -111,22 +126,19 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0 0.45rem;
   height: 44px;
-  padding: 0.2rem 0.571rem;
+  position: relative;
+  padding: 0.2rem 3.5rem 0.2rem 0.571rem;
   border-radius: var(--radius-md);
-  font: 0.786em / 1.15 var(--font-code);
+  font: 0.786em / 1.15 var(--font-display);
 }
 
-.commit-range-picker__commit--selected {
-  border-color: var(--accent);
-  background: var(--surface-2);
-}
-
-.commit-range-picker__commit--first {
-  box-shadow: inset 2px 0 0 var(--accent);
+.commit-range-picker__commit:focus-visible {
+  outline: none;
 }
 
 .commit-range-picker__sha {
   color: var(--accent);
+  font-family: var(--font-code);
 }
 
 .commit-range-picker__subject {
@@ -134,8 +146,18 @@
 }
 
 .commit-range-picker__endpoint {
+  align-self: center;
   color: var(--text-muted);
   font-family: var(--font-display);
+  font-size: 0.786rem;
+  line-height: 1;
+}
+
+.commit-range-picker__commit .commit-range-picker__endpoint {
+  position: absolute;
+  top: 50%;
+  right: 0.571rem;
+  transform: translateY(-50%);
 }
 
 .commit-range-picker__meta {

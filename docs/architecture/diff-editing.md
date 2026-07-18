@@ -18,19 +18,23 @@ the `git.writeWorkingFile` IPC.
 The header keeps separate compact controls: **BaseBranchDropdown** selects
 HEAD or a branch, and **CommitRangePicker** is shown only for a concrete base
 with at least one `git.commits` candidate. The base trigger contains only the
-branch/HEAD name. The range trigger contains only **Working tree**,
-**Uncommitted**, **1 commit**, or **N commits**. Its popup has separate
-**Working tree** (selected base through the live checkout) and **Uncommitted
-changes** (HEAD through the live checkout) rows followed by the newest-first,
+branch/HEAD name. The range trigger contains only **All changes**,
+**Uncommitted**, **1 commit**, or **N commits**. Its popup offers **Uncommitted
+changes** (HEAD through the live checkout) followed by the newest-first,
 virtualized 500-candidate commit list; it has no header, guidance dead-end, or
 Apply/Cancel footer. Both live scopes apply immediately without discarding the
-selected base. A plain commit click applies a one-commit range and closes the
-popup. Reopen it and Shift-click another commit to extend from the selected
-range's start into a normalized inclusive `{start, end}` band; that range stays
-open for inspection. Shift-clicking **Uncommitted changes** instead uses it as a
-pseudo-commit endpoint, extending from the anchor's parent through the live
-working tree (`{start, end, includeUncommitted: true}`), and likewise leaves the
-popup open. This live extended-range mode is editable; ordinary historical
+selected base. **All changes** is the default and highlights every candidate
+commit plus the **Uncommitted changes** pseudo-commit; it is a comparison label,
+not a menu choice. When a narrowed selection is active, a contextual **Select
+all** command restores this default. Pointer-down on a commit
+starts a local visual selection (only that commit remains highlighted); dragging
+then releasing commits the normalized inclusive `{start, end}` band and keeps
+it open for inspection. Releasing on **Uncommitted changes** extends from the
+anchor's parent through the live working tree (`{start, end,
+includeUncommitted: true}`). Shift-click is the keyboard/mouse equivalent: its
+anchor is the existing range start (or the oldest commit for **All changes**) and
+its clicked endpoint commits immediately. A plain commit click applies a
+one-commit range and closes the popup. This live extended-range mode is editable; ordinary historical
 ranges are not. Outside click and Escape only dismiss the popup and never roll
 back or otherwise change the committed comparison. `git.commits` returns immutable full object
 IDs plus short SHA, subject, author, and author time, oldest-to-newest

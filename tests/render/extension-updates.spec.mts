@@ -29,7 +29,28 @@ test("Settings auto-checks cached Pi extension status and keeps updates extensio
   await expect(page.getByText("@pi/mcp", { exact: true })).toBeVisible();
   await expect(page.getByText("github.com/example/pi-tools", { exact: true })).toBeVisible();
   await expect(page.getByText("2 updates available", { exact: true })).toBeVisible();
+  await expect(page.getByText("Updates available", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Update all" })).toBeVisible();
   await expect(page.locator(".sidebar__settings-update-count")).toHaveText("2");
+  await expect
+    .poll(() =>
+      page.locator(".settings-extension-updates").evaluate((updates) => {
+        const bulkAction = updates.querySelector<HTMLButtonElement>(
+          ".settings-extension-updates__header button",
+        );
+        const rowActions = [
+          ...updates.querySelectorAll<HTMLButtonElement>(".settings-extension-update > button"),
+        ];
+        if (!bulkAction || rowActions.length === 0) return false;
+        return rowActions.every(
+          (action) =>
+            Math.abs(
+              action.getBoundingClientRect().right - bulkAction.getBoundingClientRect().right,
+            ) < 1,
+        );
+      }),
+    )
+    .toBe(true);
   await expect(page.getByRole("button", { name: "Update pi" })).toHaveCount(0);
   await expect
     .poll(() =>

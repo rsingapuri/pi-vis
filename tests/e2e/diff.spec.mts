@@ -392,8 +392,8 @@ test.describe("Diff viewer", () => {
     await expect(viewer).toBeVisible({ timeout: 5_000 });
 
     // The base and range stay separate. A plain click applies a one-commit
-    // comparison and closes the picker; Shift-click extends from it while
-    // keeping the chosen range visible in the picker.
+    // comparison and closes the picker; dragging or Shift-clicking extends it
+    // while keeping the chosen range visible in the picker.
     const base = viewer.getByRole("button", { name: "Compare against base branch" });
     await base.click();
     await window.keyboard.press("Escape");
@@ -412,7 +412,9 @@ test.describe("Diff viewer", () => {
     await expect(range).toContainText("1 commit");
     await expect(viewer.getByRole("dialog", { name: "Commit range" })).toHaveCount(0);
     await range.click();
-    await viewer.getByRole("option", { name: /First feature commit/ }).click({ modifiers: ["Shift"] });
+    await viewer
+      .getByRole("option", { name: /Second feature commit/ })
+      .dragTo(viewer.getByRole("option", { name: /First feature commit/ }));
     await expect(viewer.getByRole("dialog", { name: "Commit range" })).toBeVisible();
 
     await expect(viewer.locator(".diff-tree__row--file")).toHaveCount(2, { timeout: 10_000 });
@@ -429,8 +431,14 @@ test.describe("Diff viewer", () => {
 
     // Uncommitted changes are a pseudo-commit endpoint and can extend the
     // selected historical band through the live working tree.
-    await viewer.getByRole("button", { name: "Uncommitted changes" }).click({ modifiers: ["Shift"] });
+    await viewer
+      .getByRole("button", { name: "Uncommitted changes" })
+      .click({ modifiers: ["Shift"] });
     await expect(range).toContainText("2 commits + uncommitted");
+    await expect(viewer.getByRole("button", { name: /Uncommitted changes/ })).toContainText("End");
+    await expect(viewer.getByRole("option", { name: /Second feature commit/ })).not.toContainText(
+      "End",
+    );
     await expect(viewer.getByRole("dialog", { name: "Commit range" })).toBeVisible();
     await expect(viewer.locator(".diff-tree__row--file")).toHaveCount(3, { timeout: 10_000 });
     await expect(viewer.locator('[data-testid="diff-section-working-only.ts"]')).toContainText(
@@ -441,7 +449,7 @@ test.describe("Diff viewer", () => {
     await expect(viewer).toBeHidden({ timeout: 5_000 });
     await changesBtn.click();
     await expect(viewer).toBeVisible({ timeout: 5_000 });
-    await expect(range).toContainText("Working tree");
+    await expect(range).toContainText("All changes");
 
     await app.close();
     rmrf(folders.settingsDir);

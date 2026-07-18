@@ -1015,15 +1015,30 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
 
               {extensionUpdateStatus && extensionUpdateStatus.updates.length > 0 && (
                 <div className="settings-extension-updates" aria-live="polite">
+                  <div className="settings-extension-updates__header">
+                    <span className="settings-extension-updates__title">Updates available</span>
+                    {extensionUpdateStatus.updates.length > 1 && (
+                      <button
+                        type="button"
+                        className="settings-btn settings-btn--small"
+                        disabled={extensionUpdating !== null}
+                        onClick={() => void handleRunExtensionUpdate("all")}
+                      >
+                        {extensionUpdating === "all" ? "Updating…" : "Update all"}
+                      </button>
+                    )}
+                  </div>
                   {extensionUpdateStatus.updates.map((extension) => (
                     <div className="settings-extension-update" key={extension.source}>
-                      <FadeText
-                        className="settings-extension-update__name"
-                        title={extension.source}
-                      >
-                        {extension.displayName}
-                      </FadeText>
-                      <span className="settings-hint">{extension.type}</span>
+                      <div className="settings-extension-update__details">
+                        <FadeText
+                          className="settings-extension-update__name"
+                          title={extension.source}
+                        >
+                          {extension.displayName}
+                        </FadeText>
+                        <span className="settings-hint">{extension.type}</span>
+                      </div>
                       <button
                         type="button"
                         className="settings-btn settings-btn--small"
@@ -1037,16 +1052,6 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                       </button>
                     </div>
                   ))}
-                  {extensionUpdateStatus.updates.length > 1 && (
-                    <button
-                      type="button"
-                      className="settings-btn settings-extension-updates__all"
-                      disabled={extensionUpdating !== null}
-                      onClick={() => void handleRunExtensionUpdate("all")}
-                    >
-                      {extensionUpdating === "all" ? "Updating…" : "Update all extensions"}
-                    </button>
-                  )}
                 </div>
               )}
             </section>

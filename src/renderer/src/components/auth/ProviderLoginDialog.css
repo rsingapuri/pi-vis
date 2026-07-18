@@ -10,6 +10,7 @@
   gap: 0.714rem;
   min-height: 0;
   max-height: 60vh;
+  overflow-x: hidden;
   overflow-y: auto;
   font-family: var(--font-display);
 }
@@ -147,6 +148,7 @@
   flex-direction: column;
   gap: 0.286rem;
   max-height: 18rem;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 

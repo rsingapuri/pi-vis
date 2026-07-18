@@ -104,14 +104,26 @@ describe("CommitRangePicker", () => {
     empty.unmount();
   });
 
-  it("shows only the range scope and commits Working tree immediately", async () => {
+  it("shows All changes as the default label without a redundant Select all command", async () => {
     setup();
     const view = mount(<CommitRangePicker />);
     await settle();
-    expect(view.container.textContent).toContain("Working tree");
+    expect(view.container.textContent).toContain("All changes");
     expect(view.container.textContent).not.toContain("main");
     await openPicker(view.container);
-    clickText(view.container, "Working tree");
+    expect(view.container.querySelector(".commit-range-picker__popup")?.textContent).not.toContain(
+      "Select all",
+    );
+    view.unmount();
+  });
+
+  it("offers Select all as an action for a narrowed range", async () => {
+    setup();
+    useDiffStore.setState({ commitRange: { start: "bbb-full", end: "bbb-full" } });
+    const view = mount(<CommitRangePicker />);
+    await settle();
+    await openPicker(view.container);
+    clickText(view.container, "Select all");
     expect(setCommitRange).toHaveBeenCalledWith(null);
     view.unmount();
   });
@@ -131,7 +143,7 @@ describe("CommitRangePicker", () => {
     view.unmount();
   });
 
-  it("commits the first endpoint immediately, then commits its inclusive range", async () => {
+  it("commits a plain-click endpoint and closes the popup", async () => {
     setup();
     const view = mount(<CommitRangePicker />);
     await settle();
@@ -139,11 +151,6 @@ describe("CommitRangePicker", () => {
     clickText(view.container, "ccc");
     expect(setCommitRange).toHaveBeenCalledTimes(1);
     expect(setCommitRange).toHaveBeenLastCalledWith({ start: "ccc-full", end: "ccc-full" });
-    expect(view.container.querySelector(".commit-range-picker__popup")).not.toBeNull();
-
-    clickText(view.container, "aaa");
-    expect(setCommitRange).toHaveBeenCalledTimes(2);
-    expect(setCommitRange).toHaveBeenLastCalledWith({ start: "aaa-full", end: "ccc-full" });
     expect(view.container.querySelector(".commit-range-picker__popup")).toBeNull();
     view.unmount();
   });
@@ -202,12 +209,11 @@ describe("CommitRangePicker", () => {
     view.unmount();
   });
 
-  it("Escape dismisses the popup without rolling back an already committed endpoint", async () => {
+  it("Escape dismisses the popup without changing the comparison", async () => {
     setup();
     const view = mount(<CommitRangePicker />);
     await settle();
     await openPicker(view.container);
-    clickText(view.container, "bbb");
     const trigger = view.container.querySelector<HTMLButtonElement>(
       ".commit-range-picker__trigger",
     )!;
@@ -219,7 +225,7 @@ describe("CommitRangePicker", () => {
     act(() => document.dispatchEvent(escapeEvent));
     await settle();
     expect(escapeEvent.defaultPrevented).toBe(true);
-    expect(setCommitRange).toHaveBeenCalledTimes(1);
+    expect(setCommitRange).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(trigger);
     view.unmount();
   });

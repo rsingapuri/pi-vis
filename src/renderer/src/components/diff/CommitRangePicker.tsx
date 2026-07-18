@@ -32,10 +32,15 @@ export function CommitRangePicker(): React.ReactElement | null {
   const [commits, setCommits] = useState<GitCommitMetadata[]>([]); // oldest → newest
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
   const [first, setFirst] = useState<string | null>(null);
+  const [dragSelection, setDragSelection] = useState<{
+    anchor: string;
+    end: string | "uncommitted";
+  } | null>(null);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const pickerRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
+  const ignoreClickRef = useRef(false);
   useEscapeClaim(open);
 
   const key = root && base ? `${root}\0${base}` : null;
@@ -44,6 +49,7 @@ export function CommitRangePicker(): React.ReactElement | null {
   const close = useCallback((): void => {
     setOpen(false);
     setFirst(null);
+    setDragSelection(null);
     queueMicrotask(() => triggerRef.current?.focus());
   }, []);
 
@@ -116,23 +122,39 @@ export function CommitRangePicker(): React.ReactElement | null {
     range === null
       ? workingTreeScope === "uncommitted"
         ? "Uncommitted"
-        : "Working tree"
+        : "All changes"
       : `${count === 1 ? "1 commit" : `${count} commits`}${range.includeUncommitted ? " + uncommitted" : ""}`;
-  const selectedIndices = range
+  const selectedRange = dragSelection
+    ? {
+        start: dragSelection.anchor,
+        end:
+          dragSelection.end === "uncommitted"
+            ? (commits[commits.length - 1]?.sha ?? dragSelection.anchor)
+            : dragSelection.end,
+        includeUncommitted: dragSelection.end === "uncommitted",
+      }
+    : range;
+  // A base-relative working-tree comparison is the default: it includes every
+  // candidate commit and the live working tree, so the picker starts as "all".
+  const selectedIndices = selectedRange
     ? [
-        commits.findIndex((commit) => commit.sha === range.start),
-        commits.findIndex((commit) => commit.sha === range.end),
+        commits.findIndex((commit) => commit.sha === selectedRange.start),
+        commits.findIndex((commit) => commit.sha === selectedRange.end),
       ]
-    : [-1, -1];
+    : [0, commits.length - 1];
   const startIndex = selectedIndices[0] ?? -1;
   const endIndex = selectedIndices[1] ?? -1;
+  const includesUncommitted =
+    selectedRange?.includeUncommitted === true ||
+    (selectedRange === null && workingTreeScope === "base");
+  const allChangesSelected = range === null && workingTreeScope === "base";
 
   useEffect(() => {
     if (open) virtual.ensureIndexVisible(highlightedIndex);
   }, [highlightedIndex, open, virtual.ensureIndexVisible]);
 
   const chooseCommit = (sha: string, selectRange: boolean): void => {
-    const anchor = first ?? range?.start ?? null;
+    const anchor = first ?? range?.start ?? commits[0]?.sha ?? null;
     if (!selectRange || anchor === null) {
       // A plain click is a complete one-commit comparison. Shift-click uses
       // the current selection's start as its anchor and keeps this popup open.
@@ -152,7 +174,7 @@ export function CommitRangePicker(): React.ReactElement | null {
   };
 
   const chooseUncommitted = (selectRange: boolean): void => {
-    const anchor = first ?? range?.start ?? null;
+    const anchor = first ?? range?.start ?? commits[0]?.sha ?? null;
     if (!selectRange || anchor === null) {
       showUncommittedChanges();
       close();
@@ -167,6 +189,40 @@ export function CommitRangePicker(): React.ReactElement | null {
       includeUncommitted: true,
     });
     setFirst(normalizedStart);
+  };
+
+  const endpointAt = (clientX: number, clientY: number): string | "uncommitted" | null => {
+    const element = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>("[data-commit-sha], [data-uncommitted-endpoint]");
+    if (!element) return null;
+    return element.dataset.uncommittedEndpoint === "true"
+      ? "uncommitted"
+      : (element.dataset.commitSha ?? null);
+  };
+
+  const finishDrag = (anchor: string, end: string | "uncommitted"): void => {
+    if (end === "uncommitted") {
+      const start = commits.findIndex((commit) => commit.sha === anchor);
+      const last = commits[commits.length - 1];
+      if (start < 0 || !last) return;
+      setCommitRange({ start: commits[start]!.sha, end: last.sha, includeUncommitted: true });
+      setFirst(commits[start]!.sha);
+      setDragSelection(null);
+      return;
+    }
+    if (anchor === end) {
+      setCommitRange({ start: anchor, end: anchor });
+      close();
+      return;
+    }
+    const start = commits.findIndex((commit) => commit.sha === anchor);
+    const endIndex = commits.findIndex((commit) => commit.sha === end);
+    if (start < 0 || endIndex < 0) return;
+    const normalizedStart = commits[Math.min(start, endIndex)]!.sha;
+    setCommitRange({ start: normalizedStart, end: commits[Math.max(start, endIndex)]!.sha });
+    setFirst(normalizedStart);
+    setDragSelection(null);
   };
 
   const handleListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
@@ -223,7 +279,7 @@ export function CommitRangePicker(): React.ReactElement | null {
           if (open) {
             close();
           } else {
-            setFirst(range?.start ?? null);
+            setFirst(range?.start ?? commits[0]?.sha ?? null);
             setOpen(true);
           }
         }}
@@ -237,27 +293,42 @@ export function CommitRangePicker(): React.ReactElement | null {
           className="commit-range-picker__popup"
           role="dialog"
           aria-label="Commit range"
+          onPointerMove={(event) => {
+            if (!dragSelection) return;
+            const end = endpointAt(event.clientX, event.clientY);
+            if (end !== null) setDragSelection({ ...dragSelection, end });
+          }}
+          onPointerUp={(event) => {
+            if (!dragSelection) return;
+            const end = endpointAt(event.clientX, event.clientY) ?? dragSelection.end;
+            ignoreClickRef.current = true;
+            finishDrag(dragSelection.anchor, end);
+          }}
         >
           <div className="commit-range-picker__scopes">
+            {!allChangesSelected && (
+              <button
+                data-autofocus
+                type="button"
+                className="commit-range-picker__working commit-range-picker__select-all"
+                onClick={() => {
+                  setCommitRange(null);
+                  close();
+                }}
+              >
+                Select all
+              </button>
+            )}
             <button
-              data-autofocus
+              data-autofocus={allChangesSelected || undefined}
               type="button"
-              className={`commit-range-picker__working${range === null && workingTreeScope === "base" ? " commit-range-picker__working--selected" : ""}`}
-              aria-pressed={range === null && workingTreeScope === "base"}
-              onClick={() => {
-                setCommitRange(null);
-                close();
-              }}
-            >
-              Working tree
-            </button>
-            <button
-              type="button"
-              className={`commit-range-picker__working${(range?.includeUncommitted || (range === null && workingTreeScope === "uncommitted")) ? " commit-range-picker__working--selected" : ""}`}
-              aria-pressed={range?.includeUncommitted || (range === null && workingTreeScope === "uncommitted")}
+              className={`commit-range-picker__working${includesUncommitted ? " commit-range-picker__working--selected" : ""}`}
+              aria-pressed={includesUncommitted}
+              data-uncommitted-endpoint="true"
               onClick={(event) => chooseUncommitted(event.shiftKey)}
             >
-              Uncommitted changes
+              <span>Uncommitted changes</span>
+              {includesUncommitted && <span className="commit-range-picker__endpoint">End</span>}
             </button>
           </div>
           <ScrollFadeFrame
@@ -291,7 +362,7 @@ export function CommitRangePicker(): React.ReactElement | null {
                       ? "Only"
                       : original === startIndex
                         ? "Start"
-                        : original === endIndex
+                        : !includesUncommitted && original === endIndex
                           ? "End"
                           : "";
                   return (
@@ -302,8 +373,20 @@ export function CommitRangePicker(): React.ReactElement | null {
                       role="option"
                       tabIndex={-1}
                       aria-selected={inBand}
-                      className={`commit-range-picker__commit${inBand ? " commit-range-picker__commit--selected" : ""}${first === commit.sha ? " commit-range-picker__commit--first" : ""}${index === highlightedIndex ? " commit-range-picker__commit--highlighted" : ""}`}
+                      data-commit-sha={commit.sha}
+                      className={`commit-range-picker__commit${inBand ? " commit-range-picker__commit--selected" : ""}${index === highlightedIndex ? " commit-range-picker__commit--highlighted" : ""}`}
+                      onPointerDown={(event) => {
+                        if (event.button !== 0 || event.shiftKey) return;
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                        setHighlightedIndex(index);
+                        setFirst(commit.sha);
+                        setDragSelection({ anchor: commit.sha, end: commit.sha });
+                      }}
                       onClick={(event) => {
+                        if (ignoreClickRef.current) {
+                          ignoreClickRef.current = false;
+                          return;
+                        }
                         setHighlightedIndex(index);
                         chooseCommit(commit.sha, event.shiftKey);
                       }}
