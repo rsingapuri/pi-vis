@@ -230,6 +230,61 @@ test("compact summaries omit notice counts", async ({ page }) => {
   await expect(summary).not.toContainText(/notice/i);
 });
 
+test("expanded compact activity collapses from its hairline", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  const transcriptStyle = page.getByRole("group", { name: "Transcript style" });
+  await transcriptStyle.getByRole("button", { name: "Compact" }).click();
+  await page.keyboard.press("Escape");
+
+  await page.evaluate(() => {
+    type PreviewState = {
+      activeSessionId: string;
+      seedHistory: (sessionId: string, history: Array<Record<string, unknown>>) => void;
+    };
+    const state = (
+      window as unknown as { __pivisStore: { getState: () => PreviewState } }
+    ).__pivisStore.getState();
+    state.seedHistory(state.activeSessionId, [
+      {
+        id: "rail-thinking",
+        type: "assistant",
+        data: { segments: [{ kind: "thinking", content: "hidden details" }] },
+      },
+      {
+        id: "rail-tool",
+        type: "tool_call",
+        data: {
+          toolCallId: "rail-call",
+          toolName: "read",
+          outputText: "hidden output",
+          isError: false,
+          isStreaming: false,
+        },
+      },
+    ]);
+  });
+
+  const group = page.locator(".compact-transcript-group");
+  const summary = group.locator(".compact-transcript-group__summary");
+  await expect(summary).toHaveText("Thinking, 1 tool call");
+  await summary.click();
+
+  const rail = group.locator(".compact-transcript-group__collapse-rail");
+  await expect(rail).toHaveAttribute("aria-expanded", "true");
+  await expect(group.locator(".compact-transcript-group__content")).toBeVisible();
+  await rail.hover();
+  await expect
+    .poll(() => rail.evaluate((element) => getComputedStyle(element, "::before").boxShadow))
+    .not.toBe("none");
+  await rail.click();
+
+  await expect(group).not.toHaveClass(/compact-transcript-group--open/);
+  await expect(group.locator(".compact-transcript-group__content")).toHaveCount(0);
+});
+
 test("large compact activity stays grouped across the archive/live boundary", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });

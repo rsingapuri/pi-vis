@@ -831,12 +831,45 @@ button.tool-card__header {
 }
 
 .compact-transcript-group__content {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
   margin-left: 0.429rem;
   padding-left: 0.857rem;
   border-left: 1px solid var(--border-faint);
+}
+
+/* The disclosure rail is a deliberately wider, invisible hit target around
+   the hairline. It keeps the expanded cards' layout untouched while making
+   the visual edge an obvious second collapse affordance. */
+.compact-transcript-group__collapse-rail {
+  position: absolute;
+  inset: 0 auto 0 -0.429rem;
+  z-index: 1;
+  width: 0.857rem;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.compact-transcript-group__collapse-rail::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 calc(0.429rem - 1px);
+  width: 1px;
+  background: var(--border-faint);
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.compact-transcript-group__collapse-rail:is(:hover, :focus-visible)::before {
+  background: var(--accent);
+  box-shadow: 0 0 0.571rem color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.compact-transcript-group__collapse-rail:focus-visible {
+  outline: none;
 }
 
 /* Working indicator shown while the agent is running */

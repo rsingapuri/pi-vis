@@ -1380,6 +1380,14 @@ const CompactTranscriptGroup = memo(function CompactTranscriptGroup({
       </button>
       {open && (
         <div className="compact-transcript-group__content">
+          <button
+            type="button"
+            className="compact-transcript-group__collapse-rail"
+            onClick={toggle}
+            aria-expanded={open}
+            aria-label="Collapse activity"
+            title="Collapse activity"
+          />
           {archivedItems.length > 0 && (
             <CompactTranscriptGroupItems
               sessionId={sessionId}
