@@ -12,7 +12,8 @@ This file is intentionally short. It contains rules that must always be loaded. 
 
 ## Verification requirements
 
-- For code changes, run all of the following before reporting completion:
+- During development, run focused checks relevant to the change.
+- Before reporting completion, run the full verification suite:
   - `npm run typecheck`
   - `npm run lint`
   - `npm test`
