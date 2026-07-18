@@ -1,10 +1,15 @@
 import type { SessionId } from "@shared/ids.js";
-import type { DialogUiRequest, ExtensionUiResponse } from "@shared/pi-protocol/extension-ui.js";
+import type {
+  DialogUiRequest,
+  ExtensionUiResponse,
+  ProviderAuthUiRequest,
+} from "@shared/pi-protocol/extension-ui.js";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { RENDERER_GENERATION } from "../../lib/renderer-generation.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
+import { ProviderLoginDialog } from "../auth/ProviderLoginDialog.js";
 import { ScrollFadeFrame } from "../common/ScrollFadeFrame.js";
 import "./ExtensionDialogHost.css";
 
@@ -247,7 +252,9 @@ export function ExtensionDialogHost({
 }: ExtensionDialogHostProps): React.ReactElement | null {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
   const dismissUiRequest = useSessionsStore((s) => s.dismissUiRequest);
-  const current = session?.pendingDialogs[0] as DialogUiRequest | undefined;
+  const current = session?.pendingDialogs[0] as
+    | (DialogUiRequest | ProviderAuthUiRequest)
+    | undefined;
   const [responding, setResponding] = useState(false);
 
   // Claim ESC while a dialog is open so a background streaming session isn't
@@ -286,6 +293,9 @@ export function ExtensionDialogHost({
   // Timeout and AbortSignal cancellation are enforced by the host. The request
   // stays visible until the correlated host acknowledgement arrives.
   if (!current) return null;
+  if (current.method === "providerAuth") {
+    return <ProviderLoginDialog sessionId={sessionId} request={current} />;
+  }
 
   // No modal overlay: the dialog lives in the Composer slot so the
   // transcript, status bar, session header (model + thinking level) and

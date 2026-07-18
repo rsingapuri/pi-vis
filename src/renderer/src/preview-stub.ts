@@ -868,6 +868,20 @@ async function handlePreviewRequest(command: Record<string, unknown>): Promise<u
           { name: "headroom", description: "Toggle headroom" },
         ],
       });
+    case "get_login_providers":
+      return response("get_login_providers", {
+        native: true,
+        providers: [
+          {
+            id: "preview",
+            name: "Preview",
+            checkAuth: true,
+            configured: false,
+            source: "preview",
+            methods: ["oauth", "apiKey"],
+          },
+        ],
+      });
     case "get_available_models":
       return response("get_available_models", {
         models: [
@@ -1167,6 +1181,8 @@ function outcomeFor(
       return { ...base, kind: "export", result: { path: "/tmp/pi-vis-preview-export.html" } };
     case "refreshModels":
       return { ...base, kind: "refreshModels", result: { refreshed: true } };
+    case "loginProvider":
+      return { ...base, kind: "loginProvider", result: { authenticated: true } };
   }
 }
 
@@ -1178,6 +1194,7 @@ async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
     const intent: SessionIntent = envelope.intent;
     switch (intent.kind) {
       case "refreshModels":
+      case "loginProvider":
         break;
       case "interrupt":
         previewHooks.abortCalls++;

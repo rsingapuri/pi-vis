@@ -380,6 +380,12 @@ export function createStateAuthority({
       case "interrupt":
       case "refreshModels":
         return isStrictObject(intent, ["kind"]);
+      case "loginProvider":
+        return (
+          isStrictObject(intent, ["kind", "providerId", "authType"]) &&
+          nonEmpty(intent.providerId) &&
+          nonEmpty(intent.authType)
+        );
       case "reload":
         return (
           Object.keys(intent).every((key) =>
@@ -1252,6 +1258,8 @@ export function createStateAuthority({
         return value.successorIdentity ? { successorIdentity: value.successorIdentity } : {};
       case "refreshModels":
         return value.refreshed === true ? { refreshed: true } : undefined;
+      case "loginProvider":
+        return value.authenticated === true ? { authenticated: true } : undefined;
       default:
         return undefined;
     }
@@ -1936,9 +1944,17 @@ export function createStateAuthority({
       settleDispatchedIntent(intentId, owner, intent.kind, state, result);
     };
     const settleFromError = (error) => {
-      settleDispatchedIntent(intentId, owner, intent.kind, "failed", {
-        message: error instanceof Error ? error.message : String(error),
-      });
+      // Authentication failures may contain provider responses or credential
+      // hints. Its authority outcome is intentionally non-secret and bounded.
+      settleDispatchedIntent(
+        intentId,
+        owner,
+        intent.kind,
+        "failed",
+        intent.kind === "loginProvider"
+          ? undefined
+          : { message: error instanceof Error ? error.message : String(error) },
+      );
     };
     // commitTransition already emitted the single successor baseline.
     // A trailing snapshot would create a second empty successor frame for

@@ -70,11 +70,27 @@ export const SetEditorTextUiRequestSchema = BaseUiRequest.extend({
   text: z.string(),
 });
 
+// Native provider authentication is app-owned, not an extension dialog. Updates
+// reuse the same id/operationId so the authority plane replaces its surface.
+export const ProviderAuthUiRequestSchema = BaseUiRequest.extend({
+  method: z.literal("providerAuth"),
+  providerName: z.string().max(160),
+  authType: z.string().max(80),
+  phase: z.enum(["oauth", "device", "prompt", "error"]),
+  authUrl: z.string().max(4096).optional(),
+  deviceCode: z.string().max(512).optional(),
+  message: z.string().max(1000).optional(),
+  prompt: z.string().max(1000).optional(),
+  secret: z.boolean().optional(),
+  options: z.array(z.string().max(240)).max(100).optional(),
+});
+
 export const ExtensionUiRequestSchema = z.discriminatedUnion("method", [
   SelectUiRequestSchema,
   ConfirmUiRequestSchema,
   InputUiRequestSchema,
   EditorUiRequestSchema,
+  ProviderAuthUiRequestSchema,
   NotifyUiRequestSchema,
   SetStatusUiRequestSchema,
   SetWidgetUiRequestSchema,
@@ -87,6 +103,7 @@ export type SelectUiRequest = z.infer<typeof SelectUiRequestSchema>;
 export type ConfirmUiRequest = z.infer<typeof ConfirmUiRequestSchema>;
 export type InputUiRequest = z.infer<typeof InputUiRequestSchema>;
 export type EditorUiRequest = z.infer<typeof EditorUiRequestSchema>;
+export type ProviderAuthUiRequest = z.infer<typeof ProviderAuthUiRequestSchema>;
 export type NotifyUiRequest = z.infer<typeof NotifyUiRequestSchema>;
 export type SetStatusUiRequest = z.infer<typeof SetStatusUiRequestSchema>;
 export type SetWidgetUiRequest = z.infer<typeof SetWidgetUiRequestSchema>;

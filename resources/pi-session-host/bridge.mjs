@@ -31,6 +31,9 @@ function modelAccess(session) {
       refresh: () => runtime.refresh(),
       logout: (provider) => runtime.logout(provider),
       listCredentials: () => runtime.listCredentials(),
+      getProviders: () => runtime.getProviders?.() ?? [],
+      login: (providerId, authType, interaction) =>
+        runtime.login(providerId, authType, interaction),
       getProviderName: (provider) => {
         try {
           return runtime.getProvider?.(provider)?.name ?? provider;
@@ -61,6 +64,10 @@ function modelAccess(session) {
         }
       }
       return credentials;
+    },
+    getProviders: () => [],
+    login: async () => {
+      throw new Error("Native provider login is unavailable");
     },
     getProviderName: (provider) => {
       try {
@@ -999,6 +1006,37 @@ export function setupCommandBridge({
           // the catalog only after this settles.
           await modelAccess(_session).refresh();
           return { refreshed: true };
+        case "loginProvider": {
+          // Re-read the live runtime immediately before crossing the SDK
+          // boundary; picker metadata is advisory and may be stale.
+          if (!_session.modelRuntime || _session.settingsManager?.isProjectTrusted?.() === false) {
+            throw new Error("Login unavailable");
+          }
+          const provider = modelAccess(_session)
+            .getProviders()
+            .find((item) => item?.id === intent.providerId);
+          const auth = provider?.auth;
+          const method = intent.authType === "oauth" ? auth?.oauth : auth?.apiKey?.login;
+          if (!provider || !method) throw new Error("Login unavailable");
+          const controller = new AbortController();
+          const interaction = uiContext?.createProviderAuthInteraction?.(
+            String(provider.name ?? provider.id),
+            intent.authType,
+            controller.signal,
+          );
+          const operation = trackInterruptibleOperation(
+            "login",
+            () => controller.abort(),
+            async () => {
+              // Deliberately discard Credential and provider-native errors.
+              await modelAccess(_session).login(intent.providerId, intent.authType, interaction);
+              return { authenticated: true };
+            },
+          ).catch(() => {
+            throw new Error("Sign in could not be completed");
+          });
+          return { deferredOutcome: operation };
+        }
         case "submit":
           return submission(intent.text);
         case "manageQueue":
@@ -1315,6 +1353,41 @@ export function setupCommandBridge({
         case "set_follow_up_mode": {
           _session.setFollowUpMode(command.mode);
           send({ type: "response", id, success: true });
+          break;
+        }
+
+        case "get_login_providers": {
+          // Runtime-native only. Legacy ModelRegistry intentionally reports
+          // native:false so the embedded terminal remains its fallback.
+          if (!_session.modelRuntime) {
+            send({ type: "response", id, success: true, data: { native: false, providers: [] } });
+            break;
+          }
+          const credentials = await modelAccess(_session).listCredentials();
+          const configured = new Set(credentials.map((credential) => credential?.providerId));
+          const providers = modelAccess(_session)
+            .getProviders()
+            .slice(0, 100)
+            .flatMap((provider) => {
+              if (!provider || typeof provider.id !== "string") return [];
+              const auth = provider.auth ?? {};
+              const methods = [];
+              if (auth.oauth) methods.push("oauth");
+              if (auth.apiKey?.login) methods.push("apiKey");
+              if (!methods.length) return [];
+              return [
+                {
+                  id: provider.id.slice(0, 160),
+                  name: String(provider.name ?? provider.id).slice(0, 160),
+                  checkAuth: typeof auth.checkAuth === "function",
+                  configured: configured.has(provider.id),
+                  source:
+                    typeof provider.source === "string" ? provider.source.slice(0, 120) : undefined,
+                  methods,
+                },
+              ];
+            });
+          send({ type: "response", id, success: true, data: { native: true, providers } });
           break;
         }
 

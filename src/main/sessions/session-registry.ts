@@ -239,6 +239,7 @@ const CLOSE_ESCAPE_DEADLINE_MS = 250;
 function commandForSessionQuery(query: SessionQuery): PiReadOnlyCommand {
   switch (query.type) {
     case "get_available_models":
+    case "get_login_providers":
     case "get_scoped_models":
     case "get_logout_providers":
     case "get_commands":

@@ -105,9 +105,66 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
     }
   };
 
+  // Public ModelRuntime.login receives this small interaction object. It is
+  // deliberately independent from extension dialogs: all updates replace one
+  // app-owned providerAuth surface and secrets only return through this promise.
+  const createProviderAuthInteraction = (providerName, authType, signal) => {
+    const id = `provider-auth_${Date.now()}_${++nextDialogId}`;
+    const request = (update) =>
+      new Promise((resolveFn) => {
+        const onAbort = () => finish(id, { type: "extension_ui_response", id, cancelled: true });
+        pending.set(id, {
+          resolve: resolveFn,
+          cleanup: () => signal?.removeEventListener?.("abort", onAbort),
+          request: {
+            type: "extension_ui_request",
+            id,
+            operationId: id,
+            method: "providerAuth",
+            providerName,
+            authType,
+            ...update,
+          },
+        });
+        if (signal?.aborted) return onAbort();
+        signal?.addEventListener?.("abort", onAbort, { once: true });
+        sendToMain({
+          type: "extension_ui_request",
+          id,
+          operationId: id,
+          method: "providerAuth",
+          providerName,
+          authType,
+          ...update,
+        });
+      });
+    return {
+      // Names intentionally match Pi's public auth interaction callbacks.
+      openBrowser: (authUrl) => request({ phase: "oauth", authUrl }),
+      showDeviceCode: (deviceCode, message) => request({ phase: "device", deviceCode, message }),
+      prompt: (prompt, options) =>
+        request({ phase: "prompt", prompt, options, secret: true }).then((r) => r?.value),
+      select: (prompt, options) =>
+        request({ phase: "prompt", prompt, options }).then((r) => r?.value),
+      update: (message) =>
+        sendToMain({
+          type: "extension_ui_request",
+          id,
+          operationId: id,
+          method: "providerAuth",
+          providerName,
+          authType,
+          phase: "prompt",
+          message,
+        }),
+      signal,
+    };
+  };
+
   return {
     resolve,
     createDialog,
+    createProviderAuthInteraction,
     cancelAll,
     get pendingCount() {
       return pending.size;

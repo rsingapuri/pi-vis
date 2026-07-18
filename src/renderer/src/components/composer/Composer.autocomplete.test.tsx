@@ -139,6 +139,8 @@ function outcomeFor(envelope: Envelope, patch: Partial<IntentOutcome> = {}): Int
       return { ...base, kind: "navigate", result: { targetId: envelope.intent.targetId } };
     case "refreshModels":
       return { ...base, kind: "refreshModels", result: { refreshed: true } };
+    case "loginProvider":
+      return { ...base, kind: "loginProvider", result: { authenticated: true } };
   }
 }
 

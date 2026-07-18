@@ -478,6 +478,7 @@ export type SemanticActivity = z.infer<typeof SemanticActivitySchema>;
 // and cannot describe an effect.
 export const SessionQuerySchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("get_available_models") }).strict(),
+  z.object({ type: z.literal("get_login_providers") }).strict(),
   z.object({ type: z.literal("get_scoped_models") }).strict(),
   z.object({ type: z.literal("get_logout_providers") }).strict(),
   z.object({ type: z.literal("get_commands") }).strict(),
@@ -502,6 +503,7 @@ export type SessionQuery = z.infer<typeof SessionQuerySchema>;
 
 export const SessionQueryTypeSchema = z.enum([
   "get_available_models",
+  "get_login_providers",
   "get_scoped_models",
   "get_logout_providers",
   "get_commands",
@@ -527,6 +529,7 @@ export interface QueryPolicy {
 /** Exhaustive retry policy for every read-only host operation. */
 export const SESSION_QUERY_POLICY = {
   get_available_models: { retry: "same_owner" },
+  get_login_providers: { retry: "same_owner" },
   get_scoped_models: { retry: "same_owner" },
   get_logout_providers: { retry: "same_owner" },
   get_commands: { retry: "same_owner" },
@@ -623,6 +626,7 @@ export const SessionIntentKindSchema = z.enum([
   "reload",
   "export",
   "refreshModels",
+  "loginProvider",
 ]);
 export type SessionIntentKind = z.infer<typeof SessionIntentKindSchema>;
 
@@ -756,6 +760,13 @@ export const SessionIntentSchema = z.union([
   // read separately after this bounded terminal outcome.
   z
     .object({ kind: z.literal("refreshModels") })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("loginProvider"),
+      providerId: NonEmptyIdSchema,
+      authType: NonEmptyIdSchema,
+    })
     .strict(),
 ]);
 export type SessionIntent = z.infer<typeof SessionIntentSchema>;
@@ -961,6 +972,10 @@ export const ReloadIntentResultSchema = z
 export const ExportIntentResultSchema = z.object({ path: z.string().min(1) }).strict();
 /** Refresh completion intentionally carries no model catalog payload. */
 export const RefreshModelsIntentResultSchema = z.object({ refreshed: z.literal(true) }).strict();
+/** Credentials and provider errors never cross the authority boundary. */
+export const LoginProviderIntentResultSchema = z
+  .object({ authenticated: z.literal(true) })
+  .strict();
 
 export const IntentOutcomeSchema = z.discriminatedUnion("kind", [
   OutcomeBaseSchema.extend({
@@ -1014,6 +1029,10 @@ export const IntentOutcomeSchema = z.discriminatedUnion("kind", [
   OutcomeBaseSchema.extend({
     kind: z.literal("refreshModels"),
     result: RefreshModelsIntentResultSchema.optional(),
+  }).strict(),
+  OutcomeBaseSchema.extend({
+    kind: z.literal("loginProvider"),
+    result: LoginProviderIntentResultSchema.optional(),
   }).strict(),
 ]);
 export type IntentOutcome = z.infer<typeof IntentOutcomeSchema>;

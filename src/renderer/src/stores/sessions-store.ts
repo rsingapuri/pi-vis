@@ -3023,7 +3023,14 @@ const buildSessionsStore = (
 
       // Dialog requests — queue them. Build the clone only when we mutate.
       const sessions = new Map(state.sessions);
-      sessions.set(sessionId, { ...s, pendingDialogs: [...s.pendingDialogs, request] });
+      // Provider auth is a persistent, updatable surface: retain one entry per
+      // stable dialog id instead of stacking stale OAuth/device progress cards.
+      const existing = s.pendingDialogs.findIndex((dialog) => dialog.id === request.id);
+      const pendingDialogs =
+        existing < 0
+          ? [...s.pendingDialogs, request]
+          : s.pendingDialogs.map((dialog, index) => (index === existing ? request : dialog));
+      sessions.set(sessionId, { ...s, pendingDialogs });
       return { sessions };
     });
   },
