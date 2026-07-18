@@ -36,6 +36,53 @@ test.describe("runtime-native provider sign-in", () => {
     await picker.getByRole("option").filter({ hasText: "API key" }).click();
     const signIn = page.getByRole("dialog", { name: "Sign in to Preview" });
     await expect(signIn).toBeVisible();
+    await expect(page.locator(".provider-login-dialog-slot")).toHaveCount(1);
+
+    // Exercise the real connected-stack case: provider sign-in replaces the
+    // Composer while an extension widget remains in the tray above it.
+    await page.evaluate(() => {
+      type PreviewSession = { widgets: Map<string, string[]> };
+      type PreviewStore = {
+        getState: () => { activeSessionId: string; sessions: Map<string, PreviewSession> };
+        setState: (partial: unknown) => void;
+      };
+      const store = (window as unknown as { __pivisStore: PreviewStore }).__pivisStore;
+      const state = store.getState();
+      const sessions = new Map(state.sessions);
+      const session = sessions.get(state.activeSessionId)!;
+      sessions.set(state.activeSessionId, {
+        ...session,
+        widgets: new Map([["usage", ["Codex / 11% (6d 6h 17m)"]]]),
+      });
+      store.setState({ sessions });
+    });
+    await expect(page.locator(".dock")).toBeVisible();
+    await page.locator(".provider-login-dialog-slot").evaluate(async (slot) => {
+      await Promise.all(slot.getAnimations().map((animation) => animation.finished));
+    });
+    const connectedStack = await page.evaluate(() => {
+      const dock = document.querySelector<HTMLElement>(".dock");
+      const card = document.querySelector<HTMLElement>(".provider-login-dialog");
+      if (!dock || !card) return null;
+      const dockRect = dock.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+      const style = getComputedStyle(card);
+      return {
+        leftDelta: Math.abs(dockRect.left - cardRect.left),
+        rightDelta: Math.abs(dockRect.right - cardRect.right),
+        seamDelta: Math.abs(dockRect.bottom - cardRect.top),
+        topLeftRadius: style.borderTopLeftRadius,
+        topRightRadius: style.borderTopRightRadius,
+      };
+    });
+    expect(connectedStack).not.toBeNull();
+    expect(connectedStack).toMatchObject({
+      topLeftRadius: "0px",
+      topRightRadius: "0px",
+    });
+    expect(connectedStack!.leftDelta).toBeLessThan(0.1);
+    expect(connectedStack!.rightDelta).toBeLessThan(0.1);
+    expect(connectedStack!.seamDelta).toBeLessThan(0.1);
     const secret = signIn.locator('input[type="password"]');
     await expect(secret).toHaveAttribute("autocomplete", "off");
     await page.screenshot({

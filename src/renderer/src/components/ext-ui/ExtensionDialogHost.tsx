@@ -295,11 +295,13 @@ export function ExtensionDialogHost({
   if (!current) return null;
   if (current.method === "providerAuth") {
     return (
-      <ProviderLoginDialog
-        key={current.operationId ?? current.id}
-        sessionId={sessionId}
-        request={current}
-      />
+      <div className="ext-dialog-slot provider-login-dialog-slot">
+        <ProviderLoginDialog
+          key={current.operationId ?? current.id}
+          sessionId={sessionId}
+          request={current}
+        />
+      </div>
     );
   }
 

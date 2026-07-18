@@ -1,5 +1,6 @@
 .provider-login-dialog {
-  margin: 0 0.857rem 0.857rem;
+  width: 100%;
+  box-sizing: border-box;
   padding: 0.857rem 1rem;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -8,9 +9,9 @@
   flex-direction: column;
   gap: 0.714rem;
   min-height: 0;
+  max-height: 60vh;
   overflow-y: auto;
   font-family: var(--font-display);
-  animation: ext-dialog-slot-in 0.18s ease-out;
 }
 
 .provider-login-dialog:focus {

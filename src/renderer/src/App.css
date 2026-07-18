@@ -336,7 +336,8 @@
    strong/faint mismatch. */
 .session-dock:has(.dock) ~ .custom-panel,
 .session-dock:has(.dock) ~ .picker-slot .picker,
-.session-dock:has(.dock) ~ .ext-dialog-slot .ext-dialog {
+.session-dock:has(.dock) ~ .ext-dialog-slot .ext-dialog,
+.session-dock:has(.dock) ~ .ext-dialog-slot .provider-login-dialog {
   border-top-left-radius: 0;
   border-top-right-radius: 0;
   border-color: var(--border-strong);
