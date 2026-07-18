@@ -414,23 +414,31 @@ function extractContent(content: unknown): string {
 export function entryCopyText(entry: SessionTreeEntry): string {
   switch (entry.type) {
     case "message": {
-      const message = entry.message as { content?: unknown; command?: unknown } | undefined;
+      const message = entry.message as
+        | {
+            role?: unknown;
+            content?: unknown;
+            command?: unknown;
+            errorMessage?: unknown;
+          }
+        | undefined;
+      if (message?.role === "bashExecution" && typeof message.command === "string") {
+        return message.command;
+      }
       const content = extractContent(message?.content);
-      return content || (typeof message?.command === "string" ? message.command : "");
+      if (content) return content;
+      return message?.role === "assistant" && typeof message.errorMessage === "string"
+        ? message.errorMessage
+        : "";
     }
-    case "branch_summary":
-      return stringEntryField(entry, "summary");
     case "custom_message":
       return extractContent((entry as { content?: unknown }).content);
-    case "label":
-      return stringEntryField(entry, "label");
-    case "session_info":
-      return stringEntryField(entry, "name");
-    case "model_change":
-      return stringEntryField(entry, "modelId");
-    case "thinking_level_change":
-      return stringEntryField(entry, "thinkingLevel");
+    case "compaction":
+    case "branch_summary":
+      return stringEntryField(entry, "summary");
     default:
+      // Bookkeeping rows (labels, model/thinking changes, session info) have
+      // no message body in Pi's tree-copy behavior.
       return "";
   }
 }

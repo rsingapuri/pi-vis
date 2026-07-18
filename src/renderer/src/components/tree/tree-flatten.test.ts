@@ -269,8 +269,34 @@ describe("entryCopyText", () => {
       entryCopyText({ id: "custom", type: "custom_message", content: "custom body" } as never),
     ).toBe("custom body");
     expect(
-      entryCopyText({ id: "bash", type: "message", message: { command: "git status" } } as never),
+      entryCopyText({
+        id: "bash",
+        type: "message",
+        message: { role: "bashExecution", command: "git status" },
+      } as never),
     ).toBe("git status");
+    expect(
+      entryCopyText({
+        id: "failed",
+        type: "message",
+        message: { role: "assistant", content: [], errorMessage: "Provider failed" },
+      } as never),
+    ).toBe("Provider failed");
+    expect(
+      entryCopyText({ id: "compact", type: "compaction", summary: "compact summary" } as never),
+    ).toBe("compact summary");
+  });
+
+  it("does not offer copy for bookkeeping-only rows", () => {
+    expect(entryCopyText({ id: "label", type: "label", label: "checkpoint" } as never)).toBe("");
+    expect(entryCopyText({ id: "model", type: "model_change", modelId: "opus" } as never)).toBe("");
+    expect(
+      entryCopyText({
+        id: "thinking",
+        type: "thinking_level_change",
+        thinkingLevel: "high",
+      } as never),
+    ).toBe("");
   });
 });
 
