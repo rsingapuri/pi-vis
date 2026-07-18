@@ -3392,6 +3392,11 @@ const buildSessionsStore = (
       },
       awaitIntentOutcome,
       getIntentObservation: intentObservation,
+      ...(action.kind === "reload"
+        ? {
+            getReloadEditorCommand: () => ({ editorRevision, editorText: text }),
+          }
+        : {}),
       createIntentId: () => submissionIntentId,
       invoke: async <T = unknown>(channel: string, payload: unknown) => {
         ensureClaimCurrent();

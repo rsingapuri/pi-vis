@@ -50,6 +50,10 @@ export interface ExecuteDeps {
     owner: RuntimeIdentity,
   ) => Promise<IntentOutcome>;
   getIntentObservation?: (sessionId: SessionId) => IntentObservation | undefined;
+  /** Exact Composer editor command eligible for child-owned reload consumption. */
+  getReloadEditorCommand?: (
+    sessionId: SessionId,
+  ) => { editorRevision: number; editorText: string } | undefined;
   /** Called after a child has admitted an intent, before its terminal outcome. */
   onAdmitted?: (sessionId: SessionId, intent: SessionIntent, intentId: string) => void;
   /** Unified-TUI ingress supplies its main-assigned stable intent ID here. */
@@ -462,7 +466,15 @@ async function executeReload(
   sessionId: SessionId,
   deps: ExecuteDeps,
 ): Promise<IntentCompletion | undefined> {
-  const completion = await dispatchAndAwait(sessionId, { kind: "reload" }, deps);
+  const editorCommand = deps.getReloadEditorCommand?.(sessionId);
+  const completion = await dispatchAndAwait(
+    sessionId,
+    {
+      kind: "reload",
+      ...(editorCommand ?? {}),
+    },
+    deps,
+  );
   if (!constError(completion, deps, sessionId, "Failed to reload session"))
     deps.addToast(
       sessionId,

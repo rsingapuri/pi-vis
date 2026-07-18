@@ -172,6 +172,18 @@ describe("authority protocol schemas", () => {
       }).success,
     ).toBe(false);
 
+    const reload = {
+      ...envelope,
+      intent: { kind: "reload", editorRevision: 3, editorText: "/reload " },
+    };
+    expect(IntentEnvelopeSchema.safeParse(reload).success).toBe(true);
+    expect(
+      IntentEnvelopeSchema.safeParse({
+        ...reload,
+        intent: { kind: "reload", editorRevision: 3 },
+      }).success,
+    ).toBe(false);
+
     expect(
       IntentPayloadConflictSchema.safeParse({
         intentId: "intent-a",

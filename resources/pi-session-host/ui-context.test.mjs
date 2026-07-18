@@ -1042,6 +1042,31 @@ describe("unified TUI: authoritative submit draft", () => {
     h.unified.resolveSubmit(lastSubmitId(h.sendToMain), { ok: true });
     expect(h.bundle.state.editorSnapshot()).toMatchObject({ revision: 1, text: "" });
   });
+
+  it("consumes a pending unified reload command while preserving staged attachments", () => {
+    const h = makeHarness();
+    h.context.setWidget("k", makeFactory());
+    const attachments = [{ kind: "file", name: "notes.txt", path: "/tmp/notes.txt" }];
+    expect(
+      h.bundle.state.applyEditorPatch({
+        baseRevision: 0,
+        revision: 1,
+        text: "/reload",
+        attachments,
+      }),
+    ).toMatchObject({ accepted: true });
+
+    h.editor.onSubmit("/reload");
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({ revision: 1, text: "/reload" });
+    expect(h.bundle.state.acceptEditorSubmission({ editorRevision: 1, text: "/reload" })).toBe(
+      true,
+    );
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({
+      revision: 2,
+      text: "",
+      attachments,
+    });
+  });
 });
 
 describe("unified TUI: onTerminalInput (pre-editor input chain)", () => {

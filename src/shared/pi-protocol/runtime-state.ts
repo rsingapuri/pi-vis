@@ -636,7 +636,14 @@ export const SessionIntentSchema = z.discriminatedUnion("kind", [
     .strict(),
   z.object({ kind: z.literal("setThinking"), level: ThinkingLevelSchema }).strict(),
   z.object({ kind: z.literal("rename"), name: z.string() }).strict(),
-  z.object({ kind: z.literal("reload") }).strict(),
+  z
+    .object({
+      kind: z.literal("reload"),
+      /** Present only when Composer owns the exact editor command to consume. */
+      editorRevision: NonNegativeIntegerSchema.optional(),
+      editorText: z.string().optional(),
+    })
+    .strict(),
   z.object({ kind: z.literal("export"), outputPath: z.string().optional() }).strict(),
 ]);
 export type SessionIntent = z.infer<typeof SessionIntentSchema>;
@@ -662,6 +669,16 @@ export const IntentEnvelopeSchema = z
         code: z.ZodIssueCode.custom,
         path: ["observedCursor"],
         message: "observed cursor must belong to the expected owner",
+      });
+    }
+    if (
+      envelope.intent.kind === "reload" &&
+      (envelope.intent.editorRevision === undefined) !== (envelope.intent.editorText === undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["intent"],
+        message: "reload editor revision and text must be supplied together",
       });
     }
   });

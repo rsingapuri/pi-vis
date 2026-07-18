@@ -216,6 +216,170 @@ describe("setupCommandBridge — wiring", () => {
     expect(cancelDialogs).toHaveBeenCalledTimes(1);
   });
 
+  it("clears reload command text in the successor editor baseline", async () => {
+    const editor = {
+      revision: 7,
+      text: "/reload",
+      attachments: [{ kind: "file", name: "notes.txt", path: "/tmp/notes.txt" }],
+    };
+    const acceptEditorSubmission = vi.fn((request) => {
+      if (request.editorRevision !== editor.revision || request.text !== editor.text) return false;
+      editor.revision++;
+      editor.text = "";
+      return true;
+    });
+    const sendControl = vi.fn();
+    const { session, dispatchIntent } = setup(undefined, {
+      sendControl,
+      uiState: {
+        catalogSnapshot: () => ({}),
+        editorSnapshot: () => ({ ...editor, attachments: [...editor.attachments] }),
+        acceptEditorSubmission,
+        applyEditorPatch: vi.fn(),
+      },
+    });
+    session.reload.mockImplementationOnce(async ({ beforeSessionStart }) => {
+      await beforeSessionStart();
+    });
+
+    await expect(
+      dispatchIntent({
+        intentId: "reload-editor-command",
+        expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+        intent: { kind: "reload", editorRevision: 7, editorText: "/reload" },
+      }),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() =>
+      expect(sendControl.mock.calls.some(([message]) => message.type === "transition_batch")).toBe(
+        true,
+      ),
+    );
+
+    expect(acceptEditorSubmission).toHaveBeenCalledWith({
+      editorRevision: 7,
+      text: "/reload",
+    });
+    expect(editor).toMatchObject({ text: "", attachments: [{ name: "notes.txt" }] });
+    const batch = sendControl.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === "transition_batch")?.batch;
+    expect(batch?.terminalSnapshot.editor).toMatchObject({
+      revision: 8,
+      text: "",
+      attachments: [{ kind: "file", name: "notes.txt", path: "/tmp/notes.txt" }],
+    });
+  });
+
+  it("preserves an extension reload's unrelated editor draft", async () => {
+    const editor = {
+      revision: 4,
+      text: "ordinary unsent draft",
+      attachments: [{ kind: "file", name: "draft.txt", path: "/tmp/draft.txt" }],
+    };
+    const applyEditorPatch = vi.fn();
+    const sendControl = vi.fn();
+    const { session, handleReload } = setup(undefined, {
+      sendControl,
+      uiState: {
+        catalogSnapshot: () => ({}),
+        editorSnapshot: () => ({ ...editor, attachments: [...editor.attachments] }),
+        acceptEditorSubmission: () => false,
+        applyEditorPatch,
+      },
+    });
+    session.reload.mockImplementationOnce(async ({ beforeSessionStart }) => {
+      await beforeSessionStart();
+    });
+
+    await handleReload();
+
+    expect(applyEditorPatch).not.toHaveBeenCalled();
+    const batch = sendControl.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === "transition_batch")?.batch;
+    expect(batch?.terminalSnapshot.editor).toMatchObject(editor);
+  });
+
+  it("preserves reload conflict custody instead of clearing the command text", async () => {
+    const editor = {
+      revision: 4,
+      text: "/reload",
+      attachments: [],
+      conflictText: "newer draft",
+      conflictAttachments: [{ kind: "file", name: "conflict.txt", path: "/tmp/conflict.txt" }],
+    };
+    const acceptEditorSubmission = vi.fn();
+    const sendControl = vi.fn();
+    const { session, dispatchIntent } = setup(undefined, {
+      sendControl,
+      uiState: {
+        catalogSnapshot: () => ({}),
+        editorSnapshot: () => ({
+          ...editor,
+          attachments: [...editor.attachments],
+          conflictAttachments: [...editor.conflictAttachments],
+        }),
+        acceptEditorSubmission,
+        applyEditorPatch: vi.fn(),
+      },
+    });
+    session.reload.mockImplementationOnce(async ({ beforeSessionStart }) => {
+      await beforeSessionStart();
+    });
+
+    await expect(
+      dispatchIntent({
+        intentId: "reload-editor-conflict",
+        expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+        intent: { kind: "reload", editorRevision: 4, editorText: "/reload" },
+      }),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() =>
+      expect(sendControl.mock.calls.some(([message]) => message.type === "transition_batch")).toBe(
+        true,
+      ),
+    );
+
+    expect(acceptEditorSubmission).not.toHaveBeenCalled();
+  });
+
+  it("preserves a newer retyped reload command", async () => {
+    const editor = { revision: 8, text: "/reload ", attachments: [] };
+    const acceptEditorSubmission = vi.fn();
+    const sendControl = vi.fn();
+    const { session, dispatchIntent } = setup(undefined, {
+      sendControl,
+      uiState: {
+        catalogSnapshot: () => ({}),
+        editorSnapshot: () => ({ ...editor }),
+        acceptEditorSubmission,
+        applyEditorPatch: vi.fn(),
+      },
+    });
+    session.reload.mockImplementationOnce(async ({ beforeSessionStart }) => {
+      await beforeSessionStart();
+    });
+
+    await expect(
+      dispatchIntent({
+        intentId: "reload-newer-editor-command",
+        expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+        intent: { kind: "reload", editorRevision: 7, editorText: "/reload" },
+      }),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() =>
+      expect(sendControl.mock.calls.some(([message]) => message.type === "transition_batch")).toBe(
+        true,
+      ),
+    );
+
+    expect(acceptEditorSubmission).not.toHaveBeenCalled();
+    const batch = sendControl.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === "transition_batch")?.batch;
+    expect(batch?.terminalSnapshot.editor).toMatchObject(editor);
+  });
+
   it("routes extension replacement actions through transition fencing", async () => {
     const sendControl = vi.fn();
     const { session, runtime, bindExtensions } = setup(undefined, { sendControl });

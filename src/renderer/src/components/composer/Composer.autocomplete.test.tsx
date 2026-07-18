@@ -994,14 +994,26 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
-  it("dispatches reload as an owner-bound intent and clears only on its terminal frame", async () => {
+  it("dispatches reload as an owner-bound intent and clears its workspace draft", async () => {
     installInvoke(invoke, false);
     const composer = mount();
     type(composer.textarea(), "/reload ");
+    expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("/reload ");
     key(composer.textarea(), "Enter");
     await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
-    expect(intentCalls(invoke)[0]!.intent).toEqual({ kind: "reload" });
+    expect(intentCalls(invoke)[0]!.intent).toEqual({
+      kind: "reload",
+      editorRevision: 1,
+      editorText: "/reload ",
+    });
     expect(composer.textarea().value).toBe("");
+    expect(useSessionsStore.getState().newSessionDrafts.has(WORKSPACE)).toBe(false);
+    await vi.waitFor(() => {
+      const patches = invoke.mock.calls
+        .filter(([channel]) => channel === "session.editorPatch")
+        .map(([, payload]) => (payload as { text: string }).text);
+      expect(patches.at(-1)).toBe("");
+    });
     publishOutcome(intentCalls(invoke)[0]!);
     await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
     composer.unmount();

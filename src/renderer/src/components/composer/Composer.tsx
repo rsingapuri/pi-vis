@@ -1497,7 +1497,12 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           textRef.current = "";
           setText("");
           setSlashIndex(0);
-          useSessionsStore.getState().setSessionDraft(sessionId, "");
+          const current = useSessionsStore.getState().sessions.get(sessionId);
+          if (current?.isNewPending && workspacePathRef.current) {
+            useSessionsStore.getState().clearNewSessionDraft(workspacePathRef.current);
+          } else {
+            useSessionsStore.getState().setSessionDraft(sessionId, "");
+          }
         };
         const deps = {
           // Register before dispatch: main can forward a correlated admission
@@ -1561,6 +1566,14 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
           },
           awaitIntentOutcome,
           getIntentObservation: intentObservation,
+          ...(finalAction.kind === "reload"
+            ? {
+                getReloadEditorCommand: () => ({
+                  editorRevision: submittedEditorRevision,
+                  editorText: submittedLocalText,
+                }),
+              }
+            : {}),
           onAdmitted: (_sid: SessionId, intent: SessionIntent) => clearOnAdmission(intent),
           uiSurface: "composer" as const,
           invoke: async <T = unknown>(channel: string, payload: unknown) =>

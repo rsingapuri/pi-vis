@@ -699,7 +699,7 @@ export function setupCommandBridge({
     return authority.requestEscape(requestId);
   }
 
-  async function handleReload(alreadySerialized = false) {
+  async function handleReload(alreadySerialized = false, reloadEditorCommand = undefined) {
     // Repeat child-owned admission immediately before transition creation. The
     // main-process permit only authorizes transport; it never makes this
     // semantic decision from a retained snapshot.
@@ -718,6 +718,24 @@ export function setupCommandBridge({
     const transitionId = authority.transitionId;
     try {
       await requestReplacementPermit(transitionId, "prepare", "reload", _session.sessionFile);
+      // Reload retains the AgentSession and therefore its host-owned editor.
+      // Consume only the exact Composer command that its intent identified.
+      // This child-owned acknowledgement closes the renderer-patch/reload race
+      // while preserving attachments, extension/picker drafts, newer typing,
+      // and conflict custody. It follows the main permit so a denied
+      // replacement leaves a never-dispatched command in editor custody.
+      const editor = uiState.editorSnapshot();
+      if (
+        reloadEditorCommand &&
+        editor.revision === reloadEditorCommand.editorRevision &&
+        editor.text === reloadEditorCommand.editorText &&
+        editor.conflictText === undefined
+      ) {
+        uiState.acceptEditorSubmission({
+          editorRevision: reloadEditorCommand.editorRevision,
+          text: reloadEditorCommand.editorText,
+        });
+      }
       await runLifecycle(
         () =>
           _session.reload({
@@ -1129,7 +1147,10 @@ export function setupCommandBridge({
           _session.setSessionName(intent.name);
           return { name: intent.name };
         case "reload":
-          await handleReload(true);
+          await handleReload(true, {
+            editorRevision: intent.editorRevision,
+            editorText: intent.editorText,
+          });
           return {
             successorIdentity: { hostInstanceId, sessionEpoch: authority.sessionEpoch },
           };

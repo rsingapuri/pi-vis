@@ -3978,6 +3978,27 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     });
   });
 
+  it("dispatches unified reload with its exact editor custody", async () => {
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "reload-id",
+        "/reload ",
+        41,
+        "reload-intent",
+        "host-1",
+        1,
+      );
+
+    expect(sentIntent()?.intent).toEqual({
+      kind: "reload",
+      editorRevision: 41,
+      editorText: "/reload ",
+    });
+    expect(lastUnifiedResponse()).toMatchObject({ id: "reload-id", ok: true });
+  });
+
   it("a bash command (!prefix) bypasses the no-model guard and dispatches", async () => {
     // no currentModel set — bash must still go through (Composer parity)
     await useSessionsStore

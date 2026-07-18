@@ -314,8 +314,15 @@ export function createStateAuthority({
     const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0;
     switch (intent.kind) {
       case "interrupt":
-      case "reload":
         return isStrictObject(intent, ["kind"]);
+      case "reload":
+        return (
+          Object.keys(intent).every((key) =>
+            ["kind", "editorRevision", "editorText"].includes(key),
+          ) &&
+          ((intent.editorRevision === undefined && intent.editorText === undefined) ||
+            (nonNegativeInteger(intent.editorRevision) && typeof intent.editorText === "string"))
+        );
       case "submit":
         return (
           isStrictObject(intent, [
