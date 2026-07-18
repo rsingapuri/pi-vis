@@ -216,6 +216,38 @@ describeOrSkip("unified-TUI host render (real pi-tui + pi theme)", () => {
     expect(painted).toContain("Fleet");
   });
 
+  it("publishes a trailing-blank frame together with its final editor cursor position", async () => {
+    await setup();
+    const bridge = makeCapturingBridge();
+    const { context, unified } = createUIContext({
+      theme,
+      editorTheme: buildEditorTheme(pi, theme),
+      panelBridge: bridge,
+      createDialog: async () => ({}),
+      sendToMain: () => {},
+      tuiModules: tuiModules(),
+    });
+    controllers.push(unified);
+
+    context.setWidget(
+      "trailing-blank",
+      () => ({ render: () => ["TRAILING BLANK PAINT", "", ""] }),
+      { placement: "belowEditor" },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const paint = bridge.messages.find(
+      (message) => message.type === "panel_data" && message.data.includes("TRAILING BLANK PAINT"),
+    );
+    expect(paint, "the trailing-blank widget must paint").toBeTruthy();
+    const synchronizedEnd = paint.data.indexOf("\x1b[?2026l");
+    expect(synchronizedEnd).toBeGreaterThanOrEqual(0);
+    expect(
+      paint.data.slice(synchronizedEnd + "\x1b[?2026l".length),
+      "the renderer must not receive the frame before pi-tui moves the cursor back to the editor",
+    ).toMatch(/\[\d+A.*\[\d+G/);
+  });
+
   it("contains a throwing extension render and remains able to paint a healthy replacement", async () => {
     await setup();
     const bridge = makeCapturingBridge();

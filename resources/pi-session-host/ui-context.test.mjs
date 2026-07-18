@@ -325,6 +325,33 @@ function lastClipboardId(sendToMain) {
   return reqs[reqs.length - 1].id;
 }
 
+describe("unified TUI: terminal paint publication", () => {
+  it("publishes a synchronous frame and cursor-position tail as one panel delta", async () => {
+    const h = makeHarness();
+    h.context.setWidget("roster", makeFactory("fleet"), { placement: "belowEditor" });
+
+    h.tui.terminal.write("frame-with-trailing-blanks\r\n\r\n");
+    h.tui.terminal.write("\x1b[2A\x1b[1G");
+    h.tui.terminal.hideCursor();
+
+    // A logical pi-tui paint is not observable halfway through, while its
+    // hardware cursor still sits on the final blank row.
+    expect(h.panelBridge.writePanel).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(h.panelBridge.writePanel).toHaveBeenCalledTimes(1);
+    expect(h.panelBridge.writePanel).toHaveBeenCalledWith(
+      1,
+      "frame-with-trailing-blanks\r\n\r\n\x1b[2A\x1b[1G\x1b[?25l",
+    );
+
+    // Independent turns remain independent publications.
+    h.tui.terminal.write("later-frame");
+    await Promise.resolve();
+    expect(h.panelBridge.writePanel).toHaveBeenLastCalledWith(1, "later-frame");
+    expect(h.panelBridge.writePanel).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("unified TUI: setWidget factory routing", () => {
   it("a factory setWidget opens a unified panel and adds the component below the editor", () => {
     const h = makeHarness();

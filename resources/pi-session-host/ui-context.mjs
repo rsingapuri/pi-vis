@@ -1565,6 +1565,30 @@ function createHostTerminal(panelId, panelBridge, { kittyGate, StdinBuffer } = {
   // release would hit refcount 0 early and kill kitty decode for OTHER panels.
   let gateAcquired = false;
 
+  // pi-tui emits one logical paint as several synchronous Terminal calls: the
+  // frame first, then hardware-cursor positioning and visibility. Publishing
+  // each call separately lets the renderer size the cursor-at-bottom
+  // intermediate state. That is unstable when the frame ends in blank rows:
+  // the panel briefly grows, then trims those rows after the cursor moves, and
+  // the resulting host resize can immediately reverse it. Preserve byte order
+  // but publish all writes from one JavaScript turn as one panel delta.
+  let pendingOutput = "";
+  let outputFlushQueued = false;
+  const flushOutput = () => {
+    outputFlushQueued = false;
+    if (pendingOutput.length === 0) return;
+    const data = pendingOutput;
+    pendingOutput = "";
+    panelBridge.writePanel(panelId, data);
+  };
+  const queueOutput = (data) => {
+    if (data.length === 0) return;
+    pendingOutput += data;
+    if (outputFlushQueued) return;
+    outputFlushQueued = true;
+    queueMicrotask(flushOutput);
+  };
+
   // Per-terminal negotiator. Null when there is no kitty gate (old pi-tui or
   // feature detection failed) → the terminal is a plain pass-through.
   const negotiator = kittyGate
@@ -1658,6 +1682,9 @@ function createHostTerminal(panelId, panelBridge, { kittyGate, StdinBuffer } = {
     },
 
     stop() {
+      // Do not leave a final render turn queued behind panel teardown or the
+      // negotiator's mode-reset bytes.
+      flushOutput();
       if (negotiator) {
         try {
           negotiator.stop();
@@ -1686,7 +1713,7 @@ function createHostTerminal(panelId, panelBridge, { kittyGate, StdinBuffer } = {
     },
 
     write(data) {
-      panelBridge.writePanel(panelId, data);
+      queueOutput(data);
     },
 
     // Called by panelBridge when the renderer reports a new xterm.js size —
@@ -1703,10 +1730,10 @@ function createHostTerminal(panelId, panelBridge, { kittyGate, StdinBuffer } = {
     // ours must too, or xterm renders its own block cursor that the TUI never
     // shows. Emit the escape so xterm matches the TUI.
     hideCursor() {
-      panelBridge.writePanel(panelId, "\x1b[?25l");
+      queueOutput("\x1b[?25l");
     },
     showCursor() {
-      panelBridge.writePanel(panelId, "\x1b[?25h");
+      queueOutput("\x1b[?25h");
     },
     clearLine() {},
     clearFromCursor() {},
