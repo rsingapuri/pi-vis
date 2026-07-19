@@ -25,8 +25,7 @@ virtualized 500-candidate commit list; it has no header, guidance dead-end, or
 Apply/Cancel footer. Both live scopes apply immediately without discarding the
 selected base. **All changes** is the default and highlights every candidate
 commit plus the **Uncommitted changes** pseudo-commit; it is a comparison label,
-not a menu choice. When a narrowed selection is active, a contextual **Select
-all** command restores this default. Pointer-down on a commit
+not a menu choice. The fixed-position **Select all** command restores this default; it remains visible but disabled while all changes are already selected, so the popup never shifts. Pointer-down on a commit
 starts a local visual selection (only that commit remains highlighted); dragging
 then releasing commits the normalized inclusive `{start, end}` band and keeps
 it open for inspection. Releasing on **Uncommitted changes** extends from the

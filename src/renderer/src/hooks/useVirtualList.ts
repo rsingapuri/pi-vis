@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface VirtualListOptions {
   count: number;
-  rowHeight: number;
+  /** A constant row height or per-row height for compact exceptional rows. */
+  rowHeight: number | ((index: number) => number);
   /** Minimum rows to render above and below the viewport. */
   minOverscan?: number;
   /** Viewport heights to render above and below the viewport. */
@@ -59,27 +60,57 @@ export function useVirtualList<T extends HTMLElement>({
     return () => ro.disconnect();
   }, [node]);
 
+  const rowOffsets = useMemo(() => {
+    const offsets = new Array<number>(count + 1);
+    offsets[0] = 0;
+    for (let index = 0; index < count; index++) {
+      offsets[index + 1] =
+        offsets[index]! + (typeof rowHeight === "function" ? rowHeight(index) : rowHeight);
+    }
+    return offsets;
+  }, [count, rowHeight]);
+  const totalHeight = rowOffsets[count] ?? 0;
+  const indexAtOffset = useCallback(
+    (offset: number): number => {
+      let low = 0;
+      let high = count;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (rowOffsets[middle + 1]! <= offset) low = middle + 1;
+        else high = middle;
+      }
+      return low;
+    },
+    [count, rowOffsets],
+  );
+
   useEffect(() => {
     const el = nodeRef.current;
     if (!el) return;
-    const maxScrollTop = Math.max(0, count * rowHeight - el.clientHeight);
+    const maxScrollTop = Math.max(0, totalHeight - el.clientHeight);
     if (el.scrollTop > maxScrollTop) {
       el.scrollTop = maxScrollTop;
       setScrollTop(maxScrollTop);
     }
-  }, [count, rowHeight]);
+  }, [totalHeight]);
 
   const onScroll = useCallback<React.UIEventHandler<T>>((event) => {
     setScrollTop(event.currentTarget.scrollTop);
   }, []);
 
-  const visibleRows = viewportHeight > 0 ? Math.ceil(viewportHeight / rowHeight) : 12;
+  const minimumRowHeight =
+    typeof rowHeight === "function"
+      ? count > 0
+        ? Math.min(...rowOffsets.slice(1).map((offset, index) => offset - rowOffsets[index]!))
+        : 1
+      : rowHeight;
+  const visibleRows = viewportHeight > 0 ? Math.ceil(viewportHeight / minimumRowHeight) : 12;
   const overscan = Math.max(minOverscan, Math.ceil(visibleRows * overscanScreens));
 
-  const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+  const startIndex = Math.max(0, indexAtOffset(scrollTop) - overscan);
   const endIndex = Math.min(
     count,
-    Math.ceil((scrollTop + Math.max(viewportHeight, rowHeight)) / rowHeight) + overscan,
+    indexAtOffset(scrollTop + Math.max(viewportHeight, minimumRowHeight)) + 1 + overscan,
   );
 
   const rows = useMemo<VirtualRow[]>(() => {
@@ -92,8 +123,8 @@ export function useVirtualList<T extends HTMLElement>({
     (index: number) => {
       const el = nodeRef.current;
       if (!el || index < 0 || index >= count) return;
-      const top = index * rowHeight;
-      const bottom = top + rowHeight;
+      const top = rowOffsets[index]!;
+      const bottom = rowOffsets[index + 1]!;
       const viewTop = el.scrollTop;
       const viewBottom = viewTop + el.clientHeight;
       if (top < viewTop) {
@@ -105,7 +136,7 @@ export function useVirtualList<T extends HTMLElement>({
         setScrollTop(next);
       }
     },
-    [count, rowHeight],
+    [count, rowOffsets],
   );
 
   return {
@@ -114,8 +145,8 @@ export function useVirtualList<T extends HTMLElement>({
     rows,
     startIndex,
     endIndex,
-    totalHeight: count * rowHeight,
-    offsetY: startIndex * rowHeight,
+    totalHeight,
+    offsetY: rowOffsets[startIndex] ?? 0,
     ensureIndexVisible,
   };
 }

@@ -46,8 +46,8 @@
   box-shadow: var(--elevation-2);
 }
 
-.commit-range-picker__working,
-.commit-range-picker__commit {
+.commit-range-picker__commit,
+.commit-range-picker__select-all {
   width: 100%;
   border: 1px solid transparent;
   background: transparent;
@@ -57,26 +57,6 @@
   -webkit-app-region: no-drag;
 }
 
-.commit-range-picker__working {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 0.5rem 0.571rem;
-  border-radius: var(--radius-md);
-  font: 0.857em / 1.4 var(--font-display);
-}
-
-.commit-range-picker__scopes {
-  display: flex;
-  flex-direction: column;
-  gap: 0.143rem;
-  padding: 0.286rem var(--space-2) 0;
-}
-
-.commit-range-picker__working:focus-visible,
-.commit-range-picker__working:hover,
-.commit-range-picker__working--selected,
 .commit-range-picker__commit:hover,
 .commit-range-picker__commit--highlighted,
 .commit-range-picker__commit--selected {
@@ -85,13 +65,33 @@
   outline: none;
 }
 
-/* A quiet menu command, separated from comparison endpoints rather than
-   presented as another selectable scope. */
+/* The sole command is deliberately outside the commit list. The working tree
+   is not a command: it renders as the list's first commit row. */
+.commit-range-picker__commands {
+  padding: 0.286rem var(--space-2) 0;
+}
+
 .commit-range-picker__select-all {
-  margin-bottom: 0.143rem;
-  border-bottom-color: var(--border);
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  width: 100%;
+  padding: 0.5rem 0.571rem;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
+  font: 0.857em / 1.4 var(--font-display);
+  text-align: left;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.commit-range-picker__select-all:focus-visible:not(:disabled),
+.commit-range-picker__select-all:hover:not(:disabled) {
+  border-color: var(--surface-3);
+  background: var(--surface-2);
+  outline: none;
+}
+
+.commit-range-picker__select-all:disabled {
+  color: var(--text-ghost);
+  cursor: default;
 }
 
 .commit-range-picker__list-shell {
@@ -125,9 +125,10 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0 0.45rem;
-  height: 44px;
+  height: 40px;
   position: relative;
-  padding: 0.2rem 3.5rem 0.2rem 0.571rem;
+  align-content: center;
+  padding: 0.143rem 3.5rem 0.071rem 0.571rem;
   border-radius: var(--radius-md);
   font: 0.786em / 1.15 var(--font-display);
 }
@@ -143,6 +144,16 @@
 
 .commit-range-picker__subject {
   min-width: 0;
+}
+
+.commit-range-picker__commit--uncommitted {
+  height: 28px;
+  padding-top: 0.071rem;
+  padding-bottom: 0;
+}
+
+.commit-range-picker__commit--uncommitted .commit-range-picker__subject {
+  grid-column: 1 / -1;
 }
 
 .commit-range-picker__endpoint {

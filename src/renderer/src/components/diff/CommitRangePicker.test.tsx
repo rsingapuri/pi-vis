@@ -104,16 +104,16 @@ describe("CommitRangePicker", () => {
     empty.unmount();
   });
 
-  it("shows All changes as the default label without a redundant Select all command", async () => {
+  it("keeps Select all in place but disables it for the default all-changes selection", async () => {
     setup();
     const view = mount(<CommitRangePicker />);
     await settle();
     expect(view.container.textContent).toContain("All changes");
     expect(view.container.textContent).not.toContain("main");
     await openPicker(view.container);
-    expect(view.container.querySelector(".commit-range-picker__popup")?.textContent).not.toContain(
-      "Select all",
-    );
+    expect(
+      view.container.querySelector<HTMLButtonElement>(".commit-range-picker__select-all")?.disabled,
+    ).toBe(true);
     view.unmount();
   });
 
@@ -128,18 +128,44 @@ describe("CommitRangePicker", () => {
     view.unmount();
   });
 
-  it("offers uncommitted changes as a distinct live comparison", async () => {
+  it("renders uncommitted changes as the first commit row and selects only it", async () => {
     setup();
+    useDiffStore.setState({ workingTreeScope: "uncommitted" });
     const view = mount(<CommitRangePicker />);
     await settle();
     await openPicker(view.container);
 
-    expect(view.container.querySelector(".commit-range-picker__popup")?.textContent).toContain(
-      "Uncommitted changes",
-    );
+    const rows = [...view.container.querySelectorAll<HTMLElement>("[role=option]")];
+    expect(rows[0]?.textContent).toContain("Uncommitted changes");
+    expect(rows[0]?.dataset.uncommittedEndpoint).toBe("true");
+    expect(rows[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(rows.slice(1).every((row) => row.getAttribute("aria-selected") === "false")).toBe(true);
+    expect(view.container.querySelector(".commit-range-picker__scopes")).toBeNull();
+
     clickText(view.container, "Uncommitted changes");
     expect(showUncommittedChanges).toHaveBeenCalledOnce();
     expect(setCommitRange).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("immediately replaces the all-changes highlight when a commit gesture begins", async () => {
+    setup();
+    const view = mount(<CommitRangePicker />);
+    await settle();
+    await openPicker(view.container);
+    const rows = [...view.container.querySelectorAll<HTMLButtonElement>("[role=option]")];
+    expect(rows.every((row) => row.getAttribute("aria-selected") === "true")).toBe(true);
+
+    const target = rows.find((row) => row.dataset.commitSha === "bbb-full")!;
+    target.setPointerCapture = vi.fn();
+    act(() => target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })));
+
+    expect(target.getAttribute("aria-selected")).toBe("true");
+    expect(
+      rows
+        .filter((row) => row !== target)
+        .every((row) => row.getAttribute("aria-selected") === "false"),
+    ).toBe(true);
     view.unmount();
   });
 

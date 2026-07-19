@@ -432,10 +432,10 @@ test.describe("Diff viewer", () => {
     // Uncommitted changes are a pseudo-commit endpoint and can extend the
     // selected historical band through the live working tree.
     await viewer
-      .getByRole("button", { name: "Uncommitted changes" })
+      .getByRole("option", { name: "Uncommitted changes" })
       .click({ modifiers: ["Shift"] });
     await expect(range).toContainText("2 commits + uncommitted");
-    await expect(viewer.getByRole("button", { name: /Uncommitted changes/ })).toContainText("End");
+    await expect(viewer.getByRole("option", { name: /Uncommitted changes/ })).toContainText("End");
     await expect(viewer.getByRole("option", { name: /Second feature commit/ })).not.toContainText(
       "End",
     );
