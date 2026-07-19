@@ -178,3 +178,12 @@ export function IconCopy(props: IconProps): React.ReactElement {
     </Icon>
   );
 }
+
+/** Five-spoke rotor — odd symmetry avoids a paired top/bottom axis. */
+export function IconActivityRotor(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <path d="M6 6V1.1M6 6l4.66-1.51M6 6l2.88 3.96M6 6 3.12 9.96M6 6 1.34 4.49" />
+    </Icon>
+  );
+}

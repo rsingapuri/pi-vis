@@ -235,9 +235,8 @@
   color: var(--accent);
 }
 
-.diff-viewer__icon-btn--spinning svg {
-  animation: diff-spin 0.8s linear infinite;
-  animation-delay: var(--spinner-sync-delay, 0ms);
+.diff-viewer__refresh-spinner {
+  font-size: 0.875rem;
 }
 
 /* Stale indicator — a steady mauve dot (no pulse) shown to the left of the
@@ -253,18 +252,6 @@
   border-radius: 50%;
   background: var(--accent);
   flex-shrink: 0;
-}
-
-@keyframes diff-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .diff-viewer__icon-btn--spinning svg {
-    animation: none;
-  }
 }
 
 /* Truncation banner under the header. */

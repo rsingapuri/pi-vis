@@ -17,7 +17,7 @@ import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { FadeText } from "../common/FadeText.js";
 import { ScrollFadeFrame } from "../common/ScrollFadeFrame.js";
-import { useSyncedSpinnerStyle } from "../common/Spinner.js";
+import { Spinner } from "../common/Spinner.js";
 import {
   IconCheck,
   IconChevronDown,
@@ -748,7 +748,6 @@ function ViewerHeader({
     return { ins, del, count: files.length };
   }, [files]);
   const refreshSpinning = phase === "loading" || refreshing;
-  const refreshSpinnerStyle = useSyncedSpinnerStyle(refreshSpinning);
   return (
     <div className="diff-viewer__header viewer-header">
       <div className="viewer-header__left">
@@ -789,13 +788,13 @@ function ViewerHeader({
         ) : null}
         <button
           type="button"
-          className={`diff-viewer__icon-btn${refreshSpinning ? " diff-viewer__icon-btn--spinning" : ""}`}
-          style={refreshSpinnerStyle}
+          className="diff-viewer__icon-btn"
           onClick={onRefresh}
           title="Refresh"
           aria-label="Refresh"
+          aria-busy={refreshSpinning}
         >
-          <RefreshIcon />
+          {refreshSpinning ? <Spinner className="diff-viewer__refresh-spinner" /> : <RefreshIcon />}
         </button>
         {phase === "ready" && files.length > 0 && (
           <button

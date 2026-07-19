@@ -180,10 +180,10 @@ export interface DiffStore {
   baselineFingerprint: string | null;
 
   // True while a full `git.changes` refresh is in flight. Drives the
-  // refresh-button spinner independently of `phase` (which only flips to
-  // "loading" on the first load, to avoid wiping the already-displayed
-  // file list on every click). Enforced to stay true for at least one full
-  // icon rotation so an instant refresh still gives visible feedback.
+  // refresh-button activity rotor independently of `phase` (which only flips
+  // to "loading" on the first load, to avoid wiping the already-displayed
+  // file list on every click). Enforced briefly so an instant refresh still
+  // gives visible feedback.
   refreshing: boolean;
 
   // mutators
@@ -249,9 +249,8 @@ const EMPTY_SEARCH = {
 
 const EXPAND_STEP = 20;
 
-// Minimum time the refresh icon stays spinning, so even a sub-frame
-// refresh shows at least one full rotation (matches the 0.8s
-// `diff-spin` animation period).
+// Minimum time the refresh activity rotor stays visible, so even a sub-frame
+// refresh still gives perceptible feedback without delaying it for a full turn.
 const MIN_REFRESH_SPIN_MS = 800;
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -481,8 +480,8 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         isFirst,
         rangeAtStart !== null && !rangeAtStart.includeUncommitted,
       );
-      // Keep the spinner going for at least one rotation even if the fetch
-      // was near-instant. If a newer refresh has superseded this one, leave
+      // Keep the activity rotor visible briefly even if the fetch was
+      // near-instant. If a newer refresh has superseded this one, leave
       // `refreshing` alone — the newer call owns the flag.
       await minSpin;
       if (isStale(generation, myGen)) return;

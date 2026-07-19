@@ -71,7 +71,6 @@
 .worktree-attach-field__status .spinner {
   width: 0.75rem;
   height: 0.75rem;
-  border-width: 1.5px;
 }
 
 .worktree-attach-field__status {

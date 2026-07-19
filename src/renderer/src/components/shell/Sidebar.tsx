@@ -18,7 +18,6 @@ import { ConfirmDialog } from "./ConfirmDialog.js";
 import "./Sidebar.css";
 
 const VISIBLE_PAGE_SIZE = 30;
-const STREAMING_DOT_ANIMATION_MS = 1000;
 
 interface PendingArchive {
   sessionId: SessionId | undefined;
@@ -36,11 +35,6 @@ function archiveFocusFallback(button: HTMLButtonElement): HTMLElement | null {
   const rows = Array.from(list.querySelectorAll<HTMLElement>(".sidebar__session"));
   const index = rows.indexOf(row);
   return rows[index + 1] ?? rows[index - 1] ?? list.querySelector(".sidebar__new-session");
-}
-
-function useSyncedAnimationDelay(durationMs: number): string {
-  const [delay] = useState(() => `-${Date.now() % durationMs}ms`);
-  return delay;
 }
 
 function StatusDot({
@@ -72,10 +66,6 @@ function StatusDot({
   }
 }
 
-interface WorkingDotProps {
-  working: boolean;
-}
-
 function PinIcon({ filled }: { filled: boolean }): React.ReactElement {
   return (
     <svg
@@ -93,16 +83,8 @@ function PinIcon({ filled }: { filled: boolean }): React.ReactElement {
   );
 }
 
-function WorkingIndicator({ working }: WorkingDotProps): React.ReactElement | null {
-  const animationDelay = useSyncedAnimationDelay(STREAMING_DOT_ANIMATION_MS);
-  if (!working) return null;
-  return (
-    <span
-      className="status-dot status-dot--streaming"
-      title="Working"
-      style={{ "--status-dot-animation-delay": animationDelay } as React.CSSProperties}
-    />
-  );
+function WorkingIndicator(): React.ReactElement {
+  return <span className="status-dot status-dot--streaming" title="Working" />;
 }
 
 export function Sidebar({
@@ -148,6 +130,13 @@ export function Sidebar({
   const pinnedDragKeyRef = useRef<string | null>(null);
   const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null);
   const [archiveInProgress, setArchiveInProgress] = useState(false);
+
+  // One parent-owned pulse clock keeps every working dot on the same phase,
+  // including dots that mount after other sessions have already started.
+  const hasWorkingSession = useMemo(
+    () => Array.from(sessions.values()).some(shouldShowWorkingIndicator),
+    [sessions],
+  );
 
   // Pinned sessions (by file path) as a Set for O(1) lookup during render.
   const pinnedSet = useMemo(() => new Set(pinnedSessions), [pinnedSessions]);
@@ -510,7 +499,9 @@ export function Sidebar({
           isn't clipped by `.sidebar { overflow: hidden }` (and the fade
           mask) when pushed out into the canvas gap to meet the content card's
           left edge. */}
-      <div className="sidebar__workspaces">
+      <div
+        className={`sidebar__workspaces${hasWorkingSession ? " sidebar__workspaces--working" : ""}`}
+      >
         {Array.from(workspaces.values()).map((ws, index) => {
           const isActiveWs = activeWorkspacePath === ws.path;
           const isExpanded = expandedWorkspaces.includes(ws.path);
@@ -683,7 +674,7 @@ export function Sidebar({
                                 }}
                               >
                                 {shouldShowWorkingIndicator(liveSession) ? (
-                                  <WorkingIndicator working />
+                                  <WorkingIndicator />
                                 ) : (
                                   <StatusDot
                                     status={liveSession?.status ?? "cold"}

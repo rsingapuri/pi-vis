@@ -67,7 +67,10 @@ selector includes authority-following streaming and every visible context-compac
 phase (active, cancelling, and retry-wait), while extension UI that is waiting on the
 user suppresses the streaming interpretation. Terminal `agent_settled` results remain
 solid done/error dots. Sidebar rows must use this shared selector rather than reading a
-raw SDK boolean, so compaction cannot disappear from the session list.
+raw SDK boolean, so compaction cannot disappear from the session list. All working dots
+inherit one animated opacity value from `.sidebar__workspaces`; they never start
+per-dot animations. A dot that mounts or reappears mid-cycle therefore joins the one
+parent-owned phase immediately, while the parent clock stops when no session is working.
 
 ### Shell layout (canvas + floating content card)
 
