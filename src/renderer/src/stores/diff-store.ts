@@ -249,9 +249,9 @@ const EMPTY_SEARCH = {
 
 const EXPAND_STEP = 20;
 
-// Minimum time the refresh activity rotor stays visible, so even a sub-frame
-// refresh still gives perceptible feedback without delaying it for a full turn.
-const MIN_REFRESH_SPIN_MS = 800;
+// The refresh icon turns once every 800ms. Keep it mounted through the end
+// of its current turn so removing the animation never snaps it back mid-spin.
+const REFRESH_SPIN_PERIOD_MS = 800;
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -268,6 +268,14 @@ function totals(files: GitChangedFile[]): { insertions: number; deletions: numbe
 
 function isStale(generation: number, my: number): boolean {
   return generation !== my;
+}
+
+/** Wait until the refresh icon has completed at least one whole turn. */
+function waitForRefreshTurn(startedAt: number): Promise<void> {
+  const elapsed = performance.now() - startedAt;
+  const completedTurns = Math.floor(elapsed / REFRESH_SPIN_PERIOD_MS);
+  const nextTurnAt = (completedTurns + 1) * REFRESH_SPIN_PERIOD_MS;
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, nextTurnAt - elapsed)));
 }
 
 // Paths saved in the current tick: handleChangesResult reuses their FileState
@@ -442,10 +450,12 @@ export const useDiffStore = create<DiffStore>((set, get) => {
       // click keeps the current content visible while indicating activity.
       // Held for at least one full icon rotation so an instant refresh still
       // gives visible feedback.
+      const refreshStartedAt = performance.now();
       set({ refreshing: true });
-      const minSpin = new Promise<void>((resolve) => setTimeout(resolve, MIN_REFRESH_SPIN_MS));
-      // Show loading only on first load (when fileState is empty).
-      const isFirst = get().fileState.size === 0;
+      // Only the initial open may replace the viewer with its loading state.
+      // A clean repository has an empty FileState too, but refreshing it must
+      // retain the rail and empty-state content without a flash.
+      const isFirst = get().phase === "loading";
       if (isFirst) {
         set({ phase: "loading", errorMessage: null });
       }
@@ -468,8 +478,10 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         set({
           phase: "error",
           errorMessage: err instanceof Error ? err.message : String(err),
-          refreshing: false,
         });
+        await waitForRefreshTurn(refreshStartedAt);
+        if (isStale(generation, myGen)) return;
+        set({ refreshing: false });
         return;
       }
       if (isStale(generation, myGen) || comparisonGeneration !== myComparison) return;
@@ -480,10 +492,11 @@ export const useDiffStore = create<DiffStore>((set, get) => {
         isFirst,
         rangeAtStart !== null && !rangeAtStart.includeUncommitted,
       );
-      // Keep the activity rotor visible briefly even if the fetch was
-      // near-instant. If a newer refresh has superseded this one, leave
-      // `refreshing` alone — the newer call owns the flag.
-      await minSpin;
+      // Complete an integer number of turns, including for a long fetch, so
+      // removing the rotor animation cannot produce a visible angle jump. If
+      // a newer refresh has superseded this one, leave `refreshing` alone —
+      // the newer call owns the flag.
+      await waitForRefreshTurn(refreshStartedAt);
       if (isStale(generation, myGen)) return;
       set({ refreshing: false });
     },

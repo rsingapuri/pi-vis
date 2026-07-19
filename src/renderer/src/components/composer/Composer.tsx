@@ -237,6 +237,9 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   // settles/fails. Deliberately renderer-local component state — never
   // persisted — so it cannot survive an app restart.
   const [submitPending, setSubmitPending] = useState(false);
+  // Fast admissions should not flash an activity rotor. The composer still
+  // freezes immediately; only the visual spinner waits briefly.
+  const [showSubmitSpinner, setShowSubmitSpinner] = useState(false);
   const submitPendingRef = useRef(false);
   const markSubmitPending = useCallback((value: boolean) => {
     submitPendingRef.current = value;
@@ -376,6 +379,15 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
   useEffect(() => {
     if (submitPending && text === "") markSubmitPending(false);
   }, [submitPending, text, markSubmitPending]);
+
+  useEffect(() => {
+    if (!submitPending) {
+      setShowSubmitSpinner(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowSubmitSpinner(true), 100);
+    return () => clearTimeout(timer);
+  }, [submitPending]);
 
   // Disabling the textarea mid-send drops focus to <body>; give it back when
   // the send settles so the user can type the next prompt immediately.
@@ -2234,7 +2246,7 @@ export function Composer({ sessionId }: ComposerProps): React.ReactElement {
                 aria-label="Message pi"
                 disabled={submitPending}
               />
-              {submitPending && (
+              {showSubmitSpinner && (
                 <Spinner
                   className="composer__pending-spinner"
                   role="status"

@@ -851,7 +851,11 @@ describe("Composer autocomplete and authority intents", () => {
     // In flight: input is frozen and reads as "sending", not unsubmitted text.
     expect(composer.textarea().disabled).toBe(true);
     expect(composer.textarea().value).toBe("hello");
-    expect(composer.container.querySelector(".composer__pending-spinner")).not.toBeNull();
+    // A quick admission does not flash spinner chrome.
+    expect(composer.container.querySelector(".composer__pending-spinner")).toBeNull();
+    await vi.waitFor(() =>
+      expect(composer.container.querySelector(".composer__pending-spinner")).not.toBeNull(),
+    );
 
     act(() =>
       useSessionsStore.getState().applySubmissionDisposition(SID, {

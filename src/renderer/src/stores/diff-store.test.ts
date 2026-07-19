@@ -310,6 +310,19 @@ describe("diff-store commit ranges", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps a clean viewer ready while refreshing", async () => {
+    useDiffStore.setState({ phase: "ready", files: [], searchFiles: [], fileState: new Map() });
+
+    const refresh = useDiffStore.getState().refresh();
+
+    // An empty FileState means the repository is clean, not that this is the
+    // initial load. Keeping this ready preserves the diff rail and shell.
+    expect(useDiffStore.getState().phase).toBe("ready");
+    await Promise.resolve();
+    vi.advanceTimersByTime(800);
+    await refresh;
+  });
+
   it("resets a range on close/reopen while retaining the selected base", () => {
     const store = useDiffStore.getState();
     store.setBase("main");
