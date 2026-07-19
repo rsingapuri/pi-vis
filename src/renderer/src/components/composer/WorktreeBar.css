@@ -145,9 +145,8 @@
 }
 
 .worktree-bar__spinner-dot.spinner {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-width: 1.5px;
+  width: 0.571rem;
+  height: 0.571rem;
 }
 
 /* Inline, durable failure message — replaces the old ephemeral toast so the

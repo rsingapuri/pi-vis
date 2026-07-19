@@ -1,7 +1,8 @@
 import type React from "react";
 import { useRef } from "react";
+import { IconActivityRotor } from "./icons.js";
 
-const SPINNER_PERIOD_MS = 800;
+const SPINNER_PERIOD_MS = 3200;
 
 type SpinnerStyle = React.CSSProperties & { "--spinner-sync-delay": string };
 
@@ -40,6 +41,8 @@ export function Spinner({
       {...props}
       className={className ? `spinner ${className}` : "spinner"}
       style={{ ...syncedStyle, ...style }}
-    />
+    >
+      <IconActivityRotor className="spinner__rotor" />
+    </span>
   );
 }

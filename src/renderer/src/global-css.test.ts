@@ -15,6 +15,17 @@ describe("global CSS", () => {
     );
   });
 
+  it("turns the shared activity rotor slowly without easing or oscillation", () => {
+    const css = readFileSync(join(__dirname, "global.css"), "utf8");
+
+    expect(css).toMatch(
+      /\.spinner__rotor\s*{[^}]*animation:\s*spinner-spin 3\.2s linear infinite;/s,
+    );
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\s*{\s*\.spinner__rotor\s*{[^}]*animation:\s*none;/s,
+    );
+  });
+
   it("keeps keyboard focus inside component geometry", () => {
     const rendererRoot = dirname(__filename);
     const globalCss = readFileSync(join(__dirname, "global.css"), "utf8");
