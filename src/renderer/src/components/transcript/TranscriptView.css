@@ -1123,12 +1123,15 @@
   width: max-content;
 }
 
-/* Extension entries use the same app-owned inspector as every other activity
-   card. Custom ANSI rendering is additive; raw entry data remains available
-   even when an extension renderer is absent or fails. */
+/* Pi shows extension entries only when their registered renderer returns a
+   component. The hidden host remains measurable so a real pane-width query can
+   decide visibility without exposing extension persistence records. */
 .custom-entry {
   position: relative;
   min-width: 0;
+}
+
+.custom-entry--visible {
   margin: var(--space-2) 0;
 }
 

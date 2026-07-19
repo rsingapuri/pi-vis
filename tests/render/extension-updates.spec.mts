@@ -37,6 +37,26 @@ test("Settings lists every installed extension with version status", async ({ pa
   await expect
     .poll(() =>
       page.locator(".settings-extension-updates").evaluate((updates) => {
+        const headerCells = updates.querySelectorAll<HTMLElement>(
+          ".settings-extension-updates__columns > span",
+        );
+        const rowCells = updates
+          .querySelector(".settings-extension-update")
+          ?.querySelectorAll<HTMLElement>(".settings-extension-update__version");
+        if (headerCells.length < 3 || !rowCells || rowCells.length !== 2) return false;
+        return [1, 2].every(
+          (index) =>
+            Math.abs(
+              headerCells[index].getBoundingClientRect().right -
+                rowCells[index - 1].getBoundingClientRect().right,
+            ) < 1,
+        );
+      }),
+    )
+    .toBe(true);
+  await expect
+    .poll(() =>
+      page.locator(".settings-extension-updates").evaluate((updates) => {
         const bulkAction = updates.querySelector<HTMLButtonElement>(
           ".settings-extension-updates__header button",
         );

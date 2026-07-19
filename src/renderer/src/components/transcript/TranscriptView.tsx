@@ -1356,6 +1356,7 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
   const [rendered, setRendered] = useState<RenderedEntry>();
 
   const rendererVisible = rendered?.rendered === true;
+  const renderedContentVisible = rendererVisible && expanded;
 
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -1365,7 +1366,7 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
     const scheduleMeasure = (): void => {
       queueCustomEntryMeasurement({
         host,
-        content: rendererVisible ? (contentRef.current ?? undefined) : undefined,
+        content: renderedContentVisible ? (contentRef.current ?? undefined) : undefined,
         measurementBox,
         probe,
         applyColumns: (next) => setCols((current) => (current === next ? current : next)),
@@ -1387,7 +1388,7 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
       stopContentObservation();
       cancelCustomEntryMeasurement(host);
     };
-  }, [rendererVisible]);
+  }, [renderedContentVisible]);
 
   useEffect(() => {
     renderedEpochRef.current = sessionEpoch;
@@ -1396,7 +1397,7 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
 
   useEffect(() => {
     let cancelled = false;
-    if (!runtime || !expanded) {
+    if (!runtime) {
       setRendered(undefined);
       return;
     }
@@ -1441,7 +1442,7 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
           !sessionMatchesRuntime(useSessionsStore.getState().sessions.get(sessionId), runtime)
         )
           return;
-        // The app-owned raw record remains visible if extension rendering fails.
+        // Match Pi: entries whose extension renderer is unavailable stay hidden.
         setRendered(undefined);
       });
     return () => {
@@ -1455,50 +1456,50 @@ const CustomEntryBlock = memo(function CustomEntryBlock({
   );
 
   return (
-    <div ref={hostRef} className="custom-entry">
+    <div ref={hostRef} className={`custom-entry${rendererVisible ? " custom-entry--visible" : ""}`}>
       <span ref={measurementBoxRef} className="custom-entry__measurement-box" aria-hidden="true">
         <span ref={measureRef} className="custom-entry__measure">
           0000000000
         </span>
       </span>
-      <ToolCardShell
-        isError={!!rendered?.error}
-        open={expanded}
-        onToggle={toggle}
-        accessibleLabel={`${data.customType} extension entry`}
-        kind={<span className="tool-card__name">extension</span>}
-        subject={<FadeText className="tool-card__subject">{data.customType}</FadeText>}
-        trailing={
-          rendered?.error ? <span className="tool-card__badge">renderer error</span> : undefined
-        }
-      >
-        <ProvenanceGrid
-          values={[
-            ["Custom type", data.customType],
-            ["Entry ID", data.entryId],
-          ]}
-        />
-        {rendererVisible && (
+      {rendererVisible && (
+        <ToolCardShell
+          isError={!!rendered.error}
+          open={expanded}
+          onToggle={toggle}
+          accessibleLabel={`${data.customType} extension entry`}
+          kind={<span className="tool-card__name">extension</span>}
+          subject={<FadeText className="tool-card__subject">{data.customType}</FadeText>}
+          trailing={
+            rendered.error ? <span className="tool-card__badge">renderer error</span> : undefined
+          }
+        >
+          <ProvenanceGrid
+            values={[
+              ["Custom type", data.customType],
+              ["Entry ID", data.entryId],
+            ]}
+          />
           <section className="tool-card__section">
             <SectionHeader
               title="Extension view"
-              meta={rendered?.error ? "renderer error" : "custom rendering"}
-              copyText={rendered?.ansi ?? ""}
+              meta={rendered.error ? "renderer error" : "custom rendering"}
+              copyText={rendered.ansi ?? ""}
             />
             <pre
               ref={contentRef}
-              className={`tool-card__extension-render${rendered?.error ? " tool-card__extension-render--error" : ""}`}
+              className={`tool-card__extension-render${rendered.error ? " tool-card__extension-render--error" : ""}`}
             >
-              <AnsiText text={rendered?.ansi ?? ""} />
+              <AnsiText text={rendered.ansi ?? ""} />
             </pre>
           </section>
-        )}
-        {data.data === undefined ? (
-          <EmptySection label="Raw data">No raw entry data was retained.</EmptySection>
-        ) : (
-          <StructuredPayload label="Raw data" value={data.data} />
-        )}
-      </ToolCardShell>
+          {data.data === undefined ? (
+            <EmptySection label="Raw data">No raw entry data was retained.</EmptySection>
+          ) : (
+            <StructuredPayload label="Raw data" value={data.data} />
+          )}
+        </ToolCardShell>
+      )}
     </div>
   );
 });
@@ -1519,7 +1520,6 @@ interface CompactGroupStats {
   compactions: number;
   branchSummaries: number;
   notices: number;
-  extensionEntries: number;
   errors: number;
   interrupted: number;
 }
@@ -1562,7 +1562,6 @@ function compactGroupStats(items: readonly TranscriptRenderItem[]): CompactGroup
     compactions: 0,
     branchSummaries: 0,
     notices: 0,
-    extensionEntries: 0,
     errors: 0,
     interrupted: 0,
   };
@@ -1593,9 +1592,6 @@ function compactGroupStats(items: readonly TranscriptRenderItem[]): CompactGroup
       case "custom_message":
         stats.notices += 1;
         break;
-      case "custom_entry":
-        stats.extensionEntries += 1;
-        break;
       case "error":
         stats.errors += 1;
         break;
@@ -1617,7 +1613,6 @@ function mergeCompactGroupStats(
     compactions: archived.compactions + live.compactions,
     branchSummaries: archived.branchSummaries + live.branchSummaries,
     notices: archived.notices + live.notices,
-    extensionEntries: archived.extensionEntries + live.extensionEntries,
     errors: archived.errors + live.errors,
     interrupted: archived.interrupted + live.interrupted,
   };
@@ -1638,10 +1633,6 @@ function summarizeCompactGroup(stats: CompactGroupStats): string {
     );
   if (stats.notices > 0)
     parts.push(`${stats.notices.toLocaleString()} notice${stats.notices === 1 ? "" : "s"}`);
-  if (stats.extensionEntries > 0)
-    parts.push(
-      `${stats.extensionEntries.toLocaleString()} extension ${stats.extensionEntries === 1 ? "entry" : "entries"}`,
-    );
   if (stats.errors > 0)
     parts.push(`${stats.errors.toLocaleString()} ${stats.errors === 1 ? "error" : "errors"}`);
   if (stats.interrupted > 0)
@@ -1697,7 +1688,14 @@ function buildCompactRenderItems(
     }
 
     const item: TranscriptRenderItem = { kind: "block", block };
-    if (block.type === "user" || (block.type === "error" && !block.data.retryable)) {
+    if (
+      block.type === "user" ||
+      block.type === "custom_entry" ||
+      (block.type === "error" && !block.data.retryable)
+    ) {
+      // Custom entries must mount before we know whether Pi's renderer accepts
+      // them. Keep them outside collapsed compact groups so an unrendered
+      // extension persistence record cannot create a visible group summary.
       flushGroup();
       rendered.push({ kind: "item", item });
     } else {

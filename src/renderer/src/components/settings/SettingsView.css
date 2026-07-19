@@ -441,9 +441,12 @@
 }
 
 .settings-extension-updates {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(4.25rem, max-content) minmax(4.25rem, max-content) minmax(
+      5rem,
+      max-content
+    );
+  row-gap: var(--space-2);
   min-width: 0;
   padding: var(--space-2);
   background: var(--bg-sunken);
@@ -451,6 +454,7 @@
 }
 
 .settings-extension-updates__header {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -474,10 +478,11 @@
 
 .settings-extension-updates__columns,
 .settings-extension-update {
+  grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(4.25rem, auto) minmax(4.25rem, auto) auto;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: var(--space-2);
+  column-gap: var(--space-2);
 }
 
 .settings-extension-updates__columns {
@@ -545,6 +550,10 @@
 }
 
 @media (max-width: 32rem) {
+  .settings-extension-updates {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   .settings-extension-updates__columns {
     display: none;
   }
