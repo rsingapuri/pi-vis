@@ -1512,12 +1512,27 @@ let previewExtensionUpdates = [
     displayName: "@pi/mcp",
     type: "npm" as const,
     scope: "user" as const,
+    currentVersion: "1.0.0",
+    latestVersion: "1.1.0",
+    updateAvailable: true,
   },
   {
     source: "git:github.com/example/pi-tools",
     displayName: "github.com/example/pi-tools",
     type: "git" as const,
     scope: "user" as const,
+    currentVersion: "a1b2c3d",
+    latestVersion: "d4e5f6a",
+    updateAvailable: true,
+  },
+  {
+    source: "npm:@pi/format",
+    displayName: "@pi/format",
+    type: "npm" as const,
+    scope: "user" as const,
+    currentVersion: "0.4.0",
+    latestVersion: "0.4.0",
+    updateAvailable: false,
   },
 ];
 let previewExtensionUpdateStatus: {
@@ -1544,10 +1559,15 @@ const stub = {
       case "extensionUpdates.run": {
         const { target } = req as { target: "all" | { extension: string } };
         previewHooks.extensionUpdateTargets.push(target);
-        previewExtensionUpdates =
-          target === "all"
-            ? []
-            : previewExtensionUpdates.filter((update) => update.source !== target.extension);
+        previewExtensionUpdates = previewExtensionUpdates.map((update) =>
+          target === "all" || update.source === target.extension
+            ? {
+                ...update,
+                currentVersion: update.latestVersion,
+                updateAvailable: false,
+              }
+            : update,
+        );
         return { exitCode: 0, timedOut: false };
       }
       case "settings.get":

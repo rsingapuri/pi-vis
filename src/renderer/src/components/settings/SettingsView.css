@@ -450,12 +450,18 @@
   border-radius: var(--radius-md);
 }
 
-.settings-extension-updates__header,
-.settings-extension-update {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+.settings-extension-updates__header {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
+}
+
+.settings-extension-updates__heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .settings-extension-updates__title {
@@ -464,6 +470,29 @@
   font-size: 0.857em;
   font-weight: 600;
   line-height: var(--leading-label);
+}
+
+.settings-extension-updates__columns,
+.settings-extension-update {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(4.25rem, auto) minmax(4.25rem, auto) auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settings-extension-updates__columns {
+  padding: 0 var(--space-1);
+  color: var(--text-ghost);
+  font-family: var(--font-display);
+  font-size: 0.714em;
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  line-height: var(--leading-label);
+  text-transform: uppercase;
+}
+
+.settings-extension-updates__columns span:not(:first-child) {
+  text-align: right;
 }
 
 .settings-extension-update {
@@ -483,6 +512,75 @@
   font-family: var(--font-display);
   font-size: 0.857em;
   min-width: 0;
+}
+
+.settings-extension-update__version {
+  min-width: 0;
+  color: var(--text-muted);
+  font-family: var(--font-code);
+  font-size: 0.786em;
+  line-height: var(--leading-label);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.settings-extension-update__version--new {
+  color: var(--warning);
+}
+
+.settings-extension-update__status {
+  color: var(--success);
+  font-family: var(--font-display);
+  font-size: 0.714em;
+  line-height: var(--leading-label);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.settings-extension-updates__empty {
+  margin: 0;
+  color: var(--text-ghost);
+  font-size: 0.857em;
+  line-height: var(--leading-body);
+}
+
+@media (max-width: 32rem) {
+  .settings-extension-updates__columns {
+    display: none;
+  }
+
+  .settings-extension-update {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 0.286rem;
+  }
+
+  .settings-extension-update__details {
+    grid-column: 1 / -1;
+  }
+
+  .settings-extension-update__version {
+    text-align: left;
+  }
+
+  .settings-extension-update__version::before {
+    color: var(--text-ghost);
+    font-family: var(--font-display);
+    font-size: 0.9em;
+    margin-right: 0.286rem;
+  }
+
+  .settings-extension-update__version:first-of-type::before {
+    content: "Current";
+  }
+
+  .settings-extension-update__version--latest::before {
+    content: "Latest";
+  }
+
+  .settings-extension-update__status,
+  .settings-extension-update > .settings-btn {
+    grid-column: 2;
+  }
 }
 
 /* ── Auth / Account section ─────────────────────────────────────────── */

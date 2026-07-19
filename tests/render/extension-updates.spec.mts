@@ -5,9 +5,7 @@ type PreviewHooks = {
   extensionUpdateTargets: Array<"all" | { extension: string }>;
 };
 
-test("Settings auto-checks cached Pi extension status and keeps updates extension-only", async ({
-  page,
-}) => {
+test("Settings lists every installed extension with version status", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".composer__textarea")).toBeEnabled({ timeout: 20_000 });
   await page.getByRole("button", { name: "Settings" }).click();
@@ -28,10 +26,14 @@ test("Settings auto-checks cached Pi extension status and keeps updates extensio
 
   await expect(page.getByText("@pi/mcp", { exact: true })).toBeVisible();
   await expect(page.getByText("github.com/example/pi-tools", { exact: true })).toBeVisible();
+  await expect(page.getByText("@pi/format", { exact: true })).toBeVisible();
   await expect(page.getByText("2 updates available", { exact: true })).toBeVisible();
-  await expect(page.getByText("Updates available", { exact: true })).toBeVisible();
+  await expect(page.getByText("Installed extensions", { exact: true })).toBeVisible();
+  await expect(page.getByText("1.0.0", { exact: true })).toBeVisible();
+  await expect(page.getByText("1.1.0", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Update all" })).toBeVisible();
   await expect(page.locator(".sidebar__settings-update-count")).toHaveText("2");
+  await expect(page.locator(".settings-extension-update")).toHaveCount(3);
   await expect
     .poll(() =>
       page.locator(".settings-extension-updates").evaluate((updates) => {
@@ -89,7 +91,10 @@ test("Settings auto-checks cached Pi extension status and keeps updates extensio
     .toBe(2);
 
   await page.getByRole("button", { name: "Update @pi/mcp" }).click();
-  await expect(page.getByText("@pi/mcp", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("@pi/mcp", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Update @pi/mcp" })).toHaveCount(0);
+  await expect(page.getByText("Up to date", { exact: true })).toHaveCount(2);
+  await expect(page.locator(".sidebar__settings-update-count")).toHaveText("1");
   await expect
     .poll(() =>
       page.evaluate(
