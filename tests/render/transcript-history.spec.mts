@@ -307,7 +307,9 @@ test("compact activity uses one summary disclosure for both states", async ({ pa
   await expect(content).toHaveCount(0);
 });
 
-test("attention-open compact archives mount child cards in bounded batches", async ({ page }) => {
+test("error compact archives stay closed until requested and mount in bounded batches", async ({
+  page,
+}) => {
   await page.goto("/");
   await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });
 
@@ -356,6 +358,20 @@ test("attention-open compact archives mount child cards in bounded batches", asy
   const group = page.locator(".compact-transcript-group");
   const summary = group.locator(".compact-transcript-group__summary");
   await expect(summary).toHaveText("225 tool calls, 1 error");
+  await expect(summary).toHaveAttribute("aria-expanded", "false");
+  await expect(group.locator(".compact-transcript-group__content")).toHaveCount(0);
+  await expect(page.locator(".tool-card")).toHaveCount(0);
+  expect(
+    await page.evaluate(() =>
+      (
+        window as unknown as {
+          __compactBatchRenders: Array<{ source: "archived" | "live" | "group" }>;
+        }
+      ).__compactBatchRenders.filter((render) => render.source === "archived"),
+    ),
+  ).toHaveLength(0);
+
+  await summary.click();
   await expect(summary).toHaveAttribute("aria-expanded", "true");
   await expect(group.locator(".compact-transcript-group__content")).toHaveCount(1);
   await expect(page.locator(".tool-card")).toHaveCount(225);
@@ -380,15 +396,9 @@ test("attention-open compact archives mount child cards in bounded batches", asy
     expect(current - previous).toBeLessThanOrEqual(100);
   }
 
-  const transcript = page.locator(".transcript-view");
-  await expect(transcript).toHaveClass(/transcript-view--pinned/u);
-  await expect
-    .poll(() =>
-      transcript.evaluate((element) =>
-        Math.abs(element.scrollHeight - element.scrollTop - element.clientHeight),
-      ),
-    )
-    .toBeLessThanOrEqual(1);
+  await summary.click();
+  await expect(summary).toHaveAttribute("aria-expanded", "false");
+  await expect(group.locator(".compact-transcript-group__content")).toHaveCount(0);
 });
 
 test("large compact activity stays grouped across the archive/live boundary", async ({ page }) => {

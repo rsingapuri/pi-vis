@@ -57,7 +57,7 @@ export function IconChevronUp(props: IconProps): React.ReactElement {
 export function IconChevronRight(props: IconProps): React.ReactElement {
   return (
     <Icon {...props}>
-      <polyline points="5 3 9 7 5 11" />
+      <polyline points="4 2 8 6 4 10" />
     </Icon>
   );
 }
@@ -65,7 +65,7 @@ export function IconChevronRight(props: IconProps): React.ReactElement {
 export function IconChevronLeft(props: IconProps): React.ReactElement {
   return (
     <Icon {...props}>
-      <polyline points="7 3 3 7 7 11" />
+      <polyline points="8 2 4 6 8 10" />
     </Icon>
   );
 }

@@ -41,7 +41,6 @@ import {
   transcriptBlockCount,
 } from "../../stores/transcript.js";
 import { FadeText } from "../common/FadeText.js";
-import { ScrollFadeFrame } from "../common/ScrollFadeFrame.js";
 import { Spinner } from "../common/Spinner.js";
 import { IconChevronRight, IconCopy } from "../common/icons.js";
 import { DiffBlock } from "./DiffBlock.js";
@@ -260,20 +259,12 @@ function ToolCardShell({
   );
 }
 
-function useCardDisclosure(
-  attention: boolean,
-  preserveScroll: (mutate: () => void) => void,
-): { open: boolean; toggle: () => void } {
-  const [open, setOpen] = useState(attention);
-  const userToggled = useRef(false);
-
-  useEffect(() => {
-    if (!attention || userToggled.current) return;
-    setOpen(true);
-  }, [attention]);
-
+function useCardDisclosure(preserveScroll: (mutate: () => void) => void): {
+  open: boolean;
+  toggle: () => void;
+} {
+  const [open, setOpen] = useState(false);
   const toggle = useCallback(() => {
-    userToggled.current = true;
     preserveScroll(() => setOpen((value) => !value));
   }, [preserveScroll]);
 
@@ -351,18 +342,17 @@ function StructuredPayload({
           value={text}
         />
       ) : (
-        <ScrollFadeFrame
-          frameClassName="tool-card__scroll-frame"
-          className="tool-card__scroll tool-card__scroll--structured"
-          aria-label={`${label}, complete value`}
-          role="region"
-          tabIndex={0}
-          horizontalScrollbar
-        >
-          <div className="tool-card__horizontal-scroll">
+        <div className="tool-card__scroll-frame">
+          <div
+            className="tool-card__scroll tool-card__scroll--structured"
+            aria-label={`${label}, complete value`}
+            role="region"
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: bounded scroll regions must be keyboard-scrollable
+            tabIndex={0}
+          >
             <pre className="tool-card__structured-value">{text}</pre>
           </div>
-        </ScrollFadeFrame>
+        </div>
       )}
     </section>
   );
@@ -619,29 +609,30 @@ const VirtualizedOutput = memo(function VirtualizedOutput({
   return (
     <div className="tool-card__output-panel">
       <SectionHeader title={label} meta={formatLineCount(lines.length)} copyText={text} />
-      <ScrollFadeFrame
-        frameClassName="tool-card__output-frame"
-        scrollerRef={scrollRef}
-        className="tool-card__virtual-scroll"
-        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-        aria-label={`${label} (${formatLineCount(lines.length)})`}
-        role="region"
-        tabIndex={0}
-        horizontalScrollbar
-      >
-        <div style={{ height: beforeHeight }} aria-hidden="true" />
-        {lines.slice(start, end).map((line, offset) => (
-          <div
-            // biome-ignore lint/suspicious/noArrayIndexKey: virtual rows are positional slices of immutable text
-            key={start + offset}
-            ref={offset === 0 ? measureRef : undefined}
-            className="tool-card__output-line"
-          >
-            {line || "\u00A0"}
-          </div>
-        ))}
-        <div style={{ height: afterHeight }} aria-hidden="true" />
-      </ScrollFadeFrame>
+      <div className="tool-card__output-frame">
+        <div
+          ref={scrollRef}
+          className="tool-card__virtual-scroll"
+          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+          aria-label={`${label} (${formatLineCount(lines.length)})`}
+          role="region"
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: bounded scroll regions must be keyboard-scrollable
+          tabIndex={0}
+        >
+          <div style={{ height: beforeHeight }} aria-hidden="true" />
+          {lines.slice(start, end).map((line, offset) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: virtual rows are positional slices of immutable text
+              key={start + offset}
+              ref={offset === 0 ? measureRef : undefined}
+              className="tool-card__output-line"
+            >
+              {line || "\u00A0"}
+            </div>
+          ))}
+          <div style={{ height: afterHeight }} aria-hidden="true" />
+        </div>
+      </div>
     </div>
   );
 });
@@ -656,16 +647,17 @@ function ToolScrollWell({
   label?: string | undefined;
 }): React.ReactElement {
   return (
-    <ScrollFadeFrame
-      frameClassName="tool-card__scroll-frame"
-      className={`tool-card__scroll${diff ? " tool-card__scroll--diff" : ""}`}
-      aria-label={label}
-      role="region"
-      tabIndex={0}
-      horizontalScrollbar
-    >
-      {children}
-    </ScrollFadeFrame>
+    <div className="tool-card__scroll-frame">
+      <div
+        className={`tool-card__scroll${diff ? " tool-card__scroll--diff" : ""}`}
+        aria-label={label}
+        role="region"
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: bounded scroll regions must be keyboard-scrollable
+        tabIndex={0}
+      >
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -695,7 +687,7 @@ const ToolCallBlock = memo(function ToolCallBlock({
   data: ToolCallBlockData;
   preserveScroll: (mutate: () => void) => void;
 }): React.ReactElement {
-  const { open, toggle } = useCardDisclosure(data.isError || !!data.interrupted, preserveScroll);
+  const { open, toggle } = useCardDisclosure(preserveScroll);
   const outputLines = useMemo(() => splitOutputLines(data.outputText), [data.outputText]);
   const isBash = data.toolName === "bash";
   const subject = summarizeInput(data.toolName, data.input);
@@ -846,7 +838,7 @@ const BashBlock = memo(function BashBlock({
   const outputLines = useMemo(() => splitOutputLines(data.outputText), [data.outputText]);
   const isError = data.exitCode != null && data.exitCode !== 0;
   const wasInterrupted = !!data.interrupted || !!data.cancelled;
-  const { open, toggle } = useCardDisclosure(isError || wasInterrupted, preserveScroll);
+  const { open, toggle } = useCardDisclosure(preserveScroll);
   const status = data.isStreaming
     ? "running"
     : isError
@@ -943,7 +935,6 @@ interface ActivityCardProps {
   content?: string | undefined;
   badge?: string | undefined;
   isError?: boolean | undefined;
-  attention?: boolean | undefined;
   metadata?: unknown;
   images?: string[] | undefined;
   additionalContent?: React.ReactNode;
@@ -956,7 +947,6 @@ const ActivityCard = memo(function ActivityCard({
   content,
   badge,
   isError = false,
-  attention = false,
   metadata,
   images,
   additionalContent,
@@ -965,7 +955,7 @@ const ActivityCard = memo(function ActivityCard({
   const text = content ?? "";
   const hasRetainedContent = content !== undefined;
   const whitespaceOnly = hasRetainedContent && text.trim().length === 0;
-  const { open, toggle } = useCardDisclosure(isError || attention, preserveScroll);
+  const { open, toggle } = useCardDisclosure(preserveScroll);
   const largeContent =
     text.length >= LARGE_STRUCTURED_TEXT_CHARS || splitOutputLines(text).length >= LARGE_DIFF_LINES;
 
@@ -1067,7 +1057,6 @@ const CompactionBlock = memo(function CompactionBlock({
       content={content}
       badge={badge ?? undefined}
       isError={!!data.errorMessage}
-      attention={!!data.aborted || !!data.willRetry}
       metadata={metadata}
       preserveScroll={preserveScroll}
     />
@@ -1855,7 +1844,6 @@ const CompactTranscriptGroup = memo(function CompactTranscriptGroup({
   items,
   summary,
   streaming,
-  attention = false,
   preserveScroll,
 }: {
   sessionId: SessionId;
@@ -1863,10 +1851,9 @@ const CompactTranscriptGroup = memo(function CompactTranscriptGroup({
   items: TranscriptRenderItem[];
   summary: string;
   streaming: boolean;
-  attention?: boolean | undefined;
   preserveScroll: (mutate: () => void) => void;
 }): React.ReactElement {
-  const { open, toggle } = useCardDisclosure(attention, preserveScroll);
+  const { open, toggle } = useCardDisclosure(preserveScroll);
   const contentId = useId();
 
   return (
@@ -1985,7 +1972,6 @@ const ArchivedCompactChunk = memo(function ArchivedCompactChunk({
             items={item.items}
             summary={item.summary}
             streaming={item.streaming}
-            attention={item.stats.errors > 0 || item.stats.interrupted > 0}
             preserveScroll={preserveScroll}
           />
         ),
@@ -2137,8 +2123,8 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
 
   // Disclosure actions are reading navigation, not streaming output. Anchor
   // the current viewport even when it was following the bottom so expanding a
-  // card does not move the clicked header off-screen. Normal output deltas and
-  // automatic attention expansion still retain bottom-follow behavior.
+  // card does not move the clicked header off-screen. Normal output deltas
+  // retain bottom-follow behavior.
   const preserveScroll = useCallback(
     (mutate: () => void) => {
       const el = scrollRef.current;
@@ -2487,10 +2473,6 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
             items={leadingLiveCompactGroup?.items ?? EMPTY_COMPACT_GROUP_ITEMS}
             summary={compactBoundarySummary}
             streaming={compactBoundaryStreaming}
-            attention={
-              (compactBoundaryStats?.errors ?? 0) > 0 ||
-              (compactBoundaryStats?.interrupted ?? 0) > 0
-            }
             preserveScroll={preserveScroll}
           />
         )}
@@ -2510,7 +2492,6 @@ export function TranscriptView({ sessionId }: TranscriptViewProps): React.ReactE
                   items={item.items}
                   summary={item.summary}
                   streaming={item.streaming}
-                  attention={item.stats.errors > 0 || item.stats.interrupted > 0}
                   preserveScroll={preserveScroll}
                 />
               ),

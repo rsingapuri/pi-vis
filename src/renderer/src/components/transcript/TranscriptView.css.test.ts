@@ -39,6 +39,31 @@ describe("TranscriptView CSS", () => {
     expect(css).not.toContain(".tool-card__output-frame::before");
   });
 
+  it("keeps tool disclosure chrome quiet and gives each payload one scroll owner", () => {
+    const css = readFileSync(new URL("./TranscriptView.css", import.meta.url), "utf8");
+    const diffCss = readFileSync(new URL("./DiffBlock.css", import.meta.url), "utf8");
+    const focusRule =
+      css.match(/\.tool-card__header:focus-visible\s*{(?<body>[^}]*)}/s)?.groups?.body ?? "";
+    const focusChevronRule =
+      css.match(/\.tool-card__header:focus-visible \.tool-card__chevron\s*{(?<body>[^}]*)}/s)
+        ?.groups?.body ?? "";
+    const bodyRule = css.match(/\.tool-card__body\s*{(?<body>[^}]*)}/s)?.groups?.body ?? "";
+    const scrollRule = css.match(/\.tool-card__scroll\s*{(?<body>[^}]*)}/s)?.groups?.body ?? "";
+
+    expect(css).not.toMatch(/\.tool-card:hover\s*{/);
+    expect(css).not.toMatch(/\.tool-card__header:hover\s*{/);
+    expect(focusRule).toContain("outline: none;");
+    expect(focusRule).toContain("box-shadow: none;");
+    expect(focusChevronRule).toContain("stroke-width: 2;");
+    expect(bodyRule).not.toContain("border-top");
+    expect(scrollRule).toContain("overflow: auto;");
+    expect(css).not.toContain(".tool-card__horizontal-scroll");
+    expect(diffCss).not.toContain(".diff-block__scroll");
+    expect(css).toMatch(
+      /\.activity-card__markdown \.markdown-table-scroll,[^{]*\.activity-card__markdown \.shiki > code,[^{]*\.activity-card__markdown \.code-block--plain > code\s*{[^}]*overflow: visible;/s,
+    );
+  });
+
   it("renders the working timer like compact transcript summaries", () => {
     const css = readFileSync(new URL("./TranscriptView.css", import.meta.url), "utf8");
 

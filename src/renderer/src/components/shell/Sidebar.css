@@ -221,15 +221,11 @@
   background: var(--surface-3);
   color: var(--danger);
 }
-/* Shared IconChevronRight sits a touch low in a flex-centered square; nudge it
-   up here, then rotate the icon (not the button box) when expanded so the two
-   workspace actions stay vertically aligned with each other and the label. */
 .sidebar__workspace-chevron .icon {
-  transform: translateY(-0.071rem);
   transition: transform 0.12s ease;
 }
 .sidebar__workspace-chevron--expanded .icon {
-  transform: translateY(-0.071rem) rotate(90deg);
+  transform: rotate(90deg);
 }
 
 .sidebar__workspace-name {

@@ -352,6 +352,9 @@ export function createUIContext({
   // retired. Preserve that identity across promises/timers created by teardown
   // so none of its descendants can publish widgets into a live generation.
   const widgetDisposalContext = new AsyncLocalStorage();
+  // A full extension-generation retirement is broader than an ordinary widget
+  // replacement: every UI surface from its async descendants must stay inert.
+  const extensionRetirementContext = new AsyncLocalStorage();
   const catalog = {
     notifications: [],
     statuses: new Map(),
@@ -600,10 +603,37 @@ export function createUIContext({
   // newer draft or a replacement TUI.
   const pendingClipboardReads = new Map();
 
-  // onTerminalInput handlers live host-side, decoupled from TUI lifetime so a
-  // /reload-induced TUI recreate re-attaches them to the fresh TUI. Each entry
-  // is { handler, unsubscribe }.
+  // onTerminalInput handlers live host-side, decoupled from one TUI instance
+  // so an in-generation teardown/recreate can re-attach them. Extension
+  // invalidation clears the registrations before the successor binds.
   const terminalInputHandlers = new Set();
+
+  function resetExtensionPresentation() {
+    // Match Pi's InteractiveMode.resetExtensionUI lifecycle: presentation
+    // owned by the retiring extension generation must not appear in the
+    // successor baseline. Notification history, capability diagnostics,
+    // editor custody, and the user's tool-output preference are session state
+    // and deliberately survive.
+    //
+    // Dispose first: extension-owned teardown may synchronously publish UI.
+    // Clearing after every disposer returns makes this one operation the
+    // generation boundary and prevents teardown from repopulating the catalog.
+    extensionRetirementContext.run(true, () => disposeUnifiedTui());
+    catalog.statuses.clear();
+    catalog.widgets.clear();
+    catalog.title = undefined;
+    catalog.workingMessage = undefined;
+    catalog.workingVisible = undefined;
+    catalog.hiddenThinkingLabel = undefined;
+    for (const entry of terminalInputHandlers) {
+      try {
+        entry.unsubscribe?.();
+      } catch {
+        /* retiring TUI already detached */
+      }
+    }
+    terminalInputHandlers.clear();
+  }
 
   // ─── Unified TUI lifecycle ─────────────────────────────────────────────────────
 
@@ -1007,6 +1037,13 @@ export function createUIContext({
     return widgetDisposalContext.run(true, callback);
   }
 
+  function isRetiringExtensionWork() {
+    // Keep every public UI surface owned by the retiring extension generation
+    // inert across its synchronous, Promise, and timer descendants. Ordinary
+    // widget replacement keeps its normal cleanup side effects.
+    return extensionRetirementContext.getStore() === true;
+  }
+
   function acquireWidgetSource(key, source) {
     let ownership = widgetSourceOwnership.get(source);
     if (!ownership) {
@@ -1216,24 +1253,29 @@ export function createUIContext({
     // `/agents → Settings` died on `choice.startsWith` before opening the menu.
     // Unwrap here so the host is indistinguishable from pi's own uiContext.
     select: async (title, options, opts) => {
+      if (isRetiringExtensionWork()) return undefined;
       const r = await trackBlockingUi(createDialog("select", title, { options, opts }));
       return r?.cancelled ? undefined : r?.value;
     },
     confirm: async (title, message, opts) => {
+      if (isRetiringExtensionWork()) return false;
       const r = await trackBlockingUi(createDialog("confirm", title, { message, opts }));
       return r?.confirmed === true; // cancel / anything else → false
     },
     input: async (title, placeholder, opts) => {
+      if (isRetiringExtensionWork()) return undefined;
       const r = await trackBlockingUi(createDialog("input", title, { placeholder, opts }));
       return r?.cancelled ? undefined : r?.value;
     },
     editor: async (title, prefill) => {
+      if (isRetiringExtensionWork()) return undefined;
       const r = await trackBlockingUi(createDialog("editor", title, { prefill }));
       return r?.cancelled ? undefined : r?.value;
     },
 
     // ── Fire-and-forget notifications ──
     notify: (message, notifyType) => {
+      if (isRetiringExtensionWork()) return;
       catalog.notifications.push({
         id: `notification-${++notificationSequence}`,
         message,
@@ -1247,6 +1289,7 @@ export function createUIContext({
       });
     },
     setStatus: (key, text) => {
+      if (isRetiringExtensionWork()) return;
       if (text === undefined) catalog.statuses.delete(key);
       else catalog.statuses.set(key, text);
       sendToMain({
@@ -1257,6 +1300,7 @@ export function createUIContext({
       });
     },
     setTitle: (title) => {
+      if (isRetiringExtensionWork()) return;
       catalog.title = title;
       sendToMain({
         type: "extension_ui_request",
@@ -1265,6 +1309,7 @@ export function createUIContext({
       });
     },
     setEditorText: (text) => {
+      if (isRetiringExtensionWork()) return;
       editorRevision++;
       editorText = text;
       if (unifiedTuiState) {
@@ -1286,7 +1331,7 @@ export function createUIContext({
     setWidget: (key, content, options) => {
       // A retiring source/TUI may schedule synchronous or asynchronous cleanup.
       // Every descendant write is stale, including a write to a different key.
-      if (widgetDisposalContext.getStore() === true) return;
+      if (widgetDisposalContext.getStore() === true || isRetiringExtensionWork()) return;
 
       const isFactory = typeof content === "function";
       const isStatic = Array.isArray(content);
@@ -1441,6 +1486,7 @@ export function createUIContext({
     getTheme: (_name) => undefined,
     setTheme: (_theme) => {
       const error = "Theme switching not available in pi-vis";
+      if (isRetiringExtensionWork()) return { success: false, error };
       if (!catalog.capabilityDiagnostics.includes(error)) catalog.capabilityDiagnostics.push(error);
       sendToMain({
         type: "extension_ui_request",
@@ -1455,6 +1501,7 @@ export function createUIContext({
     setFooter: (_factory) => {},
     setHeader: (_factory) => {},
     onTerminalInput: (handler) => {
+      if (isRetiringExtensionWork()) return () => {};
       // Full parity with pi's TUI: the handler joins the TUI's pre-editor input
       // chain (it can consume or rewrite keystrokes before the focused Editor).
       // Stored host-side so a /reload TUI recreate re-attaches it. When no
@@ -1474,16 +1521,20 @@ export function createUIContext({
       };
     },
     setWorkingMessage: (message) => {
+      if (isRetiringExtensionWork()) return;
       catalog.workingMessage = message;
     },
     setWorkingVisible: (visible) => {
+      if (isRetiringExtensionWork()) return;
       catalog.workingVisible = visible;
     },
     setWorkingIndicator: (_options) => {},
     setHiddenThinkingLabel: (label) => {
+      if (isRetiringExtensionWork()) return;
       catalog.hiddenThinkingLabel = label;
     },
     pasteToEditor: (text) => {
+      if (isRetiringExtensionWork()) return;
       if (unifiedTuiState) {
         const before =
           unifiedTuiState.editor.getExpandedText?.() ??
@@ -1512,6 +1563,7 @@ export function createUIContext({
     getEditorComponent: () => undefined,
     getToolsExpanded: () => catalog.toolsExpanded,
     setToolsExpanded: (expanded) => {
+      if (isRetiringExtensionWork()) return;
       catalog.toolsExpanded = expanded;
     },
 
@@ -1533,6 +1585,7 @@ export function createUIContext({
     //  - The promise settles exactly once: `closed` guards both done() and the
     //    factory-error path (the old code could resolve via done() then reject).
     custom: async (factory, options) => {
+      if (isRetiringExtensionWork()) return undefined;
       // ── Reuse path: a unified TUI already owns this session's panel. ──
       // Showing a unified-origin custom component as an overlay on THAT TUI
       // (rather than spawning a second TUI/xterm) is necessary for correct focus
@@ -1696,6 +1749,7 @@ export function createUIContext({
     runWithInvocationSurface,
     state: {
       catalogSnapshot,
+      resetExtensionPresentation,
       addCapabilityDiagnostic,
       editorSnapshot,
       acceptEditorSubmission,

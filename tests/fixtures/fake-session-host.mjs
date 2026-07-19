@@ -503,6 +503,11 @@ async function runHello(submission) {
   const text = "Hello! I'm your pi coding agent.";
   const message = { role: "assistant" };
   emitEvent({ type: "message_start", message });
+  // Process-level ESC tests must not race a short synthetic stream's natural
+  // completion while their Vitest worker is descheduled by the full suite.
+  // This explicit fixture seam leaves the recorded operation active for the
+  // tested interrupt to end, without changing ordinary fake-host timing.
+  if (String(submission.text).includes("[test:hold-streaming]")) return;
   for (const delta of ["Hello! ", "I'm ", "your pi ", "coding agent."]) {
     emitEvent({
       type: "message_update",

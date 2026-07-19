@@ -108,6 +108,16 @@ function makeRuntime(session) {
   };
 }
 
+function makeUiState(overrides = {}) {
+  return {
+    catalogSnapshot: () => ({}),
+    editorSnapshot: () => ({ revision: 0, text: "", attachments: [] }),
+    acceptEditorSubmission: () => false,
+    applyEditorPatch: () => ({ accepted: false }),
+    ...overrides,
+  };
+}
+
 /** Build a bridge + a `send` spy; return helpers to drive commands. */
 function setup(sessionOverrides, bridgeOverrides = {}) {
   const session = makeSession(sessionOverrides);
@@ -189,11 +199,16 @@ describe("setupCommandBridge — wiring", () => {
 
   it("retires dialogs from the old extension generation at invalidation", () => {
     const cancelDialogs = vi.fn();
-    const { runtime } = setup(undefined, { cancelDialogs });
+    const resetExtensionPresentation = vi.fn();
+    const { runtime } = setup(undefined, {
+      cancelDialogs,
+      uiState: makeUiState({ resetExtensionPresentation }),
+    });
 
     runtime.setBeforeSessionInvalidate.mock.calls[0][0]();
 
     expect(cancelDialogs).toHaveBeenCalledTimes(1);
+    expect(resetExtensionPresentation).toHaveBeenCalledTimes(1);
   });
 
   it("rejects extension-action reload against fresh active host getters", async () => {
@@ -206,7 +221,11 @@ describe("setupCommandBridge — wiring", () => {
 
   it("cancels dialogs from the old extension generation during reload", async () => {
     const cancelDialogs = vi.fn();
-    const { session, handleReload } = setup(undefined, { cancelDialogs });
+    const resetExtensionPresentation = vi.fn();
+    const { session, handleReload } = setup(undefined, {
+      cancelDialogs,
+      uiState: makeUiState({ resetExtensionPresentation }),
+    });
     session.reload.mockImplementationOnce(async ({ beforeSessionStart }) => {
       await beforeSessionStart();
     });
@@ -214,6 +233,7 @@ describe("setupCommandBridge — wiring", () => {
     await handleReload();
 
     expect(cancelDialogs).toHaveBeenCalledTimes(1);
+    expect(resetExtensionPresentation).toHaveBeenCalledTimes(1);
   });
 
   it("clears reload command text in the successor editor baseline", async () => {

@@ -3,6 +3,9 @@
    semantic meaning. */
 
 .diff-block {
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
   font-family: var(--font-code);
   font-size: var(--font-size-code);
   /* Same code canvas as the surrounding tool-card well (--bg) so the diff
@@ -13,20 +16,6 @@
   overflow: hidden;
   padding: var(--space-1);
   margin: 0.286rem 0;
-}
-
-.diff-block__scroll {
-  overflow-x: auto;
-  overflow-y: hidden;
-  border-radius: calc(var(--radius-md) - var(--space-1));
-}
-
-.diff-block__inner {
-  /* Size to the longest line, but never smaller than the viewport. Rows then
-     fill this inner canvas so their semantic tint continues across the whole
-     horizontally scrollable area. */
-  width: max-content;
-  min-width: 100%;
 }
 
 .diff-block__line {

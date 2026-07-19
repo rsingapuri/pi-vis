@@ -131,7 +131,7 @@ describe("fake session host ESC process semantics", () => {
   it.each([
     ["/test-navigation", "navigation"],
     ["/test-retry", "retry"],
-    ["hello cancellable stream", "streaming"],
+    ["hello cancellable stream [test:hold-streaming]", "streaming"],
   ])("cancels %s as %s without late completion", async (text, target) => {
     await submit(text);
     const started = await waitForLog("started", target);
@@ -260,7 +260,7 @@ describe("fake session host ESC process semantics", () => {
   });
 
   it("correlates an empty streaming restoration with the escape result", async () => {
-    await submit("hello empty queue");
+    await submit("hello empty queue [test:hold-streaming]");
     await waitForLog("started", "streaming");
     const result = await requestEscape();
     expect(result).toMatchObject({ target: "streaming", restorationId: expect.any(String) });
@@ -274,7 +274,7 @@ describe("fake session host ESC process semantics", () => {
   });
 
   it("restores queued follow-up text exactly once when streaming is interrupted", async () => {
-    await submit("hello queue owner");
+    await submit("hello queue owner [test:hold-streaming]");
     await waitForLog("started", "streaming");
     await submit("queued for review", "followUp", [
       { type: "image", data: "queued-image", mimeType: "image/png" },

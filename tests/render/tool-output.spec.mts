@@ -270,7 +270,156 @@ test.describe("unified tool card disclosure", () => {
     await expect(card.locator("details")).toHaveCount(0);
   });
 
-  test("attention states auto-open once but never override a user's collapse", async ({ page }) => {
+  test("header chrome stays neutral, centered, seamless, and keyboard controlled", async ({
+    page,
+  }) => {
+    await seedHistory(page, [
+      {
+        id: "chrome-tool",
+        type: "tool_call",
+        data: {
+          toolCallId: "chrome-call",
+          toolName: "chrome_tool",
+          input: { path: "chrome.txt" },
+          outputText: "chrome output",
+          isError: false,
+          isStreaming: false,
+        },
+      },
+    ]);
+
+    const card = page.locator(".tool-card").filter({ hasText: "chrome_tool" });
+    const header = card.getByRole("button", { name: /^chrome_tool tool call details/u });
+    const chevron = card.locator(".tool-card__chevron");
+    const label = card.locator(".tool-card__name");
+    await expect(header).toHaveAttribute("aria-expanded", "false");
+
+    const centeredChevron = async (): Promise<{ viewBoxDelta: number; labelDelta: number }> =>
+      card.evaluate((element) => {
+        const svg = element.querySelector<SVGSVGElement>(".tool-card__chevron");
+        const shape = svg?.querySelector<SVGGraphicsElement>("polyline");
+        const name = element.querySelector<HTMLElement>(".tool-card__name");
+        if (!svg || !shape || !name) throw new Error("tool card header geometry is incomplete");
+        const box = shape.getBBox();
+        const viewBox = svg.viewBox.baseVal;
+        const svgRect = svg.getBoundingClientRect();
+        const nameRect = name.getBoundingClientRect();
+        return {
+          viewBoxDelta: box.y + box.height / 2 - (viewBox.y + viewBox.height / 2),
+          labelDelta: svgRect.top + svgRect.height / 2 - (nameRect.top + nameRect.height / 2),
+        };
+      });
+
+    const collapsedCenter = await centeredChevron();
+    expect(collapsedCenter.viewBoxDelta).toBe(0);
+    expect(Math.abs(collapsedCenter.labelDelta)).toBeLessThanOrEqual(0.1);
+    await expect(chevron).toBeVisible();
+    await expect(label).toBeVisible();
+
+    const restingChrome = await card.evaluate((element) => {
+      const headerElement = element.querySelector<HTMLElement>(".tool-card__header");
+      if (!headerElement) throw new Error("tool card header is missing");
+      return {
+        background: getComputedStyle(headerElement).backgroundColor,
+        borderColor: getComputedStyle(element).borderColor,
+      };
+    });
+    await header.hover();
+    await page.waitForTimeout(200);
+    await expect
+      .poll(() =>
+        card.evaluate((element) => {
+          const headerElement = element.querySelector<HTMLElement>(".tool-card__header");
+          if (!headerElement) throw new Error("tool card header is missing");
+          return {
+            background: getComputedStyle(headerElement).backgroundColor,
+            borderColor: getComputedStyle(element).borderColor,
+          };
+        }),
+      )
+      .toEqual(restingChrome);
+
+    // Establish keyboard modality before focusing directly so :focus-visible
+    // is exercised, not merely the pointer-focus suppression rule.
+    await page.keyboard.press("Tab");
+    await header.focus();
+    await expect(header).toBeFocused();
+    await expect
+      .poll(() => header.evaluate((element) => element.matches(":focus-visible")))
+      .toBe(true);
+    await expect(header).toHaveCSS("outline-style", "none");
+    await expect(chevron).toHaveCSS("stroke-width", "2px");
+
+    await page.keyboard.press("Enter");
+    await expect(header).toBeFocused();
+    await expect(header).toHaveAttribute("aria-expanded", "true");
+    await expect(card.locator(".tool-card__body")).toHaveCSS("border-top-style", "none");
+    const expandedCenter = await centeredChevron();
+    expect(expandedCenter.viewBoxDelta).toBe(0);
+    expect(Math.abs(expandedCenter.labelDelta)).toBeLessThanOrEqual(0.1);
+
+    await page.keyboard.press("Space");
+    await expect(header).toBeFocused();
+    await expect(header).toHaveAttribute("aria-expanded", "false");
+  });
+
+  test("errors and interruptions stay collapsed until the user opens them", async ({ page }) => {
+    await seedHistory(page, [
+      {
+        id: "seeded-error-tool",
+        type: "tool_call",
+        data: {
+          toolCallId: "seeded-error-call",
+          toolName: "seeded_error_tool",
+          input: { path: "seeded-error.txt" },
+          outputText: "SEEDED ERROR OUTPUT",
+          isError: true,
+          isStreaming: false,
+        },
+      },
+      {
+        id: "failed-bash",
+        type: "bash",
+        data: {
+          command: "failing-command-sentinel",
+          outputText: "FAILED BASH OUTPUT",
+          isStreaming: false,
+          exitCode: 7,
+        },
+      },
+      {
+        id: "interrupted-tool",
+        type: "tool_call",
+        data: {
+          toolCallId: "interrupted-call",
+          toolName: "interrupted_tool",
+          outputText: "INTERRUPTED TOOL OUTPUT",
+          interrupted: true,
+          isError: false,
+          isStreaming: false,
+        },
+      },
+      {
+        id: "failed-compaction",
+        type: "compaction",
+        data: {
+          errorMessage: "FAILED COMPACTION OUTPUT",
+          reason: "manual",
+        },
+      },
+    ]);
+
+    const seededCases = [
+      page.locator(".tool-card").filter({ hasText: "seeded_error_tool" }),
+      page.locator(".tool-card").filter({ hasText: "failing-command-sentinel" }),
+      page.locator(".tool-card").filter({ hasText: "interrupted_tool" }),
+      page.locator(".tool-card").filter({ hasText: "Compaction failed" }),
+    ];
+    for (const card of seededCases) {
+      await expect(card.locator(".tool-card__header")).toHaveAttribute("aria-expanded", "false");
+      await expect(card.locator(".tool-card__body")).toHaveCount(0);
+    }
+
     await page.evaluate(() => {
       const state = (
         window as unknown as { __pivisStore: { getState: () => PreviewStoreState } }
@@ -302,13 +451,15 @@ test.describe("unified tool card disclosure", () => {
       });
     });
 
+    await expect(header).toHaveAttribute("aria-expanded", "false");
+    await expect(card.locator(".tool-card__body")).toHaveCount(0);
+    await expect(card).not.toContainText("ATTENTION ERROR OUTPUT");
+    await header.click();
     await expect(header).toHaveAttribute("aria-expanded", "true");
     await expect(card).toContainText("ATTENTION ERROR OUTPUT");
-    await header.click();
-    await expect(header).toHaveAttribute("aria-expanded", "false");
+    await expect(card.locator(".tool-card__body")).toHaveCSS("border-top-style", "none");
 
-    // Enrich the already failed record while attention remains true. The
-    // explicit user choice must win over subsequent renders.
+    // Enriching a failed record must not override the user's disclosure state.
     await page.evaluate(() => {
       const state = (
         window as unknown as { __pivisStore: { getState: () => PreviewStoreState } }
@@ -324,6 +475,9 @@ test.describe("unified tool card disclosure", () => {
         },
       });
     });
+    await expect(header).toHaveAttribute("aria-expanded", "true");
+    await expect(card).toContainText("UPDATED ATTENTION OUTPUT");
+    await header.click();
     await expect(header).toHaveAttribute("aria-expanded", "false");
     await expect(card.locator(".tool-card__body")).toHaveCount(0);
   });
@@ -363,6 +517,174 @@ test.describe("unified tool card disclosure", () => {
     await expect(metadata).toContainText("SHELL METADATA FINAL SENTINEL");
     await expect(metadata).toContainText('"truncated": true');
     await expect(metadata).toContainText('"excludeFromContext": true');
+  });
+
+  test("wide and tall payloads use one native scroll owner while prose wraps", async ({ page }) => {
+    const wideStructuredSentinel = `${"STRUCTURED-WIDE-".repeat(180)}END`;
+    const structuredInput = Object.fromEntries(
+      Array.from({ length: 80 }, (_, index) => [
+        `structured_row_${String(index).padStart(3, "0")}`,
+        index === 0 ? wideStructuredSentinel : `structured value ${index}`,
+      ]),
+    );
+    const wideDiffSentinel = `+${"DIFF-WIDE-".repeat(220)}END`;
+    const diff = [
+      "--- a/scroll.txt",
+      "+++ b/scroll.txt",
+      "@@ -1,80 +1,80 @@",
+      wideDiffSentinel,
+      ...Array.from({ length: 80 }, (_, index) => `+diff row ${String(index).padStart(3, "0")}`),
+    ].join("\n");
+    const activityContent = Array.from(
+      { length: 36 },
+      (_, index) =>
+        `Wrapping activity paragraph ${index}: ${"ordinary prose with spaces ".repeat(14)}`,
+    ).join("\n\n");
+    const wideCodeSentinel = `${"CODE-WIDE-".repeat(180)}END`;
+    const wideTableSentinel = `${"TABLE-WIDE-".repeat(180)}END`;
+    const markdownScrollContent = [
+      "Tall Markdown payload",
+      "",
+      "```text",
+      wideCodeSentinel,
+      ...Array.from({ length: 48 }, (_, index) => `code row ${String(index).padStart(3, "0")}`),
+      "```",
+      "",
+      "| Kind | Complete value |",
+      "| --- | --- |",
+      `| table | ${wideTableSentinel} |`,
+    ].join("\n");
+
+    await seedHistory(page, [
+      {
+        id: "native-scroll-tool",
+        type: "tool_call",
+        data: {
+          toolCallId: "native-scroll-call",
+          toolName: "native_scroll_tool",
+          input: structuredInput,
+          outputText: "",
+          diff,
+          isError: false,
+          isStreaming: false,
+        },
+      },
+      {
+        id: "wrapping-activity",
+        type: "custom_message",
+        data: {
+          customType: "wrapping-activity",
+          content: activityContent,
+        },
+      },
+      {
+        id: "markdown-scroll-activity",
+        type: "custom_message",
+        data: {
+          customType: "markdown-scroll-activity",
+          content: markdownScrollContent,
+        },
+      },
+    ]);
+
+    const toolCard = page.locator(".tool-card").filter({ hasText: "native_scroll_tool" });
+    await toolCard.getByRole("button", { name: /^native_scroll_tool tool call details/u }).click();
+
+    const structuredRegion = toolCard.getByRole("region", {
+      name: "Input, complete value",
+    });
+    const diffRegion = toolCard.getByRole("region", { name: "Complete diff" });
+    for (const region of [structuredRegion, diffRegion]) {
+      await expect(region).toHaveCSS("overflow-x", "auto");
+      await expect(region).toHaveCSS("overflow-y", "auto");
+      const initial = await region.evaluate((element) => ({
+        clientHeight: element.clientHeight,
+        clientWidth: element.clientWidth,
+        scrollHeight: element.scrollHeight,
+        scrollWidth: element.scrollWidth,
+        scrollTop: element.scrollTop,
+      }));
+      expect(initial.scrollHeight).toBeGreaterThan(initial.clientHeight);
+      expect(initial.scrollWidth).toBeGreaterThan(initial.clientWidth);
+      expect(initial.scrollTop).toBe(0);
+
+      const scrolled = await region.evaluate((element) => {
+        element.scrollLeft = element.scrollWidth;
+        return { scrollLeft: element.scrollLeft, scrollTop: element.scrollTop };
+      });
+      expect(scrolled.scrollLeft).toBeGreaterThan(0);
+      expect(scrolled.scrollTop).toBe(0);
+    }
+    await expect(structuredRegion).toContainText(wideStructuredSentinel);
+    await expect(diffRegion).toContainText(wideDiffSentinel);
+    await expect(toolCard.locator(".tool-card__horizontal-scroll")).toHaveCount(0);
+    await expect(toolCard.locator(".diff-block__scroll")).toHaveCount(0);
+    await expect(toolCard.locator(".scroll-fade-frame")).toHaveCount(0);
+
+    const activityCard = page.locator(".tool-card").filter({ hasText: "wrapping-activity" });
+    await activityCard
+      .getByRole("button", { name: /^extension activity details — wrapping-activity/u })
+      .click();
+    const activityRegion = activityCard.getByRole("region", {
+      name: "Complete activity message",
+    });
+    const activityGeometry = await activityRegion.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      clientWidth: element.clientWidth,
+      scrollHeight: element.scrollHeight,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(activityGeometry.scrollHeight).toBeGreaterThan(activityGeometry.clientHeight);
+    expect(activityGeometry.scrollWidth).toBeLessThanOrEqual(activityGeometry.clientWidth + 1);
+    await expect(activityCard.locator(".scroll-fade-frame")).toHaveCount(0);
+
+    const markdownCard = page.locator(".tool-card").filter({ hasText: "markdown-scroll-activity" });
+    await markdownCard
+      .getByRole("button", { name: /^extension activity details — markdown-scroll-activity/u })
+      .click();
+    const markdownRegion = markdownCard.getByRole("region", {
+      name: "Complete activity message",
+    });
+    await expect(markdownRegion).toContainText(wideCodeSentinel);
+    await expect(markdownRegion).toContainText(wideTableSentinel);
+    await expect(markdownRegion).toHaveCSS("overflow-x", "auto");
+    await expect(markdownRegion).toHaveCSS("overflow-y", "auto");
+    await expect(markdownCard.locator(".markdown-table-scroll")).toHaveCSS("overflow-x", "visible");
+    await expect(
+      markdownCard.locator(".shiki > code, .code-block--plain > code").first(),
+    ).toHaveCSS("overflow-x", "visible");
+
+    const markdownGeometry = await markdownRegion.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      clientWidth: element.clientWidth,
+      scrollHeight: element.scrollHeight,
+      scrollWidth: element.scrollWidth,
+      scrollTop: element.scrollTop,
+    }));
+    expect(markdownGeometry.scrollHeight).toBeGreaterThan(markdownGeometry.clientHeight);
+    expect(markdownGeometry.scrollWidth).toBeGreaterThan(markdownGeometry.clientWidth);
+    expect(markdownGeometry.scrollTop).toBe(0);
+
+    const nestedHorizontalOwners = await markdownRegion.evaluate((element) =>
+      Array.from(element.querySelectorAll<HTMLElement>("*"))
+        .filter((candidate) => {
+          const overflow = getComputedStyle(candidate).overflowX;
+          return (
+            (overflow === "auto" || overflow === "scroll") &&
+            candidate.scrollWidth > candidate.clientWidth + 1
+          );
+        })
+        .map((candidate) => candidate.className),
+    );
+    expect(nestedHorizontalOwners).toEqual([]);
+
+    const markdownScrolled = await markdownRegion.evaluate((element) => {
+      element.scrollLeft = element.scrollWidth;
+      return { scrollLeft: element.scrollLeft, scrollTop: element.scrollTop };
+    });
+    expect(markdownScrolled.scrollLeft).toBeGreaterThan(0);
+    expect(markdownScrolled.scrollTop).toBe(0);
+    await expect(markdownCard.locator(".scroll-fade-frame")).toHaveCount(0);
   });
 
   test("compaction, branch, and extension activity share the one-click inspector", async ({
@@ -741,6 +1063,6 @@ test.describe("large tool output inspector", () => {
       el.scrollTop = el.scrollHeight;
     });
     await expect(card.locator(".tool-card__output-line").last()).toContainText("preview-line-180");
-    await expect(card.locator(".scroll-fade-frame__edge--top")).toBeVisible();
+    await expect(card.locator(".scroll-fade-frame")).toHaveCount(0);
   });
 });

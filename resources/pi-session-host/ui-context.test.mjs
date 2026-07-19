@@ -1158,6 +1158,87 @@ describe("unified TUI: authoritative submit draft", () => {
   });
 });
 
+describe("extension presentation lifecycle", () => {
+  it("keeps non-widget cleanup effects during ordinary in-generation disposal", async () => {
+    const h = makeHarness();
+    const factory = makeFactory();
+    factory.component.dispose.mockImplementation(async () => {
+      await Promise.resolve();
+      h.context.setStatus("ordinary-status", undefined);
+      h.context.setTitle(undefined);
+      h.context.notify("ordinary cleanup completed", "info");
+    });
+    h.context.setStatus("ordinary-status", "active");
+    h.context.setTitle("ordinary title");
+    h.context.setWidget("ordinary", factory);
+
+    h.context.setWidget("ordinary", undefined);
+    await Promise.resolve();
+
+    expect(h.bundle.state.catalogSnapshot()).toMatchObject({
+      statuses: {},
+      notifications: [expect.objectContaining({ message: "ordinary cleanup completed" })],
+    });
+    expect(h.bundle.state.catalogSnapshot()).not.toHaveProperty("title");
+  });
+
+  it("clears retiring-generation presentation while preserving session-owned history and editor custody", async () => {
+    const h = makeHarness();
+    const handler = vi.fn();
+    const lateHandler = vi.fn();
+    const factory = makeFactory();
+    factory.component.dispose.mockImplementation(async () => {
+      await Promise.resolve();
+      h.context.notify("teardown notification", "warning");
+      h.context.setStatus("teardown-status", "must not escape");
+      h.context.setTitle("teardown title");
+      h.context.setWorkingMessage("teardown working message");
+      h.context.setWorkingVisible(true);
+      h.context.setHiddenThinkingLabel("teardown thinking label");
+      h.context.setToolsExpanded(false);
+      h.context.setEditorText("teardown draft");
+      h.context.onTerminalInput(lateHandler);
+    });
+    h.context.notify("keep this notification", "info");
+    h.bundle.state.addCapabilityDiagnostic("keep this diagnostic");
+    h.context.setStatus("old-status", "old value");
+    h.context.setWidget("old-widget", ["old value"]);
+    h.context.setTitle("old title");
+    h.context.setWorkingMessage("old working message");
+    h.context.setWorkingVisible(false);
+    h.context.setHiddenThinkingLabel("old thinking label");
+    h.context.setToolsExpanded(true);
+    h.context.onTerminalInput(handler);
+    h.context.setWidget("factory", factory);
+    expect(
+      h.bundle.state.applyEditorPatch({ baseRevision: 0, revision: 1, text: "keep this draft" }),
+    ).toMatchObject({ accepted: true });
+
+    h.bundle.state.resetExtensionPresentation();
+    await Promise.resolve();
+
+    expect(h.bundle.state.catalogSnapshot()).toMatchObject({
+      notifications: [expect.objectContaining({ message: "keep this notification" })],
+      capabilityDiagnostics: ["keep this diagnostic"],
+      statuses: {},
+      widgets: {},
+      toolsExpanded: true,
+    });
+    expect(h.bundle.state.catalogSnapshot()).not.toHaveProperty("title");
+    expect(h.bundle.state.catalogSnapshot()).not.toHaveProperty("workingMessage");
+    expect(h.bundle.state.catalogSnapshot()).not.toHaveProperty("workingVisible");
+    expect(h.bundle.state.catalogSnapshot()).not.toHaveProperty("hiddenThinkingLabel");
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({ text: "keep this draft" });
+    expect(h.tui.inputListeners.has(handler)).toBe(false);
+    expect(h.tui.stopped).toBe(true);
+    expect(factory.component.dispose).toHaveBeenCalledTimes(1);
+    expect(h.panelBridge.closePanel).toHaveBeenCalledTimes(1);
+
+    h.context.setWidget("successor", makeFactory("successor"));
+    expect(h.tui.inputListeners.has(lateHandler)).toBe(false);
+  });
+});
+
 describe("unified TUI: onTerminalInput (pre-editor input chain)", () => {
   it("buffers a handler until the first factory widget, then attaches it; unsubscribe detaches", () => {
     const h = makeHarness();
@@ -1172,7 +1253,7 @@ describe("unified TUI: onTerminalInput (pre-editor input chain)", () => {
     expect(h.tui.inputListeners.has(handler)).toBe(false);
   });
 
-  it("re-attaches the SAME handler to a fresh TUI after teardown+recreate (/reload parity)", () => {
+  it("re-attaches the same handler after an in-generation TUI teardown and recreate", () => {
     const h = makeHarness();
     const handler = vi.fn();
     h.context.onTerminalInput(handler);

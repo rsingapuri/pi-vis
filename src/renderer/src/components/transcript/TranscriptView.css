@@ -372,20 +372,11 @@
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.tool-card:hover {
-  border-color: var(--border-strong);
 }
 
 .tool-card--error {
   background: color-mix(in srgb, var(--danger) 9%, var(--bg));
   border-color: color-mix(in srgb, var(--danger) 26%, transparent);
-}
-
-.tool-card--error:hover {
-  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
 }
 
 .tool-card__header {
@@ -403,15 +394,14 @@
   cursor: pointer;
 }
 
-.tool-card__header:hover {
-  background: color-mix(in srgb, var(--surface-2) 44%, transparent);
+.tool-card__header:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
-.tool-card__header:focus-visible {
-  position: relative;
-  z-index: 1;
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+.tool-card__header:focus-visible .tool-card__chevron {
+  color: var(--text-muted);
+  stroke-width: 2;
 }
 
 .tool-card__chevron {
@@ -420,10 +410,6 @@
   flex: none;
   color: var(--text-ghost);
   transition: transform 0.15s ease, color 0.15s ease;
-}
-
-.tool-card__header:hover .tool-card__chevron {
-  color: var(--text-muted);
 }
 
 .tool-card--open .tool-card__chevron {
@@ -507,7 +493,6 @@
   flex-direction: column;
   gap: 0.857rem;
   padding: 0.143rem 0.857rem 0.857rem 2.286rem;
-  border-top: 1px solid var(--border-faint);
 }
 
 .tool-card__detail,
@@ -614,7 +599,6 @@
    provides the contrast frame. */
 .tool-card__scroll-frame,
 .tool-card__output-frame {
-  --scroll-fade-surface: var(--bg);
   background: var(--bg);
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-md);
@@ -627,8 +611,7 @@
   border-radius: calc(var(--radius-md) - var(--space-1));
   padding: 0.571rem 0.857rem;
   max-height: 28.571rem;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: auto;
   scrollbar-gutter: stable;
 }
 
@@ -644,12 +627,6 @@
   font-size: var(--font-size-code);
   line-height: var(--leading-code);
   white-space: pre;
-}
-
-.tool-card__horizontal-scroll {
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
 }
 
 .tool-card__scroll--structured {
@@ -925,14 +902,11 @@
   height: 0.857em;
   flex-shrink: 0;
   color: var(--text-ghost);
-  /* IconChevronRight's stroke sits a hair low in its 12px viewBox; nudge it
-     upward so the disclosure marker optically centers against the summary text. */
-  transform: translateY(-0.071rem);
   transition: transform 0.15s ease;
 }
 
 .compact-transcript-group--open .compact-transcript-group__chevron {
-  transform: translateY(-0.071rem) rotate(90deg);
+  transform: rotate(90deg);
 }
 
 .compact-transcript-group__content {
@@ -1220,4 +1194,22 @@
   line-height: var(--leading-code);
   margin: var(--space-2) 0;
   color: var(--text);
+}
+
+/* Activity markdown already lives inside the bounded tool-card viewport.
+   Let that one viewport own both axes instead of hiding a second horizontal
+   scrollbar at the bottom of a tall table or fenced code block. */
+.activity-card__markdown .markdown-table-shell,
+.activity-card__markdown .shiki,
+.activity-card__markdown .code-block--plain {
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
+  overflow: visible;
+}
+
+.activity-card__markdown .markdown-table-scroll,
+.activity-card__markdown .shiki > code,
+.activity-card__markdown .code-block--plain > code {
+  overflow: visible;
 }

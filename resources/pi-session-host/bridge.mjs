@@ -223,7 +223,6 @@ export function setupCommandBridge({
   uiContext,
   send,
   panelBridge,
-  disposeUnifiedTui,
   cancelDialogs = () => {},
   createProviderAuthSurface,
   runWithInvocationSurface,
@@ -461,10 +460,7 @@ export function setupCommandBridge({
     // generation. Causally awaited lifecycle dialogs have already settled;
     // fire-and-forget dialogs must not remain answerable after rebind.
     cancelDialogs();
-    // Also dispose the unified TUI if a factory widget left one mounted. The
-    // controller is passed in explicitly (not via globalThis) so the wiring is
-    // testable and there's no implicit host-global coupling.
-    disposeUnifiedTui?.();
+    uiState.resetExtensionPresentation?.();
     activeInterrupts.clear();
   });
 
@@ -797,7 +793,7 @@ export function setupCommandBridge({
             beforeSessionStart: async () => {
               authority.markTransitionBoundaryCrossed();
               panelBridge.closeAll();
-              disposeUnifiedTui?.();
+              uiState.resetExtensionPresentation?.();
               cancelDialogs();
               authority.adoptSession(_session, authority.sessionEpoch + 1);
             },

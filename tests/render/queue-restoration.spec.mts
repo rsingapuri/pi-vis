@@ -93,7 +93,12 @@ test("failed compaction is not presented as successful", async ({ page }) => {
     });
   });
 
-  await expect(page.getByText(/Compaction failed · manual/)).toBeVisible();
+  const compactionCard = page.getByRole("button", {
+    name: /context activity details — Compaction failed · manual · error/,
+  });
+  await expect(compactionCard).toBeVisible();
+  await expect(compactionCard).toHaveAttribute("aria-expanded", "false");
+  await compactionCard.click();
   await expect(page.getByText("Nothing to compact", { exact: true })).toBeVisible();
   await expect(page.getByText(/Context compacted/)).toHaveCount(0);
 });

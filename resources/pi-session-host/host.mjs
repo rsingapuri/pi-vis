@@ -639,7 +639,6 @@ async function handleInit(msg) {
       uiContext,
       send,
       panelBridge,
-      disposeUnifiedTui: unifiedCtrl.dispose,
       cancelDialogs: () => dialogResolver?.cancelAll(),
       createProviderAuthSurface,
       runWithInvocationSurface,

@@ -40,6 +40,7 @@ type AttachResponse = {
     semantic?: {
       snapshot?: { operationJournalLowWatermark?: number; operationJournalHighWatermark?: number };
     };
+    extensionUi?: { statuses?: Record<string, string> };
     operationJournal?: Array<{ sequence?: number }>;
   };
 };
@@ -354,8 +355,15 @@ test.describe("real Pi authority fault matrix", () => {
             launch.window.getByText("AUTHORITY-REPLACEMENT-SEED", { exact: true }),
           ).toBeVisible({ timeout: 60_000 });
           await slash(textarea, "/e2e-status-on");
+          const predecessorStatus = launch.window
+            .locator(".statusbar__line")
+            .filter({ hasText: "e2e lifecycle status enabled" });
+          await expect(predecessorStatus).toHaveCount(1);
           const predecessor = await readyAttach(launch.window, sessionId, generation);
           expectOwner(predecessor.baseline?.owner);
+          expect(Object.values(predecessor.baseline.extensionUi?.statuses ?? {})).toContain(
+            "e2e lifecycle status enabled",
+          );
           // Hold a real authority-attach response while the deterministic
           // child-owned replacement seam commits its successor. This is the
           // same lifecycle boundary as /new, but avoids timing an SDK UI
@@ -386,12 +394,13 @@ test.describe("real Pi authority fault matrix", () => {
           expect(successor!.baseline!.owner.sessionEpoch).toBeGreaterThan(
             predecessor.baseline.owner.sessionEpoch,
           );
+          // The new canonical baseline itself must be clean; a later renderer
+          // clear cannot mask stale presentation state retained by authority.
+          expect(Object.values(successor!.baseline!.extensionUi?.statuses ?? {})).not.toContain(
+            "e2e lifecycle status enabled",
+          );
           // The old extension-owned status must not bleed through the replacement.
-          await expect(
-            launch.window
-              .locator(".statusbar__line")
-              .filter({ hasText: "e2e lifecycle status enabled" }),
-          ).toHaveCount(0);
+          await expect(predecessorStatus).toHaveCount(0);
           // The renderer reducer rejects any late predecessor publication by
           // this owner tuple; the successor baseline plus absent predecessor
           // status above prove no old presentation was applied.

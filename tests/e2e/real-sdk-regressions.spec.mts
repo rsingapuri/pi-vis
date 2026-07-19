@@ -179,7 +179,8 @@ test.describe("Pinned real Pi 0.80.10 regressions", () => {
 
       await test.step("real custom overlay consumes bare Escape once and restores the unified surface", async () => {
         const textarea = window.locator(".composer__textarea");
-        await slash(textarea, "/regression-custom");
+        await textarea.fill("/regression-custom");
+        await textarea.press("Enter");
         const overlay = window.locator(".custom-panel");
         await expect(overlay).toBeVisible({ timeout: 30_000 });
         await expect(overlay.locator(".xterm-rows")).toContainText(CUSTOM);
@@ -189,7 +190,9 @@ test.describe("Pinned real Pi 0.80.10 regressions", () => {
         await expect(window.getByText(CUSTOM_DONE, { exact: true })).toHaveCount(1);
         await expect(window.locator(".transcript-block--user")).toHaveCount(0);
         await expect(window.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
-        await expect(window.locator(".composer__textarea")).toBeVisible();
+        const restoredComposer = window.locator(".composer__textarea");
+        await expect(restoredComposer).toBeVisible();
+        await expect(restoredComposer).toHaveValue("");
         await assertDockNeverFlashed(window);
       });
     } catch (error) {
