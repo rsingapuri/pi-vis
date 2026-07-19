@@ -26,6 +26,12 @@
    fade mask clip any child positioned out into the canvas gap to reach the
    content card's left edge. See App.css for the rationale. */
 
+@property --status-dot-pulse-opacity {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
 .sidebar__workspaces {
   flex: 1;
   overflow-y: auto;
@@ -621,11 +627,17 @@
   vertical-align: middle;
 }
 
-/* filled circle — streaming */
+/* One animation on the shared list owns the phase for every working dot.
+   A late-mounted or newly revealed dot inherits the clock's current value
+   instead of starting an independent animation that can drift out of sync. */
+.sidebar__workspaces--working {
+  animation: status-dot-pulse-clock 1s ease-in-out infinite;
+}
+
+/* filled circle — working */
 .status-dot--streaming {
   background: var(--accent);
-  animation: pulse 1s ease-in-out infinite;
-  animation-delay: var(--status-dot-animation-delay, 0ms);
+  opacity: var(--status-dot-pulse-opacity);
 }
 
 /* filled circle — turn finished (unread sidebar notification) */
@@ -687,12 +699,18 @@
   transform: translate(-50%, -50%) rotate(-45deg);
 }
 
-@keyframes pulse {
+@keyframes status-dot-pulse-clock {
   0%,
   100% {
-    opacity: 1;
+    --status-dot-pulse-opacity: 1;
   }
   50% {
-    opacity: 0.4;
+    --status-dot-pulse-opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar__workspaces--working {
+    animation: none;
   }
 }
