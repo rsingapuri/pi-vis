@@ -79,6 +79,9 @@ describe("extension updates", () => {
           displayName: "@pi/mcp",
           type: "npm",
           scope: "user",
+          currentVersion: "1.0.0",
+          latestVersion: "2.0.0",
+          updateAvailable: true,
         },
       ],
     });
@@ -99,6 +102,9 @@ describe("extension updates", () => {
         displayName: "@pi/mcp",
         type: "npm",
         scope: "user",
+        currentVersion: "1.0.0",
+        latestVersion: "2.0.0",
+        updateAvailable: true,
       },
     ]);
     expect(status.checkedAt).toBeTypeOf("number");
@@ -114,6 +120,9 @@ describe("extension updates", () => {
           displayName: "@pi/mcp",
           type: "npm",
           scope: "user",
+          currentVersion: "1.0.0",
+          latestVersion: "2.0.0",
+          updateAvailable: true,
         },
       ],
     });
@@ -300,11 +309,13 @@ describe("extension updates", () => {
     const agentDir = path.join(root, "agent");
     const cwd = path.join(root, "workspace");
     const installedDir = path.join(agentDir, "npm", "node_modules", "test-extension");
+    const currentInstalledDir = path.join(agentDir, "npm", "node_modules", "current-extension");
     const npmLog = path.join(root, "npm.log");
     const projectNpmMarker = path.join(root, "project-npm-ran");
     const fakeNpm = path.join(root, "fake-npm.mjs");
     const projectNpm = path.join(root, "project-npm.mjs");
     fs.mkdirSync(installedDir, { recursive: true });
+    fs.mkdirSync(currentInstalledDir, { recursive: true });
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
     fs.writeFileSync(
       fakeNpm,
@@ -321,7 +332,7 @@ describe("extension updates", () => {
     fs.writeFileSync(
       path.join(agentDir, "settings.json"),
       JSON.stringify({
-        packages: ["npm:test-extension"],
+        packages: ["npm:test-extension", "npm:current-extension"],
         npmCommand: [process.execPath, fakeNpm],
       }),
     );
@@ -336,6 +347,10 @@ describe("extension updates", () => {
       path.join(installedDir, "package.json"),
       JSON.stringify({ name: "test-extension", version: "1.0.0" }),
     );
+    fs.writeFileSync(
+      path.join(currentInstalledDir, "package.json"),
+      JSON.stringify({ name: "current-extension", version: "2.0.0" }),
+    );
     vi.stubEnv("FAKE_NPM_LOG", npmLog);
     vi.stubEnv("PI_OFFLINE", "");
 
@@ -345,6 +360,18 @@ describe("extension updates", () => {
         displayName: "test-extension",
         type: "npm",
         scope: "user",
+        currentVersion: "1.0.0",
+        latestVersion: "2.0.0",
+        updateAvailable: true,
+      },
+      {
+        source: "npm:current-extension",
+        displayName: "current-extension",
+        type: "npm",
+        scope: "user",
+        currentVersion: "2.0.0",
+        latestVersion: "2.0.0",
+        updateAvailable: false,
       },
     ]);
     expect(fs.readFileSync(npmLog, "utf8")).toContain("view test-extension version --json");
@@ -352,7 +379,26 @@ describe("extension updates", () => {
 
     fs.writeFileSync(npmLog, "");
     vi.stubEnv("PI_OFFLINE", "1");
-    await expect(checkUserExtensionUpdates(cwd, agentDir)).resolves.toEqual([]);
+    await expect(checkUserExtensionUpdates(cwd, agentDir)).resolves.toEqual([
+      {
+        source: "npm:test-extension",
+        displayName: "test-extension",
+        type: "npm",
+        scope: "user",
+        currentVersion: "1.0.0",
+        latestVersion: null,
+        updateAvailable: false,
+      },
+      {
+        source: "npm:current-extension",
+        displayName: "current-extension",
+        type: "npm",
+        scope: "user",
+        currentVersion: "2.0.0",
+        latestVersion: null,
+        updateAvailable: false,
+      },
+    ]);
     expect(fs.readFileSync(npmLog, "utf8")).toBe("");
   });
 });

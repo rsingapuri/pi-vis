@@ -140,7 +140,9 @@ export function Sidebar({
   const lastActiveWorkspace = useSettingsStore((s) => s.settings.lastActiveWorkspace);
   const savedExpandedWorkspaces = useSettingsStore((s) => s.settings.expandedWorkspaces);
   const statusBarVisible = useSettingsStore((s) => s.settings.statusBarVisible);
-  const extensionUpdateCount = useExtensionUpdatesStore((s) => s.status?.updates.length ?? 0);
+  const extensionUpdateCount = useExtensionUpdatesStore(
+    (s) => s.status?.updates.filter((extension) => extension.updateAvailable).length ?? 0,
+  );
   const sidebarRef = useRef<HTMLElement>(null);
   const dragIndexRef = useRef<number | null>(null);
   const pinnedDragKeyRef = useRef<string | null>(null);

@@ -1,7 +1,7 @@
 import type { AppUpdateStatus } from "@shared/app-updates.js";
 import type { ProviderAuthStatus } from "@shared/auth.js";
 import { PROVIDERS } from "@shared/auth.js";
-import type { ExtensionUpdateTarget } from "@shared/extension-updates.js";
+import type { ExtensionUpdateStatus, ExtensionUpdateTarget } from "@shared/extension-updates.js";
 import type { ThemeMode, TranscriptStyle } from "@shared/settings.js";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -358,6 +358,22 @@ function appUpdateMessage(status: AppUpdateStatus): string {
   }
 }
 
+function availableExtensionCount(status: ExtensionUpdateStatus | null): number {
+  return status?.updates.filter((extension) => extension.updateAvailable).length ?? 0;
+}
+
+function extensionUpdateMessage(status: ExtensionUpdateStatus): string {
+  const available = availableExtensionCount(status);
+  if (status.updates.length === 0) return "No user extensions installed";
+  if (available > 0) {
+    return `${available} update${available === 1 ? "" : "s"} available`;
+  }
+  if (status.updates.some((extension) => extension.latestVersion === null)) {
+    return "Installed extensions shown; latest versions unavailable";
+  }
+  return "All user extensions are up to date";
+}
+
 export function SettingsView({ onClose, initialSection }: SettingsViewProps): React.ReactElement {
   const { settings, update } = useSettingsStore();
   const [localFonts, setLocalFonts] = useState<FontFamily[]>([]);
@@ -493,11 +509,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
     setExtensionUpdateMsg("Checking…");
     try {
       const status = await checkExtensionUpdates();
-      setExtensionUpdateMsg(
-        status.updates.length === 0
-          ? "No user extension updates found"
-          : `${status.updates.length} update${status.updates.length === 1 ? "" : "s"} available`,
-      );
+      setExtensionUpdateMsg(extensionUpdateMessage(status));
     } catch {
       setExtensionUpdateMsg("Extension check failed");
     }
@@ -515,9 +527,9 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
       }
       const status = await checkExtensionUpdates();
       setExtensionUpdateMsg(
-        status.updates.length === 0
-          ? "Update completed; no remaining updates found"
-          : `${status.updates.length} update${status.updates.length === 1 ? "" : "s"} still available`,
+        status.updates.some((extension) => extension.updateAvailable)
+          ? extensionUpdateMessage(status)
+          : "Update completed; all extensions are up to date",
       );
     } catch {
       setExtensionUpdateMsg("Update failed");
@@ -534,11 +546,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
     if (extensionAutoCheckStartedRef.current) return;
     extensionAutoCheckStartedRef.current = true;
     if (extensionUpdateStatus) {
-      setExtensionUpdateMsg(
-        extensionUpdateStatus.updates.length === 0
-          ? "No user extension updates found"
-          : `${extensionUpdateStatus.updates.length} update${extensionUpdateStatus.updates.length === 1 ? "" : "s"} available`,
-      );
+      setExtensionUpdateMsg(extensionUpdateMessage(extensionUpdateStatus));
       return;
     }
     void handleCheckExtensionUpdates();
@@ -557,6 +565,8 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
   }, [setAppUpdateStatus]);
 
   const appUpdateBusy = appChecking || isAppUpdateBusy(appUpdateStatus);
+  const installedExtensions = extensionUpdateStatus?.updates ?? [];
+  const availableExtensions = installedExtensions.filter((extension) => extension.updateAvailable);
   const themes = listThemes();
   const lightThemeOptions = themes
     .filter((theme) => theme.appearance === "light")
@@ -1013,11 +1023,16 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                 </button>
               </div>
 
-              {extensionUpdateStatus && extensionUpdateStatus.updates.length > 0 && (
+              {extensionUpdateStatus && (
                 <div className="settings-extension-updates" aria-live="polite">
                   <div className="settings-extension-updates__header">
-                    <span className="settings-extension-updates__title">Updates available</span>
-                    {extensionUpdateStatus.updates.length > 1 && (
+                    <div className="settings-extension-updates__heading">
+                      <span className="settings-extension-updates__title">
+                        Installed extensions
+                      </span>
+                      <span className="settings-hint">{installedExtensions.length} installed</span>
+                    </div>
+                    {availableExtensions.length > 1 && (
                       <button
                         type="button"
                         className="settings-btn settings-btn--small"
@@ -1028,30 +1043,60 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                       </button>
                     )}
                   </div>
-                  {extensionUpdateStatus.updates.map((extension) => (
-                    <div className="settings-extension-update" key={extension.source}>
-                      <div className="settings-extension-update__details">
-                        <FadeText
-                          className="settings-extension-update__name"
-                          title={extension.source}
-                        >
-                          {extension.displayName}
-                        </FadeText>
-                        <span className="settings-hint">{extension.type}</span>
+                  {installedExtensions.length > 0 ? (
+                    <>
+                      <div className="settings-extension-updates__columns" aria-hidden="true">
+                        <span>Extension</span>
+                        <span>Current</span>
+                        <span>Latest</span>
+                        <span />
                       </div>
-                      <button
-                        type="button"
-                        className="settings-btn settings-btn--small"
-                        aria-label={`Update ${extension.displayName}`}
-                        disabled={extensionUpdating !== null}
-                        onClick={() =>
-                          void handleRunExtensionUpdate({ extension: extension.source })
-                        }
-                      >
-                        {extensionUpdating === extension.source ? "Updating…" : "Update"}
-                      </button>
-                    </div>
-                  ))}
+                      {installedExtensions.map((extension) => (
+                        <div className="settings-extension-update" key={extension.source}>
+                          <div className="settings-extension-update__details">
+                            <FadeText
+                              className="settings-extension-update__name"
+                              title={extension.source}
+                            >
+                              {extension.displayName}
+                            </FadeText>
+                            <span className="settings-hint">{extension.type}</span>
+                          </div>
+                          <span
+                            className="settings-extension-update__version"
+                            title={extension.currentVersion ?? undefined}
+                          >
+                            {extension.currentVersion ?? "Unknown"}
+                          </span>
+                          <span
+                            className={`settings-extension-update__version settings-extension-update__version--latest${extension.updateAvailable ? " settings-extension-update__version--new" : ""}`}
+                            title={extension.latestVersion ?? undefined}
+                          >
+                            {extension.latestVersion ?? "Unavailable"}
+                          </span>
+                          {extension.updateAvailable ? (
+                            <button
+                              type="button"
+                              className="settings-btn settings-btn--small"
+                              aria-label={`Update ${extension.displayName}`}
+                              disabled={extensionUpdating !== null}
+                              onClick={() =>
+                                void handleRunExtensionUpdate({ extension: extension.source })
+                              }
+                            >
+                              {extensionUpdating === extension.source ? "Updating…" : "Update"}
+                            </button>
+                          ) : (
+                            <span className="settings-extension-update__status">Up to date</span>
+                          )}
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <p className="settings-extension-updates__empty">
+                      No user extensions installed.
+                    </p>
+                  )}
                 </div>
               )}
             </section>
