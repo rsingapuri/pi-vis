@@ -630,6 +630,7 @@ export const SessionIntentKindSchema = z.enum([
   "compact",
   "invokeCommand",
   "runBash",
+  "setTrust",
   "navigate",
   "setModel",
   "setThinking",
@@ -744,6 +745,13 @@ export const SessionIntentSchema = z.union([
       kind: z.literal("runBash"),
       command: z.string(),
       excludeFromContext: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("setTrust"),
+      /** Exact child-produced choice label from get_trust_state. */
+      optionLabel: NonEmptyIdSchema,
     })
     .strict(),
   z
@@ -959,6 +967,13 @@ export const RunBashIntentResultSchema = z
     truncated: z.boolean().optional(),
   })
   .strict();
+/** Revalidated ProjectTrustStore update applied by the child. */
+export const SetTrustIntentResultSchema = z
+  .object({
+    trusted: z.boolean(),
+    persisted: z.boolean(),
+  })
+  .strict();
 /** Public post-navigation evidence from AgentSession.navigateTree(). */
 export const NavigateIntentResultSchema = z
   .object({
@@ -1012,6 +1027,10 @@ export const IntentOutcomeSchema = z.discriminatedUnion("kind", [
   OutcomeBaseSchema.extend({
     kind: z.literal("runBash"),
     result: RunBashIntentResultSchema.optional(),
+  }).strict(),
+  OutcomeBaseSchema.extend({
+    kind: z.literal("setTrust"),
+    result: SetTrustIntentResultSchema.optional(),
   }).strict(),
   OutcomeBaseSchema.extend({
     kind: z.literal("navigate"),

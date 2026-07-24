@@ -404,7 +404,11 @@ describe("Composer intent execution — read-only queries", () => {
   });
 
   it("opens trust, scoped-model, and logout pickers only from their query fixtures", async () => {
-    const option = { label: "Trust folder", trusted: true, updates: [] };
+    const option = {
+      label: "Trust folder",
+      trusted: true,
+      updates: [{ path: "/tmp/ws", decision: true }],
+    };
     const { deps, dispatch } = depsFor({
       query: vi.fn(async (_sid, request: SessionQuery) => {
         if (request.type === "get_trust_state")

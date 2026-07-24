@@ -1147,30 +1147,68 @@ export function setupCommandBridge({
         }
         case "runBash":
           // Bash can run arbitrarily long; settle it off-scheduler too.
+          //
+          // AgentSession.executeBash() persists a public bashExecution message
+          // but (unlike agent messages) emits no AgentSession event for it.
+          // Adapt the returned public BashResult into the same authoritative
+          // transcript presentation record so a live renderer sees the command
+          // it just ran without waiting for a later history re-hydration.
           return {
             deferredOutcome: trackInterruptibleOperation(
               "bash",
               () => _session.abortBash(),
               () =>
-                _session
-                  .executeBash(intent.command, undefined, {
-                    ...(intent.excludeFromContext !== undefined
-                      ? { excludeFromContext: intent.excludeFromContext }
-                      : {}),
-                  })
-                  .then((result) => ({
-                    started: true,
-                    ...(typeof result?.output === "string" ? { output: result.output } : {}),
-                    ...(Number.isInteger(result?.exitCode) ? { exitCode: result.exitCode } : {}),
-                    ...(typeof result?.cancelled === "boolean"
-                      ? { cancelled: result.cancelled }
-                      : {}),
-                    ...(typeof result?.truncated === "boolean"
-                      ? { truncated: result.truncated }
-                      : {}),
-                  })),
-            ),
+                _session.executeBash(intent.command, undefined, {
+                  ...(intent.excludeFromContext !== undefined
+                    ? { excludeFromContext: intent.excludeFromContext }
+                    : {}),
+                }),
+            ).then((result) => {
+              authority.observeEvent({
+                type: "message_start",
+                message: {
+                  role: "bashExecution",
+                  command: intent.command,
+                  output: typeof result?.output === "string" ? result.output : "",
+                  ...(Number.isInteger(result?.exitCode) ? { exitCode: result.exitCode } : {}),
+                  cancelled: result?.cancelled === true,
+                  truncated: result?.truncated === true,
+                  ...(typeof result?.fullOutputPath === "string"
+                    ? { fullOutputPath: result.fullOutputPath }
+                    : {}),
+                  ...(intent.excludeFromContext !== undefined
+                    ? { excludeFromContext: intent.excludeFromContext }
+                    : {}),
+                  timestamp: Date.now(),
+                },
+              });
+              return {
+                started: true,
+                ...(typeof result?.output === "string" ? { output: result.output } : {}),
+                ...(Number.isInteger(result?.exitCode) ? { exitCode: result.exitCode } : {}),
+                ...(typeof result?.cancelled === "boolean" ? { cancelled: result.cancelled } : {}),
+                ...(typeof result?.truncated === "boolean" ? { truncated: result.truncated } : {}),
+              };
+            }),
           };
+        case "setTrust": {
+          const { buildProjectTrustOptions } = await import("./bootstrap.mjs");
+          const liveCwd = _session.sessionManager?.getCwd?.() ?? cwd;
+          const option = buildProjectTrustOptions(liveCwd).find(
+            (candidate) => candidate.label === intent.optionLabel,
+          );
+          if (!option) throw new Error("Requested trust choice is unavailable");
+          // A session-only answer is meaningful during resource resolution,
+          // but cannot be replayed by a post-start /trust reload. Refuse it
+          // explicitly instead of reporting success for a no-op.
+          if (option.updates.length === 0) {
+            throw new Error(
+              "Session-only trust can't be changed after startup; choose a persistent option.",
+            );
+          }
+          new pi.ProjectTrustStore(agentDir).setMany(option.updates);
+          return { trusted: option.trusted, persisted: true };
+        }
         case "navigate": {
           // Renderer idle is observation context only. Recheck the public SDK
           // getter inside serialized child execution so a prompt admitted
@@ -1713,8 +1751,8 @@ export function setupCommandBridge({
 
         // ── Trust (pi-vis host-only /trust) ─────────────────────────────
         // get_trust_state returns the cwd, whether it has trust-requiring
-        // project resources, and pi's full project-trust choice set (each
-        // option carries the `trusted` answer + the `updates` to persist).
+        // project resources, and pi's persistent post-start choice subset
+        // (each option carries the `trusted` answer + updates to persist).
         // The renderer uses this to render the /trust picker; if
         // hasTrustRequiringResources is false it toasts and skips.
         case "get_trust_state": {
@@ -1730,7 +1768,13 @@ export function setupCommandBridge({
               ? _session.sessionManager.getCwd()
               : cwd;
           const hasTrustRequiringResources = pi.hasTrustRequiringProjectResources(liveCwd);
-          const currentOptions = buildProjectTrustOptions(liveCwd);
+          // /trust runs after resource resolution. Session-only answers are
+          // meaningful only during that initial callback and cannot survive
+          // the reload required to apply a post-start change, so do not expose
+          // choices that this surface must deterministically reject.
+          const currentOptions = buildProjectTrustOptions(liveCwd).filter(
+            (option) => option.updates.length > 0,
+          );
           // Surface the cwd's saved decision + the global projectTrusted
           // setting so the picker can show current state (pi's
           // TrustSelectorComponent does the same).

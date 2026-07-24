@@ -2358,6 +2358,34 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     });
   });
 
+  it("promotes a resumed session from the authored timestamp of a delivered user message", () => {
+    const store = useSessionsStore.getState();
+    store.createSession(SESSION_A, WORKSPACE, "/f/older.jsonl");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.lastActivityAt).toBeUndefined();
+
+    store.applyEvent(SESSION_A, {
+      type: "message_start",
+      message: {
+        role: "user",
+        content: "new work in an older session",
+        timestamp: "2026-07-23T18:45:00.000Z",
+      },
+      queueIntentId: "intent-older-session",
+    });
+
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.lastActivityAt).toBe(
+      Date.parse("2026-07-23T18:45:00.000Z"),
+    );
+
+    store.applyEvent(SESSION_A, {
+      type: "session_info_changed",
+      name: "Passive metadata update",
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.lastActivityAt).toBe(
+      Date.parse("2026-07-23T18:45:00.000Z"),
+    );
+  });
+
   it("preserves the count of concurrent identical queued prompts across crossed acknowledgements", () => {
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE);
@@ -5646,6 +5674,43 @@ describe("sessions store - explicit search result open", () => {
       throw new Error(`unexpected channel ${channel}`);
     });
     vi.stubGlobal("window", { pivis: { invoke: invokeMock } });
+  });
+
+  it("repairs a ready event lost before a starting search result was adopted", () => {
+    useSessionsStore
+      .getState()
+      .createSession(
+        SESSION_A,
+        WORKSPACE,
+        "/tmp/search-starting.jsonl",
+        undefined,
+        undefined,
+        "starting",
+      );
+
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());
+
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      status: "ready",
+      hostInstanceId: "host-1",
+    });
+  });
+
+  it("does not overwrite a terminal lifecycle event with a late attach", () => {
+    useSessionsStore
+      .getState()
+      .createSession(
+        SESSION_A,
+        WORKSPACE,
+        "/tmp/search-failed.jsonl",
+        undefined,
+        undefined,
+        "failed",
+      );
+
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, authorityAttach());
+
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.status).toBe("failed");
   });
 
   it("adopts the validated main result and preserves normal activation-visit ownership", async () => {

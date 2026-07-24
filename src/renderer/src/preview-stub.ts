@@ -77,6 +77,10 @@ const previewHooks = {
   abortCalls: 0,
   /** Explicit search opens; preview selection/context never increments this. */
   searchOpenCalls: 0,
+  /** Forces the search-open lifecycle snapshot used by attachment-race tests. */
+  searchOpenAsStarting: false,
+  /** Authority attaches dispatched after explicit search adoption. */
+  searchAuthorityAttachCalls: 0,
   /** Extension update checks dispatched by Settings-open or manual refresh. */
   extensionUpdateCheckCalls: 0,
   /** Extension-only update targets dispatched from Settings. */
@@ -1234,6 +1238,12 @@ function outcomeFor(
       return { ...base, kind: "invokeCommand", result: { commandType: "preview" } };
     case "runBash":
       return { ...base, kind: "runBash", result: { started: state === "completed" } };
+    case "setTrust":
+      return {
+        ...base,
+        kind: "setTrust",
+        result: { trusted: state === "completed", persisted: state === "completed" },
+      };
     case "navigate":
       return { ...base, kind: "navigate", result: { targetId: intent.targetId } };
     case "setModel":
@@ -1378,6 +1388,9 @@ async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
         break;
       case "runBash":
         await handlePreviewRequest({ type: "bash", command: intent.command });
+        break;
+      case "setTrust":
+        await sleep(50);
         break;
       case "navigate":
         await handlePreviewRequest({ type: "navigate_tree", targetId: intent.targetId });
@@ -1770,21 +1783,33 @@ const stub = {
       case "sessionSearch.open": {
         previewHooks.searchOpenCalls++;
         return {
-          outcome: "opened",
+          outcome: previewHooks.searchOpenAsStarting ? "existing" : "opened",
           sessionId: `preview-search-open-${Date.now()}` as SessionId,
           sessionFile: "/preview/sessions/search-result.jsonl",
           workspacePath: DEMO_WORKSPACE,
           name: "Lifecycle investigation",
           preview: "Preserve the exact activation lifecycle",
-          sessionStatus: "cold",
+          sessionStatus: previewHooks.searchOpenAsStarting ? "starting" : "cold",
         };
       }
-      case "session.loadHistory":
+      case "session.loadHistory": {
+        const { sessionId, historyGeneration } = req as {
+          sessionId: SessionId;
+          historyGeneration: number;
+        };
+        if (
+          previewHooks.searchOpenAsStarting &&
+          sessionId.startsWith("preview-search-open-") &&
+          useSessionsStore.getState().sessions.get(sessionId)?.status === "starting"
+        ) {
+          return { status: "stale", historyGeneration };
+        }
         return {
           status: "loaded",
-          historyGeneration: (req as { historyGeneration: number }).historyGeneration,
+          historyGeneration,
           history: [],
         };
+      }
       case "session.open":
         return {
           outcome: "opened",
@@ -1837,6 +1862,9 @@ const stub = {
           sessionId: SessionId;
           rendererGeneration: number;
         };
+        if (sessionId.startsWith("preview-search-open-")) {
+          previewHooks.searchAuthorityAttachCalls++;
+        }
         return authorityAttach(sessionId, rendererGeneration);
       }
       case "session.query":

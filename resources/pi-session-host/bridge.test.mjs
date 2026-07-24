@@ -878,6 +878,7 @@ describe("setupCommandBridge — target intent dispatch", () => {
       ],
       ["compact", { instructions: "brief" }],
       ["runBash", { command: "pwd", excludeFromContext: true }],
+      ["setTrust", { optionLabel: "Trust this folder" }],
       ["navigate", { targetId: "leaf-9", summarize: true }],
       ["setModel", { provider: "anthropic", modelId: "claude-x" }],
       ["setThinking", { level: "high" }],
@@ -915,6 +916,138 @@ describe("setupCommandBridge — target intent dispatch", () => {
     // renderer-selected PiRpcCommand type enters this dispatch.
     expect(session.prompt).toHaveBeenCalledWith("/extension arg", expect.any(Object));
     expect(runtime.newSession).not.toHaveBeenCalled();
+  });
+
+  it("publishes the public bash result on the live transcript plane", async () => {
+    const sendPresentation = vi.fn();
+    const { session, dispatchIntent } = setup(
+      {
+        executeBash: vi.fn(async () => ({
+          output: "hello\n",
+          exitCode: 0,
+          cancelled: false,
+          truncated: true,
+          fullOutputPath: "/tmp/full-bash.log",
+        })),
+      },
+      { sendPresentation },
+    );
+
+    await expect(
+      dispatchIntent(
+        envelope("visible-bash", {
+          kind: "runBash",
+          command: "printf hello",
+          excludeFromContext: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() =>
+      expect(sendPresentation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          plane: "transcript",
+          payload: expect.objectContaining({
+            entries: [
+              expect.objectContaining({
+                type: "message_start",
+                message: expect.objectContaining({
+                  role: "bashExecution",
+                  command: "printf hello",
+                  output: "hello\n",
+                  exitCode: 0,
+                  cancelled: false,
+                  truncated: true,
+                  fullOutputPath: "/tmp/full-bash.log",
+                  excludeFromContext: true,
+                }),
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+    expect(session.executeBash).toHaveBeenCalledWith("printf hello", undefined, {
+      excludeFromContext: true,
+    });
+  });
+
+  it("revalidates and persists the exact selected trust option", async () => {
+    const setMany = vi.fn();
+    class ProjectTrustStore {
+      setMany(updates) {
+        setMany(updates);
+      }
+
+      getEntry() {
+        return null;
+      }
+    }
+    const pi = { ProjectTrustStore, hasTrustRequiringProjectResources: vi.fn(() => true) };
+    const { send, dispatchIntent, run } = setup(
+      {
+        sessionManager: {
+          getCwd: vi.fn(() => "/workspace/project"),
+          getLeafId: vi.fn(() => "leaf-9"),
+          getBranch: vi.fn(() => []),
+        },
+      },
+      { pi, agentDir: "/agent", cwd: "/workspace/project" },
+    );
+
+    const state = await run({ type: "get_trust_state" });
+    expect(state.data.currentOptions.map((option) => option.label)).toEqual([
+      "Trust this folder",
+      "Trust parent folder (/workspace)",
+      "Do not trust",
+    ]);
+
+    await expect(
+      dispatchIntent(
+        envelope("trust-parent", {
+          kind: "setTrust",
+          optionLabel: "Trust parent folder (/workspace)",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({
+            intentId: "trust-parent",
+            kind: "setTrust",
+            state: "completed",
+            result: { trusted: true, persisted: true },
+          }),
+        }),
+      ),
+    );
+    expect(setMany).toHaveBeenCalledWith([
+      { path: "/workspace", decision: true },
+      { path: "/workspace/project", decision: null },
+    ]);
+
+    await expect(
+      dispatchIntent(
+        envelope("trust-session-only", {
+          kind: "setTrust",
+          optionLabel: "Trust for this session only",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({
+            intentId: "trust-session-only",
+            kind: "setTrust",
+            state: "failed",
+          }),
+        }),
+      ),
+    );
+    expect(setMany).toHaveBeenCalledTimes(1);
   });
 
   it("keeps intent ingress responsive while an intent-invoked compaction runs", async () => {

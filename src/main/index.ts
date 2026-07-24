@@ -1,5 +1,6 @@
+import fs from "node:fs";
 import path from "node:path";
-import { BrowserWindow, app, powerMonitor, screen, session, shell } from "electron";
+import { BrowserWindow, app, dialog, powerMonitor, screen, session, shell } from "electron";
 import {
   initIpc,
   refreshBackgroundUpdateChecks,
@@ -7,8 +8,13 @@ import {
   stopAllSessions,
   stopBackgroundUpdateChecks,
 } from "./ipc.js";
+import {
+  RendererCrashRecovery,
+  type RendererRecoveryDiagnostic,
+} from "./renderer-crash-recovery.js";
 import { isRendererReloadShortcut } from "./renderer-navigation.js";
 import { loadSettings, saveSettings } from "./settings-store.js";
+import { safeSendToWindow } from "./window-messaging.js";
 
 // A forcibly interrupted E2E parent can close Electron's captured output pipes
 // before global teardown runs. Without listeners, Node turns the resulting
@@ -38,6 +44,32 @@ app.setName("Pi-Vis");
 
 const hideWindowForTests = process.env["PIVIS_TEST_HIDE_WINDOW"] === "1";
 
+function openExternalLink(url: string): void {
+  void shell.openExternal(url).catch((error) => {
+    console.error("Failed to open external link:", error);
+  });
+}
+
+function logRendererRecovery(diagnostic: RendererRecoveryDiagnostic): void {
+  console.error(`[Pi-Vis] ${diagnostic.event}`, {
+    reason: diagnostic.reason,
+    exitCode: diagnostic.exitCode,
+    ...(diagnostic.message ? { message: diagnostic.message } : {}),
+  });
+  try {
+    fs.appendFileSync(
+      path.join(app.getPath("userData"), "diagnostics.log"),
+      `[${new Date().toISOString()}] ${diagnostic.event} ${JSON.stringify({
+        reason: diagnostic.reason,
+        exitCode: diagnostic.exitCode,
+        ...(diagnostic.message ? { message: diagnostic.message } : {}),
+      })}\n`,
+    );
+  } catch {
+    // Crash diagnostics are best effort and must never destabilize main.
+  }
+}
+
 // Playwright's Electron launcher passes --remote-debugging-port=0 as a
 // top-level Electron CLI argument, which Electron 43 rejects before app code
 // runs. The e2e launcher sets this env var so tests can enable the same CDP
@@ -66,11 +98,17 @@ const hasSingleInstanceLock =
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
+  let appQuitting = false;
+
   app.on("second-instance", () => {
     const win = BrowserWindow.getAllWindows()[0];
-    if (win) {
+    if (!win) return;
+    try {
+      if (win.isDestroyed()) return;
       if (win.isMinimized()) win.restore();
       win.focus();
+    } catch (error) {
+      console.warn("Failed to focus the existing Pi-Vis window:", error);
     }
   });
 
@@ -122,6 +160,28 @@ if (!hasSingleInstanceLock) {
       if (isRendererReloadShortcut(input)) event.preventDefault();
     });
 
+    const rendererCrashRecovery = new RendererCrashRecovery({
+      reload: () => {
+        if (appQuitting || win.isDestroyed() || win.webContents.isDestroyed()) return;
+        win.webContents.reload();
+      },
+      log: logRendererRecovery,
+      onTerminal: (diagnostic) => {
+        if (appQuitting) return;
+        dialog.showErrorBox(
+          "Pi-Vis could not recover its window",
+          `${diagnostic.message ?? "The renderer exited repeatedly."}\n\nQuit and reopen Pi-Vis. Details were written to diagnostics.log in the Pi-Vis application-data directory.`,
+        );
+      },
+    });
+    win.webContents.on("render-process-gone", (_event, details) => {
+      if (appQuitting) {
+        logRendererRecovery({ event: "render-process-gone", ...details });
+        return;
+      }
+      rendererCrashRecovery.handle(details);
+    });
+
     // Allow queryLocalFonts (permission name "local-fonts" may not be in Electron's typed union)
     session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
       callback(String(permission) === "local-fonts");
@@ -135,7 +195,7 @@ if (!hasSingleInstanceLock) {
     // External links open in the OS browser; never open new Electron windows.
     win.webContents.setWindowOpenHandler(({ url }) => {
       if (url.startsWith("http://") || url.startsWith("https://")) {
-        void shell.openExternal(url);
+        openExternalLink(url);
       }
       return { action: "deny" };
     });
@@ -144,10 +204,25 @@ if (!hasSingleInstanceLock) {
       if (url !== win.webContents.getURL()) {
         event.preventDefault();
         if (url.startsWith("http://") || url.startsWith("https://")) {
-          void shell.openExternal(url);
+          openExternalLink(url);
         }
       }
     });
+
+    const sendFullscreen = (): void => {
+      try {
+        safeSendToWindow(
+          win,
+          "window.fullscreenChange",
+          { fullscreen: win.isFullScreen() },
+          (error) => {
+            console.warn("Skipped fullscreen notification during window teardown:", error);
+          },
+        );
+      } catch (error) {
+        console.warn("Failed to read the Pi-Vis fullscreen state:", error);
+      }
+    };
 
     win.once("ready-to-show", () => {
       if (!hideWindowForTests) {
@@ -156,25 +231,24 @@ if (!hasSingleInstanceLock) {
       // Sync the initial fullscreen state so the title bar reserves
       // (or reclaims) the traffic-light clearance correctly if the app
       // launches already in fullscreen (e.g. relaunch while fullscreen).
-      win.webContents.send("window.fullscreenChange", {
-        fullscreen: win.isFullScreen(),
-      });
+      sendFullscreen();
     });
 
     // Forward macOS fullscreen transitions. In fullscreen the native
     // traffic-light buttons are gone, so the renderer drops the 80px left
     // clearance the title bar reserves for them — the title bar and the
     // sidebar-collapsed pill both stretch back to the window edge.
-    const sendFullscreen = () =>
-      win.webContents.send("window.fullscreenChange", {
-        fullscreen: win.isFullScreen(),
-      });
     win.on("enter-full-screen", sendFullscreen);
     win.on("leave-full-screen", sendFullscreen);
 
     win.on("close", () => {
-      const b = win.getBounds();
-      saveSettings({ window: b });
+      try {
+        saveSettings({ window: win.getBounds() });
+      } catch (error) {
+        // A disk or teardown failure must not crash the main process while the
+        // renderer and child hosts are already shutting down.
+        console.error("Failed to save Pi-Vis window bounds:", error);
+      }
     });
 
     if (process.env["ELECTRON_RENDERER_URL"]) {
@@ -241,6 +315,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("before-quit", () => {
+    appQuitting = true;
     stopBackgroundUpdateChecks();
     stopAllSessions();
   });

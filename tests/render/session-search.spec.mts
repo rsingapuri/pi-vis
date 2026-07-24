@@ -3,6 +3,8 @@ import { expect, test } from "@playwright/test";
 type PreviewHooks = {
   abortCalls: number;
   searchOpenCalls: number;
+  searchOpenAsStarting: boolean;
+  searchAuthorityAttachCalls: number;
   startStreaming(): void;
 };
 
@@ -10,6 +12,7 @@ type PreviewStore = {
   getState(): {
     activeSessionId: string | null;
     activeWorkspacePath: string | null;
+    sessions: Map<string, { status: string }>;
     sessionDrafts: Map<string, string>;
   };
 };
@@ -160,5 +163,36 @@ test.describe("workspace session search", () => {
         ),
       )
       .toBe(1);
+  });
+
+  test("explicit open attaches when ready races renderer record adoption", async ({ page }) => {
+    await page.evaluate(() => {
+      const hooks = (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview;
+      hooks.searchOpenAsStarting = true;
+      hooks.searchAuthorityAttachCalls = 0;
+    });
+
+    await page.keyboard.press("Meta+Shift+f");
+    await page.getByRole("combobox").fill("lifecycle");
+    const option = page.getByRole("option", { name: /Lifecycle investigation/u });
+    await expect(option).toBeVisible();
+    await option.click();
+    await page.getByRole("button", { name: "Open session" }).click();
+
+    await expect(page.locator(".session-search-overlay")).toHaveCount(0);
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const hooks = (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview;
+          const store = (window as unknown as { __pivisStore: PreviewStore }).__pivisStore;
+          const activeSessionId = store.getState().activeSessionId;
+          return {
+            attachCalls: hooks.searchAuthorityAttachCalls,
+            status: activeSessionId ? store.getState().sessions.get(activeSessionId)?.status : null,
+          };
+        }),
+      )
+      .toEqual({ attachCalls: 1, status: "ready" });
+    await expect(page.locator(".composer__attach-btn")).toBeEnabled();
   });
 });

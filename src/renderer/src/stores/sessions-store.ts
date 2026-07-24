@@ -967,6 +967,16 @@ function extensionErrorMessage(error: unknown): string {
   return "An extension failed while handling this session.";
 }
 
+function userMessageActivityTimestamp(message: Record<string, unknown>): number {
+  const timestamp = message["timestamp"];
+  if (typeof timestamp === "number" && Number.isFinite(timestamp)) return timestamp;
+  if (typeof timestamp === "string") {
+    const parsed = Date.parse(timestamp);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
 function appendQueueRestorations(
   current: SessionViewState,
   restorations: ReadonlyArray<{
@@ -1936,6 +1946,10 @@ const buildSessionsStore = (
           transcript.userMessageSequence > current.transcript.userMessageSequence
             ? transcript.authoritativeUserEchoes.at(-1)
             : undefined;
+        const userMessageDelivered =
+          event.type === "message_start" &&
+          event.message.role === "user" &&
+          transcript.userMessageSequence > current.transcript.userMessageSequence;
         const consumedPendingEcho =
           transcript.pendingEchoes.length < current.transcript.pendingEchoes.length;
         // Delivery transfers visible ownership atomically from the queued
@@ -2036,6 +2050,12 @@ const buildSessionsStore = (
           toasts,
 
           isNewPending: promoted ? false : current.isNewPending,
+          // Recency belongs to real user activity, not activation. Use Pi's
+          // authored timestamp so a retained transcript replay cannot make a
+          // passively reopened session look newly active.
+          lastActivityAt: userMessageDelivered
+            ? Math.max(current.lastActivityAt ?? 0, userMessageActivityTimestamp(event.message))
+            : current.lastActivityAt,
           editorInjection: promoted ? undefined : current.editorInjection,
           pendingComposerSubmission: submissionEchoed
             ? undefined
@@ -2537,6 +2557,12 @@ const buildSessionsStore = (
             current.transcriptPresentationDirty || droppedReplayCount > 0,
           transcriptPresentationRevision:
             current.transcriptPresentationRevision + (droppedReplayCount > 0 ? 1 : 0),
+          // The child cannot serialize a ready authority baseline until its
+          // initial binding has completed. Repair only a stale `starting`
+          // lifecycle projection here: a ready event may have crossed the
+          // search-open IPC gap before this renderer owned the session record.
+          // Never overwrite a newer terminal lifecycle event.
+          ...(current.status === "starting" ? { status: "ready" as const, error: undefined } : {}),
         });
         return { sessions };
       });

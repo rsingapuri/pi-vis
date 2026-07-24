@@ -709,13 +709,14 @@ export function App(): React.ReactElement {
       : [];
     // Renderer generation is window-wide. Attach every ready live session so a
     // background dialog/panel cannot remain blocked on the renderer that died.
-    // Starting sessions do not have a SessionHost baseline yet; attaching them
-    // here can coalesce the later ready-time request into that doomed attempt.
-    // The statusChanged("ready") path above performs their first attach.
+    // An existing session adopted from search may arrive as `starting`; its
+    // ready event can already be in the renderer-adoption IPC gap, so enter the
+    // bounded retry path immediately instead of waiting on that one-shot event.
     const attachReadySessions = (): void => {
       const sessions = useSessionsStore.getState().sessions;
       for (const sid of sessionIds) {
-        if (sessions.get(sid)?.status === "ready") void requestAttach(sid);
+        const status = sessions.get(sid)?.status;
+        if (status === "starting" || status === "ready") void requestAttach(sid);
       }
     };
     attachReadySessions();
@@ -752,9 +753,16 @@ export function App(): React.ReactElement {
         requestComposerFocus: true,
         preopened: resolved,
       });
-      return opened !== null;
+      if (opened === null) return false;
+      const status = useSessionsStore.getState().sessions.get(opened)?.status;
+      // An existing host may publish `ready` after main snapshots the search
+      // open result but before the renderer adopts its record. That event has
+      // no renderer owner yet, so explicitly enter the ordinary attach path
+      // for either side of that lifecycle race.
+      if (status === "starting" || status === "ready") void requestAttach(opened);
+      return true;
     },
-    [openSessionTab],
+    [openSessionTab, requestAttach],
   );
 
   return (

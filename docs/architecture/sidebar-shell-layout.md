@@ -48,6 +48,11 @@ sit at the front of the unified list and pagination slices from the front
 (`visibleSessions = unifiedSessions.slice(0, visibleCount)`), pinned rows are never
 pushed off the first page by newer unpinned sessions.
 
+Unpinned activity order advances from an authoritative delivered user message,
+using the message's authored timestamp. Merely opening or reattaching a saved
+session never promotes it, while sending new work in an older session moves that
+row to the top as soon as Pi delivers the user message.
+
 **Archiving requires explicit confirmation.** The hover-revealed archive action on
 both live and stored session rows opens the app-owned `ConfirmDialog` before any
 settings or session mutation. The dialog names the selected session, explains that

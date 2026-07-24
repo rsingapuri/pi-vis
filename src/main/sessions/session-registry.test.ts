@@ -2684,6 +2684,16 @@ describe("SessionRegistry direct AgentSession authority", () => {
 
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
+    const activated = h.registry.getSession(id)!;
+    activated.status = "starting";
+    activated._activating = true;
+    await expect(h.registry.rendererAttach(id, 1)).resolves.toEqual({
+      status: "unavailable",
+      reason: "host_cold",
+    });
+    expect(activated._rendererGeneration).toBe(1);
+    activated.status = "ready";
+    activated._activating = false;
     await h.registry.rendererAttach(id, 1);
     const attaching = h.registry.rendererAttach(id, 2);
     await vi.waitFor(() =>
@@ -2779,6 +2789,85 @@ describe("SessionRegistry direct AgentSession authority", () => {
       }),
     );
     generations.registry.stopAll();
+  });
+
+  it("binds a renderer generation early enough to answer a pre-ready trust dialog", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const fake = h.fakes[0]!;
+
+    record.status = "starting";
+    record._activating = true;
+    record._procReady = false;
+    record.availability = "unavailable";
+    fake.emitWire({
+      type: "extension_ui_request",
+      id: "startup-trust",
+      operationId: "startup-trust",
+      method: "select",
+      title: "Trust this folder?",
+      options: ["Trust this folder", "Do not trust"],
+    });
+    await vi.waitFor(() => expect(record._pendingUiRequests.has("startup-trust")).toBe(true));
+    fake.on("message", (message) => {
+      if (message.type !== "dialog_response") return;
+      queueMicrotask(() => fake.emitWire({ type: "ui_ack", operationId: "startup-trust" }));
+    });
+
+    await expect(
+      h.registry.respondToUiRequest(id, 41, ...runtimeIdentity(record), "startup-trust", {
+        type: "extension_ui_response",
+        id: "startup-trust",
+        value: "Trust this folder",
+      }),
+    ).resolves.toBe(true);
+
+    expect(record._rendererGeneration).toBe(41);
+    expect(fake.sent).toContainEqual({
+      type: "dialog_response",
+      response: {
+        type: "extension_ui_response",
+        id: "startup-trust",
+        value: "Trust this folder",
+      },
+    });
+    expect(record._pendingUiRequests.has("startup-trust")).toBe(false);
+    h.registry.stopAll();
+  });
+
+  it("does not let a mismatched pre-ready dialog claim renderer ownership", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const fake = h.fakes[0]!;
+    record.status = "starting";
+    record._activating = true;
+    record._procReady = false;
+    record.availability = "unavailable";
+    fake.emitWire({
+      type: "extension_ui_request",
+      id: "startup-trust",
+      operationId: "startup-trust",
+      method: "select",
+      title: "Trust this folder?",
+      options: ["Trust this folder", "Do not trust"],
+    });
+    await vi.waitFor(() => expect(record._pendingUiRequests.has("startup-trust")).toBe(true));
+
+    await expect(
+      h.registry.respondToUiRequest(id, 41, ...runtimeIdentity(record), "different-operation", {
+        type: "extension_ui_response",
+        id: "startup-trust",
+        value: "Trust this folder",
+      }),
+    ).resolves.toBe(false);
+
+    expect(record._rendererGeneration).toBe(0);
+    expect(fake.sent.some((message) => message.type === "dialog_response")).toBe(false);
+    h.registry.stopAll();
   });
 
   it("replays unresolved unified submissions after renderer reattachment", async () => {

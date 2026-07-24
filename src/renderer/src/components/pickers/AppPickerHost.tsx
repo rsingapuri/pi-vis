@@ -1,6 +1,8 @@
 import type { SessionId } from "@shared/ids.js";
 import type { SessionSummary } from "@shared/ipc-contract.js";
+import type { ProjectTrustOption } from "@shared/pi-protocol/commands.js";
 import type { LoginProvider, ModelInfo } from "@shared/pi-protocol/responses.js";
+import type { IntentOutcome, RuntimeIdentity } from "@shared/pi-protocol/runtime-state.js";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
@@ -1100,16 +1102,70 @@ function LogoutPicker({
 
 // ── /trust picker ───────────────────────────────────────────────────────────
 // Single-select list of pi's project-trust options for the session cwd
-// (mirrors pi's TUI TrustSelectorComponent). On pick, persists the chosen
-// option's updates via the host's set_trust bridge command and reloads the
-// session so the new decision takes effect (pi's TUI also tells the user
-// "Restart pi for this to take effect.").
+// (mirrors pi's TUI TrustSelectorComponent). On pick, sends only the exact
+// child-produced label; the host rebuilds and revalidates that option before
+// persisting it, then the renderer reloads the session after its typed terminal
+// outcome (pi's TUI also tells the user "Restart pi for this to take effect.").
 //
 // Reload rather than live re-bind: re-running createAgentSessionServices
 // mid-session would risk the transcript/session identity. The persisted
 // decision is read by resolveProjectTrust on the next session start, so a
 // /reload (which re-spawns the host) honors it immediately — faithful to
 // pi's TUI, which likewise requires a restart.
+function findTrustOutcome(
+  sessionId: SessionId,
+  intentId: string,
+  owner: RuntimeIdentity,
+): Extract<IntentOutcome, { kind: "setTrust" }> | undefined {
+  const outcomes = useSessionsStore.getState().sessions.get(sessionId)?.authorityProjection
+    ?.authoritativeSnapshot?.recentIntentOutcomes;
+  return outcomes?.find(
+    (outcome): outcome is Extract<IntentOutcome, { kind: "setTrust" }> =>
+      outcome.intentId === intentId &&
+      outcome.kind === "setTrust" &&
+      outcome.owner.hostInstanceId === owner.hostInstanceId &&
+      outcome.owner.sessionEpoch === owner.sessionEpoch,
+  );
+}
+
+function waitForTrustOutcome(
+  sessionId: SessionId,
+  intentId: string,
+  owner: RuntimeIdentity,
+): Promise<Extract<IntentOutcome, { kind: "setTrust" }>> {
+  const immediate = findTrustOutcome(sessionId, intentId, owner);
+  if (immediate) return Promise.resolve(immediate);
+  return new Promise((resolve, reject) => {
+    let unsubscribe = () => {};
+    const timeout = setTimeout(() => {
+      unsubscribe();
+      reject(new Error("Timed out waiting for the trust update to finish."));
+    }, 10_000);
+    unsubscribe = useSessionsStore.subscribe(() => {
+      const outcome = findTrustOutcome(sessionId, intentId, owner);
+      if (outcome) {
+        clearTimeout(timeout);
+        unsubscribe();
+        resolve(outcome);
+        return;
+      }
+      const session = useSessionsStore.getState().sessions.get(sessionId);
+      const snapshot = authoritySnapshotFor(session);
+      if (
+        session?.status === "failed" ||
+        session?.status === "exited" ||
+        (snapshot !== undefined &&
+          (snapshot.owner.hostInstanceId !== owner.hostInstanceId ||
+            snapshot.owner.sessionEpoch !== owner.sessionEpoch))
+      ) {
+        clearTimeout(timeout);
+        unsubscribe();
+        reject(new Error("Session changed before the trust update completed."));
+      }
+    });
+  });
+}
+
 function TrustPicker({
   sessionId,
   runtime,
@@ -1124,7 +1180,7 @@ function TrustPicker({
   cwd: string;
   savedDecision: boolean | null;
   projectTrusted: boolean;
-  options: Array<{ label: string; trusted: boolean; updates: unknown[] }>;
+  options: ProjectTrustOption[];
   onClose: () => void;
 }): React.ReactElement {
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -1132,7 +1188,6 @@ function TrustPicker({
   const highlightSourceRef = useRef<"keyboard" | "pointer" | "programmatic">("programmatic");
   const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
   const addToast = useSessionsStore((s) => s.addToast);
-  const closePicker = useSessionsStore((s) => s.closePicker);
 
   // Mirror pi-vis's other pickers: auto-focus the list so arrow-key nav
   // works without a search field (the trust option set is small and fixed).
@@ -1151,7 +1206,7 @@ function TrustPicker({
     async (idx: number) => {
       const option = options[idx];
       if (!option || saving) return;
-      // Session-only options have updates === []: set_trust persists nothing,
+      // Session-only options have updates === []: persisting them changes nothing,
       // so a reload re-runs resolveProjectTrust with no saved decision and
       // re-prompts — destroying the session-only choice. Session-only trust
       // is a runtime override pi applies only during the initial resolve;
@@ -1177,26 +1232,12 @@ function TrustPicker({
       const observation = { owner: runtime, ...(cursor ? { cursor } : {}) };
       const isCurrent = () => {
         const session = useSessionsStore.getState().sessions.get(sessionId);
-        if (!sessionMatchesRuntime(session, runtime)) return false;
-        if (!cursor) return true;
-        const current = session?.authorityProjection?.semantic;
-        return (
-          current?.state === "following" &&
-          current.cursor.hostInstanceId === cursor.hostInstanceId &&
-          current.cursor.sessionEpoch === cursor.sessionEpoch &&
-          current.cursor.transportSequence === cursor.transportSequence &&
-          current.cursor.snapshotSequence === cursor.snapshotSequence
-        );
+        return sessionMatchesRuntime(session, runtime);
       };
       try {
         const receipt = await dispatchSessionIntent(
           sessionId,
-          {
-            kind: "invokeCommand",
-            text: `/trust ${option.trusted ? "trust" : "untrust"}`,
-            editorRevision:
-              useSessionsStore.getState().sessions.get(sessionId)?.editorRevision ?? 0,
-          },
+          { kind: "setTrust", optionLabel: option.label },
           observation,
         );
         if (!isCurrent()) return;
@@ -1205,14 +1246,36 @@ function TrustPicker({
           setSaving(false);
           return;
         }
+        const outcome = await waitForTrustOutcome(sessionId, receipt.intentId, runtime);
+        if (!isCurrent()) return;
+        if (
+          outcome.state !== "completed" ||
+          outcome.result?.persisted !== true ||
+          outcome.result.trusted !== option.trusted
+        ) {
+          addToast(sessionId, outcome.error ?? "The trust choice could not be saved.", "error");
+          setSaving(false);
+          return;
+        }
         // Trust changes take effect through the same owner-bound replacement
-        // protocol; authority frames publish the successor.
+        // protocol; authority frames publish the successor. Admission itself
+        // advances the semantic cursor, so capture the fresh observation
+        // rather than treating that expected advance as a stale selection.
+        const currentSemantic = useSessionsStore.getState().sessions.get(sessionId)
+          ?.authorityProjection?.semantic;
+        const reloadObservation = {
+          owner: runtime,
+          ...(currentSemantic?.state === "following" &&
+          currentSemantic.cursor.hostInstanceId === runtime.hostInstanceId &&
+          currentSemantic.cursor.sessionEpoch === runtime.sessionEpoch
+            ? { cursor: currentSemantic.cursor }
+            : {}),
+        };
         const reloadReceipt = await dispatchSessionIntent(
           sessionId,
           { kind: "reload" },
-          observation,
+          reloadObservation,
         );
-        if (!isCurrent()) return;
         if (
           reloadReceipt.status === "not_admitted" ||
           reloadReceipt.status === "delivery_unknown"
@@ -1225,14 +1288,14 @@ function TrustPicker({
           setSaving(false);
           return;
         }
-        closePicker(sessionId);
+        onClose();
       } catch (err) {
         if (!isCurrent()) return;
         addToast(sessionId, err instanceof Error ? err.message : String(err), "error");
         setSaving(false);
       }
     },
-    [options, saving, sessionId, addToast, closePicker, runtime],
+    [options, saving, sessionId, addToast, onClose, runtime],
   );
 
   return (

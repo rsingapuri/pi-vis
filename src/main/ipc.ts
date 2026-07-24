@@ -79,6 +79,7 @@ import {
   piThemeForSchemeId,
 } from "./theme-loader.js";
 import { UpdateCheckScheduler } from "./update-check-scheduler.js";
+import { safeSendToWindow } from "./window-messaging.js";
 import {
   getOrderedWorkspaces,
   pickWorkspace,
@@ -150,9 +151,12 @@ async function getHostEnv(): Promise<Record<string, string>> {
 // During quit, pi processes are SIGTERMed and emit final events/exits after
 // the window is gone — sending to a destroyed webContents throws.
 const safeSend = (channel: string, payload: unknown): void => {
-  const w = mainWindow;
-  if (!w || w.isDestroyed() || w.webContents.isDestroyed()) return;
-  w.webContents.send(channel, payload);
+  safeSendToWindow(mainWindow, channel, payload, (error) => {
+    console.warn(
+      `Skipped renderer notification "${channel}" during window teardown:`,
+      error instanceof Error ? error.message : error,
+    );
+  });
 };
 
 async function activeWorktreeIdentity(
@@ -333,6 +337,7 @@ export function initIpc(win: BrowserWindow): void {
     },
     (sessionId: SessionId, req: ExtensionUiRequest) => {
       eventBatcher?.flush(sessionId);
+      logTestIpcInvocation("session.uiRequest", { sessionId, request: req });
       safeSend("session.uiRequest", { sessionId, request: req });
     },
     (sessionId: SessionId, status: SessionStatus, error?: string, piVersion?: string) => {
@@ -1263,6 +1268,7 @@ export function initIpc(win: BrowserWindow): void {
   ipcMain.handle(
     "session.rendererAttach",
     async (_evt, args: { sessionId: SessionId; rendererGeneration: number }) => {
+      logTestIpcInvocation("session.rendererAttach", args);
       if (!registry) throw new Error("Session registry not initialized");
       return registry.rendererAttach(args.sessionId, args.rendererGeneration);
     },

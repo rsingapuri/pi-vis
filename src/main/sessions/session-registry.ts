@@ -2367,7 +2367,32 @@ export class SessionRegistry {
       return { status: "unavailable", reason: "attach_superseded" };
     }
     const attachProc = record.proc;
-    if (!attachProc?.hostInstanceId) {
+    const preReady =
+      record.status === "cold" ||
+      record.status === "starting" ||
+      record._activating ||
+      !record._procReady;
+    if (preReady && generation > record._rendererGeneration) {
+      // Startup dialogs (notably project trust) are emitted before the host can
+      // become ready. Bind their renderer generation now, but leave semantic
+      // authority attachment behind the stable-ready gate below. Otherwise the
+      // dialog response is rejected as stale while the host waits for that
+      // exact response to finish startup.
+      record._rendererGeneration = generation;
+    }
+    // A child can answer snapshot/authority requests just before activation's
+    // main-owned lifecycle commit finishes. Attaching in that gap lets the
+    // renderer install an owner that bound-history correctly still rejects as
+    // provisional, with no later owner change to trigger its retry. Admit the
+    // renderer handshake only after activation has fully left that gap.
+    if (
+      !attachProc?.hostInstanceId ||
+      record.status !== "ready" ||
+      record._activating ||
+      !record._procReady ||
+      record.availability !== "available" ||
+      record._hostTransition !== undefined
+    ) {
       return { status: "unavailable", reason: "host_cold" };
     }
     const runtimeIdentity = {
@@ -2688,6 +2713,28 @@ export class SessionRegistry {
     const record = this.sessions.get(sessionId);
     if (record?._closing) throw new Error("Session close preparation is in progress");
     this.markActivationVisitInteracted(record);
+    const pendingRequest = record?._pendingUiRequests.get(operationId);
+    const exactPendingOwner =
+      pendingRequest?.id === response.id &&
+      pendingRequest.hostInstanceId === expectedHostInstanceId &&
+      pendingRequest.sessionEpoch === expectedSessionEpoch;
+    const preReady =
+      record?.status === "cold" ||
+      record?.status === "starting" ||
+      record?._activating === true ||
+      record?._procReady !== true;
+    if (
+      record &&
+      preReady &&
+      exactPendingOwner &&
+      rendererGeneration > record._rendererGeneration
+    ) {
+      // A brand-new session can publish project trust before its normal
+      // rendererAttach path runs. Let only that exact owner-bound pending
+      // operation claim the newer generation; arbitrary/stale dialog ids and
+      // every post-ready response remain behind the ordinary generation fence.
+      record._rendererGeneration = rendererGeneration;
+    }
     if (
       !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
       rendererGeneration !== record._rendererGeneration

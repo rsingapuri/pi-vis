@@ -171,9 +171,10 @@ export type CancellationData = z.infer<typeof CancellationDataSchema>;
 
 // ── Trust state response (host-only /trust support) ──────────────────────
 // Returned by the get_trust_state host bridge command. `currentOptions`
-// mirrors pi's getProjectTrustOptions choice set (buildProjectTrustOptions
-// in bootstrap.mjs). `hasTrustRequiringResources` gates whether /trust is
-// meaningful at all (false → the renderer toasts and skips the picker).
+// contains the persistent subset of pi's project-trust choices. Session-only
+// answers exist only during initial resource resolution and cannot be applied
+// by the reload-backed post-start /trust flow. `hasTrustRequiringResources`
+// gates whether /trust is meaningful at all (false → toast and skip).
 export const TrustStateDataSchema = z.object({
   cwd: z.string(),
   hasTrustRequiringResources: z.boolean(),

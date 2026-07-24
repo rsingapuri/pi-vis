@@ -783,11 +783,11 @@ export class SessionSearchService {
         coverage,
         done,
       };
-      state.owner.send("sessionSearch.batch", batch);
+      this.sendBatch(state, batch);
     } catch (error) {
       if (state.cancelled || state.runToken !== runToken || state.owner.isDestroyed()) return;
       this.failure = error instanceof Error ? error.message : String(error);
-      state.owner.send("sessionSearch.batch", {
+      this.sendBatch(state, {
         rendererGeneration: state.rendererGeneration,
         clientQueryId: state.clientQueryId,
         searchId: state.searchId,
@@ -800,6 +800,23 @@ export class SessionSearchService {
         done: true,
         error: this.failure,
       });
+    }
+  }
+
+  /**
+   * Renderer destruction can race the pre-send isDestroyed() check. Search
+   * refreshes are deliberately fire-and-forget, so a closed IPC endpoint must
+   * retire its capabilities instead of rejecting runPage() into the main
+   * process as an unhandled promise.
+   */
+  private sendBatch(state: SearchState, batch: SessionSearchBatch): boolean {
+    if (state.cancelled || state.owner.isDestroyed()) return false;
+    try {
+      state.owner.send("sessionSearch.batch", batch);
+      return true;
+    } catch {
+      this.cancelState(state);
+      return false;
     }
   }
 

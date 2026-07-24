@@ -471,6 +471,12 @@ export function createStateAuthority({
           typeof intent.command === "string" &&
           isOptional(intent.excludeFromContext, (value) => typeof value === "boolean")
         );
+      case "setTrust":
+        return (
+          isStrictObject(intent, ["kind", "optionLabel"]) &&
+          typeof intent.optionLabel === "string" &&
+          intent.optionLabel.length > 0
+        );
       case "navigate":
         return (
           Object.keys(intent).every((key) => ["kind", "targetId", "summarize"].includes(key)) &&
@@ -1227,6 +1233,11 @@ export function createStateAuthority({
           ...(Number.isInteger(value.exitCode) ? { exitCode: value.exitCode } : {}),
           ...(typeof value.cancelled === "boolean" ? { cancelled: value.cancelled } : {}),
           ...(typeof value.truncated === "boolean" ? { truncated: value.truncated } : {}),
+        };
+      case "setTrust":
+        return {
+          trusted: value.trusted === true,
+          persisted: value.persisted === true,
         };
       case "navigate": {
         const cancelled = value.cancelled === true || value.aborted === true;

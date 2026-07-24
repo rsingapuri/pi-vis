@@ -92,6 +92,45 @@ function sessionHasCompaction(path: string, summary: string): boolean {
 test.describe("Real SDK-host smoke", () => {
   test.beforeAll(() => expect(PI_VERSION).toBe(PINNED_PI_VERSION));
 
+  test("accepts a project-trust click while the real host is still starting", async () => {
+    test.setTimeout(120_000);
+    const ipcLog = join(os.tmpdir(), `pivis-startup-trust-${process.pid}-${Date.now()}.jsonl`);
+    const fixture = createRealSdkFixture({ ipcInvocationLog: ipcLog });
+    const projectExtensions = join(fixture.dirs.workspace, ".pi", "extensions");
+    fs.mkdirSync(projectExtensions, { recursive: true });
+    fs.copyFileSync(FIXTURE_EXTENSION, join(projectExtensions, "smoke-e2e.ts"));
+    let launch: Awaited<ReturnType<typeof fixture.launch>> | undefined;
+    try {
+      launch = await fixture.launch();
+      await launch.window.getByRole("button", { name: "New session" }).click();
+
+      const trustChoice = launch.window.getByRole("option", { name: "Trust this folder" });
+      await expect(trustChoice).toBeVisible({ timeout: 60_000 });
+      await trustChoice.click();
+      await expect(trustChoice).toHaveCount(0, { timeout: 10_000 });
+
+      const textarea = launch.window.locator(".composer__textarea");
+      await expect(launch.window.locator(".composer__attach-btn")).toBeEnabled({
+        timeout: 60_000,
+      });
+      await textarea.fill("/smoke-e2e");
+      await textarea.press("Enter");
+      await expect(
+        launch.window.getByText("Real SDK host command completed", { exact: true }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(launch.window.getByText(/Host process exited/)).toHaveCount(0);
+    } catch (error) {
+      const mainInvocations = fs.existsSync(ipcLog) ? fs.readFileSync(ipcLog, "utf8") : "<none>";
+      throw new Error(
+        `${String(error)}\n${await fixture.diagnostics(launch?.window)}\nMain invocations:\n${mainInvocations}\nElectron output:\n${launch?.output.join("") ?? "<none>"}`,
+      );
+    } finally {
+      await launch?.close();
+      fixture.cleanup();
+      rmrf(ipcLog);
+    }
+  });
+
   test("preserves the first default-model prompt through initial authority attachment", async () => {
     test.setTimeout(120_000);
     const provider = await createScriptedOpenAIProvider(

@@ -184,10 +184,12 @@ export const ExportHtmlCommandSchema = BaseCommand.extend({
 
 // ── Trust (pi-vis host-only; mirrors pi's TUI showTrustSelector) ─────────
 // get_trust_state returns the cwd, whether the cwd has trust-requiring
-// project resources, and pi's full project-trust choice set (each with a
-// label, the `trusted` answer, and the `updates` to persist). Used by the
-// /trust picker. NOT part of pi's RPC protocol — it is implemented only by
-// the direct SDK host.
+// project resources, and the persistent post-start subset of pi's
+// project-trust choices (each with a label, the `trusted` answer, and the
+// updates to persist). Used by the /trust picker. Session-only choices remain
+// available to bootstrap's initial trust resolver, where they can be honored.
+// NOT part of pi's RPC protocol — it is implemented only by the direct SDK
+// host.
 export const ProjectTrustUpdateSchema = z.object({
   path: z.string(),
   // null = clear the entry so a broader (parent) grant takes over —

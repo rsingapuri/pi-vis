@@ -301,6 +301,36 @@ describe("authority protocol schemas", () => {
     ).toBe(false);
   });
 
+  it("models trust selection as an exact child-revalidated mutation", () => {
+    const envelope = {
+      sessionId: "session-a",
+      intentId: "trust-a",
+      rendererGeneration: 1,
+      expectedOwner: owner,
+      intent: { kind: "setTrust", optionLabel: "Trust parent folder (/workspace)" },
+    };
+    expect(IntentEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    expect(
+      IntentEnvelopeSchema.safeParse({
+        ...envelope,
+        intent: {
+          kind: "setTrust",
+          optionLabel: "Trust parent folder (/workspace)",
+          updates: [{ path: "/", decision: true }],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      IntentOutcomeSchema.safeParse({
+        intentId: "trust-a",
+        owner,
+        kind: "setTrust",
+        state: "completed",
+        result: { trusted: true, persisted: true },
+      }).success,
+    ).toBe(true);
+  });
+
   it("admits only explicit read operations as owner-bound queries", () => {
     const query = { type: "render_entry", entryId: "entry-a", cols: 80, expanded: true };
     expect(SessionQuerySchema.safeParse(query).success).toBe(true);

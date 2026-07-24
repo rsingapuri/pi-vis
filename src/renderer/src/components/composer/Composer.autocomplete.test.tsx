@@ -123,6 +123,12 @@ function outcomeFor(envelope: Envelope, patch: Partial<IntentOutcome> = {}): Int
       return { ...base, kind: "export", result: { path: "/tmp/preview-export.html" } };
     case "runBash":
       return { ...base, kind: "runBash", result: { started: true } };
+    case "setTrust":
+      return {
+        ...base,
+        kind: "setTrust",
+        result: { trusted: true, persisted: true },
+      };
     case "rename":
       return { ...base, kind: "rename", result: { name: envelope.intent.name } };
     case "setModel":

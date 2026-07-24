@@ -163,6 +163,70 @@ describe("Sidebar boot workspace restore", () => {
     unmount();
   });
 
+  it("moves an older live session above unpinned peers after a delivered user message", async () => {
+    const olderSessionId = "older-live" as SessionId;
+    const olderFile = "/tmp/older-live.jsonl";
+    const newerFile = "/tmp/newer-stored.jsonl";
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === "workspace.list") return [];
+      throw new Error(`Unexpected IPC channel ${channel}`);
+    });
+    (globalThis.window as unknown as { pivis?: unknown }).pivis = { invoke };
+
+    useSettingsStore.setState({ settings: defaultSettings, loaded: false });
+    useSessionsStore.getState().addWorkspace(WS_A);
+    useSessionsStore.getState().setExpandedWorkspaces([WS_A]);
+    useSessionsStore.getState().setWorkspaceSessions(WS_A, [
+      {
+        id: "older-live",
+        cwd: WS_A,
+        filePath: olderFile,
+        name: "Older live session",
+        preview: "older",
+        mtime: 100,
+        lastActiveAt: 100,
+        messageCount: 1,
+      },
+      {
+        id: "newer-stored",
+        cwd: WS_A,
+        filePath: newerFile,
+        name: "Newer stored session",
+        preview: "newer",
+        mtime: 200,
+        lastActiveAt: 200,
+        messageCount: 1,
+      },
+    ]);
+    useSessionsStore
+      .getState()
+      .createSession(olderSessionId, WS_A, olderFile, "Older live session", undefined, "ready");
+    useSessionsStore.setState({ activeSessionId: olderSessionId, activeWorkspacePath: WS_A });
+
+    const { container, unmount } = mount(<Sidebar onOpenSettings={() => {}} />);
+    await flushEffects();
+    const visibleNames = () =>
+      Array.from(container.querySelectorAll<HTMLElement>(".sidebar__session-name")).map(
+        (row) => row.textContent,
+      );
+    expect(visibleNames()).toEqual(["Newer stored session", "Older live session"]);
+
+    act(() => {
+      useSessionsStore.getState().applyEvent(olderSessionId, {
+        type: "message_start",
+        message: {
+          role: "user",
+          content: "move this session to the top",
+          timestamp: 300,
+        },
+        queueIntentId: "intent-promote-older",
+      });
+    });
+    expect(visibleNames()).toEqual(["Older live session", "Newer stored session"]);
+
+    unmount();
+  });
+
   it("persists the last active workspace before opening a stored session", async () => {
     const invoke = vi.fn(async (channel: string, payload: { workspacePath?: string } = {}) => {
       switch (channel) {

@@ -873,6 +873,41 @@ describe("SessionSearchService", () => {
     ).toMatchObject({ outcome: "invalid-target" });
   });
 
+  it("retires a search when its renderer closes during batch delivery", async () => {
+    const data = fixture();
+    const settings = {
+      workspaceOrder: [data.workspace],
+      worktrees: {},
+      archivedSessions: [],
+      pinnedSessions: [],
+    };
+    const index = new FakeIndex();
+    const service = new SessionSearchService({
+      databaseDirectory: path.join(data.root, "index"),
+      getSettings: () => settings,
+      openValidatedSource: vi.fn(),
+      catalog: new SessionCatalog({
+        sessionsRoot: path.join(data.root, "sessions"),
+        getSettings: () => settings,
+      }),
+      index,
+    });
+    services.push(service);
+    await service.initialize();
+    const renderer = new Renderer(4);
+    const send = vi.spyOn(renderer, "send").mockImplementation(() => {
+      throw new Error("Render frame was disposed before WebFrameMain could be accessed");
+    });
+
+    const { searchId } = service.start(renderer, request(data.workspace));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(
+      service.cancel(renderer, { rendererGeneration: 7, searchId: searchId as SearchId }),
+    ).toEqual({ cancelled: false });
+  });
+
   it("keeps query/context modules independent of SessionRegistry", () => {
     for (const file of ["session-search-service.ts", "context-loader.ts", "index-worker.ts"]) {
       const source = fs.readFileSync(path.join(__dirname, file), "utf8");

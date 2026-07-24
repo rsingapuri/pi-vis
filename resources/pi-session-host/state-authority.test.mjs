@@ -2265,7 +2265,7 @@ describe("state authority", () => {
     });
   });
 
-  it("normalizes command, model, and bash outcomes without leaking raw SDK values", async () => {
+  it("normalizes command, model, bash, and trust outcomes without leaking raw SDK values", async () => {
     const sendFrame = vi.fn();
     const { authority } = setup({}, { sendFrame });
     const owner = { hostInstanceId: "host-1", sessionEpoch: 0 };
@@ -2277,6 +2277,11 @@ describe("state authority", () => {
       exitCode: 0,
       cancelled: false,
     }));
+    await dispatch(
+      "trust-result",
+      { kind: "setTrust", optionLabel: "Trust this folder" },
+      async () => ({ trusted: true, persisted: true, updates: [{ private: "ignored" }] }),
+    );
     await dispatch(
       "model-result",
       { kind: "setModel", provider: "anthropic", modelId: "claude" },
@@ -2293,7 +2298,7 @@ describe("state authority", () => {
         sendFrame.mock.calls
           .flatMap(([frame]) => frame.records)
           .filter((record) => record.type === "intent_outcome"),
-      ).toHaveLength(3),
+      ).toHaveLength(4),
     );
     const outcomes = sendFrame.mock.calls
       .flatMap(([frame]) => frame.records)
@@ -2303,6 +2308,12 @@ describe("state authority", () => {
       expect.objectContaining({
         intentId: "bash-result",
         result: { started: true, output: "/tmp", exitCode: 0, cancelled: false },
+      }),
+    );
+    expect(outcomes).toContainEqual(
+      expect.objectContaining({
+        intentId: "trust-result",
+        result: { trusted: true, persisted: true },
       }),
     );
     expect(outcomes).toContainEqual(
@@ -2534,6 +2545,7 @@ describe("state authority", () => {
       { kind: "compact", instructions: 1 },
       { kind: "invokeCommand", text: "/x", editorRevision: 1, extra: true },
       { kind: "runBash", command: "pwd", excludeFromContext: "no" },
+      { kind: "setTrust", optionLabel: "", updates: [] },
       { kind: "navigate", targetId: "", summarize: "yes" },
       { kind: "setModel", provider: "p", modelId: "" },
       { kind: "setThinking", level: "turbo" },
