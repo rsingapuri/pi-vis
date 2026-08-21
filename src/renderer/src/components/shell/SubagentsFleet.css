@@ -151,9 +151,9 @@
   gap: 0.286rem;
   margin-right: 0.4rem;
   padding: 0.143rem 0.571rem;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--border));
   border-radius: 999px;
-  background: transparent;
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
   color: var(--danger);
   font-size: var(--font-size-small);
   font-weight: 500;
@@ -171,10 +171,10 @@
   gap: 0.286rem;
   margin-left: auto;
   padding: 0.143rem 0.571rem;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--border));
   border-radius: 999px;
-  background: transparent;
-  color: var(--text-muted);
+  background: color-mix(in srgb, var(--danger) 4%, var(--surface));
+  color: var(--danger);
   font-size: var(--font-size-small);
   font-weight: 500;
   line-height: var(--leading-label);
@@ -183,9 +183,8 @@
 }
 
 .subagents-fleet__stop-btn:hover {
-  color: var(--danger);
   border-color: var(--danger);
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--danger) 11%, var(--surface));
 }
 
 .subagents-fleet__stop-confirm {
