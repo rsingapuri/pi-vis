@@ -35,7 +35,7 @@ export function Dock({ sessionId }: { sessionId: SessionId }): React.ReactElemen
         const lines = widgets!.get(key) ?? [];
         if (key === SUBAGENT_ASYNC_WIDGET_KEY) {
           // Key by session so the fleet's last-good snapshot resets on session switch.
-          return <SubagentsFleet key={`${sessionId}:${key}`} lines={lines} />;
+          return <SubagentsFleet key={`${sessionId}:${key}`} sessionId={sessionId} lines={lines} />;
         }
         if (lines.length === 0) return null;
         return <WidgetItem key={key} lines={lines} />;

@@ -5,6 +5,7 @@ import type {
   AuthorityAttachResponse,
   IntentEnvelope,
   IntentOutcome,
+  IntentReceipt,
   OperationJournalRecord,
   QueueManagementAvailability,
   RendererPublication,
@@ -84,6 +85,9 @@ let suppressUnifiedPanelResize = false;
 const previewHooks = {
   /** Count of session interrupt requests dispatched to the stub. */
   abortCalls: 0,
+  /** Last dispatched intent per session, for render-test verification. */
+  lastDispatchIntent: new Map<SessionId, SessionIntent>(),
+  dispatchIntentLog: [] as { sessionId: SessionId; intent: SessionIntent }[],
   /** Explicit search opens; preview selection/context never increments this. */
   searchOpenCalls: 0,
   /** Forces the search-open lifecycle snapshot used by attachment-race tests. */
@@ -300,10 +304,12 @@ function maybeCompleteInitialWorkspaceOpen(): void {
     completeInitialWorkspaceOpen();
   }, 0);
 }
-// Attach to window for render-test access (guarded for type safety).
+// SAFETY: preview-stub only runs in the dev renderer; these window
+// attachments are intentionally untyped test/observer hooks, not part of
+// the real Electron IPC contract.
 (window as unknown as { __pivisPreview?: typeof previewHooks }).__pivisPreview = previewHooks;
-// Expose the store for render-test introspection (NOT part of the real
-// IPC contract).
+// SAFETY: same as above — the store is exposed only for render-test
+// introspection in the standalone browser preview.
 (window as unknown as { __pivisStore?: typeof useSessionsStore }).__pivisStore = useSessionsStore;
 
 function emit(channel: string, payload: unknown): void {
@@ -489,6 +495,8 @@ function publishPreviewPanel(sessionId: SessionId, payload: Record<string, unkno
     plane: "panel",
     owner: currentOwner(sessionId),
     payload: { ...payload, cursor },
+    // SAFETY: preview panel publications are built from the typed PanelEvent
+    // shape and are emitted only to the renderer's own stub subscriber.
   } as unknown as RendererPublication);
 }
 
@@ -1102,11 +1110,21 @@ async function handlePreviewRequest(command: Record<string, unknown>): Promise<u
       //     branch indents.
       // There is no `tool_call` entry type in pi; tool calls live in assistant
       // content and tool results are `message` entries with role "toolResult".
-      const node = (id: string, type: string, extra: object, children: unknown[] = []) => ({
+      const node = (
+        id: string,
+        type: string,
+        extra: Record<string, unknown>,
+        children: unknown[] = [],
+      ) => ({
         entry: { id, type, timestamp: "2026-06-26T12:00:00.000Z", ...extra },
         children,
       });
-      const msg = (id: string, message: object, children: unknown[] = [], label?: string) => {
+      const msg = (
+        id: string,
+        message: Record<string, unknown>,
+        children: unknown[] = [],
+        label?: string,
+      ) => {
         const n = node(id, "message", { message }, children);
         return label ? { ...n, label } : n;
       };
@@ -1249,7 +1267,11 @@ async function handleQuery(envelope: {
     queryId: envelope.queryId,
     owner: currentOwner(envelope.sessionId),
     queryType: envelope.query.type,
-    response: await handlePreviewRequest(envelope.query as unknown as Record<string, unknown>),
+    response: await handlePreviewRequest(
+      // SAFETY: envelope.query is a validated SessionQuery object; the stub
+      // internal request handler consumes it as a generic command record.
+      envelope.query as unknown as Record<string, unknown>,
+    ),
   };
 }
 
@@ -1521,7 +1543,7 @@ async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
   publishIntentOutcome(envelope.sessionId, outcomeFor(envelope, state, error));
 }
 
-function dispatchIntent(envelope: PreviewIntentEnvelope): unknown {
+function dispatchIntent(envelope: PreviewIntentEnvelope): IntentReceipt {
   if (!hasCurrentOwner(envelope.sessionId, envelope.expectedOwner)) {
     return { status: "not_admitted", intentId: envelope.intentId, reason: "stale_owner" };
   }
@@ -1543,6 +1565,8 @@ function dispatchIntent(envelope: PreviewIntentEnvelope): unknown {
         };
   }
   runtime.intentPayloads.set(envelope.intentId, fingerprint);
+  previewHooks.lastDispatchIntent.set(envelope.sessionId, envelope.intent);
+  previewHooks.dispatchIntentLog.push({ sessionId: envelope.sessionId, intent: envelope.intent });
   // A receipt confirms only dispatch admission. The terminal outcome is emitted
   // on a later authority frame; receipt resolution never updates projection state.
   setTimeout(() => void settleIntent(envelope), 0);
@@ -1727,12 +1751,14 @@ const stub = {
       case "clipboard.writeText":
         (globalThis as { __previewClipboardWrites?: unknown[] }).__previewClipboardWrites ??= [];
         (
+          // SAFETY: __previewClipboardWrites is initialized on the line above.
           globalThis as unknown as { __previewClipboardWrites: unknown[] }
         ).__previewClipboardWrites.push(req);
         return { ok: true };
       case "app.openExternal":
         (globalThis as { __previewExternalLinks?: unknown[] }).__previewExternalLinks ??= [];
         (
+          // SAFETY: __previewExternalLinks is initialized on the line above.
           globalThis as unknown as { __previewExternalLinks: unknown[] }
         ).__previewExternalLinks.push(req);
         return { ok: true };
@@ -2347,6 +2373,8 @@ const stub = {
   },
 };
 
+// SAFETY: preview-stub is the only code that assigns window.pivis in the
+// dev renderer; the stub object is typed locally and matches the contract.
 (window as unknown as { pivis: typeof stub }).pivis = stub;
 
 seedDemoSession();

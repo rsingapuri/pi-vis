@@ -1,10 +1,21 @@
 // @vitest-environment jsdom
+import type { SessionId } from "@shared/ids.js";
+import type {
+  IntentOutcome,
+  RuntimeIdentity,
+  SemanticSnapshot,
+} from "@shared/pi-protocol/runtime-state.js";
 import type React from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { act } from "react-dom/test-utils";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type SessionViewState, useSessionsStore } from "../../stores/sessions-store.js";
 import { SubagentsFleet } from "./SubagentsFleet.js";
+
+const SESSION_ID = "test-session" as SessionId;
+const OWNER: RuntimeIdentity = { hostInstanceId: "host-1", sessionEpoch: 1 };
+const CURSOR = { ...OWNER, transportSequence: 1, snapshotSequence: 1 };
 
 function mount(node: React.ReactElement): {
   container: HTMLDivElement;
@@ -54,13 +65,143 @@ function baseSnapshot(): Record<string, unknown> {
   };
 }
 
+function makeSemanticSnapshot(): SemanticSnapshot {
+  return {
+    owner: OWNER,
+    snapshotSequence: 1,
+    capturedAt: Date.now(),
+    sdk: {
+      isStreaming: false,
+      isIdle: true,
+      isCompacting: false,
+      isRetrying: false,
+      retryAttempt: 0,
+      isBashRunning: false,
+    },
+    activity: {},
+    queues: {
+      steering: [],
+      followUp: [],
+      steeringIntentIds: [],
+      followUpIntentIds: [],
+    },
+    custody: [],
+    editor: { revision: 0, text: "", attachments: [] },
+    activeIntents: [],
+    recentIntentOutcomes: [],
+    recentObservedOperations: [],
+    operationJournalLowWatermark: 0,
+    operationJournalHighWatermark: 0,
+    operationJournalTruncated: false,
+    model: null,
+    thinkingLevel: "off",
+    catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
+  };
+}
+
+function installSession(overrides: Partial<SessionViewState> = {}): void {
+  useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
+  useSessionsStore.getState().createSession(SESSION_ID, "/workspace", "/session.jsonl");
+  useSessionsStore.setState((state) => {
+    const sessions = new Map(state.sessions);
+    const session = sessions.get(SESSION_ID)!;
+    sessions.set(SESSION_ID, {
+      ...session,
+      editorRevision: 0,
+      authorityProjection: {
+        ...session.authorityProjection,
+        owner: OWNER,
+        semantic: { state: "following", cursor: CURSOR },
+        authoritativeSnapshot: makeSemanticSnapshot(),
+      },
+      ...overrides,
+    } as unknown as SessionViewState);
+    return { sessions };
+  });
+}
+
+function publishOutcome(
+  intentId: string,
+  state: "completed" | "failed" | "outcome_unknown",
+  error?: string,
+): void {
+  useSessionsStore.setState((current) => {
+    const sessions = new Map(current.sessions);
+    const session = sessions.get(SESSION_ID);
+    if (!session?.authorityProjection?.authoritativeSnapshot) return current;
+    const snapshot = session.authorityProjection.authoritativeSnapshot;
+    const outcome: IntentOutcome = {
+      intentId,
+      owner: snapshot.owner,
+      state,
+      kind: "invokeCommand",
+      result: { commandType: "subagents-stop" },
+      ...(error ? { error } : {}),
+    };
+    const nextSnapshot: SemanticSnapshot = {
+      ...snapshot,
+      recentIntentOutcomes: [...snapshot.recentIntentOutcomes, outcome],
+    };
+    sessions.set(SESSION_ID, {
+      ...session,
+      authorityProjection: {
+        ...session.authorityProjection,
+        authoritativeSnapshot: nextSnapshot,
+      },
+    } as unknown as SessionViewState);
+    return { sessions };
+  });
+}
+
+let lastInvokeCall: { channel: string; req: unknown } | undefined;
+
+function installPivis(
+  outcomeState: "completed" | "failed" | "outcome_unknown" = "completed",
+  outcomeError?: string,
+): ReturnType<typeof vi.fn> {
+  const invoke = vi.fn(async (channel: string, req: unknown) => {
+    lastInvokeCall = { channel, req };
+    if (channel === "session.dispatchIntent") {
+      const envelope = req as { intentId: string };
+      // Publish the outcome in the next macrotask so the component's
+      // awaitIntentOutcome subscription is set up before the store updates.
+      setTimeout(() => publishOutcome(envelope.intentId, outcomeState, outcomeError), 0);
+      return { status: "admitted", intentId: envelope.intentId, owner: OWNER };
+    }
+    return undefined;
+  });
+  Object.defineProperty(window, "pivis", {
+    configurable: true,
+    value: { invoke, on: vi.fn(() => () => {}) },
+  });
+  return invoke;
+}
+
+function fleetProps(lines: string[]): React.ComponentProps<typeof SubagentsFleet> {
+  return { sessionId: SESSION_ID, lines };
+}
+
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 describe("SubagentsFleet", () => {
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    installSession();
+  });
+
   afterEach(() => {
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    lastInvokeCall = undefined;
   });
 
   it("renders the header and empty state when no snapshot line is present", () => {
-    const { container, unmount } = mount(<SubagentsFleet lines={["no prefix here"]} />);
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(["no prefix here"])} />);
     expect(container.textContent).toContain("Subagents");
     expect(container.textContent).toContain("No active subagent runs");
     unmount();
@@ -71,14 +212,28 @@ describe("SubagentsFleet", () => {
       snapshotLine({
         ...baseSnapshot(),
         runs: [
-          { id: "r1", kind: "subagent", label: "dev", state: "running", startedAt: 1704067200000, updatedAt: 1704067260000 },
+          {
+            id: "r1",
+            kind: "subagent",
+            label: "dev",
+            state: "running",
+            startedAt: 1704067200000,
+            updatedAt: 1704067260000,
+          },
           { id: "r2", kind: "subagent", label: "qa", state: "queued" },
-          { id: "r3", kind: "subagent", label: "scout", state: "complete", startedAt: 1704067200000, endedAt: 1704067230000 },
+          {
+            id: "r3",
+            kind: "subagent",
+            label: "scout",
+            state: "complete",
+            startedAt: 1704067200000,
+            endedAt: 1704067230000,
+          },
         ],
       }),
     ];
-    const { container, unmount } = mount(<SubagentsFleet lines={lines} />);
-    const header = container.querySelector<HTMLButtonElement>(".subagents-fleet__header");
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
+    const header = container.querySelector<HTMLButtonElement>(".subagents-fleet__header-toggle");
     expect(header).not.toBeNull();
     expect(header!.getAttribute("aria-expanded")).toBe("true");
     expect(container.textContent).toContain("dev");
@@ -130,7 +285,7 @@ describe("SubagentsFleet", () => {
         ],
       }),
     ];
-    const { container, unmount } = mount(<SubagentsFleet lines={lines} />);
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
     const text = container.textContent ?? "";
     expect(text).toContain("Subagents");
     expect(text).toContain("researcher");
@@ -159,7 +314,7 @@ describe("SubagentsFleet", () => {
         ],
       }),
     ];
-    const { container, unmount } = mount(<SubagentsFleet lines={lines} />);
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
     const badges = container.querySelectorAll(".subagents-fleet__badge");
     expect(badges).toHaveLength(2);
     expect(badges[0]?.classList.contains("subagents-fleet__badge--failed")).toBe(true);
@@ -182,7 +337,7 @@ describe("SubagentsFleet", () => {
         runs: [{ id: "run-1", kind: "subagent", label: "kept", state: "running" }],
       }),
     ];
-    const { container, unmount } = mount(<SubagentsFleet lines={lines} />);
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
     const text = container.textContent ?? "";
     expect(text).toContain("truncated to 4.0 KiB budget");
     expect(text).toContain("2 runs omitted");
@@ -198,10 +353,10 @@ describe("SubagentsFleet", () => {
         runs: [{ id: "run-1", kind: "subagent", label: "kept", state: "running" }],
       }),
     ];
-    const { container, rerender, unmount } = mount(<SubagentsFleet lines={validLines} />);
+    const { container, rerender, unmount } = mount(<SubagentsFleet {...fleetProps(validLines)} />);
     expect(container.textContent).toContain("kept");
 
-    rerender(<SubagentsFleet lines={["PI_SUBAGENT_ASYNC_JSON:not valid json"]} />);
+    rerender(<SubagentsFleet {...fleetProps(["PI_SUBAGENT_ASYNC_JSON:not valid json"])} />);
     expect(container.textContent).toContain("kept");
     expect(container.textContent).toContain("running");
 
@@ -215,10 +370,10 @@ describe("SubagentsFleet", () => {
         runs: [{ id: "run-1", kind: "subagent", label: "kept", state: "running" }],
       }),
     ];
-    const { container, rerender, unmount } = mount(<SubagentsFleet lines={validLines} />);
+    const { container, rerender, unmount } = mount(<SubagentsFleet {...fleetProps(validLines)} />);
     expect(container.textContent).toContain("kept");
 
-    rerender(<SubagentsFleet lines={[]} />);
+    rerender(<SubagentsFleet {...fleetProps([])} />);
     expect(container.textContent).toContain("No active subagent runs");
     expect(container.textContent).not.toContain("kept");
 
@@ -227,9 +382,147 @@ describe("SubagentsFleet", () => {
 
   it("ignores malformed snapshot lines gracefully", () => {
     const lines = ["PI_SUBAGENT_ASYNC_JSON:not valid json"];
-    const { container, unmount } = mount(<SubagentsFleet lines={lines} />);
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
     expect(container.textContent).toContain("Subagents");
     expect(container.textContent).toContain("No active subagent runs");
+    unmount();
+  });
+
+  it("shows a stop button only for running or queued runs", () => {
+    const lines = [
+      snapshotLine({
+        ...baseSnapshot(),
+        runs: [
+          { id: "running-run", kind: "subagent", label: "running", state: "running" },
+          { id: "queued-run", kind: "subagent", label: "queued", state: "queued" },
+          { id: "complete-run", kind: "subagent", label: "complete", state: "complete" },
+          { id: "failed-run", kind: "subagent", label: "failed", state: "failed" },
+          { id: "stopped-run", kind: "subagent", label: "stopped", state: "stopped" },
+          { id: "paused-run", kind: "subagent", label: "paused", state: "paused" },
+          { id: "rejected-run", kind: "subagent", label: "rejected", state: "rejected" },
+        ],
+      }),
+    ];
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
+    const buttons = container.querySelectorAll(".subagents-fleet__stop-btn");
+    expect(buttons).toHaveLength(2);
+    const labels = Array.from(buttons).map((btn) => btn.getAttribute("aria-label"));
+    expect(labels).toContain("Stop running");
+    expect(labels).toContain("Stop queued");
+    unmount();
+  });
+
+  it("shows an inline confirm for a run stop and cancels it", () => {
+    installPivis();
+    const lines = [
+      snapshotLine({
+        ...baseSnapshot(),
+        runs: [{ id: "r1", kind: "subagent", label: "worker", state: "running" }],
+      }),
+    ];
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>(".subagents-fleet__stop-btn")!.click();
+    });
+    expect(container.querySelector(".subagents-fleet__stop-confirm")).not.toBeNull();
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>("[aria-label='Cancel']")!.click();
+    });
+    expect(container.querySelector(".subagents-fleet__stop-confirm")).toBeNull();
+    unmount();
+  });
+
+  it("issues /subagents-stop <runId> when confirmed and clears the confirm", async () => {
+    const invoke = installPivis();
+    const lines = [
+      snapshotLine({
+        ...baseSnapshot(),
+        runs: [{ id: "r1", kind: "subagent", label: "worker", state: "running" }],
+      }),
+    ];
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>(".subagents-fleet__stop-btn")!.click();
+    });
+    expect(container.querySelector(".subagents-fleet__stop-confirm")).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[aria-label='Confirm stop']")!.click();
+    });
+
+    expect(container.querySelector(".subagents-fleet__stop-confirm")).toBeNull();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith(
+      "session.dispatchIntent",
+      expect.objectContaining({
+        intent: expect.objectContaining({
+          kind: "invokeCommand",
+          text: "/subagents-stop r1",
+          editorRevision: 0,
+        }),
+      }),
+    );
+    expect(lastInvokeCall?.channel).toBe("session.dispatchIntent");
+    unmount();
+  });
+
+  it("renders an error note when a stop fails", async () => {
+    const invoke = installPivis("failed", "unknown run id");
+    const lines = [
+      snapshotLine({
+        ...baseSnapshot(),
+        runs: [{ id: "r1", kind: "subagent", label: "worker", state: "running" }],
+      }),
+    ];
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>(".subagents-fleet__stop-btn")!.click();
+    });
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>("[aria-label='Confirm stop']")!.click();
+    });
+    await settle();
+
+    const errorNode = container.querySelector(".subagents-fleet__stop-error");
+    expect(errorNode).not.toBeNull();
+    expect(errorNode!.textContent).toContain("unknown run id");
+    unmount();
+  });
+
+  it("shows a 'Stop all' header control when the session is streaming", () => {
+    installSession({
+      authorityProjection: {
+        ...useSessionsStore.getState().sessions.get(SESSION_ID)!.authorityProjection,
+        authoritativeSnapshot: {
+          ...makeSemanticSnapshot(),
+          sdk: { ...makeSemanticSnapshot().sdk, isStreaming: true, isIdle: false },
+        },
+      },
+    } as unknown as SessionViewState);
+    const lines = [snapshotLine(baseSnapshot())];
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
+    expect(container.querySelector(".subagents-fleet__stop-all")).not.toBeNull();
+    expect(container.textContent).toContain("Stop all");
+    unmount();
+  });
+
+  it("shows a 'Stop all' header control when active runs exist", () => {
+    const lines = [
+      snapshotLine({
+        ...baseSnapshot(),
+        runs: [
+          { id: "r1", kind: "subagent", label: "worker", state: "running" },
+          { id: "r2", kind: "subagent", label: "idle", state: "complete" },
+        ],
+      }),
+    ];
+    const { container, unmount } = mount(<SubagentsFleet {...fleetProps(lines)} />);
+    expect(container.querySelector(".subagents-fleet__stop-all")).not.toBeNull();
     unmount();
   });
 });
