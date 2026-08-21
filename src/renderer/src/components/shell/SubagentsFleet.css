@@ -1,0 +1,227 @@
+/* ── SubagentsFleet — live fleet panel in the Dock ───────────────────────
+   A dedicated card for the `subagent-async` widget. It spans the full width
+   of the Dock so the run tree has room to indent nested children, while
+   keeping the same visual language (surface, hairline, pill badges) as the
+   rest of the tray. */
+
+.subagents-fleet {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.357rem;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 0.5rem 0.643rem;
+  font-size: var(--font-size-small);
+  line-height: var(--leading-label);
+  color: var(--text);
+}
+
+.subagents-fleet__header {
+  display: flex;
+  align-items: center;
+  gap: 0.429rem;
+  width: 100%;
+}
+
+.subagents-fleet__header-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.429rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  font-family: inherit;
+  text-align: left;
+}
+
+.subagents-fleet__notice,
+.subagents-fleet__empty {
+  color: var(--text-muted);
+  font-size: var(--font-size-small);
+}
+
+.subagents-fleet__notice--warning {
+  color: var(--warning);
+}
+
+.subagents-fleet__runs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.357rem;
+}
+
+.subagents-fleet__node {
+  display: flex;
+  flex-direction: column;
+  gap: 0.143rem;
+}
+
+.subagents-fleet__node-header {
+  display: flex;
+  align-items: center;
+  gap: 0.429rem;
+  min-width: 0;
+}
+
+.subagents-fleet__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.214rem;
+  padding: 0.071rem 0.357rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.75em;
+  text-transform: capitalize;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.subagents-fleet__badge--running {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.subagents-fleet__badge--queued {
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__badge--complete {
+  color: var(--success);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__badge--failed,
+.subagents-fleet__badge--rejected {
+  color: var(--danger);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__badge--paused {
+  color: var(--warning);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__badge--stopped {
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__node-id {
+  min-width: 0;
+  color: var(--text);
+}
+
+.subagents-fleet__node-meta,
+.subagents-fleet__node-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.643rem;
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+.subagents-fleet__node-kind {
+  color: var(--text-faint);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.subagents-fleet__summary {
+  color: var(--text-faint);
+  font-size: 0.85em;
+  margin-left: auto;
+  margin-right: 0.4rem;
+}
+
+/* Stop affordances -------------------------------------------------------- */
+
+.subagents-fleet__stop-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.286rem;
+  margin-right: 0.4rem;
+  padding: 0.143rem 0.571rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+  color: var(--danger);
+  font-size: var(--font-size-small);
+  font-weight: 500;
+  line-height: var(--leading-label);
+}
+
+.subagents-fleet__stop-all:hover {
+  color: var(--danger);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.286rem;
+  margin-left: auto;
+  padding: 0.143rem 0.571rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 4%, var(--surface));
+  color: var(--danger);
+  font-size: var(--font-size-small);
+  font-weight: 500;
+  line-height: var(--leading-label);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.subagents-fleet__stop-btn:hover {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 11%, var(--surface));
+}
+
+.subagents-fleet__stop-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.214rem;
+  margin-left: auto;
+  color: var(--text-muted);
+}
+
+.subagents-fleet__stop-confirm-label {
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.subagents-fleet__stop-confirm-btn {
+  color: var(--text-muted);
+}
+
+.subagents-fleet__stop-confirm-btn:hover {
+  color: var(--danger);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__stop-error,
+.subagents-fleet__stop-all-error {
+  display: flex;
+  align-items: center;
+  gap: 0.286rem;
+  color: var(--danger);
+  font-size: 0.85em;
+}
+
+.subagents-fleet__stop-error {
+  padding-left: 0.5rem;
+}
+
+.subagents-fleet__stop-all-error {
+  padding: 0 0.143rem;
+}

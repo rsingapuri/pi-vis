@@ -23,6 +23,7 @@ import { SessionSubBar } from "./components/session-header/SessionSubBar.js";
 import { SessionSearchModal } from "./components/session-search/SessionSearchModal.js";
 import { SettingsView } from "./components/settings/SettingsView.js";
 import { Dock } from "./components/shell/Dock.js";
+import { SessionStopButton } from "./components/shell/SessionStopButton.js";
 import { ShellTerminalHost } from "./components/shell/ShellTerminalHost.js";
 import { Sidebar } from "./components/shell/Sidebar.js";
 import { StatusBar } from "./components/shell/StatusBar.js";
@@ -903,6 +904,9 @@ export function App(): React.ReactElement {
               <div className="session-dock">
                 {/* WorktreeBar — appears only in new sessions (first-send bar) */}
                 <WorktreeBar sessionId={activeSessionId} />
+                {/* SessionStopButton — visible whenever the main turn is
+                    streaming, with or without subagents (the desktop Esc) */}
+                <SessionStopButton sessionId={activeSessionId} />
                 {/* Dock — the above-composer tray (extension widget items + the
                     update notice). Sits directly above the composer so the two
                     read as a connected stack of cards. Renders nothing when
