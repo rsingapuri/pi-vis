@@ -253,6 +253,7 @@ function RunNode({
   node,
   generatedAt,
   depth = 0,
+  stopRunId,
   confirmingRunId,
   runErrors,
   onRequestStop,
@@ -309,9 +310,9 @@ function RunNode({
           <StopButton
             confirming={confirming}
             error={error}
-            title={`Stop ${node.label}`}
+            title={depth > 0 ? `Stop the whole run containing ${node.label}` : `Stop ${node.label}`}
             onRequestConfirm={() => onRequestStop(node.id)}
-            onConfirm={() => onConfirmStop(node.id)}
+            onConfirm={() => onConfirmStop(stopRunId)}
             onCancel={() => onCancelStop(node.id)}
           />
         )}
@@ -340,6 +341,7 @@ function RunNode({
           node={child}
           generatedAt={generatedAt}
           depth={depth + 1}
+          stopRunId={stopRunId}
           confirmingRunId={confirmingRunId}
           runErrors={runErrors}
           onRequestStop={onRequestStop}
@@ -514,6 +516,7 @@ export function SubagentsFleet({ sessionId, lines }: SubagentsFleetProps): React
                 key={run.id}
                 node={run}
                 generatedAt={snapshot!.generatedAt}
+                stopRunId={run.id}
                 confirmingRunId={confirmingRunId}
                 runErrors={runErrors}
                 onRequestStop={requestStop}
