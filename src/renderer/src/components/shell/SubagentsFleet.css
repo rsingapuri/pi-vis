@@ -150,7 +150,14 @@
   align-items: center;
   gap: 0.286rem;
   margin-right: 0.4rem;
+  padding: 0.143rem 0.571rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
   color: var(--danger);
+  font-size: var(--font-size-small);
+  font-weight: 500;
+  line-height: var(--leading-label);
 }
 
 .subagents-fleet__stop-all:hover {
@@ -159,12 +166,25 @@
 }
 
 .subagents-fleet__stop-btn {
-  color: var(--danger);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.286rem;
   margin-left: auto;
+  padding: 0.143rem 0.571rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-size-small);
+  font-weight: 500;
+  line-height: var(--leading-label);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 
 .subagents-fleet__stop-btn:hover {
   color: var(--danger);
+  border-color: var(--danger);
   background: var(--surface-2);
 }
 

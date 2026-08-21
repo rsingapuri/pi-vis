@@ -200,12 +200,13 @@ function StopButton({
   return (
     <button
       type="button"
-      className="icon-btn subagents-fleet__stop-btn"
+      className="subagents-fleet__stop-btn"
       aria-label={title ?? "Stop run"}
       title={title ?? "Stop run"}
       onClick={onRequestConfirm}
     >
       <IconStop size="0.75em" />
+      <span>Stop</span>
     </button>
   );
 }
@@ -225,7 +226,7 @@ function StopAllButton({
     <>
       <button
         type="button"
-        className="icon-btn subagents-fleet__stop-all"
+        className="subagents-fleet__stop-all"
         aria-label="Stop all work"
         title="Interrupt the session and stop every running subagent run"
         onClick={onRequestConfirm}
