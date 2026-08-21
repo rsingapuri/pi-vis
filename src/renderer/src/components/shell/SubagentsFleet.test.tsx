@@ -66,6 +66,39 @@ describe("SubagentsFleet", () => {
     unmount();
   });
 
+  it("collapses to the header summary on click and expands again", () => {
+    const lines = [
+      snapshotLine({
+        ...baseSnapshot(),
+        runs: [
+          { id: "r1", kind: "subagent", label: "dev", state: "running", startedAt: 1704067200000, updatedAt: 1704067260000 },
+          { id: "r2", kind: "subagent", label: "qa", state: "queued" },
+          { id: "r3", kind: "subagent", label: "scout", state: "complete", startedAt: 1704067200000, endedAt: 1704067230000 },
+        ],
+      }),
+    ];
+    const { container, unmount } = mount(<SubagentsFleet lines={lines} />);
+    const header = container.querySelector<HTMLButtonElement>(".subagents-fleet__header");
+    expect(header).not.toBeNull();
+    expect(header!.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("dev");
+
+    act(() => {
+      header!.click();
+    });
+    expect(header!.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector(".subagents-fleet__runs")).toBeNull();
+    expect(container.textContent).toContain("2 active");
+    expect(container.querySelector(".subagents-fleet__node-label")).toBeNull();
+
+    act(() => {
+      header!.click();
+    });
+    expect(header!.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("dev");
+    unmount();
+  });
+
   it("renders a run tree with label, state, current tool, and activity counters", () => {
     const lines = [
       snapshotLine({

@@ -25,6 +25,14 @@
   gap: 0.429rem;
   font-weight: 500;
   color: var(--text-secondary);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  font-family: inherit;
+  width: 100%;
+  text-align: left;
 }
 
 .subagents-fleet__notice,
@@ -118,4 +126,11 @@
   font-size: 0.85em;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.subagents-fleet__summary {
+  color: var(--text-faint);
+  font-size: 0.85em;
+  margin-left: auto;
+  margin-right: 0.4rem;
 }

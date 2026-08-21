@@ -6,12 +6,14 @@ import {
   parseSubagentAsyncSnapshot,
 } from "@shared/pi-protocol/subagents.js";
 import type React from "react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { FadeText } from "../common/FadeText.js";
 import {
   IconActivityRotor,
   IconAlert,
   IconCheck,
+  IconChevronDown,
+  IconChevronRight,
   IconStop,
   IconSubagents,
 } from "../common/icons.js";
@@ -162,14 +164,30 @@ export function SubagentsFleet({ lines }: SubagentsFleetProps): React.ReactEleme
   const snapshot = currentSnapshot ?? lastGoodRef.current;
   const hasRuns = snapshot && snapshot.runs.length > 0;
   const omissionNotice = snapshot ? buildOmissionNotice(snapshot.caps, snapshot.omitted) : null;
+  const [collapsed, setCollapsed] = useState(false);
+  const activeCount = snapshot
+    ? snapshot.runs.filter((run) => run.state === "running" || run.state === "queued").length
+    : 0;
+  const summary = hasRuns
+    ? activeCount > 0
+      ? `${activeCount} active`
+      : `${snapshot!.runs.length} run${snapshot!.runs.length === 1 ? "" : "s"}`
+    : "No active subagent runs";
 
   return (
     <div className="subagents-fleet">
-      <div className="subagents-fleet__header">
+      <button
+        type="button"
+        className="subagents-fleet__header"
+        aria-expanded={!collapsed}
+        onClick={() => setCollapsed((value) => !value)}
+      >
         <IconSubagents size="1em" />
         <span>Subagents</span>
-      </div>
-      {omissionNotice && (
+        <span className="subagents-fleet__summary">{summary}</span>
+        {collapsed ? <IconChevronRight size="1em" /> : <IconChevronDown size="1em" />}
+      </button>
+      {!collapsed && omissionNotice && (
         <div
           className={`subagents-fleet__notice ${
             snapshot?.omitted.byteLimitExceeded ? "subagents-fleet__notice--warning" : ""
@@ -178,15 +196,16 @@ export function SubagentsFleet({ lines }: SubagentsFleetProps): React.ReactEleme
           {omissionNotice}
         </div>
       )}
-      {hasRuns ? (
-        <div className="subagents-fleet__runs">
-          {snapshot!.runs.map((run) => (
-            <RunNode key={run.id} node={run} generatedAt={snapshot!.generatedAt} />
-          ))}
-        </div>
-      ) : (
-        <div className="subagents-fleet__empty">No active subagent runs</div>
-      )}
+      {!collapsed &&
+        (hasRuns ? (
+          <div className="subagents-fleet__runs">
+            {snapshot!.runs.map((run) => (
+              <RunNode key={run.id} node={run} generatedAt={snapshot!.generatedAt} />
+            ))}
+          </div>
+        ) : (
+          <div className="subagents-fleet__empty">No active subagent runs</div>
+        ))}
     </div>
   );
 }
