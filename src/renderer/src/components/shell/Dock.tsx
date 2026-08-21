@@ -1,8 +1,10 @@
 import type { SessionId } from "@shared/ids.js";
+import { SUBAGENT_ASYNC_WIDGET_KEY } from "@shared/pi-protocol/subagents.js";
 import type React from "react";
 import { AnsiText } from "../../lib/ansi.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { FadeText } from "../common/FadeText.js";
+import { SubagentsFleet } from "./SubagentsFleet.js";
 import "./Dock.css";
 
 /**
@@ -31,6 +33,10 @@ export function Dock({ sessionId }: { sessionId: SessionId }): React.ReactElemen
     <div className="dock">
       {widgetKeys.map((key) => {
         const lines = widgets!.get(key) ?? [];
+        if (key === SUBAGENT_ASYNC_WIDGET_KEY) {
+          // Key by session so the fleet's last-good snapshot resets on session switch.
+          return <SubagentsFleet key={`${sessionId}:${key}`} lines={lines} />;
+        }
         if (lines.length === 0) return null;
         return <WidgetItem key={key} lines={lines} />;
       })}

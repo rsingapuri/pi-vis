@@ -1,0 +1,121 @@
+/* ── SubagentsFleet — live fleet panel in the Dock ───────────────────────
+   A dedicated card for the `subagent-async` widget. It spans the full width
+   of the Dock so the run tree has room to indent nested children, while
+   keeping the same visual language (surface, hairline, pill badges) as the
+   rest of the tray. */
+
+.subagents-fleet {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.357rem;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 0.5rem 0.643rem;
+  font-size: var(--font-size-small);
+  line-height: var(--leading-label);
+  color: var(--text);
+}
+
+.subagents-fleet__header {
+  display: flex;
+  align-items: center;
+  gap: 0.429rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.subagents-fleet__notice,
+.subagents-fleet__empty {
+  color: var(--text-muted);
+  font-size: var(--font-size-small);
+}
+
+.subagents-fleet__notice--warning {
+  color: var(--warning);
+}
+
+.subagents-fleet__runs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.357rem;
+}
+
+.subagents-fleet__node {
+  display: flex;
+  flex-direction: column;
+  gap: 0.143rem;
+}
+
+.subagents-fleet__node-header {
+  display: flex;
+  align-items: center;
+  gap: 0.429rem;
+  min-width: 0;
+}
+
+.subagents-fleet__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.214rem;
+  padding: 0.071rem 0.357rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.75em;
+  text-transform: capitalize;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.subagents-fleet__badge--running {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.subagents-fleet__badge--queued {
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__badge--complete {
+  color: var(--success);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__badge--failed,
+.subagents-fleet__badge--rejected {
+  color: var(--danger);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__badge--paused {
+  color: var(--warning);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__badge--stopped {
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.subagents-fleet__node-id {
+  min-width: 0;
+  color: var(--text);
+}
+
+.subagents-fleet__node-meta,
+.subagents-fleet__node-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.643rem;
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+.subagents-fleet__node-kind {
+  color: var(--text-faint);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

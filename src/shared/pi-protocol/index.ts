@@ -5,4 +5,5 @@ export * from "./extension-ui.js";
 export * from "./messages.js";
 export * from "./markdown-transform.js";
 export * from "./runtime-state.js";
+export * from "./subagents.js";
 export * from "./turn-error.js";

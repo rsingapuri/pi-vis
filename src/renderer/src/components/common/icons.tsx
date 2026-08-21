@@ -157,6 +157,18 @@ export function IconBranch(props: IconProps): React.ReactElement {
   );
 }
 
+/** Subagents — a parent node with two children, for the live fleet panel. */
+export function IconSubagents(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <circle cx="6" cy="2.75" r="1.35" />
+      <circle cx="3.5" cy="9.25" r="1.35" />
+      <circle cx="8.5" cy="9.25" r="1.35" />
+      <path d="M6 4.1v2.2M3.5 6.3h5M3.5 6.3v1.95M8.5 6.3v1.95" />
+    </Icon>
+  );
+}
+
 /** Pencil — inline edit affordance. */
 export function IconPencil(props: IconProps): React.ReactElement {
   return (
