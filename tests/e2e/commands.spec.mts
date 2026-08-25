@@ -153,9 +153,69 @@ test.describe("Slash commands", () => {
     await expect(interfaceSection.getByText("Light theme", { exact: true })).toBeVisible();
     await expect(interfaceSection.getByText("Dark theme", { exact: true })).toBeVisible();
     await expect(interfaceSection.getByText("Mode", { exact: true })).toBeVisible();
-    await expect(interfaceSection.getByText("Font Size", { exact: true })).toBeVisible();
-    await expect(interfaceSection.getByText("Family", { exact: true })).toHaveCount(0);
+    // Font controls are grouped into their own sections (Chat, Titles)
+    // following the Code section pattern: header carries context, rows are
+    // plain "Font Family" / "Font Size". Chrome/interface font stays
+    // app-owned (no family control in Interface); chat body + titles are
+    // user-configurable (defaults Inter / Fraunces).
+    // UI Zoom (fonts + spacing) stays in Interface; Chat holds only the
+    // transcript font family.
+    await expect(interfaceSection.getByText("UI Zoom", { exact: true })).toBeVisible();
+    const chatSection = window.locator(".settings-section", {
+      has: window.getByRole("heading", { name: "Chat" }),
+    });
+    const titlesSection = window.locator(".settings-section", {
+      has: window.getByRole("heading", { name: "Titles" }),
+    });
+    const chatFontRow = chatSection.locator(".settings-row", { hasText: "Font Family" });
+    const titleFontRow = titlesSection.locator(".settings-row", { hasText: "Font Family" });
+    await expect(chatFontRow).toBeVisible();
+    await expect(titleFontRow).toBeVisible();
+    await expect(
+      chatSection.locator(".settings-row", { hasText: "Font Size" }),
+    ).toHaveCount(0);
     await expect(interfaceSection).not.toContainText("Pi-Vis owns interface font families");
+
+    // Defaults render as Inter (interface + chat) / Fraunces (title) on :root.
+    const defaultVars = await window.locator("html").evaluate((element) => ({
+      display: (element as HTMLElement).style.getPropertyValue("--font-display"),
+      chat: (element as HTMLElement).style.getPropertyValue("--font-chat"),
+      accent: (element as HTMLElement).style.getPropertyValue("--font-accent"),
+    }));
+    expect(defaultVars.display).toContain("Inter");
+    expect(defaultVars.chat).toContain("Inter");
+    expect(defaultVars.accent).toContain("Fraunces");
+
+    // Changing the chat font rewrites --font-chat live while the interface
+    // font stays app-owned.
+    const chatInput = chatFontRow.locator("input.settings-input");
+    if ((await chatInput.count()) > 0) {
+      await chatInput.fill("Georgia");
+    } else {
+      await chatFontRow.locator(".settings-select__trigger").click();
+      await chatFontRow.getByRole("option", { name: "Georgia" }).click();
+    }
+    const chatVars = await window.locator("html").evaluate((element) => ({
+      display: (element as HTMLElement).style.getPropertyValue("--font-display"),
+      chat: (element as HTMLElement).style.getPropertyValue("--font-chat"),
+    }));
+    expect(chatVars.chat).toContain("Georgia");
+    expect(chatVars.display).toContain("Inter");
+
+    // Changing the title font rewrites --font-accent live, falling back to
+    // the interface font.
+    const titleInput = titleFontRow.locator("input.settings-input");
+    if ((await titleInput.count()) > 0) {
+      await titleInput.fill("IBM Plex Serif");
+    } else {
+      await titleFontRow.locator(".settings-select__trigger").click();
+      await titleFontRow.getByRole("option", { name: "IBM Plex Serif" }).click();
+    }
+    const accentVar = await window
+      .locator("html")
+      .evaluate((element) => (element as HTMLElement).style.getPropertyValue("--font-accent"));
+    expect(accentVar).toContain("IBM Plex Serif");
+    expect(accentVar).toContain("var(--font-display)");
 
     const darkThemeRow = interfaceSection.locator(".settings-row", { hasText: "Dark theme" });
     await darkThemeRow.locator(".settings-select__trigger").click();

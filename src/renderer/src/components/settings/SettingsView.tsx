@@ -30,17 +30,48 @@ interface FontFamily {
  * font picker still needs bundled monospace options to appear even when they
  * are not system-installed.
  */
-const BUNDLED_FONTS = ["IBM Plex Mono"];
+// Kept as the default pinned list for buildFontOptions callers that don't
+// pass one explicitly.
+const BUNDLED_CODE_FONTS = ["IBM Plex Mono"];
+
+// One shared Google-Docs-style shortlist for all three font pickers (Chat,
+// Titles, Code): bundled families first, then widely available system fonts.
+// Each picker pins its own default family to the very top; the full
+// queryLocalFonts system list follows below, de-duplicated. A persisted
+// custom family outside the list still renders via the `current` slot in
+// buildFontOptions.
+const CURATED_FONT_OPTIONS = [
+  "Inter",
+  "Fraunces",
+  "IBM Plex Serif",
+  "IBM Plex Mono",
+  "Arial",
+  "Helvetica",
+  "Georgia",
+  "Roboto",
+  "Verdana",
+  "Times New Roman",
+  "system-ui",
+];
+
+/** Curated list with the picker's own default pinned first. */
+function curatedFontOptions(defaultFamily: string): string[] {
+  return [defaultFamily, ...CURATED_FONT_OPTIONS.filter((f) => f !== defaultFamily)];
+}
 
 /**
  * Build the family-dropdown options: bundled fonts first, then the currently
  * selected family (so a custom value the user typed always has a matching
  * option), then the system fonts — all de-duplicated.
  */
-function buildFontOptions(localFonts: FontFamily[], current: string): string[] {
+function buildFontOptions(
+  localFonts: FontFamily[],
+  current: string,
+  bundledFonts: readonly string[] = BUNDLED_CODE_FONTS,
+): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const family of [...BUNDLED_FONTS, current, ...localFonts.map((f) => f.family)]) {
+  for (const family of [...bundledFonts, current, ...localFonts.map((f) => f.family)]) {
     if (family && !seen.has(family)) {
       seen.add(family);
       out.push(family);
@@ -59,11 +90,14 @@ function SettingsSelect({
   options,
   onChange,
   compact = false,
+  fontPreview = false,
 }: {
   value: string;
   options: readonly SettingsSelectOption[];
   onChange: (value: string) => void;
   compact?: boolean;
+  /** Render trigger + option labels in the font each option names (font pickers). */
+  fontPreview?: boolean;
 }): React.ReactElement {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -92,7 +126,12 @@ function SettingsSelect({
           if (event.key === "Escape") setOpen(false);
         }}
       >
-        <span className="settings-select__label">{selectedLabel}</span>
+        <span
+          className="settings-select__label"
+          style={fontPreview && value ? { fontFamily: value } : undefined}
+        >
+          {selectedLabel}
+        </span>
         <IconChevronDown className="settings-select__caret" />
       </button>
       {open && (
@@ -118,7 +157,12 @@ function SettingsSelect({
                   }}
                 >
                   <span className="settings-select__check">{active && <IconCheck />}</span>
-                  <span className="settings-select__option-label">{option.label}</span>
+                  <span
+                    className="settings-select__option-label"
+                    style={fontPreview ? { fontFamily: option.value } : undefined}
+                  >
+                    {option.label}
+                  </span>
                 </button>
               );
             })}
@@ -735,7 +779,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                 </span>
               </div>
               <div className="settings-row">
-                <span className="settings-label">Font Size</span>
+                <span className="settings-label">UI Zoom</span>
                 <div className="settings-stepper">
                   <button
                     type="button"
@@ -782,6 +826,56 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
               )}
             </section>
 
+            {/* Chat */}
+            <section className="settings-section">
+              <h3 className="settings-section__title">Chat</h3>
+              <div className="settings-row">
+                <span className="settings-label">Font Family</span>
+                <SettingsSelect
+                  fontPreview
+                  value={settings.fonts.chat.family}
+                  onChange={(family) =>
+                    update({
+                      fonts: {
+                        ...settings.fonts,
+                        chat: { ...settings.fonts.chat, family },
+                      },
+                    })
+                  }
+                  options={buildFontOptions(
+                    localFonts,
+                    settings.fonts.chat.family,
+                    curatedFontOptions("Inter"),
+                  ).map((family) => ({ value: family, label: family }))}
+                />
+              </div>
+            </section>
+
+            {/* Titles */}
+            <section className="settings-section">
+              <h3 className="settings-section__title">Titles</h3>
+              <div className="settings-row">
+                <span className="settings-label">Font Family</span>
+                <SettingsSelect
+                  fontPreview
+                  value={settings.fonts.accent.family}
+                  onChange={(family) =>
+                    update({
+                      fonts: {
+                        ...settings.fonts,
+                        accent: { ...settings.fonts.accent, family },
+                      },
+                    })
+                  }
+                  options={buildFontOptions(
+                    localFonts,
+                    settings.fonts.accent.family,
+                    curatedFontOptions("Fraunces"),
+                  ).map((family) => ({ value: family, label: family }))}
+                />
+              </div>
+            </section>
+
             {/* Code */}
             <section className="settings-section">
               <h3 className="settings-section__title">Code</h3>
@@ -789,6 +883,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                 <span className="settings-label">Font Family</span>
                 {localFonts.length > 0 ? (
                   <SettingsSelect
+                    fontPreview
                     value={settings.fonts.code.family}
                     onChange={(family) =>
                       update({
@@ -798,9 +893,11 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                         },
                       })
                     }
-                    options={buildFontOptions(localFonts, settings.fonts.code.family).map(
-                      (family) => ({ value: family, label: family }),
-                    )}
+                    options={buildFontOptions(
+                      localFonts,
+                      settings.fonts.code.family,
+                      curatedFontOptions("IBM Plex Mono"),
+                    ).map((family) => ({ value: family, label: family }))}
                   />
                 ) : (
                   <input

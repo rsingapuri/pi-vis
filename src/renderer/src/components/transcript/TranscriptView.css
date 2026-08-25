@@ -169,7 +169,7 @@
   line-height: var(--leading-body);
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: var(--font-display);
+  font-family: var(--font-chat);
   font-size: 1em;
 }
 
@@ -179,7 +179,7 @@
    re-capped by this rule. */
 .transcript-block__content {
   color: var(--text);
-  font-family: var(--font-display);
+  font-family: var(--font-chat);
   font-size: 1em;
   line-height: var(--leading-body);
   letter-spacing: var(--tracking-body);

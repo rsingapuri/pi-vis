@@ -19,6 +19,8 @@ describe("AppSettingsSchema", () => {
     expect(parsed.groupModelsByProvider).toBe(false);
     expect(parsed.sessionSearchEnabled).toBe(true);
     expect(parsed.fonts.display).toEqual({ sizePx: 14 });
+    expect(parsed.fonts.chat).toEqual({ family: "Inter" });
+    expect(parsed.fonts.accent).toEqual({ family: "Fraunces" });
     expect(parsed.fonts.code).toEqual({ family: "IBM Plex Mono", sizePx: 14 });
   });
 
@@ -34,6 +36,19 @@ describe("AppSettingsSchema", () => {
     expect("family" in result.data.fonts.display).toBe(false);
     expect(result.data.fonts.display.sizePx).toBe(16);
     expect(result.data.fonts.code).toEqual({ family: "JetBrains Mono", sizePx: 13 });
+  });
+
+  it("preserves user-selected chat and title font families on parse", () => {
+    const result = AppSettingsSchema.safeParse({
+      fonts: {
+        chat: { family: "Nimbus Sans" },
+        accent: { family: "Helvetica" },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.fonts.chat).toEqual({ family: "Nimbus Sans" });
+    expect(result.data.fonts.accent).toEqual({ family: "Helvetica" });
   });
 
   it("strips the legacy openTabs / activeSessionFile / openSessions keys on parse (plain z.object)", () => {

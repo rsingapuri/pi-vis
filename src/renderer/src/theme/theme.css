@@ -100,6 +100,9 @@
      and size remain user-configurable. */
   --font-display: "Inter", system-ui, -apple-system, sans-serif;
   --font-accent: "Fraunces", var(--font-display);
+  /* Transcript body text (assistant prose, user messages). Chrome stays on
+     --font-display; reading text can be user-selected in Settings. */
+  --font-chat: var(--font-display);
   --font-accent-tracking: -0.015em;
   --font-reading-heading: "IBM Plex Serif", var(--font-display);
   --font-thinking: "IBM Plex Serif", var(--font-display);

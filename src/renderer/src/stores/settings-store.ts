@@ -106,6 +106,14 @@ function applyFonts(settings: AppSettings): void {
   // this stable metric set; exposing arbitrary system fonts makes controls
   // drift vertically even when their CSS box sizes remain correct.
   root.style.setProperty("--font-display", '"Inter", system-ui, -apple-system, sans-serif');
+  // Chat/transcript body font: user-selectable (default Inter). Reading text
+  // is layout-tolerant, unlike chrome. Falls back to the interface font.
+  root.style.setProperty("--font-chat", `${settings.fonts.chat.family}, var(--font-display)`);
+  // Title/accent font (workspace label, active session title, modal
+  // headers): user-selectable, defaulting to Fraunces. Falls back to the
+  // interface font so an unavailable family never renders in the browser's
+  // default.
+  root.style.setProperty("--font-accent", `${settings.fonts.accent.family}, var(--font-display)`);
   // Append a generic fallback stack for code so that while the chosen font is
   // still loading — or if it isn't available at all (e.g. a custom family name
   // the user typed) — code degrades to the right *kind* of font. Without the

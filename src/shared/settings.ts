@@ -14,6 +14,22 @@ const DisplayFontSettingsSchema = z.object({
   sizePx: z.number().min(8).max(48).default(14),
 });
 
+const ChatFontSettingsSchema = z.object({
+  // Transcript body font (--font-chat): the reading text in the chat —
+  // assistant prose and user messages. Family-only; defaults to Inter (the
+  // interface font). Chrome stays app-owned: UI alignment is tuned against
+  // stable font metrics, so only reading text is user-selectable.
+  family: z.string().default("Inter"),
+});
+
+const AccentFontSettingsSchema = z.object({
+  // Title/accent font (--font-accent): the workspace label in the sidebar,
+  // the active session title in the title bar, and app-owned modal headers.
+  // Defaults to Fraunces. Family-only: size stays app-owned so header
+  // geometry/tracking remains stable.
+  family: z.string().default("Fraunces"),
+});
+
 const CodeFontSettingsSchema = z.object({
   family: z.string(),
   sizePx: z.number().min(8).max(48),
@@ -33,6 +49,8 @@ export const AppSettingsSchema = z.object({
   fonts: z
     .object({
       display: DisplayFontSettingsSchema.default({ sizePx: 14 }),
+      chat: ChatFontSettingsSchema.default({}),
+      accent: AccentFontSettingsSchema.default({}),
       code: CodeFontSettingsSchema.default({ family: "IBM Plex Mono", sizePx: 14 }),
     })
     .default({}),
