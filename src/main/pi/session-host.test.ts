@@ -181,7 +181,7 @@ describe("SessionHost", () => {
   });
 
   it("round-trips exact-owner navigation presentation acknowledgement", async () => {
-    fake.emitReady("0.84.2");
+    fake.emitReady("0.85.1");
     await host.waitForReady();
     const owner = { hostInstanceId: fake.hostInstanceId, sessionEpoch: fake.sessionEpoch };
 
@@ -777,6 +777,27 @@ describe("SessionHost", () => {
       );
     });
 
+    it("returns the serialized host input watermark with a repaint acknowledgement", async () => {
+      await fake.emitReady("0.80.0");
+      await host.waitForReady();
+      const pending = host.acknowledgePanelRepaint(3, 9);
+      const request = fake.sent.find(
+        (message) => message.type === "panel_repaint_ack" && message.panelId === 3,
+      );
+      if (!request || typeof request.id !== "string") throw new Error("missing repaint request");
+      fake.emitWire({
+        type: "response",
+        id: request.id,
+        success: true,
+        data: { acknowledged: true, inputAcknowledgedThrough: 4 },
+      });
+
+      await expect(pending).resolves.toEqual({
+        acknowledged: true,
+        inputAcknowledgedThrough: 4,
+      });
+    });
+
     it("sendPanelResize emits {type:panel_resize, panelId, cols, rows}", async () => {
       await fake.emitReady("0.80.0");
       await host.waitForReady();
@@ -823,7 +844,7 @@ describe("SessionHost", () => {
 
   describe("Shell Turn I/O round-trips", () => {
     it("forwards sequenced input and returns the host acknowledgement", async () => {
-      await fake.emitReady("0.84.2");
+      await fake.emitReady("0.85.1");
       await host.waitForReady();
 
       await expect(host.sendShellInput("shell-1", 2, "yes\n")).resolves.toEqual({
@@ -841,7 +862,7 @@ describe("SessionHost", () => {
     });
 
     it("forwards resize revisions, reconstruction acknowledgement, and signals", async () => {
-      await fake.emitReady("0.84.2");
+      await fake.emitReady("0.85.1");
       await host.waitForReady();
 
       await expect(host.sendShellResize("shell-1", 4, 120, 40)).resolves.toBe(true);
@@ -892,22 +913,150 @@ describe("SessionHost", () => {
         text: string;
         editorRevision: number;
         submissionIntentId: string | undefined;
+        editorAttachments: unknown[] | undefined;
+        postClearEditor: unknown;
       } | null = null;
-      host.on("unifiedSubmitRequest", (id, text, editorRevision, submissionIntentId) => {
-        captured = { id, text, editorRevision, submissionIntentId };
-      });
+      host.on(
+        "unifiedSubmitRequest",
+        (id, text, editorRevision, submissionIntentId, editorAttachments, postClearEditor) => {
+          captured = {
+            id,
+            text,
+            editorRevision,
+            submissionIntentId,
+            editorAttachments,
+            postClearEditor,
+          };
+        },
+      );
       fake.emitMessage({
         type: "unified_submit_request",
         id: "u1",
         text: "hello",
         editorRevision: 7,
         submissionIntentId: "intent-u1",
+        editorAttachments: [{ kind: "file", path: "/tmp/source.txt" }],
+        postClearEditor: {
+          revision: 8,
+          text: "",
+          attachments: [],
+          conflictText: "newer draft",
+          conflictAttachments: [],
+        },
       });
       expect(captured).toEqual({
         id: "u1",
         text: "hello",
         editorRevision: 7,
         submissionIntentId: "intent-u1",
+        editorAttachments: [{ kind: "file", path: "/tmp/source.txt" }],
+        postClearEditor: {
+          revision: 8,
+          text: "",
+          attachments: [],
+          conflictText: "newer draft",
+          conflictAttachments: [],
+        },
+      });
+
+      for (const malformed of [
+        { type: "unified_submit_request", id: "", text: "", editorRevision: 1 },
+        { type: "unified_submit_request", id: "u2", text: 7, editorRevision: 1 },
+        { type: "unified_submit_request", id: "u2", text: "", editorRevision: -1 },
+        { type: "unified_submit_request", id: "u2", text: "", editorRevision: Number.NaN },
+        {
+          type: "unified_submit_request",
+          id: "u2",
+          text: "",
+          editorRevision: 1,
+          submissionIntentId: "",
+        },
+        {
+          type: "unified_submit_request",
+          id: "u2",
+          text: "",
+          editorRevision: 1,
+          editorAttachments: {},
+        },
+        {
+          type: "unified_submit_request",
+          id: "u2",
+          text: "hello",
+          editorRevision: 1,
+          submissionIntentId: "intent-u2",
+          editorAttachments: [],
+        },
+        {
+          type: "unified_submit_request",
+          id: "u2",
+          text: "hello",
+          editorRevision: 1,
+          submissionIntentId: "intent-u2",
+          editorAttachments: [],
+          postClearEditor: { revision: 1, text: "", attachments: [] },
+        },
+        {
+          type: "unified_submit_request",
+          id: "u2",
+          text: "hello",
+          editorRevision: 1,
+          submissionIntentId: "intent-u2",
+          editorAttachments: [],
+          postClearEditor: { revision: 2, text: "hello", attachments: [] },
+        },
+      ]) {
+        fake.emitMessage(malformed as never);
+      }
+      expect(captured).toEqual({
+        id: "u1",
+        text: "hello",
+        editorRevision: 7,
+        submissionIntentId: "intent-u1",
+        editorAttachments: [{ kind: "file", path: "/tmp/source.txt" }],
+        postClearEditor: {
+          revision: 8,
+          text: "",
+          attachments: [],
+          conflictText: "newer draft",
+          conflictAttachments: [],
+        },
+      });
+    });
+
+    it("emits only valid editor_source_cleared lifecycle evidence", async () => {
+      await fake.emitReady("0.85.1");
+      await host.waitForReady();
+      const cleared = vi.fn();
+      host.on("editorSourceCleared", cleared);
+
+      fake.emitMessage({
+        type: "editor_source_cleared",
+        intentId: "intent-clear",
+        editorRevision: 9,
+        editor: {
+          revision: 10,
+          text: "",
+          attachments: [{ kind: "file", path: "/tmp/kept.txt" }],
+          conflictText: "newer draft",
+          conflictAttachments: [],
+        },
+      });
+      for (const malformed of [
+        { type: "editor_source_cleared", intentId: "", editorRevision: 9 },
+        { type: "editor_source_cleared", intentId: "intent-clear", editorRevision: -1 },
+        { type: "editor_source_cleared", intentId: "intent-clear", editorRevision: 1.5 },
+        { type: "editor_source_cleared", intentId: 7, editorRevision: 9 },
+      ]) {
+        fake.emitMessage(malformed as never);
+      }
+
+      expect(cleared).toHaveBeenCalledTimes(1);
+      expect(cleared).toHaveBeenCalledWith("intent-clear", 9, {
+        revision: 10,
+        text: "",
+        attachments: [{ kind: "file", path: "/tmp/kept.txt" }],
+        conflictText: "newer draft",
+        conflictAttachments: [],
       });
     });
 

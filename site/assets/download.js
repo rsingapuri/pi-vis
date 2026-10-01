@@ -35,13 +35,13 @@
 
   if (!platformLooksLikeMac(platform, userAgent)) {
     showSourceBuild(
-      "Pi-Vis needs a Pi install and currently ships a macOS Apple Silicon DMG. This device needs a source build.",
+      "Pi-Vis currently ships an Apple Silicon macOS DMG. This device needs a source build; the pinned Pi runtime is included either way.",
     );
     return;
   }
 
   if (typeof userAgentData?.getHighEntropyValues !== "function") {
-    setNote("Apple Silicon macOS only · Needs a Pi install · Intel Macs need a source build");
+    setNote("Apple Silicon macOS only · Pi runtime included · Intel Macs need a source build");
     return;
   }
 
@@ -50,15 +50,15 @@
     .then(({ architecture }) => {
       if (isX86Architecture(architecture)) {
         showSourceBuild(
-          "Intel Mac detected. Pi-Vis needs a Pi install and currently requires a source build on Intel Macs.",
+          "Intel Mac detected. Pi-Vis currently requires a source build on Intel Macs; the pinned Pi runtime is included.",
         );
       } else if (isArmArchitecture(architecture)) {
-        setNote("Apple Silicon Mac detected · Needs a Pi install · MIT licensed");
+        setNote("Apple Silicon Mac detected · Pi runtime included · MIT licensed");
       } else {
-        setNote("Apple Silicon macOS only · Needs a Pi install · Intel Macs need a source build");
+        setNote("Apple Silicon macOS only · Pi runtime included · Intel Macs need a source build");
       }
     })
     .catch(() => {
-      setNote("Apple Silicon macOS only · Needs a Pi install · Intel Macs need a source build");
+      setNote("Apple Silicon macOS only · Pi runtime included · Intel Macs need a source build");
     });
 })();

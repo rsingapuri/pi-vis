@@ -222,6 +222,26 @@ describe("createKeyboardProtocolNegotiator — fragment flush", () => {
       vi.useRealTimers();
     }
   });
+
+  it("fences a predecessor renderer fragment without forwarding or changing terminal mode", () => {
+    vi.useFakeTimers();
+    try {
+      const { negotiator, forwarded, written } = makeNegotiator();
+      negotiator.push();
+      negotiator.filterInput("\x1b[?");
+      written.length = 0;
+
+      negotiator.fenceInput();
+      vi.advanceTimersByTime(200);
+
+      expect(forwarded).toEqual([]);
+      expect(written, "an input fence must not renegotiate or pop terminal modes").toEqual([]);
+      expect(negotiator.filterInput("x")).toBe(false);
+      expect(forwarded).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("createKeyboardProtocolNegotiator.stop", () => {

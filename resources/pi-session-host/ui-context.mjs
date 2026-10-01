@@ -35,6 +35,19 @@ function inputKindForEditorText(text) {
   return typeof text === "string" && text.startsWith("/") ? "slash_command" : "ordinary";
 }
 
+/**
+ * Apply the Pi settings that pi-tui 0.85 requires embedders to configure.
+ * The config object is intentionally mutated in place because one UI context
+ * survives AgentSessionRuntime factory rebinds.
+ */
+export function applyTuiRuntimeSettings(piTui, settingsManager, agentDir, tuiConfig) {
+  tuiConfig.showHardwareCursor = settingsManager.getShowHardwareCursor();
+  tuiConfig.clearOnShrink = settingsManager.getClearOnShrink();
+  tuiConfig.logDirectory = agentDir;
+  piTui.setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
+  return tuiConfig;
+}
+
 // ─── Dialog resolver (promise-based, one-at-a-time) ───────────────────────────
 
 export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
@@ -341,6 +354,7 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
  * @param {function} [deps.trackBlockingUi] - correlates a blocking UI promise
  *   with the lifecycle async context that opened it.
  * @param {object} deps.tuiModules - public TUI/component/keybinding/width helpers from pi-tui
+ * @param {object} [deps.tuiConfig] - exact pi-tui 0.85 constructor/runtime settings
  */
 export function createUIContext({
   theme,
@@ -350,6 +364,7 @@ export function createUIContext({
   sendToMain,
   trackBlockingUi = (promise) => promise,
   tuiModules,
+  tuiConfig = {},
 }) {
   const {
     TuiMainScreen,
@@ -373,6 +388,19 @@ export function createUIContext({
     visibleWidth,
   } = tuiModules;
   const invocationSurface = new AsyncLocalStorage();
+
+  function createTuiMainScreen(terminal) {
+    // pi-tui 0.85 removed its implicit PI_HARDWARE_CURSOR and
+    // PI_CLEAR_ON_SHRINK reads. The host resolves those settings through Pi's
+    // public SettingsManager and supplies them explicitly for every owned TUI.
+    const tui = new TuiMainScreen(
+      terminal,
+      tuiConfig.showHardwareCursor === true,
+      tuiConfig.logDirectory,
+    );
+    tui.setClearOnShrink(tuiConfig.clearOnShrink === true);
+    return tui;
+  }
   // A teardown callback belongs exclusively to the widget generation being
   // retired. Preserve that identity across promises/timers created by teardown
   // so none of its descendants can publish widgets into a live generation.
@@ -399,7 +427,21 @@ export function createUIContext({
   let editorAlternateConflictText;
   let editorAlternateConflictAttachments = [];
   let editorAdditionalConflictCandidates = [];
+  // The ordinary-input mirror runs before host.mjs samples its lightweight
+  // crash-recovery checkpoint. Latch conflict retirement across that
+  // microtask; inferring it from a second text delta would leave main's cached
+  // alternate candidates stale.
+  let editorConflictsClearedSinceCheckpoint = false;
   let notificationSequence = 0;
+
+  function clearEditorConflictsForInput() {
+    editorConflictText = undefined;
+    editorConflictAttachments = [];
+    editorAlternateConflictText = undefined;
+    editorAlternateConflictAttachments = [];
+    editorAdditionalConflictCandidates = [];
+    editorConflictsClearedSinceCheckpoint = true;
+  }
 
   function addCapabilityDiagnostic(message) {
     if (!catalog.capabilityDiagnostics.includes(message)) {
@@ -474,17 +516,88 @@ export function createUIContext({
   }
 
   function editorSnapshot() {
-    const pending = [...pendingSubmits.values()].find((item) => item.accepted !== true);
-    if (pending !== undefined) {
-      return editorStateSnapshot(pending.revision, pending.text, editorAttachments, [
-        ...(editorText !== "" ? [{ text: editorText, attachments: editorAttachments }] : []),
-      ]);
-    }
+    // Editor presentation and submission custody are deliberately separate.
+    // pi-tui clears the visible Editor before onSubmit runs; that clear is an
+    // irreversible presentation commit, even while main/renderer are still
+    // deciding whether the submitted payload can execute. Pending submissions
+    // therefore never replace (or become conflicts of) the current draft.
     return editorStateSnapshot(editorRevision, editorText, editorAttachments);
   }
 
-  function acceptEditorSubmission(request) {
-    if (request.editorRevision !== editorRevision) return false;
+  function panelInputEditorCheckpoint() {
+    // TuiMainScreen dispatches input synchronously. The ordinary input mirror
+    // below then observes the focused Editor in a microtask, and host.mjs waits
+    // for that microtask before sampling this crash-recovery checkpoint. Also
+    // sample the live Editor defensively so direct callers still receive the
+    // post-input value without advancing its revision twice.
+    const liveEditor = unifiedTuiState?.editor;
+    if (liveEditor) {
+      try {
+        const liveText = liveEditor.getExpandedText?.() ?? liveEditor.getText?.();
+        if (typeof liveText === "string" && liveText !== editorText) {
+          editorText = liveText;
+          editorRevision++;
+          clearEditorConflictsForInput();
+        }
+      } catch {
+        // A transient public Editor getter failure must not make snapshot
+        // publication fail. The last mirrored state remains authoritative.
+      }
+    }
+    // Per-key recovery must stay lightweight: image attachment data URLs can
+    // be tens of megabytes. Attachments are unchanged by ordinary keys and a
+    // submit publishes its exact residual separately, so main merges this
+    // text checkpoint into its cached full editor tuple.
+    const checkpoint = {
+      revision: editorRevision,
+      text: editorText,
+      clearedConflicts: editorConflictsClearedSinceCheckpoint,
+    };
+    editorConflictsClearedSinceCheckpoint = false;
+    return checkpoint;
+  }
+
+  /**
+   * Compare-and-consume for renderer-local commands. Unlike applyEditorPatch,
+   * this operation owns only the exact primary source string. It deliberately
+   * preserves staged attachments and every independent conflict candidate.
+   */
+  function consumeEditorSource(request) {
+    if (
+      !request ||
+      !Number.isInteger(request.editorRevision) ||
+      request.editorRevision < 0 ||
+      typeof request.editorText !== "string" ||
+      request.editorRevision !== editorRevision ||
+      request.editorText !== editorText
+    ) {
+      return { accepted: false, editor: editorSnapshot() };
+    }
+    const sourceRevision = editorRevision;
+    editorRevision++;
+    editorText = "";
+    if (request.consumeAttachments === true) editorAttachments = [];
+    if (unifiedTuiState) {
+      unifiedTuiState.editor.setText("");
+      unifiedTuiState.tui.requestRender();
+      maybeDisposeUnifiedTui();
+    }
+    if (typeof request.intentId === "string" && request.intentId.length > 0) {
+      sendToMain({
+        type: "editor_source_cleared",
+        intentId: request.intentId,
+        editorRevision: sourceRevision,
+        editor: editorSnapshot(),
+      });
+    }
+    return {
+      accepted: true,
+      sourceRevision,
+      editor: editorSnapshot(),
+    };
+  }
+
+  function inspectEditorSubmission(request) {
     const pendingAtRevision = [...pendingSubmits.values()].filter(
       (item) => item.accepted !== true && item.revision === request.editorRevision,
     );
@@ -494,20 +607,67 @@ export function createUIContext({
       // A pending unified editor submission owns this revision. Never let an
       // unrelated intent acknowledge whichever pending item happened to be
       // inserted first.
-      if (pendingAtRevision.length > 0 && pending === undefined) return false;
+      if (pendingAtRevision.length > 0 && pending === undefined) return { accepted: false };
     } else if (pendingAtRevision.length > 0) {
       const exactTextMatches = pendingAtRevision.filter((item) => item.text === request.text);
       if (exactTextMatches.length === 1) pending = exactTextMatches[0];
       else if (pendingAtRevision.length === 1) pending = pendingAtRevision[0];
-      else return false;
+      else return { accepted: false };
     }
-    const authoritativeEditorText = pending?.text ?? editorText;
+    if (pending !== undefined) {
+      // Intent correlation permits renderer-only transport decoration for an
+      // ordinary prompt (file paths, diff comments, image fallbacks), but a
+      // slash command is itself executable source. Bind that source exactly so
+      // a claimed `/safe` revision can never be substituted with another
+      // built-in or extension command.
+      if (
+        inputKindForEditorText(pending.text) === "slash_command" &&
+        request.text !== pending.text
+      ) {
+        return { accepted: false };
+      }
+      return { accepted: true, text: pending.text, pending };
+    }
+    // A renderer cannot turn a forged/missing Unified source into a native
+    // current-editor acknowledgement merely by guessing its advanced revision.
+    if (request.surface === "unified" || request.uiSurface === "unified") {
+      return { accepted: false };
+    }
+    if (request.editorRevision !== editorRevision) return { accepted: false };
+    return { accepted: true, text: editorText };
+  }
+
+  function acceptEditorSubmission(request) {
+    const source = inspectEditorSubmission(request);
+    if (!source.accepted) return false;
+    // A Unified TUI submission advances the visible editor revision at the
+    // synchronous clear point, before semantic admission. Validate that
+    // immutable source independently so an older acknowledgement cannot clear
+    // or mask a newer draft typed while the round-trip was in flight.
+    if (source.pending !== undefined) {
+      if (
+        request.inputKind !== undefined &&
+        request.inputKind !== inputKindForEditorText(source.text)
+      ) {
+        return false;
+      }
+      source.pending.accepted = true;
+      if (typeof request.intentId === "string") {
+        sendToMain({
+          type: "editor_source_cleared",
+          intentId: request.intentId,
+          editorRevision: request.editorRevision,
+          editor: editorSnapshot(),
+        });
+      }
+      return true;
+    }
     // Current authority requests carry the classification derived from the
     // revision-matched raw editor text. Missing inputKind keeps the direct
     // legacy helper behavior for one-version compatibility.
     if (
       request.inputKind !== undefined &&
-      request.inputKind !== inputKindForEditorText(authoritativeEditorText)
+      request.inputKind !== inputKindForEditorText(source.text)
     ) {
       return false;
     }
@@ -516,17 +676,22 @@ export function createUIContext({
     // Slash commands consume only their command text. Attachments are staged
     // prompt context and remain authoritative for the next ordinary prompt.
     if (!isSlashSubmission(request)) editorAttachments = [];
-    editorConflictText = undefined;
-    editorConflictAttachments = [];
-    editorAlternateConflictText = undefined;
-    editorAlternateConflictAttachments = [];
-    editorAdditionalConflictCandidates = [];
+    // Conflict candidates represent independent renderer edits, not aliases of
+    // the admitted primary. Submission can consume only its correlated source;
+    // every distinct candidate remains in host custody.
     if (unifiedTuiState) {
       unifiedTuiState.editor.setText("");
       unifiedTuiState.tui.requestRender();
       maybeDisposeUnifiedTui();
     }
-    if (pending) pending.accepted = true;
+    if (typeof request.intentId === "string") {
+      sendToMain({
+        type: "editor_source_cleared",
+        intentId: request.intentId,
+        editorRevision: request.editorRevision,
+        editor: editorSnapshot(),
+      });
+    }
     return true;
   }
 
@@ -536,24 +701,43 @@ export function createUIContext({
    * command text: attachments and every conflict candidate remain staged for
    * the next ordinary prompt.
    */
-  function acceptShellEditorSubmission(request) {
-    if (request.editorRevision !== editorRevision || typeof request.editorText !== "string") {
-      return false;
-    }
+  function inspectShellEditorSubmission(request) {
+    if (typeof request.editorText !== "string") return { accepted: false };
     const pendingAtRevision = [...pendingSubmits.values()].filter(
       (item) => item.accepted !== true && item.revision === request.editorRevision,
     );
     let pending;
     if (typeof request.intentId === "string") {
       pending = pendingAtRevision.find((item) => item.submissionIntentId === request.intentId);
-      if (pendingAtRevision.length > 0 && pending === undefined) return false;
+      if (pendingAtRevision.length > 0 && pending === undefined) return { accepted: false };
     } else if (pendingAtRevision.length > 0) {
       const exactTextMatches = pendingAtRevision.filter((item) => item.text === request.editorText);
       if (exactTextMatches.length === 1) pending = exactTextMatches[0];
-      else return false;
+      else return { accepted: false };
     }
-    const authoritativeEditorText = pending?.text ?? editorText;
-    if (authoritativeEditorText !== request.editorText) return false;
+    if (pending !== undefined) {
+      return { accepted: pending.text === request.editorText, pending };
+    }
+    return {
+      accepted: request.editorRevision === editorRevision && editorText === request.editorText,
+    };
+  }
+
+  function acceptShellEditorSubmission(request) {
+    const source = inspectShellEditorSubmission(request);
+    if (source.accepted !== true) return false;
+    if (source.pending !== undefined) {
+      source.pending.accepted = true;
+      if (typeof request.intentId === "string" && request.deferClearEvidence !== true) {
+        sendToMain({
+          type: "editor_source_cleared",
+          intentId: request.intentId,
+          editorRevision: request.editorRevision,
+          editor: editorSnapshot(),
+        });
+      }
+      return true;
+    }
 
     editorRevision++;
     editorText = "";
@@ -562,7 +746,50 @@ export function createUIContext({
       unifiedTuiState.tui.requestRender();
       maybeDisposeUnifiedTui();
     }
-    if (pending) pending.accepted = true;
+    if (typeof request.intentId === "string" && request.deferClearEvidence !== true) {
+      sendToMain({
+        type: "editor_source_cleared",
+        intentId: request.intentId,
+        editorRevision: request.editorRevision,
+        editor: editorSnapshot(),
+      });
+    }
+    return true;
+  }
+
+  function publishShellEditorSubmission(request) {
+    if (typeof request?.intentId !== "string" || request.intentId.length === 0) return false;
+    sendToMain({
+      type: "editor_source_cleared",
+      intentId: request.intentId,
+      editorRevision: request.editorRevision,
+      editor: editorSnapshot(),
+    });
+    return true;
+  }
+
+  function rollbackShellEditorSubmission(request) {
+    // Unified presentation was already cleared by pi-tui before the request
+    // existed. A pre-start refusal may retire that request, but must never put
+    // its source back into the editor.
+    if (request?.surface === "unified") return true;
+    if (
+      !request ||
+      !Number.isInteger(request.editorRevision) ||
+      typeof request.editorText !== "string" ||
+      editorRevision !== request.editorRevision + 1 ||
+      editorText !== ""
+    ) {
+      return false;
+    }
+    // The provisional R+1 clear was never published and the scheduler forbids
+    // interleaving here, so restore the revision main/renderer still own.
+    editorRevision = request.editorRevision;
+    editorText = request.editorText;
+    if (unifiedTuiState) {
+      unifiedTuiState.editor.setText(editorText);
+      unifiedTuiState.tui.requestRender();
+    }
     return true;
   }
 
@@ -571,11 +798,27 @@ export function createUIContext({
     revision,
     text,
     attachments = [],
+    preserveConflicts = false,
     alternateConflictText,
     alternateConflictAttachments = [],
     additionalConflictCandidates = [],
   }) {
     if (baseRevision !== editorRevision || revision <= editorRevision) {
+      if (preserveConflicts) {
+        const merged = editorStateSnapshot(editorRevision, editorText, editorAttachments, [
+          { text, attachments },
+          ...(alternateConflictText !== undefined
+            ? [{ text: alternateConflictText, attachments: alternateConflictAttachments }]
+            : []),
+          ...additionalConflictCandidates,
+        ]);
+        editorConflictText = merged.conflictText;
+        editorConflictAttachments = merged.conflictAttachments ?? [];
+        editorAlternateConflictText = merged.alternateConflictText;
+        editorAlternateConflictAttachments = merged.alternateConflictAttachments ?? [];
+        editorAdditionalConflictCandidates = merged.additionalConflictCandidates ?? [];
+        return { accepted: false, ...merged };
+      }
       editorConflictText = text;
       editorConflictAttachments = structuredClone(attachments);
       editorAlternateConflictText = alternateConflictText;
@@ -602,11 +845,13 @@ export function createUIContext({
     editorRevision = revision;
     editorText = text;
     editorAttachments = structuredClone(attachments);
-    editorConflictText = undefined;
-    editorConflictAttachments = [];
-    editorAlternateConflictText = undefined;
-    editorAlternateConflictAttachments = [];
-    editorAdditionalConflictCandidates = [];
+    if (!preserveConflicts) {
+      editorConflictText = undefined;
+      editorConflictAttachments = [];
+      editorAlternateConflictText = undefined;
+      editorAlternateConflictAttachments = [];
+      editorAdditionalConflictCandidates = [];
+    }
     if (unifiedTuiState) {
       unifiedTuiState.editor.setText(text);
       unifiedTuiState.tui.requestRender();
@@ -676,9 +921,10 @@ export function createUIContext({
   // lease, and source.dispose() runs only after the final lease is released.
   const widgetSourceOwnership = new Map();
 
-  // Pending unified submissions remain authoritative across renderer loss:
-  // id → { text, revision }. The new renderer replays the same correlated
-  // request; disposal never drops it unless the whole session is replaced.
+  // Pending unified submissions retain only execution/correlation custody
+  // across renderer loss. They are never editor-authoritative: pi-tui clears
+  // before onSubmit, and that visible clear is an irreversible presentation
+  // commit even if admission later fails.
   const pendingSubmits = new Map();
 
   // Pending clipboard-image reads capture the editor generation/revision/text.
@@ -725,7 +971,7 @@ export function createUIContext({
 
     const panelId = panelBridge.openPanel({ overlay: false, unified: true });
     const hostTerminal = createHostTerminal(panelId, panelBridge, hostTerminalDeps);
-    const tui = new TuiMainScreen(hostTerminal);
+    const tui = createTuiMainScreen(hostTerminal);
     // Local manager used ONLY by the paste input-listener below to detect the
     // paste-image key. Not installed globally — the base Editor keeps using
     // pi-tui's default keybindings for its own tui.* handling.
@@ -789,34 +1035,46 @@ export function createUIContext({
         if (next !== editorText) {
           editorText = next;
           editorRevision++;
-          editorConflictText = undefined;
+          clearEditorConflictsForInput();
         }
       });
       scheduleUnifiedRetentionCheck();
     });
 
-    // Editor submit → ask the renderer to run the shared submit pipeline, then
-    // report the outcome so a guard bail can restore the text. Pi's
+    // Editor submit → ask the renderer to run the shared submit pipeline. Pi's
     // Editor.submitValue() clears the editor synchronously BEFORE invoking
-    // onSubmit, so the editor is already empty by the time this fires; the text
-    // captured here is what gets restored on bail. The pending submit itself is
-    // a retention root while the renderer may still ask us to restore on bail.
+    // onSubmit. Commit that presentation change immediately: the submitted
+    // source stays in pendingSubmits only for correlated at-most-once dispatch,
+    // and can never be projected back into this or a replacement Composer.
     editor.onSubmit = (text) => {
-      // The base Editor clears its visual buffer before this callback. Keep the
-      // submitted text in pendingSubmits as the authoritative editor snapshot
-      // until main confirms custody/consumption; do not advance the synchronized
-      // revision merely because the local widget cleared.
       const revision = editorRevision;
+      const attachments = structuredClone(editorAttachments);
+      const inputKind = inputKindForEditorText(text);
+      const shellTurn = text.startsWith("!");
+      editorRevision++;
       editorText = "";
-      editorConflictText = undefined;
+      // Ordinary prompts consume the exact staged attachments at the same
+      // visible clear point. Slash commands and direct Shell Turns consume only
+      // their command text, leaving attachments for the next ordinary prompt.
+      if (inputKind === "ordinary" && !shellTurn) editorAttachments = [];
+      // Conflict candidates represent independent renderer edits, not aliases
+      // of this primary. No submission kind may silently discard them.
       const id = crypto.randomUUID();
       const submissionIntentId = crypto.randomUUID();
-      pendingSubmits.set(id, { text, revision, submissionIntentId, accepted: false });
+      pendingSubmits.set(id, {
+        text,
+        revision,
+        attachments,
+        submissionIntentId,
+        accepted: false,
+      });
       sendToMain({
         type: "unified_submit_request",
         id,
         text,
         editorRevision: revision,
+        editorAttachments: attachments,
+        postClearEditor: editorSnapshot(),
         submissionIntentId,
       });
     };
@@ -856,52 +1114,23 @@ export function createUIContext({
   // clipboard_read_image request. Exposed via the returned `unified` bundle
   // (NOT globalThis) so the wiring is explicit and unit-testable in isolation.
 
-  function resolveUnifiedSubmit(id, result) {
-    const snapshot = pendingSubmits.get(id);
-    if (snapshot === undefined) return;
-    pendingSubmits.delete(id);
-
-    const { ok, bailed } = result;
-    const editor = unifiedTuiState?.editor;
-    if (ok) {
-      // Native and unified submissions share the same custody acknowledgement.
-      // The authority normally advances this revision before the renderer
-      // response arrives; retain the fallback for non-prompt unified actions.
-      if (!snapshot.accepted && editorText === "") editorRevision++;
-      editorConflictText = undefined;
-    } else if (bailed) {
-      // Restore losslessly. If the user typed during the round-trip, preserve
-      // that newer local draft and expose the submitted text as the conflict.
-      if (!editor && editorText === "") {
-        // Renderer-loss teardown disposed the TUI, but the host still owns the
-        // correlated submission. Restore into replicated editor state so the
-        // native Composer in the new renderer receives it.
-        editorText = snapshot.text;
-        editorConflictText = undefined;
-      } else if (editor && editor.getText() === "") {
-        editor.setText(snapshot.text);
-        editorText = snapshot.text;
-        editorConflictText = undefined;
-        editor.requestRender?.();
-        unifiedTuiState.tui.requestRender();
-      } else {
-        editorConflictText = snapshot.text;
-      }
-    }
+  function resolveUnifiedSubmit(id, _result) {
+    if (!pendingSubmits.delete(id)) return;
 
     // Re-evaluate roots after the pending-submit root drains. Success with no
-    // widgets and an empty editor closes; bail/failure restore keeps the panel;
-    // a new widget registered during the round-trip keeps it open.
+    // widgets and an empty editor closes. Failures behave identically: their
+    // submitted source has already left editor presentation permanently. A new
+    // widget or newer draft registered during the round-trip keeps it open.
     maybeDisposeUnifiedTui();
   }
 
   function resolveClipboardImage(id, result) {
     const request = pendingClipboardReads.get(id);
-    if (!request) return;
+    if (!request) return false;
     pendingClipboardReads.delete(id);
 
     const { bytes, mimeType } = result;
-    if (!bytes) return; // empty clipboard → nothing to insert
+    if (!bytes) return false; // empty clipboard → nothing to insert
 
     const editor = unifiedTuiState?.editor;
     const sameEditorGeneration = Boolean(editor && unifiedTuiState?.panelId === request.panelId);
@@ -933,7 +1162,7 @@ export function createUIContext({
           message: "Clipboard image was retained separately because the editor changed.",
           type: "warning",
         });
-        return;
+        return true;
       }
       editor.insertTextAtCursor(tmpPath);
       const insertedText = editor.getExpandedText?.() ?? editor.getText?.() ?? currentText;
@@ -941,8 +1170,10 @@ export function createUIContext({
       editorConflictText = undefined;
       editorRevision++;
       unifiedTuiState.tui.requestRender();
+      return true;
     } catch {
       /* best-effort — a failed write/insert must not crash the editor */
+      return false;
     }
   }
 
@@ -1540,7 +1771,8 @@ export function createUIContext({
           // Tear down only when ALL unified roots are gone. If the user has an
           // unsent editor draft, keep an editor-only unified panel alive instead
           // of shoving them back to the Composer and losing the text. If a
-          // submit is in flight, keep the panel too so a guard bail can restore.
+          // submit is in flight, keep the panel until its correlated dispatch
+          // custody retires; the already-cleared source is never restored.
           maybeDisposeUnifiedTui();
         }
       } else if (isStatic) {
@@ -1758,7 +1990,7 @@ export function createUIContext({
       // arrow body would shadow the outer binding for the WHOLE body and put it
       // in the temporal dead zone, so the reuse path's `new KeybindingsManager`
       // (which runs before this line textually) would throw ReferenceError.
-      const tui = new TuiMainScreen(hostTerminal);
+      const tui = createTuiMainScreen(hostTerminal);
       const keybindings = new KeybindingsManager(TUI_KEYBINDINGS);
       // Start the TUI: wires HostTerminal.start (input handler) + begins the
       // render loop that composites overlays and writes ANSI to hostTerminal.
@@ -1842,14 +2074,21 @@ export function createUIContext({
       resetExtensionPresentation,
       addCapabilityDiagnostic,
       editorSnapshot,
+      panelInputEditorCheckpoint,
+      inspectEditorSubmission,
       acceptEditorSubmission,
+      inspectShellEditorSubmission,
       acceptShellEditorSubmission,
+      publishShellEditorSubmission,
+      rollbackShellEditorSubmission,
+      consumeEditorSource,
       applyEditorPatch,
       pendingUnifiedSubmissions: () =>
         [...pendingSubmits].map(([id, value]) => ({
           id,
           text: value.text,
           revision: value.revision,
+          attachments: structuredClone(value.attachments),
           submissionIntentId: value.submissionIntentId,
         })),
     },
@@ -1929,6 +2168,14 @@ function createHostTerminal(panelId, panelBridge, { kittyGate, StdinBuffer } = {
       })
     : null;
 
+  const fenceInput = () => {
+    // The TUI deliberately survives a renderer reload, but its transport parser
+    // does not. Drop incomplete paste/escape state and negotiation fragments so
+    // predecessor bytes cannot absorb or mutate the successor's first input.
+    stdinBuffer?.clear();
+    negotiator?.fenceInput();
+  };
+
   return {
     get columns() {
       return cols;
@@ -1975,6 +2222,7 @@ function createHostTerminal(panelId, panelBridge, { kittyGate, StdinBuffer } = {
         };
       }
       panelBridge.setInputHandler(panelId, dataHandler);
+      panelBridge.setInputFence?.(panelId, fenceInput);
 
       // Join the kitty pool + push the handshake. The renderer's xterm answers
       // asynchronously; the guaranteed force-resize after mount renegotiates if
@@ -2030,6 +2278,7 @@ function createHostTerminal(panelId, panelBridge, { kittyGate, StdinBuffer } = {
         }
         stdinBuffer = null;
       }
+      panelBridge.clearInputFence?.(panelId);
       panelBridge.clearInputHandler(panelId);
       inputHandler = null;
     },

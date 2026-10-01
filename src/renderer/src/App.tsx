@@ -636,9 +636,9 @@ export function App(): React.ReactElement {
       handlePanelEvent(sessionId as SessionId, event);
     });
 
-    // Unified-TUI editor submit: the host's editor.onSubmit sent the text to
-    // the renderer; run it through the shared submit pipeline + reply so the
-    // host can restore the editor on a guard bail.
+    // Unified-TUI editor submit: the host's editor.onSubmit committed its
+    // visible clear and sent an immutable source payload. Run it through the
+    // shared pipeline; the correlated reply retires dispatch custody only.
     const unsubUnifiedSubmit = window.pivis.on(
       "session.unifiedSubmitRequest",
       ({
@@ -646,6 +646,8 @@ export function App(): React.ReactElement {
         id,
         text,
         editorRevision,
+        editorAttachments,
+        postClearEditor,
         submissionIntentId,
         hostInstanceId,
         sessionEpoch,
@@ -658,6 +660,8 @@ export function App(): React.ReactElement {
           submissionIntentId,
           hostInstanceId,
           sessionEpoch,
+          editorAttachments,
+          postClearEditor,
         );
       },
     );
@@ -924,19 +928,29 @@ export function App(): React.ReactElement {
               ) : shellViewportVisible ? (
                 <ShellTerminalHost sessionId={activeSessionId} requestAttach={requestAttach} />
               ) : shellViewportPending ? (
-                <Composer sessionId={activeSessionId} suspended />
+                <Composer key={activeSessionId} sessionId={activeSessionId} suspended />
               ) : hasUnifiedPanel ? (
                 <>
-                  {/* Keep xterm mounted while native Input is selected. A
-                      toggle must not force authority repaint reconstruction
-                      and drop the first keys typed on returning to Extension. */}
-                  <UnifiedTuiHost sessionId={activeSessionId} visible={!unifiedPanelHidden} />
-                  {unifiedPanelHidden && <Composer sessionId={activeSessionId} />}
+                  {/* Keep xterm mounted while native Input or a built-in
+                      picker is selected. Hiding instead of unmounting retains
+                      the Unified terminal's authority/focus reconstruction;
+                      picker completion reliably reveals it again. */}
+                  <UnifiedTuiHost
+                    sessionId={activeSessionId}
+                    visible={!unifiedPanelHidden && !hasPendingPicker}
+                  />
+                  {hasPendingPicker ? (
+                    <AppPickerHost sessionId={activeSessionId} />
+                  ) : (
+                    unifiedPanelHidden && (
+                      <Composer key={activeSessionId} sessionId={activeSessionId} />
+                    )
+                  )}
                 </>
               ) : hasPendingPicker ? (
                 <AppPickerHost sessionId={activeSessionId} />
               ) : (
-                <Composer sessionId={activeSessionId} />
+                <Composer key={activeSessionId} sessionId={activeSessionId} />
               )}
               {statusBarVisible && <StatusBar sessionId={activeSessionId} />}
             </ErrorBoundary>

@@ -34,10 +34,12 @@ async function applyRestoreDraft(page: import("@playwright/test").Page, restorat
   }, restoration);
 }
 
-test("automatically restores an interrupted draft and attachments directly into the composer", async ({
+test("settles an interrupted submitted payload without reinserting text or attachments", async ({
   page,
 }) => {
   await waitForStore(page);
+  const textarea = page.locator(".composer__textarea");
+  await textarea.fill("newer draft stays visible");
 
   await applyRestoreDraft(page, {
     restorationId: "restore-render",
@@ -51,14 +53,8 @@ test("automatically restores an interrupted draft and attachments directly into 
     disposition: "restore",
   });
 
-  await expect(page.locator(".composer__textarea")).toHaveValue(
-    "queued text restored automatically",
-  );
-  await expect(page.locator(".composer__attachment-thumb")).toHaveCount(1);
-  await expect(page.locator(".composer__attachment-thumb")).toHaveAttribute(
-    "alt",
-    "restored-image-1.png",
-  );
+  await expect(textarea).toHaveValue("newer draft stays visible");
+  await expect(page.locator(".composer__attachment-thumb")).toHaveCount(0);
   await expect(page.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Dismiss|Restore to Composer/ })).toHaveCount(0);
 });

@@ -5,6 +5,7 @@ import {
   acknowledgePanelInput,
   activatePanelInputIdentity,
   enqueuePanelInputAttempt,
+  ensurePanelInputIdentity,
   forgetPanelInputSequence,
   forgetPanelInputSession,
   isPanelInputBlocked,
@@ -12,6 +13,7 @@ import {
   panelAcknowledgedThrough,
   queuePanelInput,
   releaseQueuedPanelInput,
+  resetPanelInputSequenceToAcknowledged,
 } from "./panel-input-sequence.js";
 
 const SESSION = "panel-sequence-test" as SessionId;
@@ -38,6 +40,21 @@ describe("panel input identity coordinator", () => {
     ).toBe(9);
   });
 
+  it("rebases downward only at an explicit no-delivery boundary", () => {
+    acknowledgePanelInput(SESSION, PANEL.hostInstanceId, PANEL.sessionEpoch, PANEL.panelId, 6);
+    resetPanelInputSequenceToAcknowledged(
+      SESSION,
+      PANEL.hostInstanceId,
+      PANEL.sessionEpoch,
+      PANEL.panelId,
+      0,
+    );
+
+    expect(
+      nextPanelInputSequence(SESSION, PANEL.hostInstanceId, PANEL.sessionEpoch, PANEL.panelId),
+    ).toBe(1);
+  });
+
   it("keeps rejected input across component-local lifetimes", () => {
     queuePanelInput(SESSION, PANEL, "first");
     queuePanelInput(SESSION, PANEL, "\u001b[13;2u");
@@ -47,6 +64,23 @@ describe("panel input identity coordinator", () => {
     // A new component instance releases from the identity-owned mailbox.
     expect(releaseQueuedPanelInput(SESSION, PANEL, true)).toEqual(["first", "\u001b[13;2u"]);
     expect(isPanelInputBlocked(SESSION, PANEL)).toBe(false);
+  });
+
+  it("drops a delivery-uncertain chunk when the repaint watermark proves it already ran", () => {
+    queuePanelInput(SESSION, PANEL, "z", 7);
+    queuePanelInput(SESSION, PANEL, "\r");
+
+    expect(releaseQueuedPanelInput(SESSION, PANEL, true, 7)).toEqual(["\r"]);
+    expect(
+      nextPanelInputSequence(SESSION, PANEL.hostInstanceId, PANEL.sessionEpoch, PANEL.panelId),
+    ).toBe(8);
+  });
+
+  it("replays a delivery-uncertain chunk when the repaint watermark is still below it", () => {
+    queuePanelInput(SESSION, PANEL, "z", 7);
+    queuePanelInput(SESSION, PANEL, "\r");
+
+    expect(releaseQueuedPanelInput(SESSION, PANEL, true, 6)).toEqual(["z", "\r"]);
   });
 
   it("serializes attempts that were enqueued by different component instances", async () => {
@@ -145,6 +179,39 @@ describe("panel input identity coordinator", () => {
         successor,
       ),
     ).toBe(2);
+  });
+
+  it("lets an authoritative live projection replace a retired same-tuple tombstone", async () => {
+    let retiredAttemptRan = false;
+    const predecessor = activatePanelInputIdentity(SESSION, PANEL);
+    forgetPanelInputSequence(SESSION, PANEL.panelId);
+
+    enqueuePanelInputAttempt(SESSION, PANEL, async () => {
+      retiredAttemptRan = true;
+    });
+    await Promise.resolve();
+    expect(retiredAttemptRan).toBe(false);
+
+    const successor = ensurePanelInputIdentity(SESSION, PANEL);
+    expect(successor).not.toEqual(predecessor);
+    expect(
+      nextPanelInputSequence(
+        SESSION,
+        PANEL.hostInstanceId,
+        PANEL.sessionEpoch,
+        PANEL.panelId,
+        predecessor,
+      ),
+    ).toBe(0);
+    expect(
+      nextPanelInputSequence(
+        SESSION,
+        PANEL.hostInstanceId,
+        PANEL.sessionEpoch,
+        PANEL.panelId,
+        successor,
+      ),
+    ).toBe(1);
   });
 
   it("retires every coordinator entry for a removed session", () => {

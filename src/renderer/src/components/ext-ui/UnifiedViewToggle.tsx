@@ -37,9 +37,25 @@ export function UnifiedViewToggle({
 }: UnifiedViewToggleProps): React.ReactElement | null {
   const hidden = useSessionsStore((s) => s.sessions.get(sessionId)?.unifiedPanelHidden ?? false);
   const setUnifiedPanelHidden = useSessionsStore((s) => s.setUnifiedPanelHidden);
+  const revealNativeComposerFromUnified = useSessionsStore(
+    (s) => s.revealNativeComposerFromUnified,
+  );
+  const requestComposerFocus = useSessionsStore((s) => s.requestComposerFocus);
 
-  const selectView = (nextHidden: boolean): void => {
-    setUnifiedPanelHidden(sessionId, nextHidden);
+  const selectView = async (nextHidden: boolean): Promise<void> => {
+    if (nextHidden) {
+      // The child sends its source-clear evidence through main before the
+      // terminal redraw becomes visible. Refresh that exact owner baseline
+      // before mounting Composer: an untouched handoff remains natively
+      // submittable, while a TUI-cleared source can never flash or resubmit.
+      if (!(await revealNativeComposerFromUnified(sessionId))) return;
+    } else {
+      setUnifiedPanelHidden(sessionId, false);
+      // This also covers clicking the already-selected Extension segment:
+      // UnifiedTuiHost consumes the request only once the exact terminal is
+      // visible, following, and input-ready.
+      requestComposerFocus(sessionId);
+    }
     // The click leaves focus on the segmented control while React swaps the
     // input surface. An explicit view choice transfers focus to that surface;
     // background widget mounts still obey their separate no-steal guard.
@@ -60,7 +76,7 @@ export function UnifiedViewToggle({
         role="tab"
         aria-selected={!hidden}
         className={`unified-toggle__seg${!hidden ? " unified-toggle__seg--active" : ""}`}
-        onClick={() => selectView(false)}
+        onClick={() => void selectView(false)}
         title="Extension panel (TUI)"
       >
         {extensionLabel}
@@ -70,7 +86,7 @@ export function UnifiedViewToggle({
         role="tab"
         aria-selected={hidden}
         className={`unified-toggle__seg${hidden ? " unified-toggle__seg--active" : ""}`}
-        onClick={() => selectView(true)}
+        onClick={() => void selectView(true)}
         title="Native chat composer"
       >
         {inputLabel}

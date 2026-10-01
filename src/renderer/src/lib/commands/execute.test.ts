@@ -166,7 +166,12 @@ describe("Composer intent execution — prompts and effects", () => {
     );
     expect(dispatch).toHaveBeenCalledWith(
       SID,
-      { kind: "invokeCommand", text: "/extension", editorRevision: 2 },
+      {
+        kind: "invokeCommand",
+        text: "/extension",
+        editorRevision: 2,
+        surface: "unified",
+      },
       expect.any(String),
     );
     expect(deps.addUserMessage).not.toHaveBeenCalled();
@@ -377,6 +382,7 @@ describe("Composer intent execution — prompts and effects", () => {
         excludeFromContext: true,
         editorRevision: 2,
         editorText: "!!ls",
+        surface: "composer",
       },
       expect.any(String),
     );
@@ -400,6 +406,20 @@ describe("Composer intent execution — prompts and effects", () => {
 });
 
 describe("Composer intent execution — model, name, and replacement commands", () => {
+  it("opens the thinking picker with or without an exact-level search", async () => {
+    const bare = depsFor();
+    await executeAction(SID, { kind: "thinking" }, bare.deps);
+    expect(bare.deps.openPicker).toHaveBeenCalledWith(SID, { kind: "thinking" });
+
+    const searched = depsFor();
+    await executeAction(SID, { kind: "thinking", search: "high" }, searched.deps);
+    expect(searched.deps.openPicker).toHaveBeenCalledWith(SID, {
+      kind: "thinking",
+      search: "high",
+    });
+    expect(searched.dispatch).not.toHaveBeenCalled();
+  });
+
   it("opens the model picker for no match or an ambiguous providerless model", async () => {
     const noMatch = depsFor();
     await executeAction(SID, { kind: "model", search: "nope" }, noMatch.deps);
@@ -462,8 +482,8 @@ describe("Composer intent execution — model, name, and replacement commands", 
     await executeAction(SID, { kind: "new-session" }, deps);
     await executeAction(SID, { kind: "clone" }, deps);
     expect(dispatch.mock.calls.map(([, intent]) => intent)).toEqual([
-      { kind: "invokeCommand", text: "/new", editorRevision: 2 },
-      { kind: "invokeCommand", text: "/clone", editorRevision: 2 },
+      { kind: "invokeCommand", text: "/new", editorRevision: 2, surface: "composer" },
+      { kind: "invokeCommand", text: "/clone", editorRevision: 2, surface: "composer" },
     ]);
     expect(deps.addToast).toHaveBeenCalledWith(SID, "Started a fresh session");
     expect(deps.addToast).toHaveBeenCalledWith(SID, "Cloned to new session");
@@ -513,6 +533,7 @@ describe("Composer intent execution — model, name, and replacement commands", 
 describe("Composer intent execution — read-only queries", () => {
   it("uses query results to populate fork and copy without turning reads into intents", async () => {
     const { deps, dispatch } = depsFor({
+      uiSurface: "unified",
       query: vi.fn(async (_sid, request: SessionQuery) => {
         if (request.type === "get_fork_messages")
           return queryResult(request, { messages: [{ entryId: "e1", text: "first" }] });
@@ -528,6 +549,7 @@ describe("Composer intent execution — read-only queries", () => {
     expect(deps.openPicker).toHaveBeenCalledWith(SID, {
       kind: "fork",
       messages: [{ entryId: "e1", text: "first" }],
+      sourceSurface: "unified",
     });
     expect(deps.copyToClipboard).toHaveBeenCalledWith("answer");
     expect(dispatch).not.toHaveBeenCalled();
@@ -581,13 +603,18 @@ describe("Composer intent execution — read-only queries", () => {
     );
     expect(deps.openPicker).toHaveBeenCalledWith(
       SID,
-      expect.objectContaining({ kind: "scoped-models", enabledIds: ["p/m"] }),
+      expect.objectContaining({
+        kind: "scoped-models",
+        enabledIds: ["p/m"],
+        sourceSurface: "composer",
+      }),
     );
     expect(deps.openPicker).toHaveBeenCalledWith(
       SID,
       expect.objectContaining({
         kind: "logout",
         providers: [expect.objectContaining({ id: "p" })],
+        sourceSurface: "composer",
       }),
     );
     expect(dispatch).not.toHaveBeenCalled();

@@ -13,15 +13,14 @@
   "scripts": {
     "dev": "node scripts/ensure-worktree-dev.mjs && electron-vite dev",
     "dev:renderer": "node scripts/ensure-worktree-dev.mjs && vite --config vite.renderer.config.ts",
-    "prebuild": "node scripts/ensure-worktree-dev.mjs && node scripts/patch-node-pty.mjs --verify && node scripts/patch-pinned-pi.mjs --verify",
+    "prebuild": "node scripts/ensure-worktree-dev.mjs && node scripts/patch-node-pty.mjs --verify",
     "build": "node scripts/ensure-worktree-dev.mjs && npm run typecheck && electron-vite build && npm run copy-host",
     "copy-host": "node scripts/copy-host.mjs",
     "dist": "npm run build && electron-builder --mac && npm run verify:packaged-pty",
     "dist:signed": "node scripts/dist-signed.mjs",
     "release": "node scripts/release.mjs",
     "patch:node-pty": "node scripts/patch-node-pty.mjs",
-    "patch:pinned-pi": "node scripts/patch-pinned-pi.mjs",
-    "postinstall": "npm run patch:node-pty && npm run patch:pinned-pi",
+    "postinstall": "node scripts/postinstall.mjs",
     "verify:packaged-pty": "node scripts/verify-packaged-pty.mjs",
     "typecheck": "node scripts/ensure-worktree-dev.mjs && tsc -b --noEmit",
     "lint": "node scripts/ensure-worktree-dev.mjs && biome check .",
@@ -38,7 +37,7 @@
     "site:screenshots": "node scripts/site-screenshots.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-coding-agent": "0.85.1",
     "@fontsource/fraunces": "^5.2.9",
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@fontsource/ibm-plex-serif": "^5.2.7",

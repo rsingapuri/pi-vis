@@ -41,6 +41,31 @@ describe("saveSettings", () => {
 });
 
 describe("loadSettings — workspace migration & recovery", () => {
+  it("migrates legacy font settings and persists independent reading families", () => {
+    writeSettings({
+      fonts: {
+        display: { sizePx: 16 },
+        code: { family: "JetBrains Mono", sizePx: 13 },
+      },
+    });
+
+    const migrated = loadSettings();
+    expect(migrated.fonts.title).toEqual({ family: "Fraunces" });
+    expect(migrated.fonts.transcriptHeader).toEqual({ family: "IBM Plex Serif" });
+    expect(migrated.fonts.transcriptBody).toEqual({ family: "Inter" });
+
+    const saved = saveSettings({
+      fonts: {
+        ...migrated.fonts,
+        title: { family: "Avenir Next" },
+        transcriptHeader: { family: "Charter" },
+        transcriptBody: { family: "Atkinson Hyperlegible" },
+      },
+    });
+    expect(saved.fonts.title.family).toBe("Avenir Next");
+    expect(loadSettings().fonts).toEqual(saved.fonts);
+  });
+
   it("migrates legacy recentWorkspaces into workspaceOrder", () => {
     writeSettings({ recentWorkspaces: ["/a", "/b"] });
     const s = loadSettings();

@@ -1,7 +1,7 @@
 /**
- * Opt-in E2E (flagship): the FULL kitty keyboard chain against REAL pi.
+ * Opt-in E2E (flagship): the full Kitty keyboard chain against pinned Pi.
  *
- * Real `pi` binary + real `pi-session-host` (real `ensureUnifiedTui()` → real
+ * Repository-pinned Pi + real `pi-session-host` (real `ensureUnifiedTui()` → real
  * pi-tui `TUI` + `Editor`) + the unified-widget-extension fixture, driven
  * through the REAL renderer (xterm 6.1 with `vtExtensions.kittyKeyboard`).
  * This is the one test that proves the USER-VISIBLE fix end-to-end: every
@@ -36,7 +36,7 @@ const __dirname = dirname(__filename);
 const APP_ENTRY = join(__dirname, "../../out/main/index.js");
 const FIXTURE_EXT = join(__dirname, "../fixtures/unified-widget-extension/unified-widget-e2e.ts");
 
-const PINNED_PI_VERSION = "0.84.2";
+const PINNED_PI_VERSION = "0.85.1";
 const PI_BIN =
   process.env.PIVIS_TEST_PI_BIN ??
   join(__dirname, "../../node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
@@ -58,7 +58,7 @@ if (process.env.PI_E2E === "1") {
 test.describe("Unified TUI Kitty keyboard (real pi, full chain)", () => {
   test.skip(
     process.env["PI_E2E"] !== "1",
-    "Opt-in: set PI_E2E=1 (requires real pi + provider auth; real API spend)",
+    "Opt-in: set PI_E2E=1 (requires provider auth; real API spend)",
   );
 
   function rmrf(p: string): void {

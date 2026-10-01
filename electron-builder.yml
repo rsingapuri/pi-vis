@@ -19,7 +19,7 @@ files:
 asarUnpack:
   - resources/**
   # ALL of node_modules must be real files, not asar entries: the pinned pi
-  # runtime (SDK host fork under system Node, pty spawning dist/cli.js) reads
+  # runtime (SDK host fork under system Node, CLI spawning dist/bundle/cli.js) reads
   # its dependency tree with plain-node fs, and electron-builder re-hoists
   # pi's shrinkwrapped nested deps to top-level node_modules at package time —
   # so unpacking only @earendil-works/** leaves a broken module graph inside

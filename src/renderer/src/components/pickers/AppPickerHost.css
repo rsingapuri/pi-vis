@@ -202,6 +202,14 @@
   border-top: 1px solid var(--border);
 }
 
+.picker__key-hint {
+  color: var(--text-ghost);
+  font-family: var(--font-display);
+  font-size: 0.857em;
+  margin-right: auto;
+  align-self: center;
+}
+
 .picker__btn {
   background: var(--surface-2);
   border: none;

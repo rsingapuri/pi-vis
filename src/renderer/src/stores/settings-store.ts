@@ -11,44 +11,17 @@ interface SettingsStore {
   loaded: boolean;
   load: () => Promise<void>;
   update: (updates: Partial<AppSettings>) => Promise<void>;
+  updateReadingFonts: (
+    updates: Partial<Pick<AppSettings["fonts"], "title" | "transcriptHeader" | "transcriptBody">>,
+  ) => Promise<void>;
 }
 
-export const useSettingsStore = create<SettingsStore>((set) => ({
-  settings: defaultSettings,
-  activeColorScheme: resolveActiveThemeId(defaultSettings, getSystemAppearance()),
-  systemAppearance: getSystemAppearance(),
-  loaded: false,
+export const useSettingsStore = create<SettingsStore>((set, get) => {
+  let writeTail = Promise.resolve();
+  let updateRevision = 0;
+  let persistedSettings = defaultSettings;
 
-  load: async () => {
-    // Install user-droppable themes BEFORE the first paint so a saved
-    // light/dark theme id pointing at a user theme resolves on load (not after a
-    // flash of the default). Best-effort: a failed/empty fetch just leaves
-    // the bundled themes in place.
-    try {
-      const userThemes = await window.pivis.invoke("themes.listUser", undefined);
-      setUserThemes(userThemes);
-    } catch {
-      /* user themes unavailable — bundled themes still apply */
-    }
-
-    const settings = await window.pivis.invoke("settings.get", undefined);
-    const systemAppearance = getSystemAppearance();
-    set({
-      settings,
-      systemAppearance,
-      activeColorScheme: resolveActiveThemeId(settings, systemAppearance),
-      loaded: true,
-    });
-    installSystemAppearanceListener(set);
-
-    // Apply visual settings to the DOM. We do fonts and color scheme
-    // together so a single settings load fully paints the UI.
-    applyFonts(settings);
-    applyColorScheme(settings, systemAppearance);
-  },
-
-  update: async (updates) => {
-    const settings = await window.pivis.invoke("settings.set", updates);
+  const publishSettings = (settings: AppSettings): void => {
     const systemAppearance = getSystemAppearance();
     set({
       settings,
@@ -57,8 +30,72 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
     });
     applyFonts(settings);
     applyColorScheme(settings, systemAppearance);
-  },
-}));
+  };
+
+  const persistUpdate = (
+    updates: Partial<AppSettings>,
+    optimisticSettings: AppSettings,
+  ): Promise<void> => {
+    const revision = ++updateRevision;
+    publishSettings(optimisticSettings);
+
+    // Main persists each settings patch atomically. Serialize renderer writes so
+    // a later patch cannot reach main first, and fence each response so an older
+    // acknowledgement cannot repaint over a newer optimistic choice.
+    const write = writeTail.then(() => window.pivis.invoke("settings.set", updates));
+    writeTail = write.then(
+      () => undefined,
+      () => undefined,
+    );
+    return write.then(
+      (settings) => {
+        persistedSettings = settings;
+        if (revision === updateRevision) publishSettings(settings);
+      },
+      (error: unknown) => {
+        if (revision === updateRevision) publishSettings(persistedSettings);
+        throw error;
+      },
+    );
+  };
+
+  return {
+    settings: defaultSettings,
+    activeColorScheme: resolveActiveThemeId(defaultSettings, getSystemAppearance()),
+    systemAppearance: getSystemAppearance(),
+    loaded: false,
+
+    load: async () => {
+      // Install user-droppable themes BEFORE the first paint so a saved
+      // light/dark theme id pointing at a user theme resolves on load (not after a
+      // flash of the default). Best-effort: a failed/empty fetch just leaves
+      // the bundled themes in place.
+      try {
+        const userThemes = await window.pivis.invoke("themes.listUser", undefined);
+        setUserThemes(userThemes);
+      } catch {
+        /* user themes unavailable — bundled themes still apply */
+      }
+
+      const settings = await window.pivis.invoke("settings.get", undefined);
+      persistedSettings = settings;
+      publishSettings(settings);
+      set({ loaded: true });
+      installSystemAppearanceListener(set);
+    },
+
+    update: (updates) => {
+      const current = get().settings;
+      return persistUpdate(updates, { ...current, ...updates });
+    },
+
+    updateReadingFonts: (updates) => {
+      const current = get().settings;
+      const fonts = { ...current.fonts, ...updates };
+      return persistUpdate({ fonts }, { ...current, fonts });
+    },
+  };
+});
 
 let systemAppearanceListenerInstalled = false;
 
@@ -100,12 +137,30 @@ function resolveActiveThemeId(settings: AppSettings, systemAppearance: ThemeAppe
   return getThemeForAppearance(resolveActiveColorScheme(settings, systemAppearance), appearance).id;
 }
 
-function applyFonts(settings: AppSettings): void {
+export function applyFonts(settings: AppSettings): void {
   const root = document.documentElement;
   // Keep the interface font family app-owned. UI alignment is tuned against
   // this stable metric set; exposing arbitrary system fonts makes controls
   // drift vertically even when their CSS box sizes remain correct.
   root.style.setProperty("--font-display", '"Inter", system-ui, -apple-system, sans-serif');
+  // These user-selected families are quoted as one CSS family name before a
+  // known app-owned fallback is appended. Quoting keeps punctuation in a
+  // locally installed font name from turning into an invalid declaration and
+  // guarantees every scope still has a usable face when that font disappears.
+  root.style.setProperty(
+    "--font-title",
+    fontFamilyStack(settings.fonts.title.family, "var(--font-accent)"),
+  );
+  const transcriptHeaderStack = fontFamilyStack(
+    settings.fonts.transcriptHeader.family,
+    '"IBM Plex Serif", var(--font-display)',
+  );
+  root.style.setProperty("--font-transcript-heading", transcriptHeaderStack);
+  root.style.setProperty("--font-thinking", transcriptHeaderStack);
+  root.style.setProperty(
+    "--font-transcript-body",
+    fontFamilyStack(settings.fonts.transcriptBody.family, "var(--font-display)"),
+  );
   // Append a generic fallback stack for code so that while the chosen font is
   // still loading — or if it isn't available at all (e.g. a custom family name
   // the user typed) — code degrades to the right *kind* of font. Without the
@@ -131,6 +186,16 @@ function applyFonts(settings: AppSettings): void {
     "--font-size-small",
     `${(settings.fonts.display.sizePx - 2) / settings.fonts.display.sizePx}em`,
   );
+}
+
+function fontFamilyStack(family: string, fallback: string): string {
+  const trimmed = family.trim();
+  if (!trimmed) return fallback;
+  const quoted = trimmed
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replace(/[\n\r\f]/g, " ");
+  return `"${quoted}", ${fallback}`;
 }
 
 /**

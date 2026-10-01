@@ -5,7 +5,6 @@ import { defineConfig } from "@playwright/test";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const optInIgnores = [
-  ...(process.env["REAL_PI_VERIFY"] === "1" ? [] : ["real-pi-verify.spec.mts"]),
   ...(process.env["PI_E2E"] === "1" ? [] : ["panels-real.spec.mts"]),
   ...(process.env["PIVIS_PACKAGED_EXECUTABLE"] ? [] : ["packaged-pty.spec.mts"]),
 ];

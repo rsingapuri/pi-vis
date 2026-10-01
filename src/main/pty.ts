@@ -110,7 +110,7 @@ export async function startPty(opts: {
   const cols = opts.cols ?? 80;
   const rows = opts.rows ?? 24;
 
-  const proc = ptySpawn(piInfo.path, [], {
+  const proc = ptySpawn(piInfo.cliPath, [], {
     name: "xterm-256color",
     cwd,
     env,

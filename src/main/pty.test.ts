@@ -5,7 +5,7 @@ vi.mock("./settings-store.js", () => ({
   getSettings: () => ({ piBinaryPath: undefined, piEnv: "" }),
 }));
 vi.mock("./pi/pinned-pi.js", () => ({
-  getPinnedPi: () => ({ path: "/fake/pi", version: "0.0.0-test" }),
+  getPinnedPi: () => ({ path: "/fake/pi-host", cliPath: "/fake/pi", version: "0.0.0-test" }),
 }));
 vi.mock("./auth.js", () => ({
   getSubprocessEnv: async () => ({}),

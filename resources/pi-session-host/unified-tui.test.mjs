@@ -30,7 +30,7 @@ import { importPi, importPiTui, initHostTheme } from "./bootstrap.mjs";
 import { buildEditorTheme } from "./editor-theme.mjs";
 import { createUIContext } from "./ui-context.mjs";
 
-const PINNED_PI_VERSION = "0.84.2";
+const PINNED_PI_VERSION = "0.85.1";
 const REPOSITORY_PINNED_PI_CLI = fileURLToPath(
   new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/cli.js", import.meta.url),
 );
@@ -54,7 +54,8 @@ const PI_BIN = resolvePinnedPiCli();
 function makeCapturingBridge() {
   const messages = [];
   let counter = 0;
-  // panelId -> { inputHandler }. hostTerminal.start() registers the dataHandler
+  // panelId -> { inputHandler, inputFence }. hostTerminal.start() registers both
+  // the dataHandler and the renderer-generation parser fence
   // (which runs the negotiator + StdinBuffer); feedInput() drives it so a test
   // can simulate xterm keystrokes / negotiation replies byte-for-byte.
   const handlers = new Map();
@@ -63,7 +64,7 @@ function makeCapturingBridge() {
     handlers,
     openPanel({ overlay, unified }) {
       const id = ++counter;
-      handlers.set(id, { inputHandler: null, resizeHandler: null });
+      handlers.set(id, { inputHandler: null, inputFence: null, resizeHandler: null });
       messages.push({ type: "panel_open", panelId: id, overlay, unified });
       return id;
     },
@@ -84,9 +85,20 @@ function makeCapturingBridge() {
       const p = handlers.get(panelId);
       if (p) p.inputHandler = null;
     },
+    setInputFence(panelId, fence) {
+      const p = handlers.get(panelId);
+      if (p) p.inputFence = fence;
+    },
+    clearInputFence(panelId) {
+      const p = handlers.get(panelId);
+      if (p) p.inputFence = null;
+    },
     feedInput(panelId, data) {
       const p = handlers.get(panelId);
       p?.inputHandler?.(data);
+    },
+    fenceAll() {
+      for (const p of handlers.values()) p.inputFence?.();
     },
     setResizeHandler(panelId, handler) {
       const p = handlers.get(panelId);
@@ -170,7 +182,7 @@ describe("unified-TUI host render (repository-pinned pi-tui + pi theme)", () => 
     const bridge = makeCapturingBridge();
     const editorTheme = buildEditorTheme(pi, theme);
 
-    const { context, unified } = createUIContext({
+    const bundle = createUIContext({
       theme,
       editorTheme,
       panelBridge: bridge,
@@ -178,6 +190,7 @@ describe("unified-TUI host render (repository-pinned pi-tui + pi theme)", () => 
       sendToMain: () => {},
       tuiModules: tuiModules(),
     });
+    const { context, unified } = bundle;
     controllers.push(unified);
 
     // A fleet-list-shaped factory: returns a pi-tui component (render → string[]).
@@ -213,7 +226,7 @@ describe("unified-TUI host render (repository-pinned pi-tui + pi theme)", () => 
   it("publishes a trailing-blank frame together with its final editor cursor position", async () => {
     await setup();
     const bridge = makeCapturingBridge();
-    const { context, unified } = createUIContext({
+    const bundle = createUIContext({
       theme,
       editorTheme: buildEditorTheme(pi, theme),
       panelBridge: bridge,
@@ -221,6 +234,7 @@ describe("unified-TUI host render (repository-pinned pi-tui + pi theme)", () => 
       sendToMain: () => {},
       tuiModules: tuiModules(),
     });
+    const { context, unified } = bundle;
     controllers.push(unified);
 
     context.setWidget(
@@ -348,19 +362,21 @@ describe("unified-TUI host render (repository-pinned pi-tui + pi theme)", () => 
   // CSI-u) is covered by the e2e + render suites.
 
   /** Build a fresh unified TUI wired to a functional capturing bridge. */
-  async function buildKittyTui(modules = tuiModules()) {
+  async function buildKittyTui(modules) {
     await setup();
+    const activeModules = modules ?? tuiModules();
     const bridge = makeCapturingBridge();
     const editorTheme = buildEditorTheme(pi, theme);
     const sent = [];
-    const { context, unified } = createUIContext({
+    const bundle = createUIContext({
       theme,
       editorTheme,
       panelBridge: bridge,
       createDialog: async () => ({}),
       sendToMain: (m) => sent.push(m),
-      tuiModules: modules,
+      tuiModules: activeModules,
     });
+    const { context, unified } = bundle;
     controllers.push(unified);
     context.setWidget(
       "kitty-editor",
@@ -370,7 +386,7 @@ describe("unified-TUI host render (repository-pinned pi-tui + pi theme)", () => 
     const panelId = bridge.messages.find((m) => m.type === "panel_open").panelId;
     // Let the first render tick fire so the editor is fully wired.
     await new Promise((r) => setTimeout(r, 60));
-    return { bridge, context, unified, panelId, sent };
+    return { bridge, context, state: bundle.state, unified, panelId, sent };
   }
 
   /** StdinBuffer may buffer an incomplete tail; flush anything pending. */
@@ -414,11 +430,66 @@ describe("unified-TUI host render (repository-pinned pi-tui + pi theme)", () => 
   });
 
   it("plain Enter emits exactly one submit", async () => {
-    const { bridge, panelId, sent } = await buildKittyTui();
+    const { bridge, panelId, sent, state } = await buildKittyTui();
+    state.applyEditorPatch({
+      baseRevision: -1,
+      revision: 1,
+      text: "conflicting primary",
+      attachments: [],
+      alternateConflictText: "alternate",
+      alternateConflictAttachments: [],
+      additionalConflictCandidates: [{ text: "third", attachments: [] }],
+    });
     bridge.feedInput(panelId, "abc");
+    // This is the host.mjs ordering: the mirror microtask observes the Editor
+    // before the acknowledgement samples its lightweight checkpoint.
+    await Promise.resolve();
+    expect(state.panelInputEditorCheckpoint()).toMatchObject({
+      revision: 1,
+      text: "abc",
+      clearedConflicts: true,
+    });
+    expect(state.editorSnapshot()).not.toHaveProperty("conflictText");
+    expect(state.panelInputEditorCheckpoint()).toMatchObject({
+      revision: 1,
+      text: "abc",
+      clearedConflicts: false,
+    });
     bridge.feedInput(panelId, "\r");
+    await Promise.resolve();
+    expect(state.panelInputEditorCheckpoint()).toMatchObject({
+      revision: 2,
+      text: "",
+      clearedConflicts: false,
+    });
     await flushStdin();
     expect(sent.filter((m) => m.type === "unified_submit_request")).toHaveLength(1);
+    expect(sent.find((m) => m.type === "unified_submit_request")?.postClearEditor).toMatchObject({
+      revision: 2,
+      text: "",
+    });
+  });
+
+  it("keeps input live while an older submit is unsettled and never restores it on bail", async () => {
+    const { bridge, panelId, context, unified, sent } = await buildKittyTui();
+    bridge.feedInput(panelId, "first prompt");
+    bridge.feedInput(panelId, "\r");
+    await flushStdin();
+    const first = sent.find((message) => message.type === "unified_submit_request");
+    expect(first).toMatchObject({ text: "first prompt", editorRevision: 0 });
+
+    bridge.feedInput(panelId, "newer draft");
+    await flushStdin();
+    expect(context.getEditorText()).toBe("newer draft");
+    unified.resolveSubmit(first.id, { ok: false, bailed: true });
+    expect(context.getEditorText()).toBe("newer draft");
+
+    bridge.feedInput(panelId, "\r");
+    await flushStdin();
+    const requests = sent.filter((message) => message.type === "unified_submit_request");
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toMatchObject({ text: "newer draft" });
+    expect(requests[1].editorRevision).toBeGreaterThan(first.editorRevision);
   });
 
   it("a press+release Enter cycle emits exactly ONE submit (flag 2 release events are filtered)", async () => {
@@ -442,6 +513,48 @@ describe("unified-TUI host render (repository-pinned pi-tui + pi theme)", () => 
       sent.filter((m) => m.type === "unified_submit_request"),
       "a paste must never submit on a newline",
     ).toHaveLength(0);
+  });
+
+  it("a renderer detach drops incomplete paste and delayed escape state before successor input", async () => {
+    const { bridge, panelId, context, sent } = await buildKittyTui();
+    const observed = [];
+    const unsubscribe = context.onTerminalInput((data) => {
+      observed.push(data);
+    });
+
+    // The paste terminator can be lost with the predecessor renderer. Without
+    // the fence, StdinBuffer remains in pasteMode forever and absorbs all input
+    // from the successor renderer.
+    bridge.feedInput(panelId, "\x1b[200~predecessor paste");
+    bridge.fenceAll();
+    bridge.feedInput(panelId, "successor");
+    await flushStdin();
+    expect(context.getEditorText()).toBe("successor");
+
+    // Bare Escape has a delayed StdinBuffer flush. It must not mutate the TUI
+    // after detach or reach an extension input listener in the next generation.
+    const observedBeforeEscape = observed.length;
+    bridge.feedInput(panelId, "\x1b");
+    bridge.fenceAll();
+    await flushStdin();
+    expect(observed).toHaveLength(observedBeforeEscape);
+
+    // Once StdinBuffer times out an incomplete negotiation prefix, the
+    // negotiator owns a separate 150ms delayed flush. The same detach fence
+    // must cancel that second-stage predecessor timer as well.
+    bridge.feedInput(panelId, "\x1b[?");
+    await flushStdin();
+    bridge.fenceAll();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    expect(observed).toHaveLength(observedBeforeEscape);
+
+    bridge.feedInput(panelId, "\r");
+    await flushStdin();
+    expect(sent.filter((message) => message.type === "unified_submit_request")).toHaveLength(1);
+    expect(sent.find((message) => message.type === "unified_submit_request")?.text).toBe(
+      "successor",
+    );
+    unsubscribe();
   });
 
   it("a forced resize re-pushes the handshake (kitty survives an xterm remount)", async () => {

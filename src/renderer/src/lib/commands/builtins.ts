@@ -24,6 +24,12 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandDef[] = [
     description: "Switch model or open picker",
     takesArgs: true,
   },
+  {
+    name: "thinking",
+    argHint: "[search]",
+    description: "Switch thinking level or open picker",
+    takesArgs: true,
+  },
   { name: "name", argHint: "[name]", description: "Get or set the session name", takesArgs: true },
   { name: "session", argHint: "", description: "Show session info in the chat", takesArgs: false },
   { name: "new", argHint: "", description: "Start a fresh session", takesArgs: false },

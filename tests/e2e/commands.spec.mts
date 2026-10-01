@@ -142,7 +142,7 @@ test.describe("Slash commands", () => {
     fs.chmodSync(FAKE_SESSION_HOST, 0o755);
   });
 
-  test("settings put interface controls together while code font remains configurable", async () => {
+  test("settings isolate and persist reading fonts while code font remains configurable", async () => {
     const folders = await makeFolders();
     const { app, window } = await launchApp(folders);
 
@@ -156,6 +156,54 @@ test.describe("Slash commands", () => {
     await expect(interfaceSection.getByText("Font Size", { exact: true })).toBeVisible();
     await expect(interfaceSection.getByText("Family", { exact: true })).toHaveCount(0);
     await expect(interfaceSection).not.toContainText("Pi-Vis owns interface font families");
+
+    const readingSection = window.locator(".settings-section", {
+      has: window.getByRole("heading", { name: "Reading typography" }),
+    });
+    await expect(readingSection.getByText("Title", { exact: true })).toBeVisible();
+    await expect(
+      readingSection.getByText("Transcript header / thinking", { exact: true }),
+    ).toBeVisible();
+    await expect(readingSection.getByText("Transcript body", { exact: true })).toBeVisible();
+
+    const chooseFont = async (label: string, family: string): Promise<void> => {
+      const trigger = readingSection.getByRole("button", { name: label });
+      await trigger.click();
+      await readingSection.getByRole("option", { name: family, exact: true }).click();
+      await expect(trigger).toContainText(family);
+    };
+    await chooseFont("Title font family", "IBM Plex Mono");
+    await chooseFont("Transcript header and thinking font family", "Fraunces");
+    await chooseFont("Transcript body font family", "IBM Plex Serif");
+
+    await expect
+      .poll(() =>
+        window.evaluate(() =>
+          window.pivis.invoke("settings.get", undefined).then((settings) => settings.fonts),
+        ),
+      )
+      .toEqual(
+        expect.objectContaining({
+          title: { family: "IBM Plex Mono" },
+          transcriptHeader: { family: "Fraunces" },
+          transcriptBody: { family: "IBM Plex Serif" },
+        }),
+      );
+    const fontTokens = await window.locator("html").evaluate((element) => {
+      const styles = getComputedStyle(element);
+      return {
+        title: styles.getPropertyValue("--font-title"),
+        header: styles.getPropertyValue("--font-transcript-heading"),
+        thinking: styles.getPropertyValue("--font-thinking"),
+        body: styles.getPropertyValue("--font-transcript-body"),
+        ui: styles.getPropertyValue("--font-display"),
+      };
+    });
+    expect(fontTokens.title).toContain("IBM Plex Mono");
+    expect(fontTokens.header).toContain("Fraunces");
+    expect(fontTokens.thinking).toBe(fontTokens.header);
+    expect(fontTokens.body).toContain("IBM Plex Serif");
+    expect(fontTokens.ui).toContain("Inter");
 
     const darkThemeRow = interfaceSection.locator(".settings-row", { hasText: "Dark theme" });
     await darkThemeRow.locator(".settings-select__trigger").click();
@@ -193,6 +241,16 @@ test.describe("Slash commands", () => {
     await expect(codeSection.getByText("Font Size", { exact: true })).toBeVisible();
 
     await app.close();
+    const persisted = JSON.parse(
+      fs.readFileSync(join(folders.settingsDir, "settings.json"), "utf8"),
+    ) as { fonts?: Record<string, unknown> };
+    expect(persisted.fonts).toEqual(
+      expect.objectContaining({
+        title: { family: "IBM Plex Mono" },
+        transcriptHeader: { family: "Fraunces" },
+        transcriptBody: { family: "IBM Plex Serif" },
+      }),
+    );
     rmrf(folders.settingsDir);
     rmrf(folders.workspaceDir);
     rmrf(folders.piSessionsDir);
@@ -746,6 +804,46 @@ test.describe("Slash commands", () => {
     await expect(window.locator(".session-header__model-btn")).toContainText("Fake Model [fake]", {
       timeout: 5_000,
     });
+
+    await app.close();
+    rmrf(folders.settingsDir);
+    rmrf(folders.workspaceDir);
+    rmrf(folders.piSessionsDir);
+  });
+
+  test("/thinking opens a searchable picker and an exact argument applies session-only", async () => {
+    test.setTimeout(60_000);
+    const folders = await makeFolders();
+    const { app, window } = await launchApp(folders);
+
+    await window.getByRole("button", { name: "New session" }).click();
+    await expect(window.locator(".session-header__model-btn")).toContainText("Fake Model [fake]", {
+      timeout: 15_000,
+    });
+    const textarea = window.locator(".composer__textarea");
+    await textarea.fill("/model fake-model-2");
+    await textarea.press("Enter");
+    await expect(window.locator(".session-header__model-btn")).toContainText(
+      "Fake Model Two [fake]",
+      { timeout: 15_000 },
+    );
+
+    await textarea.fill("/thinking");
+    await textarea.press("Enter");
+    const picker = window.locator(".picker--thinking");
+    await expect(picker).toBeVisible({ timeout: 5_000 });
+    await picker.locator(".picker__search-input").fill("high");
+    await picker.locator(".picker__item", { hasText: "high" }).click();
+    await expect(
+      window.locator(".session-header__thinking > .session-header__picker-btn"),
+    ).toContainText("high", { timeout: 5_000 });
+
+    await textarea.fill("/thinking low");
+    await textarea.press("Enter");
+    await expect(picker).toBeHidden();
+    await expect(
+      window.locator(".session-header__thinking > .session-header__picker-btn"),
+    ).toContainText("low", { timeout: 5_000 });
 
     await app.close();
     rmrf(folders.settingsDir);

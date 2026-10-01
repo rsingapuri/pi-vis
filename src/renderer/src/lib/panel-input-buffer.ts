@@ -6,6 +6,9 @@ export interface PanelInputIdentity {
 
 export interface PendingPanelInput extends PanelInputIdentity {
   chunks: string[];
+  /** Sequence used by a transport attempt whose reply was lost. A later
+   * keyframe watermark at or above it proves that chunk already executed. */
+  attemptedSequences: Array<number | undefined>;
   bytes: number;
 }
 
@@ -27,17 +30,19 @@ export function bufferPanelInput(
   pending: PendingPanelInput | null,
   identity: PanelInputIdentity,
   data: string,
+  attemptedSequence?: number,
 ): PendingPanelInput | null {
   const next =
     pending && samePanelInputIdentity(pending, identity)
       ? pending
-      : { ...identity, chunks: [], bytes: 0 };
+      : { ...identity, chunks: [], attemptedSequences: [], bytes: 0 };
   if (next.bytes + data.length > MAX_PENDING_PANEL_INPUT_BYTES) {
     return next.bytes > 0 ? next : null;
   }
   return {
     ...next,
     chunks: [...next.chunks, data],
+    attemptedSequences: [...next.attemptedSequences, attemptedSequence],
     bytes: next.bytes + data.length,
   };
 }

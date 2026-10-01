@@ -233,9 +233,10 @@ describe("streaming assistant attach checkpoint", () => {
     });
   });
 
-  it("retains Pi 0.84.2 endTurn and tool-call namespace metadata", () => {
+  it("retains Pi 0.85.1 provider thinking, endTurn, and tool-call namespace metadata", () => {
     const message = {
       role: "assistant",
+      providerThinkingLevel: "high",
       endTurn: true,
       content: [
         {

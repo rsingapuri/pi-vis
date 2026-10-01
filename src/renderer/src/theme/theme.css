@@ -97,12 +97,17 @@
      settings only change its base size. --font-size-base is applied to the
      <html> root from JS, so 1rem = the user's chosen base size. The other
      sizes are em ratios that scale fluidly with the base. Code font family
-     and size remain user-configurable. */
+     and size remain user-configurable. Title and transcript families have
+     isolated settings-backed tokens; their fallbacks end at --font-display
+     without changing interface or Composer typography. */
   --font-display: "Inter", system-ui, -apple-system, sans-serif;
   --font-accent: "Fraunces", var(--font-display);
+  --font-title: "Fraunces", var(--font-accent);
   --font-accent-tracking: -0.015em;
   --font-reading-heading: "IBM Plex Serif", var(--font-display);
+  --font-transcript-heading: "IBM Plex Serif", var(--font-display);
   --font-thinking: "IBM Plex Serif", var(--font-display);
+  --font-transcript-body: "Inter", var(--font-display);
   --font-code: "IBM Plex Mono", "Menlo", "Monaco", "Courier New", monospace;
   --font-size-base: 14px;
   --font-size-serif: calc(var(--font-size-base) * 1.07);

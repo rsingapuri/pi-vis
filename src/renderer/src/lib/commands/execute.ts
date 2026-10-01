@@ -55,9 +55,13 @@ export interface ExecuteDeps {
   /** Exact Composer editor command eligible for child-owned reload consumption. */
   getReloadEditorCommand?: (
     sessionId: SessionId,
-  ) => { editorRevision: number; editorText: string } | undefined;
+  ) => { editorRevision: number; editorText: string; surface?: "composer" | "unified" } | undefined;
   /** Called after a child has admitted an intent, before its terminal outcome. */
-  onAdmitted?: (sessionId: SessionId, intent: SessionIntent, intentId: string) => void;
+  onAdmitted?: (
+    sessionId: SessionId,
+    intent: SessionIntent,
+    intentId: string,
+  ) => void | Promise<void>;
   /** Unified-TUI ingress supplies its main-assigned stable intent ID here. */
   createIntentId?: (() => string) | undefined;
   uiSurface?: "composer" | "unified" | undefined;
@@ -83,7 +87,7 @@ export interface ExecuteDeps {
   openAppSettings: () => void;
   openLogin: () => void;
   openDiffViewer: (sessionId: SessionId) => void;
-  openTreeViewer: (sessionId: SessionId) => void;
+  openTreeViewer: (sessionId: SessionId) => void | Promise<void>;
   copyToClipboard: (text: string) => Promise<void>;
   getAvailableModels: (sessionId: SessionId) => ModelInfo[];
   getSessionWorkspacePath: (sessionId: SessionId) => string | undefined;
@@ -107,6 +111,7 @@ export interface IntentCompletion {
 
 export type PickerRequest = (
   | { kind: "model"; search?: string }
+  | { kind: "thinking"; search?: string }
   | { kind: "fork"; messages: Array<{ entryId: string; text: string }> }
   | { kind: "resume"; sessions: SessionSummary[] }
   | { kind: "scoped-models"; models: ModelInfo[]; enabledIds: string[] | null }
@@ -125,7 +130,12 @@ export type PickerRequest = (
       projectTrusted: boolean;
       options: ProjectTrustOption[];
     }
-) & { expectedHostInstanceId?: string; expectedSessionEpoch?: number };
+) & {
+  expectedHostInstanceId?: string;
+  expectedSessionEpoch?: number;
+  /** Immutable UI origin retained by picker continuations. */
+  sourceSurface?: "composer" | "unified";
+};
 
 function queryData<T>(result: SessionQueryResult): T {
   if (result.status !== "ok")
@@ -173,17 +183,17 @@ async function dispatchAndAwait(
     throw new InputNotConsumedError(message);
   }
   if (receipt.status === "delivery_unknown") {
-    const message = "Intent delivery is unknown; input was preserved for review.";
+    const message = "Intent delivery is unknown; verify the outcome before retrying.";
     deps.addToast(sessionId, message, "warning");
     throw new InputNotConsumedError(message);
   }
   // Admission proves this intent is now child-owned. Composer may clear only
   // intent-shaped commands here; prompt/editor acknowledgement remains fenced
   // by the terminal outcome.
-  deps.onAdmitted?.(sessionId, intent, intentId);
+  await deps.onAdmitted?.(sessionId, intent, intentId);
   const outcome = await deps.awaitIntentOutcome!(sessionId, intentId, observation.owner);
   if (outcome.state === "outcome_unknown") {
-    const message = outcome.error ?? "Intent outcome is unknown; input was preserved for review.";
+    const message = outcome.error ?? "Intent outcome is unknown; verify before retrying.";
     deps.addToast(sessionId, message, "warning");
     throw new InputNotConsumedError(message);
   }
@@ -222,12 +232,21 @@ export async function executeAction(
           excludeFromContext: action.excludeFromContext,
           editorRevision: observation.editorRevision,
           editorText: action.editorText,
+          surface: deps.uiSurface ?? "composer",
         }),
         deps,
       );
     }
     case "model":
       return executeModel(sessionId, action, deps);
+    case "thinking":
+      deps.openPicker(
+        sessionId,
+        action.search === undefined
+          ? { kind: "thinking" }
+          : { kind: "thinking", search: action.search },
+      );
+      return;
     case "name":
       return executeName(sessionId, action, deps);
     case "session-info":
@@ -280,7 +299,7 @@ export async function executeAction(
       await executeChangelog(sessionId, deps);
       return;
     case "open-tree":
-      deps.openTreeViewer(sessionId);
+      await deps.openTreeViewer(sessionId);
       return;
     case "unsupported":
       deps.addToast(
@@ -316,7 +335,12 @@ async function executePrompt(
       deps,
     );
   const intent: SessionIntent = action.commandSource
-    ? { kind: "invokeCommand", text: action.text, editorRevision: observation.editorRevision }
+    ? {
+        kind: "invokeCommand",
+        text: action.text,
+        editorRevision: observation.editorRevision,
+        surface: deps.uiSurface ?? "composer",
+      }
     : {
         kind: "submit",
         editorRevision: observation.editorRevision,
@@ -454,7 +478,12 @@ async function executeSlashIntent(
   const observation = deps.getIntentObservation?.(sessionId);
   const completion = await dispatchAndAwait(
     sessionId,
-    { kind: "invokeCommand", text, editorRevision: observation?.editorRevision ?? 0 },
+    {
+      kind: "invokeCommand",
+      text,
+      editorRevision: observation?.editorRevision ?? 0,
+      surface: deps.uiSurface ?? "composer",
+    },
     deps,
   );
   const error = outcomeError(completion);
@@ -508,7 +537,11 @@ async function executeFork(sessionId: SessionId, deps: ExecuteDeps): Promise<voi
       queryData<ForkMessagesData>(await deps.query!(sessionId, { type: "get_fork_messages" }))
         .messages ?? [];
     messages.length
-      ? deps.openPicker(sessionId, { kind: "fork", messages })
+      ? deps.openPicker(sessionId, {
+          kind: "fork",
+          messages,
+          sourceSurface: deps.uiSurface ?? "composer",
+        })
       : deps.addToast(sessionId, "No messages to fork from", "warning");
   } catch (error) {
     deps.addToast(sessionId, error instanceof Error ? error.message : String(error), "error");
@@ -545,6 +578,7 @@ async function executeScopedModels(sessionId: SessionId, deps: ExecuteDeps): Pro
           kind: "scoped-models",
           models,
           enabledIds: data.enabledIds ?? null,
+          sourceSurface: deps.uiSurface ?? "composer",
         })
       : deps.addToast(sessionId, "No models available", "warning");
   } catch (error) {
@@ -576,7 +610,11 @@ async function executeLogout(sessionId: SessionId, deps: ExecuteDeps): Promise<v
       queryData<LogoutProvidersData>(await deps.query!(sessionId, { type: "get_logout_providers" }))
         .providers ?? [];
     providers.length
-      ? deps.openPicker(sessionId, { kind: "logout", providers })
+      ? deps.openPicker(sessionId, {
+          kind: "logout",
+          providers,
+          sourceSurface: deps.uiSurface ?? "composer",
+        })
       : deps.addToast(
           sessionId,
           "No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",

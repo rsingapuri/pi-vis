@@ -2,7 +2,7 @@
 
 This matrix is exhaustive for `PiRpcCommandSchema`. The executable source of truth is `PI_COMMAND_POLICY` in `src/shared/pi-protocol/commands.ts`; `commands.test.ts` fails when a discriminant is added without policy coverage.
 
-All renderer rows require `(requestId, expectedHostInstanceId, expectedSessionEpoch)`. **Intent** means an additional intent id is mandatory and post-dispatch transport loss becomes `outcome_unknown` review custody. Text rows never use `session.sendCommand`.
+All renderer rows require `(requestId, expectedHostInstanceId, expectedSessionEpoch)`. **Intent** means an additional intent id is mandatory and post-dispatch transport loss becomes non-replayable `outcome_unknown` evidence. Text rows never use `session.sendCommand`.
 
 ### Authority-frame migration status
 
@@ -17,16 +17,19 @@ This table documents the deployed policy/settlement compatibility contract. Unde
 | `get_state`, `get_session_stats` | read-only | bootstrap, `/session`, reconciliation, header/tree stats | identity-bound read and stale-write fencing; executor/store/header tests |
 | `get_messages`, `get_fork_messages`, `get_last_assistant_text` | read-only | SDK integrations, `/fork`, `/copy` | bridge response plus executor outcome tests |
 | `get_trust_state`, `get_tree`, `render_entry`, `render_message`, `get_cache_miss_notices` | read-only | trust/tree/transcript/history UI | identity-bound continuation; trust returns only persistent post-start choices |
-| `set_model`, `set_scoped_models`, `save_scoped_models` | idempotent | model and scope controls | explicit terminal response plus authoritative read-back |
+| `set_model`, `set_scoped_models`, `save_scoped_models` | idempotent | header compatibility and scope controls | explicit terminal response plus authoritative read-back |
+| `setModel` intent | mutation | `/model` picker | public `setModel(model, { persist })`; Enter is session-only, Ctrl+S persists, and terminal authority/readback—not admission—owns success |
+| `pickerAction` intent | bounded mutation/replacement | `/fork`, `/models`, `/logout` pickers | strict typed selection plus immutable originating surface; app-owned core operation cannot be shadowed by discovered commands; cancellation is a terminal cancelled outcome |
 | `logout_provider` | idempotent explicit-state | logout picker | terminal credential-store response and model refresh |
-| `set_thinking_level` | idempotent | header/bootstrap | terminal response plus authoritative clamp read-back |
+| `set_thinking_level` | idempotent | header/bootstrap compatibility | terminal response plus authoritative clamp read-back |
+| `setThinking` intent | mutation | `/thinking [search]` picker | exact available-level match and public `setThinkingLevel(level, { persist })`; Enter is session-only and Ctrl+S persists |
 | `set_session_name` | idempotent | `/name`, header | terminal response; optimistic state only after success |
 | `set_auto_compaction`, `set_auto_retry`, `set_steering_mode`, `set_follow_up_mode` | idempotent | extension/unified command surfaces | bridge contract tests and correlated settlement |
 | `set_trust` | idempotent compatibility command | legacy trust integrations | terminal persistence response; current picker uses `setTrust` intent |
 | `setTrust` intent | mutation | trust picker | exact child-revalidated option; bounded persisted outcome, then fresh-cursor reload |
 | `set_label` | idempotent | tree viewer | terminal response followed by same-runtime tree refresh |
 | `abort`, `abort_bash`, `abort_retry` | effectful + intent | ESC/host controls and integrations | explicit completion or unknown-effect review; bridge/state-authority tests |
-| `bash` / `runBash` intent | effectful + intent | `!` / `!!` | correlated start/update/end transcript lifecycle plus exit code/output outcome; transport ambiguity is review custody |
+| `bash` / `runBash` intent | effectful + intent | `!` / `!!` | correlated start/update/end transcript lifecycle plus exit code/output outcome; transport ambiguity is non-replayable outcome evidence |
 | `cycle_model`, `cycle_thinking_level` | effectful + intent | extension/unified controls | correlated host response; never rebound or replayed |
 | `compact` | effectful + intent | `/compact`, extensions | `compaction_end` and persisted compaction prove success; domain and unknown paths are separate |
 | `export_html` | effectful + intent | `/export`, `/share` | returned path/file is success evidence; `/share` uses the same custody path |
@@ -41,6 +44,6 @@ This table documents the deployed policy/settlement compatibility contract. Unde
 - Renderer tests prove all direct command call sites construct the mandatory request and stale continuations do not write state.
 - Bridge tests prove each command reaches the intended public SDK operation or an explicit structured capability/domain failure.
 - Electron fake-host tests cover first-use, picker, command, delayed-history, unified-claim, and ESC cancellation/queue-restoration behavior without model/network nondeterminism.
-- The Pi 0.84.2 localhost-provider smoke proves a real successful model-backed compaction by asserting the HTTP summarization request, `Context compacted`, a persisted `compaction` JSONL entry, Composer clearing, and continued host liveness.
+- The Pi 0.85.1 localhost-provider smoke proves a real successful model-backed compaction by asserting the HTTP summarization request, `Context compacted`, a persisted `compaction` JSONL entry, Composer clearing, and continued host liveness.
 
 External provider aliases, credentials, and backend availability remain integration dependencies. A dispatch, cleared editor, or surfaced provider failure is never recorded as successful operation evidence.

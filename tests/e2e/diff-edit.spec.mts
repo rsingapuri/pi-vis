@@ -257,7 +257,7 @@ test.describe("Diff inline edit", () => {
     fs.chmodSync(FAKE_SESSION_HOST, 0o755);
   });
 
-  test("drag-select shows the bubble; opening the card shifts no glyph", async () => {
+  test("selection shows the bubble; opening the card shifts no glyph", async () => {
     test.setTimeout(90_000);
     const folders = await makeFolders();
     setupRepoForEdit(folders.workspaceDir);
@@ -294,7 +294,18 @@ test.describe("Diff inline edit", () => {
         `.diff-row--add[data-line-idx="${addIdxs[0]!}"] .diff-row__code`,
       );
 
-      await selectRange(window, fromIdx, toIdx);
+      // This case owns exact placement/layout geometry, so create a stable DOM
+      // range instead of coupling that oracle to Chromium's synthetic pointer
+      // hit-testing. The dedicated many-line case below exercises real mouse
+      // drags in both directions.
+      const fromSelector = `.diff-row--add[data-line-idx="${fromIdx}"] .diff-row__code`;
+      const toSelector = `.diff-row--add[data-line-idx="${toIdx}"] .diff-row__code`;
+      const toTextLength = (await window.locator(toSelector).first().textContent())?.length ?? 0;
+      expect(toTextLength).toBeGreaterThan(0);
+      await selectTextAcrossCells(window, fromSelector, 1, toSelector, toTextLength);
+      const selectedText = await window.evaluate(() => window.getSelection()?.toString() ?? "");
+      expect(selectedText).toContain("EDIT_2");
+      expect(selectedText).toContain("EDIT_3");
       const bubble = window.getByTestId("diff-edit-bubble");
       await expect(bubble).toBeVisible({ timeout: 5_000 });
       await expect(bubble).toContainText("Edit selection");

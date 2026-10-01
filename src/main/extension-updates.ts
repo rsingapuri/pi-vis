@@ -208,7 +208,7 @@ async function performExtensionUpdate(
   if (!piInfo) throw new Error("Bundled pi runtime not found (broken install)");
 
   const env = mergeUserPiEnv(await getSubprocessEnv(), settings.piEnv);
-  const child = spawnUpdate(piInfo.path, buildExtensionUpdateArgs(target), {
+  const child = spawnUpdate(piInfo.cliPath, buildExtensionUpdateArgs(target), {
     cwd: os.homedir(),
     env: { ...env, FORCE_COLOR: "0" },
     stdio: ["ignore", "ignore", "ignore"],

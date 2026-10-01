@@ -4,11 +4,6 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  PINNED_PI_PATCH_FILES,
-  PINNED_PI_PATCH_VERSION,
-  patchPinnedPi,
-} from "../scripts/patch-pinned-pi.mjs";
 
 const roots: string[] = [];
 
@@ -59,71 +54,23 @@ const createPersistedSession = (): { root: string; file: string } => {
 const roles = (manager: SessionManager): string[] =>
   manager.getBranch().map((entry) => (entry.type === "message" ? entry.message.role : entry.type));
 
-describe("exact Pi 0.84.2 runtime patch", () => {
-  it("verifies every installed patch target by exact hash", () => {
-    expect(PINNED_PI_PATCH_VERSION).toBe("0.84.2");
-    expect(PINNED_PI_PATCH_FILES).toHaveLength(3);
-    expect(patchPinnedPi({ verifyOnly: true })).toMatchObject({
-      changed: false,
-      verified: true,
-    });
-  });
-
-  it("fails closed before reading patch targets for a different package version", () => {
-    const root = temporaryDirectory("pivis-pi-patch-version-");
-    const codingAgent = path.join(root, "pi-coding-agent");
-    const piAi = path.join(root, "pi-ai");
-    fs.mkdirSync(codingAgent, { recursive: true });
-    fs.mkdirSync(piAi, { recursive: true });
-    fs.writeFileSync(path.join(codingAgent, "package.json"), JSON.stringify({ version: "0.84.3" }));
-    fs.writeFileSync(path.join(piAi, "package.json"), JSON.stringify({ version: "0.84.2" }));
-
-    expect(() =>
-      patchPinnedPi({
-        packageDirectory: codingAgent,
-        piAiPackageDirectory: piAi,
-        verifyOnly: true,
-      }),
-    ).toThrow("requires coding-agent and pi-ai 0.84.2");
-  });
-
-  it("fails closed on unknown bytes in an exact-version dependency tree", () => {
-    const root = temporaryDirectory("pivis-pi-patch-drift-");
-    const codingAgent = path.join(root, "pi-coding-agent");
-    const piAi = path.join(root, "pi-ai");
-    for (const directory of [codingAgent, piAi]) {
-      fs.mkdirSync(directory, { recursive: true });
-      fs.writeFileSync(path.join(directory, "package.json"), JSON.stringify({ version: "0.84.2" }));
-    }
-    for (const spec of PINNED_PI_PATCH_FILES) {
-      const target = path.join(
-        spec.owner === "coding-agent" ? codingAgent : piAi,
-        spec.relativePath,
-      );
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, "unrecognized runtime bytes");
-    }
-
-    expect(() =>
-      patchPinnedPi({
-        packageDirectory: codingAgent,
-        piAiPackageDirectory: piAi,
-        verifyOnly: true,
-      }),
-    ).toThrow("refused drifted");
-  });
-
+describe("Pi 0.85.1 upstream regression fixes", () => {
   it.each([
-    ["invalid fragment", (file: string) => fs.appendFileSync(file, '{"type":"message"')],
     [
-      "valid record without a delimiter",
+      "unterminated invalid fragment",
+      (file: string) => fs.appendFileSync(file, '{"type":"message"'),
+      false,
+    ],
+    [
+      "unterminated valid record",
       (file: string) => {
         const content = fs.readFileSync(file);
         expect(content.at(-1)).toBe(0x0a);
         fs.writeFileSync(file, content.subarray(0, content.length - 1));
       },
+      true,
     ],
-  ])("repairs an %s before the next SessionManager append", (_name, damage) => {
+  ])("separates an %s before the next SessionManager append", (_name, damage, allValid) => {
     const { root, file } = createPersistedSession();
     damage(file);
 
@@ -137,8 +84,16 @@ describe("exact Pi 0.84.2 runtime patch", () => {
     expect(roles(reopened)).toEqual(["user", "assistant", "user", "assistant", "user"]);
     const content = fs.readFileSync(file, "utf8");
     expect(content.endsWith("\n")).toBe(true);
-    for (const line of content.split("\n").filter(Boolean))
-      expect(() => JSON.parse(line)).not.toThrow();
+    const lines = content.split("\n").filter(Boolean);
+    if (allValid) {
+      for (const line of lines) expect(() => JSON.parse(line)).not.toThrow();
+    } else {
+      const malformedIndex = lines.indexOf('{"type":"message"');
+      expect(malformedIndex).toBeGreaterThanOrEqual(0);
+      for (const line of lines.slice(malformedIndex + 1)) {
+        expect(() => JSON.parse(line)).not.toThrow();
+      }
+    }
   });
 
   it("keeps fragmented Mistral tool-call deltas on one indexed call", async () => {

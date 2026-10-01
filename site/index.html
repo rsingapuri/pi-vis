@@ -11,7 +11,7 @@
     <meta property="og:title" content="Pi-Vis — a desktop interface for the Pi coding agent" />
     <meta
       property="og:description"
-      content="The unmodified Pi binary, with a GUI: readable transcripts, a real diff viewer, parallel sessions, and full extension compatibility."
+      content="The bundled, unmodified Pi runtime with a GUI: readable transcripts, a real diff viewer, parallel sessions, and full extension compatibility."
     />
     <meta property="og:image" content="https://rsingapuri.github.io/pi-vis/assets/screenshots/hero.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png" />
@@ -43,10 +43,10 @@
       <section class="hero">
         <h1>A desktop interface for&nbsp;Pi</h1>
         <p class="hero__lede">
-          Pi-Vis runs the same <a href="https://pi.dev">Pi</a> binary you use in the
-          terminal — same sessions, same extensions, same config — and puts a
-          window around it: a transcript you can actually scroll, a real diff
-          viewer, and as many sessions as you have work.
+          Pi-Vis bundles the same unmodified <a href="https://pi.dev">Pi</a>
+          runtime used by the CLI — same sessions, same extensions, same config
+          — and puts a window around it: a transcript you can actually scroll,
+          a real diff viewer, and as many sessions as you have work.
         </p>
         <div class="hero__actions">
           <a
@@ -61,7 +61,7 @@
           >
         </div>
         <p class="hero__fineprint" data-download-note>
-          Apple Silicon macOS · MIT licensed · Needs a Pi install
+          Apple Silicon macOS · MIT licensed · Pi runtime included
         </p>
         <figure class="shot shot--hero">
           <img
@@ -82,7 +82,7 @@
           </li>
           <li>
             <strong>No accounts, no server</strong>
-            <span>A local shell around your existing Pi install.</span>
+            <span>A local shell with its pinned Pi runtime included.</span>
           </li>
           <li>
             <strong>No forked config</strong>
@@ -269,13 +269,12 @@
         <h2>Install</h2>
         <ol class="install__steps">
           <li>
-            <p>Install Pi, if you haven't:</p>
-            <pre><code>npm i -g --ignore-scripts @earendil-works/pi-coding-agent</code></pre>
-          </li>
-          <li>
             <p>Install Pi-Vis:</p>
             <pre><code>curl -fsSL https://raw.githubusercontent.com/rsingapuri/pi-vis/main/scripts/install.sh | bash</code></pre>
             <p class="install__alt">
+              Pi-Vis includes its pinned Pi runtime; no separate Pi or Node.js
+              installation is required.
+              <br />
               Or grab the <code>.dmg</code> from
               <a href="https://github.com/rsingapuri/pi-vis/releases/latest">GitHub Releases</a>.
               The installer downloads the latest notarized build into

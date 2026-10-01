@@ -232,9 +232,9 @@ export const AgentSessionSnapshotSchema = z.object({
 });
 export type AgentSessionSnapshot = z.infer<typeof AgentSessionSnapshotSchema>;
 
-// clearQueue() payloads are held for review; attachment bytes are retained
-// with their original submission intent so restoration is lossless. This is
-// also an authority record: it must survive frame routing and attach baselines.
+// clearQueue() payloads are retained as non-replayable outcome/custody
+// evidence. They are authority records that survive frame routing and attach
+// baselines, but they never authorize editor reinsertion after visual clear.
 export const QueueRestorationRecordSchema = z
   .object({
     type: z.literal("queue_restoration"),
@@ -242,11 +242,11 @@ export const QueueRestorationRecordSchema = z
     steering: z.array(z.string()),
     followUp: z.array(z.string()),
     originalAttachments: z.array(z.object({ intentId: z.string(), images: z.array(z.unknown()) })),
-    /** GUI queue intents destructively removed by clearQueue(). */
+    /** GUI intents whose editor presentation already crossed visual clear. */
     clearedIntentIds: z.array(z.string()).optional(),
     /** Present for an ambiguous effectful command that has no replayable queue payload. */
     commandDescription: z.string().optional(),
-    /** `not_processed` never crossed queue consumption; `unknown` must be reconciled by main. */
+    /** Execution certainty only; it never weakens a `clearedIntentIds` presentation fence. */
     certainty: z.enum(["not_processed", "unknown"]),
   })
   .strict();
@@ -701,6 +701,7 @@ export const SessionIntentKindSchema = z.enum([
   "manageQueue",
   "compact",
   "invokeCommand",
+  "pickerAction",
   "runBash",
   "setTrust",
   "navigate",
@@ -713,6 +714,24 @@ export const SessionIntentKindSchema = z.enum([
   "loginProvider",
 ]);
 export type SessionIntentKind = z.infer<typeof SessionIntentKindSchema>;
+
+/**
+ * A picker continuation carries only the selection produced by the app UI.
+ * It deliberately cannot transport arbitrary slash text or claim an editor
+ * revision after the source command has crossed its clear boundary.
+ */
+export const PickerActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("fork"), entryId: NonEmptyIdSchema }).strict(),
+  z
+    .object({
+      action: z.literal("setScopedModels"),
+      enabledIds: z.array(NonEmptyIdSchema).nullable(),
+      persist: z.boolean(),
+    })
+    .strict(),
+  z.object({ action: z.literal("logoutProvider"), providerId: NonEmptyIdSchema }).strict(),
+]);
+export type PickerAction = z.infer<typeof PickerActionSchema>;
 
 export const SessionIntentSchema = z.union([
   z.object({ kind: z.literal("interrupt") }).strict(),
@@ -811,6 +830,16 @@ export const SessionIntentSchema = z.union([
       kind: z.literal("invokeCommand"),
       text: z.string(),
       editorRevision: NonNegativeIntegerSchema,
+      /** UI authority that owns extension dialogs/custom panels for this invocation. */
+      surface: SubmissionSurfaceSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("pickerAction"),
+      selection: PickerActionSchema,
+      /** UI authority that owns lifecycle dialogs/custom panels for this continuation. */
+      surface: SubmissionSurfaceSchema,
     })
     .strict(),
   z
@@ -822,6 +851,8 @@ export const SessionIntentSchema = z.union([
       editorRevision: NonNegativeIntegerSchema,
       /** Exact raw editor source, including its editable `!` or `!!` prefix. */
       editorText: z.string(),
+      /** UI authority that owns user_bash dialogs/custom panels. */
+      surface: SubmissionSurfaceSchema.optional(),
     })
     .strict()
     .superRefine((intent, ctx) => {
@@ -857,9 +888,22 @@ export const SessionIntentSchema = z.union([
     })
     .strict(),
   z
-    .object({ kind: z.literal("setModel"), provider: z.string(), modelId: NonEmptyIdSchema })
+    .object({
+      kind: z.literal("setModel"),
+      provider: z.string(),
+      modelId: NonEmptyIdSchema,
+      /** Persist as Pi's global default; omitted/false remains session-only. */
+      persist: z.boolean().optional(),
+    })
     .strict(),
-  z.object({ kind: z.literal("setThinking"), level: ThinkingLevelSchema }).strict(),
+  z
+    .object({
+      kind: z.literal("setThinking"),
+      level: ThinkingLevelSchema,
+      /** Persist as Pi's global default; omitted/false remains session-only. */
+      persist: z.boolean().optional(),
+    })
+    .strict(),
   z.object({ kind: z.literal("rename"), name: z.string() }).strict(),
   z
     .object({
@@ -867,8 +911,28 @@ export const SessionIntentSchema = z.union([
       /** Present only when Composer owns the exact editor command to consume. */
       editorRevision: NonNegativeIntegerSchema.optional(),
       editorText: z.string().optional(),
+      /** UI authority that owns the exact reload command source. */
+      surface: SubmissionSurfaceSchema.optional(),
     })
-    .strict(),
+    .strict()
+    .superRefine((intent, ctx) => {
+      const hasRevision = intent.editorRevision !== undefined;
+      const hasText = intent.editorText !== undefined;
+      if (hasRevision !== hasText) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [hasRevision ? "editorText" : "editorRevision"],
+          message: "reload editor revision and text must be supplied together",
+        });
+      }
+      if (intent.surface !== undefined && (!hasRevision || !hasText)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["surface"],
+          message: "reload surface requires an exact editor source",
+        });
+      }
+    }),
   z.object({ kind: z.literal("export"), outputPath: z.string().optional() }).strict(),
   // Refresh mutates Pi's ModelRuntime; the catalog itself is deliberately
   // read separately after this bounded terminal outcome.
@@ -906,16 +970,6 @@ export const IntentEnvelopeSchema = z
         code: z.ZodIssueCode.custom,
         path: ["observedCursor"],
         message: "observed cursor must belong to the expected owner",
-      });
-    }
-    if (
-      envelope.intent.kind === "reload" &&
-      (envelope.intent.editorRevision === undefined) !== (envelope.intent.editorText === undefined)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["intent"],
-        message: "reload editor revision and text must be supplied together",
       });
     }
   });
@@ -1055,6 +1109,9 @@ export const InvokeCommandIntentResultSchema = z
     response: z.unknown().optional(),
   })
   .strict();
+export const PickerActionIntentResultSchema = z
+  .object({ action: z.enum(["fork", "setScopedModels", "logoutProvider"]) })
+  .strict();
 /** Public executeBash completion evidence, normalized from Pi's BashResult. */
 export const RunBashIntentResultSchema = z
   .object({
@@ -1111,7 +1168,11 @@ export const SetModelIntentResultSchema = z
 export const SetThinkingIntentResultSchema = z.object({ level: ThinkingLevelSchema }).strict();
 export const RenameIntentResultSchema = z.object({ name: z.string() }).strict();
 export const ReloadIntentResultSchema = z
-  .object({ successorIdentity: RuntimeIdentitySchema.optional() })
+  .object({
+    successorIdentity: RuntimeIdentitySchema.optional(),
+    /** Exact native editor source crossed the child clear boundary. */
+    editorSourceConsumed: z.boolean().optional(),
+  })
   .strict();
 /** The child-authoritative file produced by an export effect. */
 export const ExportIntentResultSchema = z.object({ path: z.string().min(1) }).strict();
@@ -1147,6 +1208,10 @@ export const IntentOutcomeSchema = z.discriminatedUnion("kind", [
   OutcomeBaseSchema.extend({
     kind: z.literal("invokeCommand"),
     result: InvokeCommandIntentResultSchema.optional(),
+  }).strict(),
+  OutcomeBaseSchema.extend({
+    kind: z.literal("pickerAction"),
+    result: PickerActionIntentResultSchema.optional(),
   }).strict(),
   OutcomeBaseSchema.extend({
     kind: z.literal("runBash"),

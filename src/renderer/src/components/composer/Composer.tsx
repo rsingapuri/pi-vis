@@ -461,7 +461,30 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
   // clears custody. Track renderer-originated edits separately so that
   // acknowledgement cannot be confused with newer user typing/attachments.
   const localEditGenerationRef = useRef(0);
-  const editorPatchTailRef = useRef<Promise<"accepted" | "rejected" | "failed">>(
+  // Attachment-only edits share the replicated editor revision, but they do
+  // not make an unchanged command string a successor draft. Keep a separate
+  // text lineage so a delayed picker can retire `/fork` while preserving a
+  // file attached during its query. Re-typing even identical text advances
+  // this fence and is therefore preserved as a deliberate newer draft.
+  const localTextEditGenerationRef = useRef(0);
+  // Unified source-clear receipts can arrive after the native Input view has
+  // already mounted from a stale renderer draft. Track actual user mutations
+  // separately from authority seeding so that receipt clears the old source
+  // but never an identical deliberate retype or reattachment.
+  const userTextEditGenerationRef = useRef(0);
+  const userAttachmentEditGenerationRef = useRef(0);
+  const editorSourceConsumptionRef = useRef<
+    | {
+        owner: RuntimeIdentity;
+        sourceRevision: number;
+        residualRevision: number;
+        sourceText: string;
+        sourceTextGeneration: number;
+        successorScheduled: boolean;
+      }
+    | undefined
+  >(undefined);
+  const editorPatchTailRef = useRef<Promise<"accepted" | "rejected" | "failed" | "staged">>(
     Promise.resolve("accepted"),
   );
   const editorPatchEpochRef = useRef(0);
@@ -490,6 +513,10 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
   const submissionDispositions = useSessionsStore((s) => s.submissionDispositions);
   const composerFocusRequest = useSessionsStore((s) => s.composerFocusRequest);
   const consumeComposerFocus = useSessionsStore((s) => s.consumeComposerFocus);
+  const unifiedSourceClearReceipt = session?.unifiedSourceClearReceipts?.[0];
+  const consumeUnifiedSourceClearReceipt = useSessionsStore(
+    (s) => s.consumeUnifiedSourceClearReceipt,
+  );
   const semanticSnapshot = authoritySnapshotFor(session);
   const commands = session?.commands ?? [];
   const discovered = useMemo(() => new Map(commands.map((c) => [c.name, c])), [commands]);
@@ -541,6 +568,8 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
   useEffect(() => {
     if (candidateSessionIdRef.current === sessionId) return;
     candidateSessionIdRef.current = sessionId;
+    userTextEditGenerationRef.current = 0;
+    userAttachmentEditGenerationRef.current = 0;
     authorityRebaseInFlightRef.current = false;
     pendingOrdinaryPromptRef.current = undefined;
     seededEditorOwnerRef.current = undefined;
@@ -555,6 +584,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
       : (useSessionsStore.getState().sessionDrafts.get(sessionId) ?? "");
     const restored = parseReplicatedAttachments(current?.editorAttachments ?? []);
     const replicated = serializeComposerAttachments(restored.images, restored.files);
+    localTextEditGenerationRef.current++;
     textRef.current = draft;
     replicatedAttachmentsRef.current = replicated;
     setText(draft);
@@ -605,47 +635,67 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
   }, [authoritativeEditorRevision]);
 
   const synchronizeEditorText = useCallback(
-    (nextText: string, nextAttachments = replicatedAttachmentsRef.current): number => {
+    (
+      nextText: string,
+      nextAttachments = replicatedAttachmentsRef.current,
+      options: { preserveConflicts?: boolean } = {},
+    ): number => {
       localEditGenerationRef.current++;
       const baseRevision = editorRevisionRef.current;
-      const revision = baseRevision + 1;
-      const patchEpoch = editorPatchEpochRef.current;
       const runtimeIdentity = useSessionsStore.getState().sessions.get(sessionId);
       // Stage the complete attachment candidate before checking authority so a
       // session switch cannot lose fenced attachment additions/removals.
       useSessionsStore.getState().stageEditorAttachments(sessionId, nextAttachments);
+      const sourceConsumption = editorSourceConsumptionRef.current;
+      if (sourceConsumption) sourceConsumption.successorScheduled = true;
+      const patchText =
+        sourceConsumption &&
+        localTextEditGenerationRef.current === sourceConsumption.sourceTextGeneration &&
+        nextText === sourceConsumption.sourceText
+          ? ""
+          : nextText;
+      const inheritsSourceTextOnConsumeFailure =
+        !!sourceConsumption &&
+        patchText === "" &&
+        nextText === sourceConsumption.sourceText &&
+        localTextEditGenerationRef.current === sourceConsumption.sourceTextGeneration;
+      const revision = baseRevision + 1;
+      const patchEpoch = editorPatchEpochRef.current;
       const runtimeSnapshot = authoritySnapshotFor(runtimeIdentity);
-      if (!runtimeSnapshot) {
+      const expectedOwner = runtimeSnapshot?.owner ?? sourceConsumption?.owner;
+      if (!expectedOwner) {
         // Text and attachments are one revisioned editor payload. Any edit
         // accepted while authority is fenced must be retained for rebase,
         // regardless of which UI path produced it.
         localEditAwaitingAuthorityRef.current = true;
+        const predecessor = editorPatchTailRef.current;
+        editorPatchTailRef.current = predecessor.then(
+          () => "staged",
+          () => "staged",
+        );
         return baseRevision;
       }
-      const expectedHostInstanceId = runtimeSnapshot.owner.hostInstanceId;
-      const expectedSessionEpoch = runtimeSnapshot.owner.sessionEpoch;
+      const expectedHostInstanceId = expectedOwner.hostInstanceId;
+      const expectedSessionEpoch = expectedOwner.sessionEpoch;
       editorRevisionRef.current = revision;
       useSessionsStore.getState().beginEditorPatch(sessionId);
-      editorPatchTailRef.current = editorPatchTailRef.current.then(async () => {
+      const dispatchPatch = async (): Promise<"accepted" | "rejected" | "failed"> => {
         try {
-          // A rejection fences every patch that was already queued from the
-          // rejected optimistic revision chain. Only a subsequent user edit,
-          // created in the new epoch and rebased to the host revision, may
-          // resolve the preserved conflict.
-          if (patchEpoch !== editorPatchEpochRef.current) return "rejected";
-          // A local command may synchronously replace the host (/new, reload,
-          // worktree switch) before this serialized optimistic patch reaches
-          // IPC. Silently retire that stale patch instead of invoking main
-          // against an owner that can no longer accept it.
-          const latestSnapshot = authoritySnapshotFor(
-            useSessionsStore.getState().sessions.get(sessionId),
-          );
-          if (
-            !latestSnapshot ||
-            latestSnapshot.owner.hostInstanceId !== expectedHostInstanceId ||
-            latestSnapshot.owner.sessionEpoch !== expectedSessionEpoch
-          ) {
-            return "rejected";
+          // Ordinary edits keep their renderer FIFO. A source-consume successor
+          // deliberately skips this late preflight: it is sent to main at once,
+          // where the owner-bound editor FIFO durably queues it behind consume.
+          if (!sourceConsumption) {
+            if (patchEpoch !== editorPatchEpochRef.current) return "rejected";
+            const latestSnapshot = authoritySnapshotFor(
+              useSessionsStore.getState().sessions.get(sessionId),
+            );
+            if (
+              !latestSnapshot ||
+              latestSnapshot.owner.hostInstanceId !== expectedHostInstanceId ||
+              latestSnapshot.owner.sessionEpoch !== expectedSessionEpoch
+            ) {
+              return "rejected";
+            }
           }
           const result = await window.pivis.invoke("session.editorPatch", {
             sessionId,
@@ -653,8 +703,20 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
             expectedSessionEpoch,
             baseRevision,
             revision,
-            text: nextText,
+            text: patchText,
             attachments: nextAttachments,
+            ...(options.preserveConflicts === true || sourceConsumption
+              ? { preserveConflicts: true }
+              : {}),
+            ...(sourceConsumption
+              ? {
+                  sourceConsumeRevision: sourceConsumption.sourceRevision,
+                  sourceConsumeText: sourceConsumption.sourceText,
+                  ...(inheritsSourceTextOnConsumeFailure
+                    ? { inheritsSourceTextOnConsumeFailure: true }
+                    : {}),
+                }
+              : {}),
           });
           if (patchEpoch !== editorPatchEpochRef.current) return "rejected";
           // /new and host replacement can begin in the narrow interval after
@@ -711,7 +773,12 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
         } finally {
           useSessionsStore.getState().endEditorPatch(sessionId);
         }
-      });
+      };
+      // Main owns the source-consume FIFO, so dispatch a successor immediately
+      // into process-independent custody. All other edits retain the local FIFO.
+      editorPatchTailRef.current = sourceConsumption
+        ? dispatchPatch()
+        : editorPatchTailRef.current.then(dispatchPatch, dispatchPatch);
       return revision;
     },
     [sessionId],
@@ -744,6 +811,9 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
         parsedAttachments.files,
       );
       replicatedAttachmentsRef.current = replicated;
+      localTextEditGenerationRef.current++;
+      userTextEditGenerationRef.current++;
+      userAttachmentEditGenerationRef.current++;
       setText(value);
       setAttachments(parsedAttachments.images);
       setFileAttachments(parsedAttachments.files);
@@ -832,8 +902,6 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
     }
   }, [pending, workspacePath, sessionId]);
   const editorInjectionText = session?.editorInjection?.text;
-  const editorInjectionAttachments = session?.editorInjection?.attachments;
-  const editorInjectionIsRendererOwned = editorInjectionAttachments !== undefined;
 
   const addUserMessage = useSessionsStore((s) => s.addUserMessage);
   const addToast = useSessionsStore((s) => s.addToast);
@@ -915,7 +983,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
     if (
       editorInjectionNonce === undefined ||
       editorInjectionText === undefined ||
-      (localEditAwaitingAuthorityRef.current && !editorInjectionIsRendererOwned)
+      localEditAwaitingAuthorityRef.current
     )
       return;
     const injectionKey = `${sessionId}:${editorInjectionNonce}`;
@@ -923,7 +991,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
     processedEditorInjectionRef.current = injectionKey;
 
     // An initial owner baseline can contain an empty editor injection while a
-    // renderer draft is being restored. Keep that renderer-owned draft and
+    // renderer draft already exists from a remount. Keep that unsent draft and
     // rebase it to the attached editor exactly once; this is synchronization,
     // never a submit.
     const rendererDraft =
@@ -931,6 +999,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
         ? useSessionsStore.getState().newSessionDrafts.get(workspacePathRef.current)
         : useSessionsStore.getState().sessionDrafts.get(sessionId);
     if (editorInjectionMayPreserveDraft && editorInjectionText === "" && rendererDraft) {
+      localTextEditGenerationRef.current++;
       textRef.current = rendererDraft;
       setText(rendererDraft);
       setSlashIndex(0);
@@ -945,7 +1014,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
     // Treat any single-component slash token as command text: Pi does not
     // restrict extension command names to identifier syntax. Normal absolute
     // paths such as /tmp/file.txt contain another separator and retain the
-    // existing file-tile restoration behavior.
+    // existing file-tile projection behavior.
     const slashCommandShaped = /^\/[^/\n\s]+(?:\s.*)?$/.test(editorInjectionText);
     const injectedTextIsCommand =
       slashCommandShaped ||
@@ -955,6 +1024,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
       ? undefined
       : fileAttachmentsFromEditorText(editorInjectionText);
     const nextText = injectedFiles ? "" : editorInjectionText;
+    localTextEditGenerationRef.current++;
     textRef.current = nextText;
     setText(nextText);
     // Mirror the injected text into the per-workspace draft when the session
@@ -967,52 +1037,90 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
       setSessionDraft(sessionId, nextText);
     }
     setSlashIndex(0);
-    const restored = parseReplicatedAttachments(
-      editorInjectionAttachments ??
-        useSessionsStore.getState().sessions.get(sessionId)?.editorAttachments ??
-        [],
+    const projected = parseReplicatedAttachments(
+      useSessionsStore.getState().sessions.get(sessionId)?.editorAttachments ?? [],
     );
-    const nextFileAttachments = injectedFiles ?? restored.files;
-    const replicated = serializeComposerAttachments(restored.images, nextFileAttachments);
-    // Keep the ref in lockstep with the state updates below. In particular, a
-    // restore-draft instruction may arrive before the first authority baseline;
-    // the owner-seed/rebase effects must see its complete text+attachment
-    // candidate instead of the prior empty attachment snapshot.
+    const nextFileAttachments = injectedFiles ?? projected.files;
+    const replicated = serializeComposerAttachments(projected.images, nextFileAttachments);
+    // Keep the ref in lockstep with the host editor projection so owner-seed
+    // and rebase effects see one complete text+attachment candidate.
     replicatedAttachmentsRef.current = replicated;
-    setAttachments(restored.images);
+    setAttachments(projected.images);
     setFileAttachments(nextFileAttachments);
-    if (editorInjectionIsRendererOwned) {
-      // Explicit injection attachments are renderer-owned restoration custody,
-      // not a host editor projection. Stage and reconcile that whole payload so
-      // a late initial owner cannot replace restored images with its empty
-      // baseline while the separately persisted draft text survives.
-      synchronizeEditorText(nextText, replicated);
-      const currentInjection = useSessionsStore.getState().sessions.get(sessionId)?.editorInjection;
-      if (
-        currentInjection?.nonce === editorInjectionNonce &&
-        currentInjection.attachments !== undefined
-      ) {
-        // The draft store and staged editor attachments now own the candidate;
-        // retire the transient injection so later authority frames can project
-        // normally without replaying the restoration.
-        clearEditorInjection(sessionId);
-      }
-    }
     const textarea = textareaRef.current;
     if (textarea && mayFocusComposer(textarea)) textarea.focus();
   }, [
     editorInjectionNonce,
     editorInjectionText,
     editorInjectionMayPreserveDraft,
-    editorInjectionAttachments,
-    editorInjectionIsRendererOwned,
-    clearEditorInjection,
     discovered,
     sessionId,
     synchronizeEditorText,
     setNewSessionDraft,
     setSessionDraft,
   ]);
+
+  // The Unified editor clears before emitting this receipt. If the user
+  // toggled to Input first, this mounted Composer may already have seeded the
+  // submitted renderer draft. Retire that exact mount baseline before paint,
+  // but consume the receipt without clearing whenever a user mutation won the
+  // race. Store-owned draft/attachment generations provide the same fence
+  // across remounts and preserve byte-identical successors.
+  useLayoutEffect(() => {
+    const receipt = unifiedSourceClearReceipt;
+    if (!receipt) return;
+    const store = useSessionsStore.getState();
+    const current = store.sessions.get(sessionId);
+    const persistedDraft =
+      receipt.draftScope === "workspace"
+        ? store.newSessionDrafts.get(receipt.workspacePath)
+        : store.sessionDrafts.get(sessionId);
+    const persistedDraftRevision =
+      receipt.draftScope === "workspace"
+        ? (store.newSessionDraftRevisions.get(receipt.workspacePath) ?? 0)
+        : (store.sessionDraftRevisions.get(sessionId) ?? 0);
+    const draftLineageIsSource =
+      persistedDraftRevision === receipt.draftRevision && persistedDraft === receipt.draftText;
+    const draftLineageWasRetired =
+      persistedDraftRevision === receipt.draftRevision + 1 && persistedDraft === undefined;
+    const textStillSubmittedBaseline =
+      userTextEditGenerationRef.current === 0 &&
+      textRef.current === receipt.draftText &&
+      (draftLineageIsSource || draftLineageWasRetired);
+    const attachmentLineageIsSource =
+      current?.editorAttachmentGeneration === receipt.attachmentGeneration &&
+      JSON.stringify(current.editorAttachments) === JSON.stringify(receipt.projectedAttachments);
+    const attachmentLineageWasRetired =
+      current?.editorAttachmentGeneration === receipt.attachmentGeneration + 1 &&
+      current.editorAttachments.length === 0;
+    const attachmentsStillSubmittedBaseline =
+      receipt.consumeAttachments &&
+      userAttachmentEditGenerationRef.current === 0 &&
+      JSON.stringify(replicatedAttachmentsRef.current) ===
+        JSON.stringify(receipt.projectedAttachments) &&
+      (attachmentLineageIsSource || attachmentLineageWasRetired);
+
+    if (textStillSubmittedBaseline) {
+      textRef.current = "";
+      setText("");
+      setSlashIndex(0);
+    }
+    if (attachmentsStillSubmittedBaseline) {
+      replicatedAttachmentsRef.current = [];
+      setAttachments([]);
+      setFileAttachments([]);
+    }
+    if (
+      textStillSubmittedBaseline &&
+      (!receipt.consumeAttachments || attachmentsStillSubmittedBaseline)
+    ) {
+      localEditAwaitingAuthorityRef.current = false;
+    }
+    consumeUnifiedSourceClearReceipt(sessionId, receipt.key, {
+      draft: textStillSubmittedBaseline,
+      attachments: attachmentsStillSubmittedBaseline,
+    });
+  }, [consumeUnifiedSourceClearReceipt, sessionId, unifiedSourceClearReceipt]);
 
   // Focus the composer so the user can type right away on app open, session
   // switch, and new-session — all of which mount a fresh Composer (the
@@ -1131,6 +1239,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
       }
 
       if (genericFiles.length > 0) {
+        userAttachmentEditGenerationRef.current++;
         const next = [
           ...replicatedAttachmentsRef.current,
           ...genericFiles.map((item) => ({ kind: "file" as const, ...item })),
@@ -1208,6 +1317,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
               return;
             }
             const dataUrl = reader.result as string;
+            userAttachmentEditGenerationRef.current++;
             const next = [
               ...replicatedAttachmentsRef.current,
               { kind: "image" as const, name: file.name, path, dataUrl },
@@ -1309,6 +1419,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
 
   const removeAttachment = useCallback(
     (index: number) => {
+      userAttachmentEditGenerationRef.current++;
       let imageIndex = -1;
       const next = replicatedAttachmentsRef.current.filter((item) => {
         if (item.kind !== "image") return true;
@@ -1324,6 +1435,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
 
   const removeFileAttachment = useCallback(
     (index: number) => {
+      userAttachmentEditGenerationRef.current++;
       let fileIndex = -1;
       const next = replicatedAttachmentsRef.current.filter((item) => {
         if (item.kind !== "file") return true;
@@ -1377,16 +1489,12 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
     // Discovered (prompt / extension / skill, in pi's order). pi's TUI
     // includes all of these in autocomplete too (promptTemplates +
     // getRegisteredCommands + skills), skipping only names that collide
-    // with built-ins (built-in wins for discoverability; the parser still
-    // routes the discovered one at execute time since it carries the
-    // actual extension data).
+    // with built-ins. Built-ins win in both autocomplete and execution.
     for (const c of commands) {
       if (!c.name.toLowerCase().startsWith(prefix)) continue;
       // If the same name appears as both a built-in and discovered, the
-      // built-in is the user-facing entry. The parser's shadowing rule
-      // makes the discovered one take effect at execute time (it carries
-      // the actual extension data), but the visible command is the built-in.
-      // Skip the discovered duplicate.
+      // built-in is the user-facing and executable entry. Skip the
+      // discovered duplicate so the list matches that precedence.
       if (BUILTIN_COMMANDS.some((b) => b.name === c.name)) continue;
       const badge = c.source === "skill" ? "skill" : c.source === "prompt" ? "prompt" : "extension";
       const scope =
@@ -1492,39 +1600,17 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
       const parsed = parseComposerInput(content, { discovered });
       const parsedAction = parsed.kind === "send-prompt" ? { ...parsed, deliveryMode } : parsed;
 
-      // Opening the tree is renderer-local. It is intentionally classified
-      // before every runtime/editor gate so `/tree` can always open, even while
-      // compaction, an abort, attach repair, startup, or host failure has fenced
-      // semantic authority. Tree reads/navigation apply their own owner/idle
-      // checks and show a retryable unavailable state when necessary.
-      if (parsedAction.kind === "open-tree") {
+      // Tree opening is renderer-local and must remain available while the
+      // semantic/editor planes are fenced. Without an owner there is no
+      // durable lineage against which to consume the command, so open the
+      // overlay but leave `/tree` visibly staged. A later explicit retry uses
+      // the compare-and-consume path below; presentation never disappears on
+      // evidence that could be lost across a remount or renderer reload.
+      if (
+        parsedAction.kind === "open-tree" &&
+        !hasAuthoritativeSemanticState(store.sessions.get(sessionId))
+      ) {
         void useTreeStore.getState().openTreeForSession(sessionId);
-        // Serialize a clear behind any in-flight `/tree` text patch when an
-        // owner is available. While fenced, the empty renderer draft is
-        // retained and rebased by the authority-recovery effect above.
-        localEditAwaitingAuthorityRef.current = true;
-        const clearCanEnqueue = hasAuthoritativeSemanticState(store.sessions.get(sessionId));
-        if (clearCanEnqueue) authorityRebaseInFlightRef.current = true;
-        synchronizeEditorText("", replicatedAttachmentsRef.current);
-        // With no owner, synchronizeEditorText only stages the candidate; do
-        // not mistake an older resolved patch tail for acceptance of this clear.
-        if (clearCanEnqueue) {
-          void editorPatchTailRef.current.then((result) => {
-            authorityRebaseInFlightRef.current = false;
-            if (result === "accepted" && textRef.current === "") {
-              localEditAwaitingAuthorityRef.current = false;
-            }
-          });
-        }
-        textRef.current = "";
-        setText("");
-        setSlashIndex(0);
-        const current = store.sessions.get(sessionId);
-        if (current?.isNewPending && workspacePathRef.current) {
-          store.clearNewSessionDraft(workspacePathRef.current);
-        } else {
-          store.setSessionDraft(sessionId, "");
-        }
         return;
       }
 
@@ -1778,7 +1864,8 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
           dispatchIdentity = useSessionsStore.getState().sessions.get(sessionId);
         }
         const patchOutcome = await editorPatchTailRef.current;
-        const currentDispatchIdentity = useSessionsStore.getState().sessions.get(sessionId);
+        const dispatchStore = useSessionsStore.getState();
+        const currentDispatchIdentity = dispatchStore.sessions.get(sessionId);
         if (patchOutcome !== "accepted") return;
         const dispatchSnapshot = authoritySnapshotFor(dispatchIdentity);
         const currentDispatchSnapshot = authoritySnapshotFor(currentDispatchIdentity);
@@ -1794,10 +1881,210 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
         // disposition. New typing during the round trip advances this revision
         // and is therefore never cleared by the older submit.
         const submittedEditorRevision = editorRevisionRef.current;
-        const submittedEditorInjectionNonce = session?.editorInjection?.nonce;
+        const submittedEditorInjectionNonce = currentDispatchIdentity?.editorInjection?.nonce;
         const submittedLocalText = content;
         const submittedAttachmentsKey = JSON.stringify(replicatedAttachmentsRef.current);
         const submittedLocalEditGeneration = localEditGenerationRef.current;
+        const submittedTextEditGeneration = localTextEditGenerationRef.current;
+        const submittedDraftScope = isNewSessionPending(currentDispatchIdentity)
+          ? "workspace"
+          : "session";
+        const submittedWorkspacePath = currentDispatchIdentity?.workspacePath ?? workspacePath;
+        const submittedDraftRevision =
+          submittedDraftScope === "workspace" && submittedWorkspacePath
+            ? (dispatchStore.newSessionDraftRevisions.get(submittedWorkspacePath) ?? 0)
+            : (dispatchStore.sessionDraftRevisions.get(sessionId) ?? 0);
+        let sourceClearCommitted = false;
+        let sourceClearRefused = false;
+
+        const awaitLatestEditorPatch = async (): Promise<
+          "accepted" | "rejected" | "failed" | "staged"
+        > => {
+          for (;;) {
+            const flight = editorPatchTailRef.current;
+            const result = await flight;
+            if (flight === editorPatchTailRef.current) return result;
+          }
+        };
+
+        const clearExactLocalPresentation = (clearPromptAttachments: boolean): void => {
+          if (
+            localTextEditGenerationRef.current !== submittedTextEditGeneration ||
+            (textRef.current !== submittedLocalText && textRef.current !== "")
+          ) {
+            return;
+          }
+          textRef.current = "";
+          if (mountedRef.current && renderedSessionIdRef.current === sessionId) setText("");
+          setSlashIndex(0);
+          if (
+            clearPromptAttachments &&
+            localEditGenerationRef.current === submittedLocalEditGeneration &&
+            JSON.stringify(replicatedAttachmentsRef.current) === submittedAttachmentsKey
+          ) {
+            replicatedAttachmentsRef.current = [];
+            if (mountedRef.current && renderedSessionIdRef.current === sessionId) {
+              setAttachments([]);
+              setFileAttachments([]);
+            }
+          }
+          const store = useSessionsStore.getState();
+          if (
+            submittedDraftScope === "workspace" &&
+            submittedWorkspacePath &&
+            store.newSessionDraftRevisions.get(submittedWorkspacePath) === submittedDraftRevision &&
+            store.newSessionDrafts.get(submittedWorkspacePath) === submittedLocalText
+          ) {
+            store.clearNewSessionDraft(submittedWorkspacePath);
+          } else if (
+            submittedDraftScope === "session" &&
+            store.sessionDraftRevisions.get(sessionId) === submittedDraftRevision &&
+            store.sessionDrafts.get(sessionId) === submittedLocalText
+          ) {
+            store.setSessionDraft(sessionId, "");
+          }
+          const injection = store.sessions.get(sessionId)?.editorInjection;
+          if (injection?.nonce === submittedEditorInjectionNonce) {
+            store.clearEditorInjection(sessionId);
+          }
+        };
+
+        const commitSubmittedSourceClear = async (
+          consumeInHost: boolean,
+          clearPromptAttachments = false,
+        ): Promise<boolean> => {
+          if (sourceClearCommitted) return true;
+          if (sourceClearRefused) return false;
+
+          // A successor that already reached the editor before this command's
+          // async query completed owns presentation. Do not erase it, and do
+          // not open a replacement UI until its latest patch is durable.
+          if (
+            textRef.current !== submittedLocalText ||
+            localTextEditGenerationRef.current !== submittedTextEditGeneration
+          ) {
+            if ((await awaitLatestEditorPatch()) !== "accepted") {
+              sourceClearRefused = true;
+              return false;
+            }
+            sourceClearCommitted = true;
+            return true;
+          }
+
+          if (consumeInHost) {
+            if ((await awaitLatestEditorPatch()) !== "accepted") {
+              sourceClearRefused = true;
+              return false;
+            }
+            // A user edit can land while the predecessor patch is settling.
+            // That accepted successor already replaced the submitted command
+            // in host authority, so no second source-consume operation applies.
+            if (
+              textRef.current !== submittedLocalText ||
+              localTextEditGenerationRef.current !== submittedTextEditGeneration
+            ) {
+              if ((await awaitLatestEditorPatch()) !== "accepted") {
+                sourceClearRefused = true;
+                return false;
+              }
+              sourceClearCommitted = true;
+              return true;
+            }
+            const currentOwner = authoritySnapshotFor(
+              useSessionsStore.getState().sessions.get(sessionId),
+            )?.owner;
+            if (!currentOwner || !runtimeIdentityMatches(currentOwner, dispatchSnapshot.owner)) {
+              sourceClearRefused = true;
+              return false;
+            }
+            const sourceRevision = editorRevisionRef.current;
+            const residualRevision = sourceRevision + 1;
+            editorSourceConsumptionRef.current = {
+              owner: currentOwner,
+              sourceRevision,
+              residualRevision,
+              sourceText: submittedLocalText,
+              sourceTextGeneration: submittedTextEditGeneration,
+              successorScheduled: false,
+            };
+            // Reserve the compare-and-consume revision synchronously. Input
+            // handlers can now issue successor patches immediately; main queues
+            // them behind this consume request and owns them across unmounts.
+            editorRevisionRef.current = residualRevision;
+            useSessionsStore.getState().beginEditorPatch(sessionId);
+            let result: Awaited<
+              ReturnType<typeof window.pivis.invoke<"session.consumeEditorSource">>
+            >;
+            try {
+              result = await window.pivis.invoke("session.consumeEditorSource", {
+                sessionId,
+                expectedHostInstanceId: currentOwner.hostInstanceId,
+                expectedSessionEpoch: currentOwner.sessionEpoch,
+                editorRevision: sourceRevision,
+                editorText: submittedLocalText,
+                ...(clearPromptAttachments ? { consumeAttachments: true } : {}),
+              });
+            } catch (error) {
+              const hadSuccessor = editorSourceConsumptionRef.current?.successorScheduled === true;
+              editorSourceConsumptionRef.current = undefined;
+              if (hadSuccessor) {
+                await awaitLatestEditorPatch();
+                localEditAwaitingAuthorityRef.current = true;
+              } else {
+                editorRevisionRef.current = sourceRevision;
+              }
+              sourceClearRefused = true;
+              throw error;
+            } finally {
+              useSessionsStore.getState().endEditorPatch(sessionId);
+            }
+            const hadSuccessor = editorSourceConsumptionRef.current?.successorScheduled === true;
+            editorSourceConsumptionRef.current = undefined;
+            if (!result.accepted) {
+              if (hadSuccessor) {
+                await awaitLatestEditorPatch();
+                localEditAwaitingAuthorityRef.current = true;
+              } else {
+                editorRevisionRef.current = sourceRevision;
+              }
+              sourceClearRefused = true;
+              return false;
+            }
+            editorRevisionRef.current = Math.max(editorRevisionRef.current, result.editor.revision);
+            if (hadSuccessor && (await awaitLatestEditorPatch()) !== "accepted") {
+              localEditAwaitingAuthorityRef.current = true;
+              sourceClearRefused = true;
+              return false;
+            }
+          }
+
+          const successorText =
+            localTextEditGenerationRef.current !== submittedTextEditGeneration ||
+            (textRef.current !== submittedLocalText && textRef.current !== "");
+          if (!successorText) clearExactLocalPresentation(clearPromptAttachments);
+
+          sourceClearCommitted = true;
+          return true;
+        };
+
+        let sourceClearFlight: Promise<boolean> | undefined;
+        let pendingSourceAction: (() => void | Promise<void>) | undefined;
+        let sourceActionRan = false;
+        const runPendingSourceAction = async (): Promise<void> => {
+          if (sourceActionRan || !pendingSourceAction) return;
+          if (!mountedRef.current || renderedSessionIdRef.current !== sessionId) return;
+          sourceActionRan = true;
+          await pendingSourceAction();
+        };
+        const openAfterSourceClear = (open: () => void): void => {
+          pendingSourceAction = open;
+          const flight = commitSubmittedSourceClear(true).then(async (committed) => {
+            if (committed) await runPendingSourceAction();
+            return committed;
+          });
+          sourceClearFlight = flight;
+          void flight;
+        };
 
         const intentObservation = (sid: SessionId) => {
           const runtime = useSessionsStore.getState().sessions.get(sid);
@@ -1836,49 +2123,21 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
                 return;
               }
               const runtime = useSessionsStore.getState().sessions.get(sid);
+              const projection = runtime?.authorityProjection;
+              const snapshot = authoritySnapshotFor(runtime);
               if (
-                !runtime?.hostInstanceId ||
-                runtime.hostInstanceId !== owner.hostInstanceId ||
-                runtime.sessionEpoch !== owner.sessionEpoch
+                projection?.semantic.state !== "following" ||
+                !snapshot ||
+                !runtime ||
+                runtime.availability !== "available" ||
+                snapshot.owner.hostInstanceId !== owner.hostInstanceId ||
+                snapshot.owner.sessionEpoch !== owner.sessionEpoch
               ) {
                 unsubscribe();
                 reject(new InputNotConsumedError("Session changed before intent outcome"));
               }
             });
           });
-        };
-        // Admission proves the child owns the command, so its stale text can
-        // clear immediately (notably long-running /compact). A later failed
-        // outcome is a domain error the user already sees in the transcript
-        // and toasts; the command text is deliberately not re-injected.
-        const clearOnAdmission = (intent: SessionIntent) => {
-          if (
-            !["compact", "export", "reload", "rename", "setModel", "runBash", "navigate"].includes(
-              intent.kind,
-            ) ||
-            !mountedRef.current ||
-            renderedSessionIdRef.current !== sessionId ||
-            textRef.current !== submittedLocalText ||
-            localEditGenerationRef.current !== submittedLocalEditGeneration
-          ) {
-            return;
-          }
-          // runBash admission already consumed this exact text in SDK-host
-          // editor authority while preserving staged attachments. Sending a
-          // second empty patch from the renderer would target the advanced
-          // revision and manufacture an empty conflict candidate.
-          if (intent.kind !== "runBash") {
-            synchronizeEditorText("", replicatedAttachmentsRef.current);
-          }
-          textRef.current = "";
-          setText("");
-          setSlashIndex(0);
-          const current = useSessionsStore.getState().sessions.get(sessionId);
-          if (current?.isNewPending && workspacePathRef.current) {
-            useSessionsStore.getState().clearNewSessionDraft(workspacePathRef.current);
-          } else {
-            useSessionsStore.getState().setSessionDraft(sessionId, "");
-          }
         };
         const deps = {
           // Register before dispatch: main can forward a correlated admission
@@ -1909,9 +2168,13 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
                     intentId,
                     owner: dispatchSnapshot.owner,
                     editorRevision: submittedEditorRevision,
-                    draftScope: pending ? "workspace" : "session",
+                    draftScope: submittedDraftScope,
                     composerText: submittedLocalText,
                     composerAttachments: replicatedAttachmentsRef.current,
+                    consumeComposerAttachments: isRealPrompt,
+                    ...(submittedEditorInjectionNonce !== undefined
+                      ? { editorInjectionNonce: submittedEditorInjectionNonce }
+                      : {}),
                     submittedText: finalAction.text,
                     submittedComments: isRealPrompt ? pendingDiffComments : [],
                   });
@@ -1951,7 +2214,20 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
                 }),
               }
             : {}),
-          onAdmitted: (_sid: SessionId, intent: SessionIntent) => clearOnAdmission(intent),
+          onAdmitted: async (_sid: SessionId, intent: SessionIntent) => {
+            // A Shell Turn receipt is withheld until child editor consumption
+            // and its clear event. Source-independent command intents instead
+            // commit an accepted empty editor patch before their long terminal
+            // work continues. Submit/invoke/reload keep their source until the
+            // child-specific admission/transition boundary.
+            if (intent.kind === "runBash") {
+              await commitSubmittedSourceClear(false);
+            } else if (
+              ["compact", "export", "rename", "setModel", "navigate"].includes(intent.kind)
+            ) {
+              await commitSubmittedSourceClear(true);
+            }
+          },
           uiSurface: "composer" as const,
           invoke: async <T = unknown>(channel: string, payload: unknown) =>
             window.pivis.invoke(
@@ -1966,20 +2242,32 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
             opts?: { registerEcho?: boolean; afterUserMessageSequence?: number; intentId?: string },
           ) => addUserMessage(sid, message, images, { ...opts, clearDraft: false }),
           addCustomMessage,
-          openChangelog: (markdown: string) => useChangelogStore.getState().openChangelog(markdown),
+          openChangelog: (markdown: string) =>
+            openAfterSourceClear(() => useChangelogStore.getState().openChangelog(markdown)),
           openPicker: (sid: SessionId, picker: PickerRequest) =>
-            openPicker(sid, {
-              ...picker,
-              expectedHostInstanceId: dispatchSnapshot.owner.hostInstanceId,
-              expectedSessionEpoch: dispatchSnapshot.owner.sessionEpoch,
-            }),
-          closeSessionTab: async (sid: SessionId) => closeSessionTab(sid),
-          openAppSettings: () => window.dispatchEvent(new CustomEvent("pivis:open-settings")),
-          openDiffViewer: (sid: SessionId) => openDiffForSession(sid),
-          openTreeViewer: (sid: SessionId) => {
-            void useTreeStore.getState().openTreeForSession(sid);
+            openAfterSourceClear(() =>
+              openPicker(sid, {
+                ...picker,
+                expectedHostInstanceId: dispatchSnapshot.owner.hostInstanceId,
+                expectedSessionEpoch: dispatchSnapshot.owner.sessionEpoch,
+              }),
+            ),
+          closeSessionTab: async (sid: SessionId) => {
+            pendingSourceAction = () => closeSessionTab(sid);
+            if (await commitSubmittedSourceClear(true)) await runPendingSourceAction();
           },
-          openLogin: () => window.dispatchEvent(new CustomEvent("pivis:open-login")),
+          openAppSettings: () =>
+            openAfterSourceClear(() =>
+              window.dispatchEvent(new CustomEvent("pivis:open-settings")),
+            ),
+          openDiffViewer: (sid: SessionId) => openAfterSourceClear(() => openDiffForSession(sid)),
+          openTreeViewer: (sid: SessionId) => {
+            openAfterSourceClear(() => {
+              void useTreeStore.getState().openTreeForSession(sid);
+            });
+          },
+          openLogin: () =>
+            openAfterSourceClear(() => window.dispatchEvent(new CustomEvent("pivis:open-login"))),
           copyToClipboard: async (t: string) => {
             await window.pivis.invoke("clipboard.writeText", { text: t });
           },
@@ -1992,14 +2280,10 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
         };
 
         const completion = await executeAction(sessionId, finalAction, deps);
-        const currentSession = useSessionsStore.getState().sessions.get(sessionId);
-        const originatingComposerStillMounted =
-          mountedRef.current && renderedSessionIdRef.current === sessionId;
-        const currentAttachmentsKey = JSON.stringify(replicatedAttachmentsRef.current);
-        const localPayloadUnchanged =
-          localEditGenerationRef.current === submittedLocalEditGeneration &&
-          textRef.current === submittedLocalText &&
-          currentAttachmentsKey === submittedAttachmentsKey;
+        // UI-opening callbacks commit and persist the exact clear before they
+        // replace Composer. Await that short flight even though ExecuteDeps
+        // keeps those callbacks synchronous for the shared executor.
+        if (sourceClearFlight) await sourceClearFlight;
         // Receipt admission never reaches this branch: executeAction returns
         // only after the semantic authority projection published a terminal
         // outcome. Unknown/cancelled/rejected work remains in editor custody.
@@ -2013,8 +2297,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
               completion.outcome.result?.disposition ?? "",
             )) ||
             completion?.outcome.kind === "invokeCommand");
-        const acceptedPromptCanClear =
-          acceptedPromptOutcome && originatingComposerStillMounted && localPayloadUnchanged;
+        const acceptedPromptCanClear = acceptedPromptOutcome;
         // Local UI commands (for example /tree) settle synchronously and have
         // no intent completion, so clear their stale command text once the UI
         // opens. `/name` without an argument is different: it is a read-only
@@ -2022,34 +2305,28 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
         // for the user to enter a value.
         const preservesReadOnlyNamePrefix =
           finalAction.kind === "name" && finalAction.name === undefined;
+        const reloadSourceWasConsumed =
+          finalAction.kind !== "reload" ||
+          (completion?.outcome.kind === "reload" &&
+            completion.outcome.result?.editorSourceConsumed === true);
         const completedCommandCanClear =
           finalAction.kind !== "send-prompt" &&
           finalAction.kind !== "unsupported" &&
           !preservesReadOnlyNamePrefix &&
-          (completion === undefined || terminalOutcome) &&
-          originatingComposerStillMounted &&
-          localPayloadUnchanged;
+          reloadSourceWasConsumed &&
+          (completion === undefined || terminalOutcome);
         if (acceptedPromptCanClear || completedCommandCanClear) {
-          if (completedCommandCanClear || !isRealPrompt) {
-            synchronizeEditorText("", replicatedAttachmentsRef.current);
-          }
-          textRef.current = "";
-          setText("");
-          if (isRealPrompt) {
-            setAttachments([]);
-            setFileAttachments([]);
-            replicatedAttachmentsRef.current = [];
-          }
-          setSlashIndex(0);
-          const stillPending = !!useSessionsStore.getState().sessions.get(sessionId)?.isNewPending;
-          if (stillPending && workspacePathRef.current) {
-            useSessionsStore.getState().clearNewSessionDraft(workspacePathRef.current);
-          } else {
-            useSessionsStore.getState().setSessionDraft(sessionId, "");
-          }
-          const injection = currentSession?.editorInjection;
-          if (injection?.nonce === submittedEditorInjectionNonce) {
-            useSessionsStore.getState().clearEditorInjection(sessionId);
+          // Accepted prompt/reload/invoke and Shell Turn paths clear in child
+          // authority first. Other completed local/query commands need one
+          // accepted empty editor patch before presentation can disappear.
+          const childOwnsClear =
+            acceptedPromptCanClear ||
+            finalAction.kind === "bash" ||
+            finalAction.kind === "reload" ||
+            finalAction.kind === "new-session" ||
+            finalAction.kind === "clone";
+          if (await commitSubmittedSourceClear(!childOwnsClear, isRealPrompt)) {
+            await runPendingSourceAction();
           }
         }
         // Diff comments have their own stable revision fence. A concurrent
@@ -2072,8 +2349,8 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
       text,
       discovered,
       session,
-      pending,
       sessionId,
+      workspacePath,
       addToast,
       addUserMessage,
       addCustomMessage,
@@ -2125,6 +2402,8 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
             // Built-ins that take args get a trailing space to invite the
             // user to type the argument. Arg-less ones don't.
             const v = completionFor(chosen);
+            localTextEditGenerationRef.current++;
+            userTextEditGenerationRef.current++;
             textRef.current = v;
             setText(v);
             synchronizeEditorText(v);
@@ -2153,6 +2432,8 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
           const chosen = suggestions[slashIndex];
           if (chosen) {
             const completed = completionFor(chosen);
+            localTextEditGenerationRef.current++;
+            userTextEditGenerationRef.current++;
             textRef.current = completed;
             setText(completed);
             synchronizeEditorText(completed);
@@ -2207,6 +2488,8 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const v = e.target.value;
+      localTextEditGenerationRef.current++;
+      userTextEditGenerationRef.current++;
       textRef.current = v;
       setText(v);
       setTextareaSelection({
@@ -2221,7 +2504,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
       else setSessionDraft(sessionId, v);
       // Consume any pending editor injection — the user has taken over the
       // textarea, so a stale injection must not re-fire on remount and
-      // clobber the restored draft. No-op once cleared (subsequent
+      // clobber the user's current draft. No-op once cleared (subsequent
       // keystrokes skip the store read-and-write).
       if (useSessionsStore.getState().sessions.get(sessionId)?.editorInjection !== undefined) {
         clearEditorInjection(sessionId);
@@ -2255,6 +2538,8 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
   const handleSuggestionClick = useCallback(
     (entry: SuggestionEntry) => {
       const v = completionFor(entry);
+      localTextEditGenerationRef.current++;
+      userTextEditGenerationRef.current++;
       textRef.current = v;
       setText(v);
       synchronizeEditorText(v);

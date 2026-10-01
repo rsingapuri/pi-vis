@@ -1,7 +1,8 @@
 /**
  * Opt-in E2E: real extension panel rendering.
  *
- * Requires a real pi installation and pi-mcp-adapter.
+ * Uses the repository-pinned Pi runtime and requires the pi-mcp-adapter
+ * extension in the active Pi agent directory.
  * Run with: PI_E2E=1 npm run test:e2e -- --grep "Panel"
  */
 
@@ -23,7 +24,6 @@ test.describe("Extension Panel Rendering (real pi)", () => {
     fs.writeFileSync(
       join(settingsDir, "settings.json"),
       JSON.stringify({
-        piBinaryPath: "pi",
         workspaceOrder: [workspaceDir],
         fonts: {
           display: { sizePx: 14 },

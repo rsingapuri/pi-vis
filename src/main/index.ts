@@ -14,6 +14,7 @@ import {
   configureDiagnosticLogging,
   installMainProcessDiagnosticHandlers,
 } from "./diagnostics.js";
+import { handleRendererNavigation, handleWindowOpen } from "./external-navigation.js";
 import {
   initIpc,
   refreshBackgroundUpdateChecks,
@@ -57,10 +58,8 @@ app.setName("Pi-Vis");
 
 const hideWindowForTests = process.env["PIVIS_TEST_HIDE_WINDOW"] === "1";
 
-function openExternalLink(url: string): void {
-  void shell.openExternal(url).catch((error) => {
-    console.error("Failed to open external link:", error);
-  });
+function reportExternalLinkFailure(error: unknown): void {
+  console.error("Failed to open external link:", error);
 }
 
 function logRendererRecovery(diagnostic: RendererRecoveryDiagnostic): void {
@@ -234,19 +233,21 @@ if (!hasSingleInstanceLock) {
 
     // External links open in the OS browser; never open new Electron windows.
     win.webContents.setWindowOpenHandler(({ url }) => {
-      if (url.startsWith("http://") || url.startsWith("https://")) {
-        openExternalLink(url);
-      }
-      return { action: "deny" };
+      return handleWindowOpen(
+        url,
+        (target) => shell.openExternal(target),
+        reportExternalLinkFailure,
+      );
     });
     // Prevent the app window from ever navigating away from the renderer.
     win.webContents.on("will-navigate", (event, url) => {
-      if (url !== win.webContents.getURL()) {
-        event.preventDefault();
-        if (url.startsWith("http://") || url.startsWith("https://")) {
-          openExternalLink(url);
-        }
-      }
+      handleRendererNavigation(
+        event,
+        url,
+        win.webContents.getURL(),
+        (target) => shell.openExternal(target),
+        reportExternalLinkFailure,
+      );
     });
 
     const sendFullscreen = (): void => {

@@ -23,6 +23,7 @@ export interface CodeComment {
 
 export const DIFF_COMMENTS_STORAGE_KEY = "pivis.diffComments.v2";
 export const DIFF_COMMENTS_SESSION_STORAGE_KEY = "pivis.diffComments.v1";
+export const UNIFIED_COMMENT_CUSTODY_STORAGE_KEY = "pivis.unifiedCommentCustody.v1";
 
 export function codeCommentKey(filePath: string, lineNumber: number): string {
   return `${filePath}\u0000${lineNumber}`;
@@ -181,5 +182,53 @@ export function persistCodeComments(
     }
   } catch {
     // Best-effort durable renderer persistence; in-memory state remains authoritative.
+  }
+}
+
+/**
+ * Process-independent custody for comments already attached to a visually
+ * cleared Unified submission. This is intentionally separate from active diff
+ * comments: a renderer reload may replay the pending request, but must neither
+ * lose its exact comment revisions nor put them back into the Composer.
+ */
+export function loadUnifiedCommentCustodies(): Map<string, readonly CodeComment[]> {
+  const out = new Map<string, readonly CodeComment[]>();
+  const local = storageArea("local");
+  try {
+    const parsed = JSON.parse(
+      local?.getItem(UNIFIED_COMMENT_CUSTODY_STORAGE_KEY) ?? "{}",
+    ) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return out;
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!Array.isArray(value)) continue;
+      const comments = value
+        .map((comment) => parsePersistedComment(comment))
+        .filter((comment): comment is CodeComment => comment !== null);
+      // Empty arrays are durable tombstones: duplicate delivery must not
+      // capture comments added after the original request.
+      out.set(key, comments);
+    }
+  } catch {
+    return out;
+  }
+  return out;
+}
+
+export function persistUnifiedCommentCustodies(
+  custodies: ReadonlyMap<string, readonly CodeComment[]>,
+): boolean {
+  const local = storageArea("local");
+  if (!local) return false;
+  const persisted: Record<string, readonly CodeComment[]> = {};
+  for (const [key, comments] of custodies) persisted[key] = comments;
+  try {
+    if (Object.keys(persisted).length === 0) {
+      local.removeItem(UNIFIED_COMMENT_CUSTODY_STORAGE_KEY);
+    } else {
+      local.setItem(UNIFIED_COMMENT_CUSTODY_STORAGE_KEY, JSON.stringify(persisted));
+    }
+    return true;
+  } catch {
+    return false;
   }
 }

@@ -90,11 +90,32 @@ function setup(sessionOverrides = {}, options = {}) {
   const sendControl = vi.fn();
   const sendRecord = vi.fn();
   let editor = { revision: 1, text: "draft" };
+  const getEditor = options.getEditor ?? (() => editor);
+  const acceptEditorSubmission = vi.fn((request) => {
+    const current = getEditor() ?? {};
+    return request.editorRevision === current.revision;
+  });
   const acceptShellEditorSubmission = vi.fn((request) => {
-    if (request.editorRevision !== editor.revision || request.editorText !== editor.text) {
+    const current = getEditor() ?? {};
+    if (request.editorRevision !== current.revision || request.editorText !== current.text) {
       return false;
     }
-    editor = { ...editor, revision: editor.revision + 1, text: "" };
+    editor = { ...current, revision: current.revision + 1, text: "" };
+    return true;
+  });
+  const publishShellEditorSubmission = vi.fn((request) => {
+    const current = getEditor() ?? {};
+    return current.revision === request.editorRevision + 1 && current.text === "";
+  });
+  const rollbackShellEditorSubmission = vi.fn((request) => {
+    if (request.surface === "unified") return true;
+    const current = getEditor() ?? {};
+    if (current.revision !== request.editorRevision + 1 || current.text !== "") return false;
+    editor = {
+      ...current,
+      revision: request.editorRevision,
+      text: request.editorText,
+    };
     return true;
   });
   const authority = createStateAuthority({
@@ -103,8 +124,11 @@ function setup(sessionOverrides = {}, options = {}) {
     sendControl,
     sendRecord,
     getCatalog: () => ({ pendingDialogs: 3 }),
-    getEditor: () => editor,
+    getEditor,
+    acceptEditorSubmission,
     acceptShellEditorSubmission,
+    publishShellEditorSubmission,
+    rollbackShellEditorSubmission,
     ...options,
   });
   return {
@@ -112,7 +136,10 @@ function setup(sessionOverrides = {}, options = {}) {
     authority,
     sendControl,
     sendRecord,
+    acceptEditorSubmission,
     acceptShellEditorSubmission,
+    publishShellEditorSubmission,
+    rollbackShellEditorSubmission,
     setEditor(value) {
       editor = value;
     },
@@ -2866,6 +2893,61 @@ describe("state authority", () => {
     expect(session.prompt).not.toHaveBeenCalled();
   });
 
+  it("admits an early-cleared Unified source by its immutable pending identity", async () => {
+    const inspectEditorSubmission = vi.fn((request) =>
+      request.surface === "unified" &&
+      request.intentId === "unified-source" &&
+      request.editorRevision === 1
+        ? { accepted: true, text: "review these files" }
+        : { accepted: false },
+    );
+    const acceptEditorSubmission = vi.fn(() => true);
+    const { authority, session, setEditor } = setup(
+      {},
+      { inspectEditorSubmission, acceptEditorSubmission },
+    );
+    // Pi's editor has already committed its visual clear and advanced while
+    // the renderer transforms the frozen source for transport.
+    setEditor({ revision: 2, text: "", attachments: [] });
+
+    await expect(
+      authority.submit(
+        makeRequest("unified-source", {
+          surface: "unified",
+          editorRevision: 1,
+          text: "/tmp/notes.txt\n\nreview these files",
+          inputKind: "ordinary",
+        }),
+      ),
+    ).resolves.toMatchObject({ disposition: "consumed" });
+
+    expect(session.prompt).toHaveBeenCalledWith(
+      "/tmp/notes.txt\n\nreview these files",
+      expect.any(Object),
+    );
+    expect(acceptEditorSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({ intentId: "unified-source", editorRevision: 1 }),
+    );
+  });
+
+  it("rejects a forged Unified source before any Pi prompt side effect", async () => {
+    const inspectEditorSubmission = vi.fn(() => ({ accepted: false }));
+    const { authority, session, setEditor } = setup({}, { inspectEditorSubmission });
+    setEditor({ revision: 2, text: "newer draft", attachments: [] });
+
+    await expect(
+      authority.submit(
+        makeRequest("missing-unified-source", {
+          surface: "unified",
+          editorRevision: 1,
+          text: "forged text",
+          inputKind: "ordinary",
+        }),
+      ),
+    ).resolves.toMatchObject({ disposition: "not_submitted" });
+    expect(session.prompt).not.toHaveBeenCalled();
+  });
+
   it("commits initial binding records with one terminal snapshot without partial control", () => {
     const { authority, sendControl } = setup();
     authority.beginTransition(0, false);
@@ -3036,8 +3118,9 @@ describe("state authority", () => {
 
   it("keeps a delayed predecessor terminal outcome out of a valid successor frame", async () => {
     const sendFrame = vi.fn();
-    const { authority } = setup({}, { sendFrame });
+    const { authority, setEditor } = setup({}, { sendFrame });
     const owner = { hostInstanceId: "host-1", sessionEpoch: 0 };
+    setEditor({ revision: 1, text: "/new", attachments: [] });
 
     await authority.dispatchIntent(
       {
@@ -3608,6 +3691,141 @@ describe("state authority", () => {
     expect(session.prompt).toHaveBeenCalledTimes(1);
   });
 
+  it("exact-binds and preclaims Unified slash source before any command effect", async () => {
+    let accepted = false;
+    const acceptEditorSubmission = vi.fn((request) => {
+      if (request.intentId !== "slash-source" || request.text !== "/safe" || accepted) return false;
+      accepted = true;
+      return true;
+    });
+    const { authority } = setup(
+      {},
+      {
+        inspectEditorSubmission: (request) =>
+          request.intentId === "slash-source" && !accepted
+            ? { accepted: true, text: "/safe" }
+            : { accepted: false },
+        acceptEditorSubmission,
+      },
+    );
+    const owner = { hostInstanceId: "host-1", sessionEpoch: 0 };
+    const effect = vi.fn(async () => ({ response: { ok: true } }));
+
+    await expect(
+      authority.dispatchIntent(
+        {
+          intentId: "slash-source",
+          expectedOwner: owner,
+          intent: {
+            kind: "invokeCommand",
+            text: "/different-effect",
+            editorRevision: 4,
+            surface: "unified",
+          },
+        },
+        effect,
+      ),
+    ).resolves.toMatchObject({ status: "not_admitted", reason: "stale_editor" });
+    expect(effect).not.toHaveBeenCalled();
+    expect(acceptEditorSubmission).not.toHaveBeenCalled();
+
+    await expect(
+      authority.dispatchIntent(
+        {
+          intentId: "slash-source",
+          expectedOwner: owner,
+          intent: {
+            kind: "invokeCommand",
+            text: "/safe",
+            editorRevision: 4,
+            surface: "unified",
+          },
+        },
+        effect,
+      ),
+    ).resolves.toMatchObject({ status: "admitted" });
+    expect(acceptEditorSubmission).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(effect).toHaveBeenCalledOnce());
+  });
+
+  it("admits one bounded picker continuation without granting arbitrary empty-editor slash text", async () => {
+    const { authority, setEditor, acceptEditorSubmission } = setup();
+    const owner = { hostInstanceId: "host-1", sessionEpoch: 0 };
+    setEditor({ revision: 5, text: "", attachments: [] });
+    const effect = vi.fn(async (intent) => ({ action: intent.selection.action }));
+    const pickerEnvelope = {
+      intentId: "fork-picker-continuation",
+      expectedOwner: owner,
+      intent: {
+        kind: "pickerAction",
+        selection: { action: "fork", entryId: "entry-a" },
+        surface: "composer",
+      },
+    };
+
+    await expect(authority.dispatchIntent(pickerEnvelope, effect)).resolves.toMatchObject({
+      status: "admitted",
+    });
+    await expect(authority.dispatchIntent(pickerEnvelope, effect)).resolves.toMatchObject({
+      status: "duplicate",
+    });
+    await vi.waitFor(() => expect(effect).toHaveBeenCalledOnce());
+    expect(acceptEditorSubmission).not.toHaveBeenCalled();
+
+    await expect(
+      authority.dispatchIntent(
+        {
+          intentId: "ungranted-empty-editor-slash",
+          expectedOwner: owner,
+          intent: {
+            kind: "invokeCommand",
+            text: "/fork entry-a",
+            editorRevision: 5,
+          },
+        },
+        vi.fn(),
+      ),
+    ).resolves.toMatchObject({ status: "not_admitted", reason: "stale_editor" });
+  });
+
+  it("preclaims a cleared Unified reload source before scheduling reload", async () => {
+    let accepted = false;
+    const effect = vi.fn(async () => ({
+      successorIdentity: { hostInstanceId: "host-1", sessionEpoch: 1 },
+    }));
+    const { authority } = setup(
+      {},
+      {
+        inspectEditorSubmission: (request) =>
+          request.intentId === "reload-source" && !accepted
+            ? { accepted: true, text: "/reload" }
+            : { accepted: false },
+        acceptEditorSubmission: vi.fn(() => {
+          accepted = true;
+          return true;
+        }),
+      },
+    );
+
+    await expect(
+      authority.dispatchIntent(
+        {
+          intentId: "reload-source",
+          expectedOwner: { hostInstanceId: "host-1", sessionEpoch: 0 },
+          intent: {
+            kind: "reload",
+            editorRevision: 9,
+            editorText: "/reload",
+            surface: "unified",
+          },
+        },
+        effect,
+      ),
+    ).resolves.toMatchObject({ status: "admitted" });
+    expect(accepted).toBe(true);
+    await vi.waitFor(() => expect(effect).toHaveBeenCalledOnce());
+  });
+
   it("records dispatch admission before Pi, retains outcomes, and separates receipt from settlement", async () => {
     const gate = deferred();
     const { authority, sendRecord, setEditor } = setup();
@@ -3674,7 +3892,8 @@ describe("state authority", () => {
 
   it("consumes an admitted shell draft in authority while preserving staged context across reattach", async () => {
     const terminal = deferred();
-    const { authority, setEditor, acceptShellEditorSubmission } = setup();
+    const { authority, setEditor, acceptShellEditorSubmission, publishShellEditorSubmission } =
+      setup();
     const attachments = [{ kind: "file", name: "notes.txt", path: "/tmp/notes.txt" }];
     setEditor({
       revision: 1,
@@ -3706,6 +3925,14 @@ describe("state authority", () => {
       intentId: "authority-owned-shell",
       editorRevision: 1,
       editorText: "!read answer",
+      surface: undefined,
+      deferClearEvidence: true,
+    });
+    expect(publishShellEditorSubmission).toHaveBeenCalledWith({
+      intentId: "authority-owned-shell",
+      editorRevision: 1,
+      editorText: "!read answer",
+      surface: undefined,
     });
     expect(authority.semanticSnapshot().editor).toMatchObject({
       revision: 2,
@@ -3743,8 +3970,7 @@ describe("state authority", () => {
     await flush();
   });
 
-  it("keeps a durably started shell visible and reports bounded custody failure", async () => {
-    const terminal = deferred();
+  it("fails closed before shell start when its exact editor source cannot be consumed", async () => {
     const acceptShellEditorSubmission = vi.fn(() => false);
     const { authority, setEditor } = setup({}, { acceptShellEditorSubmission });
     setEditor({ revision: 1, text: "!pwd", attachments: [] });
@@ -3753,24 +3979,73 @@ describe("state authority", () => {
       expectedOwner: { hostInstanceId: "host-1", sessionEpoch: 0 },
       intent: shellIntent("pwd"),
     };
-    const execute = vi.fn(() => ({ deferredOutcome: terminal.promise }));
+    const startShell = vi.fn(() => ({
+      deferredOutcome: Promise.resolve({ output: "", exitCode: 0 }),
+    }));
+    const execute = vi.fn(() => ({
+      shellPreparation: Promise.resolve({ command: "pwd" }),
+      startShell,
+    }));
 
-    await expect(authority.dispatchIntent(envelope, execute)).resolves.toMatchObject({
-      status: "admitted",
+    await expect(authority.dispatchIntent(envelope, execute)).resolves.toEqual({
+      status: "not_admitted",
       intentId: "shell-custody-anomaly",
+      reason: "stale_editor",
     });
     const attached = await readyAttach(authority, 24);
-    expect(attached.operationJournal).toContainEqual(
-      expect.objectContaining({
-        type: "anomaly",
-        code: "shell_editor_custody_lost",
-        detail: "durable_shell_start_without_editor_consumption",
-      }),
+    expect(attached.semantic.snapshot.editor).toMatchObject({ revision: 1, text: "!pwd" });
+    expect(attached.operationJournal).not.toContainEqual(
+      expect.objectContaining({ type: "anomaly" }),
     );
     expect(execute).toHaveBeenCalledOnce();
+    expect(startShell).not.toHaveBeenCalled();
+  });
 
-    terminal.resolve({ output: "", exitCode: 0 });
-    await flush();
+  it("rolls back a provisional native shell clear when durable start fails", async () => {
+    const {
+      authority,
+      setEditor,
+      acceptShellEditorSubmission,
+      publishShellEditorSubmission,
+      rollbackShellEditorSubmission,
+    } = setup();
+    setEditor({ revision: 1, text: "!pwd", attachments: [] });
+    const envelope = {
+      intentId: "shell-start-failure",
+      expectedOwner: { hostInstanceId: "host-1", sessionEpoch: 0 },
+      intent: shellIntent("pwd"),
+    };
+    const startShell = vi.fn(() => {
+      throw new Error("PTY spawn failed");
+    });
+    const execute = vi.fn(() => ({
+      shellPreparation: Promise.resolve({ command: "pwd" }),
+      startShell,
+    }));
+
+    await expect(authority.dispatchIntent(envelope, execute)).resolves.toEqual({
+      status: "not_admitted",
+      intentId: "shell-start-failure",
+      reason: "transport_unavailable",
+    });
+    expect(acceptShellEditorSubmission).toHaveBeenCalledWith({
+      intentId: "shell-start-failure",
+      editorRevision: 1,
+      editorText: "!pwd",
+      surface: undefined,
+      deferClearEvidence: true,
+    });
+    expect(rollbackShellEditorSubmission).toHaveBeenCalledWith({
+      intentId: "shell-start-failure",
+      editorRevision: 1,
+      editorText: "!pwd",
+      surface: undefined,
+    });
+    expect(publishShellEditorSubmission).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(startShell).toHaveBeenCalledWith({ command: "pwd" });
+    expect(authority.semanticSnapshot().editor).toMatchObject({ revision: 1, text: "!pwd" });
+    expect(authority.semanticSnapshot().activeIntents).toEqual([]);
   });
 
   it("reattaches a bounded active non-PTY Shell Turn with an ordered output baseline", async () => {
@@ -4215,7 +4490,7 @@ describe("state authority", () => {
 
   it("fences non-submit mutation dispatch from active navigation before presentation capture", async () => {
     const navigationGate = deferred();
-    const { authority, session } = setup();
+    const { authority, session, setEditor } = setup();
     const owner = { hostInstanceId: "host-1", sessionEpoch: 0 };
     const navigationEnvelope = {
       intentId: "navigate-active-fence",
@@ -4254,6 +4529,7 @@ describe("state authority", () => {
 
     // Submit is the sole exception: its executor re-enters admit(), which
     // transfers the exact prompt into navigation custody without calling Pi.
+    setEditor({ revision: 1, text: "held during active navigation", attachments: [] });
     await expect(
       authority.dispatchIntent(
         {
@@ -4350,7 +4626,7 @@ describe("state authority", () => {
   });
 
   it("retains compact navigation outcomes while tiny-capacity submit custody is pending", async () => {
-    const { authority, session } = setup({}, { dispatchedIntentCapacity: 2 });
+    const { authority, session, setEditor } = setup({}, { dispatchedIntentCapacity: 2 });
     const owner = { hostInstanceId: "host-1", sessionEpoch: 0 };
     const navigationIntentId = "navigate-capacity-escrow";
 
@@ -4396,6 +4672,7 @@ describe("state authority", () => {
           ),
       );
 
+    setEditor({ revision: 1, text: "capacity-custody-one", attachments: [] });
     await expect(dispatchSubmit("capacity-custody-one")).resolves.toMatchObject({
       status: "admitted",
     });
@@ -4404,6 +4681,7 @@ describe("state authority", () => {
 
     // The navigation terminal fact is not available for capacity eviction:
     // rejecting later ingress is safer than orphaning its full branch escrow.
+    setEditor({ revision: 1, text: "capacity-custody-two", attachments: [] });
     await expect(dispatchSubmit("capacity-custody-two")).resolves.toEqual({
       status: "not_admitted",
       intentId: "capacity-custody-two",
@@ -4486,7 +4764,7 @@ describe("state authority", () => {
   it("settles admitted idle and queued submit intents exactly once with typed public evidence", async () => {
     const idleGate = deferred();
     const sendFrame = vi.fn();
-    const { authority, session } = setup(
+    const { authority, session, setEditor } = setup(
       {
         prompt: vi.fn((_text, options) => {
           options.preflightResult(true);
@@ -4497,12 +4775,12 @@ describe("state authority", () => {
       { sendFrame },
     );
     const owner = { hostInstanceId: "host-1", sessionEpoch: 0 };
-    const envelope = (intentId) => ({
+    const envelope = (intentId, editorRevision = 1) => ({
       intentId,
       expectedOwner: owner,
       intent: {
         kind: "submit",
-        editorRevision: 1,
+        editorRevision,
         text: intentId,
         images: [],
         requestedMode: "followUp",
@@ -4510,6 +4788,7 @@ describe("state authority", () => {
       },
     });
 
+    setEditor({ revision: 1, text: "idle-complete", attachments: [] });
     await expect(
       authority.dispatchIntent(envelope("idle-complete"), (intent) =>
         authority.submit(
@@ -4555,6 +4834,7 @@ describe("state authority", () => {
       options.preflightResult(true);
       return queuedGate.promise;
     });
+    setEditor({ revision: 1, text: "queued-complete", attachments: [] });
     await authority.dispatchIntent(envelope("queued-complete"), (intent) =>
       authority.submit(
         {
@@ -4663,10 +4943,11 @@ describe("state authority", () => {
       { kind: "setModel", provider: "anthropic", modelId: "claude" },
       async () => ({ model: { private: "ignored" } }),
     );
+    setEditor({ revision: 2, text: "/test", attachments: [] });
     await dispatch(
       "command-result",
-      { kind: "invokeCommand", text: "/test", editorRevision: 1 },
-      async () => ({ disposition: "rejected", editorRevision: 1, message: "blocked" }),
+      { kind: "invokeCommand", text: "/test", editorRevision: 2 },
+      async () => ({ disposition: "rejected", editorRevision: 2, message: "blocked" }),
     );
 
     await vi.waitFor(() =>
@@ -4705,7 +4986,7 @@ describe("state authority", () => {
         result: {
           commandType: "test",
           disposition: "rejected",
-          editorRevision: 1,
+          editorRevision: 2,
           message: "blocked",
         },
       }),
@@ -4926,6 +5207,32 @@ describe("state authority", () => {
       },
       { kind: "compact", instructions: 1 },
       { kind: "invokeCommand", text: "/x", editorRevision: 1, extra: true },
+      { kind: "pickerAction", selection: { action: "fork", entryId: "entry-a" } },
+      {
+        kind: "pickerAction",
+        selection: { action: "fork", entryId: "entry-a" },
+        surface: "detached",
+      },
+      {
+        kind: "pickerAction",
+        selection: { action: "fork", entryId: "", text: "/new" },
+        surface: "composer",
+      },
+      {
+        kind: "pickerAction",
+        selection: { action: "setScopedModels", enabledIds: [""], persist: false },
+        surface: "composer",
+      },
+      {
+        kind: "pickerAction",
+        selection: { action: "logoutProvider", providerId: "", extra: 1 },
+        surface: "composer",
+      },
+      {
+        kind: "pickerAction",
+        selection: { action: "arbitrary", text: "/new" },
+        surface: "composer",
+      },
       { ...shellIntent("pwd"), excludeFromContext: "no" },
       { ...shellIntent("pwd"), editorRevision: -1 },
       { ...shellIntent("pwd"), editorText: "pwd" },
@@ -4940,6 +5247,9 @@ describe("state authority", () => {
       { kind: "setThinking", level: "turbo" },
       { kind: "rename", name: 1 },
       { kind: "reload", extra: true },
+      { kind: "reload", editorRevision: 1 },
+      { kind: "reload", editorText: "/reload" },
+      { kind: "reload", surface: "unified" },
       { kind: "export", outputPath: 1 },
       { kind: "unknown" },
     ];

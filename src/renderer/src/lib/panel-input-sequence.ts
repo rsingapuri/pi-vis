@@ -127,6 +127,30 @@ export function activatePanelInputIdentity(
   return handleFor(identityKey, state);
 }
 
+/**
+ * Ensure a store-projected live panel has an input generation.
+ *
+ * A legacy panel event may retire an identity immediately before an authority
+ * attach retains that same host/epoch/panel tuple.  `stateFor()` intentionally
+ * does not revive tombstones because a late callback from the retired xterm
+ * also reaches it.  The sessions store, however, has the authoritative live
+ * projection and may explicitly establish the successor generation here.
+ */
+export function ensurePanelInputIdentity(
+  sessionId: SessionId,
+  identity: PanelInputIdentity,
+): PanelInputGenerationHandle {
+  const identityKey = key(
+    sessionId,
+    identity.hostInstanceId,
+    identity.sessionEpoch,
+    identity.panelId,
+  );
+  const existing = sequences.get(identityKey);
+  if (existing && !existing.retired) return handleFor(identityKey, existing);
+  return activatePanelInputIdentity(sessionId, identity);
+}
+
 /** Monotonic for one host-bound panel identity across React remounts. */
 export function nextPanelInputSequence(
   sessionId: SessionId,
@@ -183,7 +207,13 @@ export function resetPanelInputSequenceToAcknowledged(
   const identity = { hostInstanceId, sessionEpoch, panelId };
   const state = handle ? stateForHandle(handle) : stateFor(sessionId, identity);
   if (!state) return;
-  state.acknowledgedThrough = Math.max(state.acknowledgedThrough, acknowledgedThrough);
+  // This is an explicit no-delivery rebase, not an ordinary cumulative ack.
+  // Main resets its gate when a successor renderer attaches while the
+  // long-lived host panel can retain a larger cumulative sequence. Allow the
+  // caller to lower the local allocation point so it can probe main at the
+  // advertised expected sequence; a later high ack then rebases to the host's
+  // retained watermark without losing the current chunk.
+  state.acknowledgedThrough = acknowledgedThrough;
   state.next = state.acknowledgedThrough;
 }
 
@@ -225,11 +255,12 @@ export function queuePanelInput(
   sessionId: SessionId,
   identity: PanelInputIdentity,
   data: string,
+  attemptedSequence?: number,
 ): void {
   const state = stateFor(sessionId, identity);
   if (!state) return;
   state.blocked = identity;
-  state.pending = bufferPanelInput(state.pending, identity, data);
+  state.pending = bufferPanelInput(state.pending, identity, data, attemptedSequence);
 }
 
 export function isPanelInputBlocked(sessionId: SessionId, identity: PanelInputIdentity): boolean {
@@ -244,13 +275,27 @@ export function releaseQueuedPanelInput(
   sessionId: SessionId,
   identity: PanelInputIdentity,
   ready: boolean,
+  acknowledgedThrough?: number,
 ): readonly string[] {
   const state = stateFor(sessionId, identity);
   if (!state) return [];
+  if (acknowledgedThrough !== undefined) {
+    // The ready projection/keyframe is also the cumulative host input proof.
+    // Rebase allocation before releasing retained bytes so a key arriving in
+    // the render-to-effect gap is assigned watermark + 1, never replayed at a
+    // sequence the host has already consumed.
+    state.acknowledgedThrough = Math.max(state.acknowledgedThrough, acknowledgedThrough);
+    state.next = Math.max(state.next, state.acknowledgedThrough);
+  }
+  const pending = state.pending;
   const reconciled = reconcilePanelInputBuffer(identity, ready, state.blocked, state.pending);
   state.blocked = reconciled.blocked;
   state.pending = reconciled.pending;
-  return reconciled.replay;
+  if (acknowledgedThrough === undefined || !pending) return reconciled.replay;
+  return reconciled.replay.filter((_, index) => {
+    const attemptedSequence = pending.attemptedSequences[index];
+    return attemptedSequence === undefined || acknowledgedThrough < attemptedSequence;
+  });
 }
 
 /** A host gap is explicit: fence the panel and reconstruct before replaying input. */

@@ -88,8 +88,14 @@ const fakeModels = [
   },
 ];
 
+const REASONING_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"];
+
 function currentModel() {
   return fakeModels.find((model) => model.id === currentModelId) ?? fakeModels[0];
+}
+
+function availableThinkingLevels() {
+  return currentModel().reasoning === true ? [...REASONING_THINKING_LEVELS] : ["off"];
 }
 
 function send(message) {
@@ -134,6 +140,7 @@ function snapshot() {
     isBashRunning: runtimeBash,
     model: currentModel(),
     thinkingLevel: currentThinkingLevel,
+    availableThinkingLevels: availableThinkingLevels(),
     sessionId,
     ...(sessionFile ? { sessionFile } : {}),
     ...(sessionName ? { sessionName } : {}),
@@ -150,6 +157,47 @@ function snapshot() {
     catalog: structuredClone(catalog),
     editor: { revision: editorRevision, text: editorText, attachments: editorAttachments },
   };
+}
+
+function editorSnapshot() {
+  return {
+    revision: editorRevision,
+    text: editorText,
+    attachments: structuredClone(editorAttachments),
+  };
+}
+
+/**
+ * Match the production host's exact-source compare-and-consume boundary.
+ * The causal event is emitted synchronously with the state mutation so main
+ * can fence editor recovery even if the later request response is lost.
+ */
+function consumeEditorSource(request) {
+  if (
+    !request ||
+    !Number.isInteger(request.editorRevision) ||
+    request.editorRevision < 0 ||
+    typeof request.editorText !== "string" ||
+    request.editorRevision !== editorRevision ||
+    request.editorText !== editorText
+  ) {
+    return { accepted: false, editor: editorSnapshot() };
+  }
+
+  const sourceRevision = editorRevision;
+  editorRevision++;
+  editorText = "";
+  if (request.consumeAttachments === true) editorAttachments = [];
+  const editor = editorSnapshot();
+  if (typeof request.intentId === "string" && request.intentId.length > 0) {
+    send({
+      type: "editor_source_cleared",
+      intentId: request.intentId,
+      editorRevision: sourceRevision,
+      editor,
+    });
+  }
+  return { accepted: true, sourceRevision, editor };
 }
 
 function authorityOwner() {
@@ -235,6 +283,7 @@ function semanticSnapshot() {
     dispatchedIntentTruncated: false,
     model: value.model,
     thinkingLevel: value.thinkingLevel,
+    availableThinkingLevels: value.availableThinkingLevels,
     sessionName: value.sessionName,
     catalog: value.catalog,
   };
@@ -1120,7 +1169,7 @@ async function transition(reason, records = []) {
   emitAuthorityFrame();
 }
 
-async function startFreshSession() {
+async function startFreshSession(editorSourcePreclaimed = false) {
   sessionId = crypto.randomUUID();
   sessionName = undefined;
   sessionFile = allocateSessionPath(`new-${Date.now()}`);
@@ -1129,7 +1178,7 @@ async function startFreshSession() {
   lastAssistantText = null;
   userMessagesForForking.length = 0;
   editorText = "";
-  editorRevision += 1;
+  if (!editorSourcePreclaimed) editorRevision += 1;
   ensureFile();
   await transition("new-session", [{ type: "event", event: { type: "session_info_changed" } }]);
 }
@@ -1424,17 +1473,10 @@ async function executeAuthorityIntent(entry) {
       } else if (command === "new") {
         // Settle against the predecessor before the fixture advances its epoch.
         finishAuthorityIntent(entry, "completed", { commandType: command, response: {} });
-        await handleCommand(`authority-${entry.intentId}`, { type: "new_session" });
+        await startFreshSession(true);
       } else if (command === "reload") {
         finishAuthorityIntent(entry, "completed", { commandType: command, response: {} });
         await transition("authority-reload");
-      } else if (intent.editorRevision !== editorRevision) {
-        finishAuthorityIntent(entry, "rejected", {
-          ...(command ? { commandType: command } : {}),
-          disposition: "not_submitted",
-          editorRevision,
-          message: "Editor revision changed",
-        });
       } else {
         const submission = {
           intentId: entry.intentId,
@@ -1446,9 +1488,6 @@ async function executeAuthorityIntent(entry) {
           requestedMode: "followUp",
           surface: "composer",
         };
-        editorRevision++;
-        editorText = "";
-        editorAttachments = [];
         await runSubmission(submission);
         finishAuthorityIntent(entry, "completed", {
           ...(command ? { commandType: command } : {}),
@@ -1585,8 +1624,10 @@ async function executeAuthorityIntent(entry) {
                 intentId: item.intentId,
                 images: structuredClone(item.images),
               })),
-              // Real Pi's requestEscape clears the queue before consumption, so the
-              // authentic record certainty is not_processed (always restored).
+              // Queue entries already crossed visual clear when they were
+              // admitted. `not_processed` describes execution only; their
+              // editor presentation is still permanently dropped.
+              clearedIntentIds: queued.map((item) => item.intentId),
               certainty: "not_processed",
             };
             authorityRestorations.set(restoration.restorationId, restoration);
@@ -1643,6 +1684,16 @@ function dispatchAuthorityIntent(envelope) {
       };
     }
     return { status: "duplicate", intentId, owner: structuredClone(owner) };
+  }
+  if (
+    intent.kind === "invokeCommand" &&
+    consumeEditorSource({
+      intentId,
+      editorRevision: intent.editorRevision,
+      editorText: intent.text,
+    }).accepted !== true
+  ) {
+    return { status: "not_admitted", intentId, reason: "stale_editor" };
   }
   if (
     intent.kind === "runBash" &&
@@ -2016,8 +2067,9 @@ async function handleMessage(message) {
               intentId: item.intentId,
               images: structuredClone(item.images),
             })),
-            // Real Pi's requestEscape clears the queue before consumption, so the
-            // authentic record certainty is not_processed (always restored).
+            clearedIntentIds: [...steeringQueue, ...followUpQueue].map((item) => item.intentId),
+            // Execution did not consume the queue, but Enter already committed
+            // editor clear for each attributed intent.
             certainty: "not_processed",
           });
           const restoration = {
@@ -2029,13 +2081,14 @@ async function handleMessage(message) {
               intentId: item.intentId,
               images: structuredClone(item.images),
             })),
-            // Real Pi's requestEscape clears the queue before consumption, so the
-            // authentic record certainty is not_processed (always restored).
+            clearedIntentIds: [...steeringQueue, ...followUpQueue].map((item) => item.intentId),
+            // Execution did not consume the queue, but Enter already committed
+            // editor clear for each attributed intent.
             certainty: "not_processed",
           };
           authorityRestorations.set(restorationId, restoration);
           emitAuthorityFrame([restoration]);
-          logOperation("restored", {
+          logOperation("restoration_evidence", {
             kind: "queue",
             restorationId,
             steering: steeringQueue.map((item) => item.text),
@@ -2107,6 +2160,12 @@ async function handleMessage(message) {
             : {}),
         });
       }
+      break;
+    }
+    case "consume_editor_source": {
+      const result = consumeEditorSource(message.request);
+      publishSnapshot();
+      reply(message.id, true, result);
       break;
     }
     case "dialog_response": {
@@ -2269,10 +2328,13 @@ async function handleMessage(message) {
       break;
     }
     case "panel_resize":
-    case "restoration_ack":
     case "unified_submit_response":
     case "clipboard_read_image_response":
     case "interrupt":
+      break;
+    case "restoration_ack":
+      authorityRestorations.delete(message.restorationId);
+      logOperation("restoration_ack", { restorationId: message.restorationId });
       break;
     default:
       if (message?.id) reply(message.id, false, undefined, `Unknown message: ${message.type}`);

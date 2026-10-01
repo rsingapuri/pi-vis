@@ -87,9 +87,10 @@ describe("SessionEntrySchema pinned-Pi public payloads", () => {
     expect(SessionEntrySchema.parse(entry)).toMatchObject({ usage });
   });
 
-  it("preserves Pi 0.84.2 endTurn and namespaced tool calls in persisted messages", () => {
+  it("preserves Pi 0.85.1 provider thinking, endTurn, and namespaced tool calls in persisted messages", () => {
     const message = {
       role: "assistant",
+      providerThinkingLevel: "high",
       endTurn: true,
       content: [
         {

@@ -14,6 +14,7 @@ import type {
   IntentEnvelope,
   IntentReceipt,
   ReloadRequest,
+  RuntimeEditorState,
   SessionQueryEnvelope,
   SessionQueryResult,
   SessionSubmission,
@@ -41,6 +42,7 @@ import {
   initExtensionUpdates,
   runExtensionUpdate,
 } from "./extension-updates.js";
+import { openValidatedExternalWebUrl } from "./external-links.js";
 import {
   type CheckoutChangesSnapshot,
   type CheckoutIdentity,
@@ -359,6 +361,8 @@ export function initIpc(win: BrowserWindow): void {
         text: string;
         editorRevision: number;
         submissionIntentId: string;
+        editorAttachments?: unknown[] | undefined;
+        postClearEditor: RuntimeEditorState;
         hostInstanceId: string;
         sessionEpoch: number;
       },
@@ -1311,6 +1315,10 @@ export function initIpc(win: BrowserWindow): void {
         revision: number;
         text: string;
         attachments: unknown[];
+        preserveConflicts?: boolean;
+        sourceConsumeRevision?: number;
+        sourceConsumeText?: string;
+        inheritsSourceTextOnConsumeFailure?: boolean;
       },
     ) => {
       if (!registry) throw new Error("Session registry not initialized");
@@ -1323,6 +1331,43 @@ export function initIpc(win: BrowserWindow): void {
           revision: args.revision,
           text: args.text,
           attachments: args.attachments,
+          ...(args.preserveConflicts === true ? { preserveConflicts: true } : {}),
+          ...(args.sourceConsumeRevision !== undefined
+            ? { sourceConsumeRevision: args.sourceConsumeRevision }
+            : {}),
+          ...(args.sourceConsumeText !== undefined
+            ? { sourceConsumeText: args.sourceConsumeText }
+            : {}),
+          ...(args.inheritsSourceTextOnConsumeFailure === true
+            ? { inheritsSourceTextOnConsumeFailure: true }
+            : {}),
+        },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    "session.consumeEditorSource",
+    async (
+      _evt,
+      args: {
+        sessionId: SessionId;
+        expectedHostInstanceId: string;
+        expectedSessionEpoch: number;
+        editorRevision: number;
+        editorText: string;
+        consumeAttachments?: boolean;
+      },
+    ) => {
+      if (!registry) throw new Error("Session registry not initialized");
+      return registry.consumeEditorSource(
+        args.sessionId,
+        args.expectedHostInstanceId,
+        args.expectedSessionEpoch,
+        {
+          editorRevision: args.editorRevision,
+          editorText: args.editorText,
+          ...(args.consumeAttachments === true ? { consumeAttachments: true } : {}),
         },
       );
     },
@@ -1374,19 +1419,19 @@ export function initIpc(win: BrowserWindow): void {
         data: string;
       },
     ) => {
-      return (
-        registry?.sendPanelInput(
-          args.sessionId,
-          args.expectedHostInstanceId,
-          args.expectedSessionEpoch,
-          args.panelId,
-          args.revision,
-          args.sequence,
-          args.data,
-        ) ?? {
-          acknowledgedThrough: 0,
-        }
-      );
+      const result = await (registry?.sendPanelInput(
+        args.sessionId,
+        args.expectedHostInstanceId,
+        args.expectedSessionEpoch,
+        args.panelId,
+        args.revision,
+        args.sequence,
+        args.data,
+      ) ?? {
+        acknowledgedThrough: 0,
+      });
+      logTestIpcInvocation("session.panelInput", { args, result });
+      return result;
     },
   );
 
@@ -1606,16 +1651,7 @@ export function initIpc(win: BrowserWindow): void {
   });
 
   ipcMain.handle("app.openExternal", async (_evt, args: { url: string }) => {
-    const url = new URL(args.url);
-    const loopback =
-      url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
-      throw new Error("Only secure web links can be opened");
-    }
-    if (url.username || url.password) {
-      throw new Error("Links containing credentials are not allowed");
-    }
-    await shell.openExternal(url.toString());
+    await openValidatedExternalWebUrl(args?.url, (url) => shell.openExternal(url));
     return { ok: true as const };
   });
 

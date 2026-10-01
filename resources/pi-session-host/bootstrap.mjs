@@ -464,9 +464,9 @@ export function initHostTheme(pi, themeName) {
 
 /**
  * Build a local pi Theme from the complete stable ANSI role-index maps required
- * by Pi's public constructor. Pi derives optional `scrollbarThumb` from
- * `selectedBg`; 0.84.2 likewise derives `searchMatchText` from `text` and
- * `searchMatchBg` from `selectedBg`. If Pi's PUBLIC
+ * by Pi's public constructor. Pi derives the optional foreground roles
+ * `scrollbarThumb` and `searchMatchText` from `text`, and the optional
+ * `searchMatchBg` background role from `selectedBg`. If Pi's PUBLIC
  * root exports a setter, install it. Otherwise return an explicit capability
  * failure together with the usable local theme; callers must surface the
  * diagnostic and must not mutate undocumented global symbols.

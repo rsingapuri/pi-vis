@@ -1,4 +1,4 @@
-# 0004: Silent reconciliation replaces user review
+# 0004: Submitted composer clears are irreversible
 
 ## Status
 
@@ -6,21 +6,66 @@ Accepted
 
 ## Context
 
-Interrupted queue custody and uncertain delivery can leave Pi-Vis with recoverable draft text/attachments but no safe basis to replay work automatically. The former review-card flow made that transport and reconciliation detail a persistent user decision, even when persisted session evidence could determine whether the text was processed.
+Interrupted queue custody and uncertain delivery can leave Pi-Vis unable to
+prove whether submitted work reached Pi. Earlier implementations treated the
+submitted payload as recoverable draft custody. They could reinsert it after a
+guard failure, renderer reattachment, host restart, queue interruption, or
+delayed reconciliation—even after the user had watched it disappear and begun
+typing a new prompt. That made an old submission indistinguishable from current
+input and could also mask or overwrite newer text and attachments.
 
 ## Decision
 
-Main reconciles each queue-restoration record against persisted session history and emits the one-way `session.restoreDraft` instruction. `not_processed` custody restores directly. For uncertain custody, only an exact appended persisted user-message match proves the input was processed and yields `dropped`; missing, malformed, unreadable, or inconclusive evidence restores the draft. A command-only restoration is `dropped`. The renderer applies a restoration once by ID, merges restoreable text and attachments into its current draft, and immediately calls `session.acknowledgeRestoration`. There is no renderer review channel, review card, restore/dismiss control, or acknowledgement chosen by the user.
+The visible clear is an irreversible presentation commit. Once a submitted
+revision leaves either Composer or the Unified TUI editor, the payload consumed
+by that submission can never be projected into an editor again. An ordinary
+prompt consumes its text, staged attachments, and submitted comment revisions.
+A slash command or Shell Turn consumes only its command text; independently
+staged attachments and conflict candidates remain editor custody. Execution
+custody and editor presentation are separate state machines.
+
+Unified TUI commits this boundary synchronously in `Editor.onSubmit`, because
+Pi clears the public editor before invoking that callback. The host immediately
+advances the current editor revision and exposes the empty/newer draft as
+authority. It retains an immutable pending source—stable intent, source
+revision, raw classification, and frozen attachments—only long enough to
+validate at-most-once dispatch. Admission validates that source before any Pi
+side effect. An acknowledgement or failure retires it but never changes the
+current editor.
+
+Every queue-restoration record for work that crossed this boundary includes
+`clearedIntentIds`. Main resolves such a record to `dropped` regardless of
+`not_processed`, persistence evidence, or reconciliation failure, and uses that
+result to fence host editor recovery. Command-only records are also dropped.
+A `restore` disposition is reserved for a pre-clear recovery checkpoint; it can
+permit main to recover already-visible host editor state, but the renderer does
+not synthesize or merge submitted record text into Composer. It only retires an
+exact pending correlation and acknowledges the record. Thus a pre-clear refusal
+keeps the draft it already owns, while post-clear and newer editor state remain
+untouched.
+
+There is no renderer review channel, restoration card, restore/dismiss control,
+or user-selected acknowledgement. `session.restoreDraft` remains a one-way,
+idempotent settlement/acknowledgement protocol name for compatibility.
 
 A tab close is likewise unconditional: `session.close` fences ingress, makes best-effort child shutdown, releases the in-memory runtime, and leaves persisted session files/worktrees on disk. It does not run a renderer close-review handshake.
 
-This does not change the safety rule for mutations: a post-dispatch `outcome_unknown`, a lost acknowledgement, or a restoration that reconciliation cannot establish as unprocessed is never automatically replayed against a replacement host. Reconciliation may restore a draft for the user to inspect and submit; it never dispatches that draft.
+This does not change the mutation safety rule: `outcome_unknown` work and lost
+acknowledgements are never replayed against a replacement host. The outcome can
+remain unknown even though its submitted editor presentation is permanently
+retired.
 
 ## Consequences
 
-Reconciliation intentionally has a false-negative recognition bias: extension transformation, a non-identical persisted representation, or unavailable evidence can fail to identify input that Pi already processed, so Pi-Vis restores a draft that may be redundant. That tradeoff preserves recoverability instead of falsely declaring the input processed. It is safe only because restoration never dispatches work: the user must make a new submission decision, and Pi-Vis never automatically replays ambiguous model/tool effects.
+An interrupted post-clear submission may therefore be absent from both the
+transcript and the editor. This is intentional: automatically reconstructing it
+would contradict the visible commit and risks a duplicate submission. Outcome
+markers and toasts describe uncertainty without retaining replay affordances.
 
-`session.restoreDraft` plus acknowledgement is the restoration lifecycle. Queue-restoration records may remain as authority/custody evidence for transcript ownership and main-side reconciliation, but they do not create user-facing review UI.
+Queue-restoration records may remain as bounded authority/custody evidence for
+transcript ownership and crash fencing. They are never composer content. The
+renderer applies record IDs idempotently, acknowledges redelivery, and leaves
+all current text, attachments, injections, and comment revisions unchanged.
 
 ## References
 

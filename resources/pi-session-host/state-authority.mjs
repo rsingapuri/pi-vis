@@ -76,8 +76,12 @@ export function createStateAuthority({
   dispatchedIntentPayloadBytes = 8 * 1024 * 1024,
   getCatalog = () => ({}),
   getEditor = () => ({ revision: 0, text: "", attachments: [] }),
+  inspectEditorSubmission,
   acceptEditorSubmission = () => false,
+  inspectShellEditorSubmission,
   acceptShellEditorSubmission = () => false,
+  publishShellEditorSubmission = () => false,
+  rollbackShellEditorSubmission = () => false,
   onSubmissionResult = () => {},
   onAdmissionStuck = () => {},
   admissionStuckMs = 60_000,
@@ -94,6 +98,25 @@ export function createStateAuthority({
     typeof initialPresentedSessionFile === "string" && initialPresentedSessionFile.length > 0
       ? initialPresentedSessionFile
       : undefined;
+
+  const inspectSubmissionSource = (request) => {
+    if (typeof inspectEditorSubmission === "function") {
+      return inspectEditorSubmission(request);
+    }
+    const editor = getEditor() ?? {};
+    return request.editorRevision === editor.revision
+      ? { accepted: true, text: editor.text ?? "" }
+      : { accepted: false };
+  };
+  const inspectShellSource = (request) => {
+    if (typeof inspectShellEditorSubmission === "function") {
+      return inspectShellEditorSubmission(request);
+    }
+    const editor = getEditor() ?? {};
+    return {
+      accepted: request.editorRevision === editor.revision && request.editorText === editor.text,
+    };
+  };
   const presentedSessionFile = () => presentedSessionFileOverride ?? session.sessionFile;
   let sessionEpoch = 0;
   let snapshotSequence = 0;
@@ -143,6 +166,10 @@ export function createStateAuthority({
   // ledger above. Their key is explicitly owner-bound, so an old owner's
   // duplicate can never be admitted by a successor.
   const dispatchedIntents = new Map();
+  // Unified Enter has already crossed the irreversible visual-clear boundary.
+  // Reserve its exact host editor source synchronously with dispatch admission
+  // so source acknowledgement is independent of a long terminal outcome.
+  const preclaimedEditorSources = new Set();
   let nextDispatchedIntentSequence = 0;
   let dispatchedIntentTruncated = false;
   // Every emitted observed operation that has not reached a terminal state.
@@ -544,24 +571,123 @@ export function createStateAuthority({
     return { command, excludeFromContext };
   }
 
-  function shellIntentMatchesEditor(intent) {
-    const editor = getEditor() ?? {};
-    return editor.revision === intent.editorRevision && editor.text === intent.editorText;
+  function shellIntentMatchesEditor(intent, intentId) {
+    return (
+      inspectShellSource({
+        intentId,
+        editorRevision: intent.editorRevision,
+        editorText: intent.editorText,
+      })?.accepted === true
+    );
   }
 
   function consumeShellEditor(intent, intentId) {
-    if (!shellIntentMatchesEditor(intent)) return false;
     try {
+      // acceptShellEditorSubmission validates either the current native editor
+      // or an immutable Unified TUI source. The latter has already advanced
+      // visible editor authority at Pi's synchronous clear point, so comparing
+      // only against getEditor() would incorrectly reject it as stale and can
+      // stall rapid consecutive submissions.
       return (
         acceptShellEditorSubmission({
           intentId,
           editorRevision: intent.editorRevision,
           editorText: intent.editorText,
+          surface: intent.surface,
+          deferClearEvidence: true,
         }) === true
       );
     } catch {
       return false;
     }
+  }
+
+  function publishConsumedShellEditor(intent, intentId) {
+    try {
+      return (
+        publishShellEditorSubmission({
+          intentId,
+          editorRevision: intent.editorRevision,
+          editorText: intent.editorText,
+          surface: intent.surface,
+        }) === true
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function rollbackConsumedShellEditor(intent, intentId) {
+    try {
+      return (
+        rollbackShellEditorSubmission({
+          intentId,
+          editorRevision: intent.editorRevision,
+          editorText: intent.editorText,
+          surface: intent.surface,
+        }) === true
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function editorRequestForIntent(intent, intentId) {
+    if (intent.kind === "submit") {
+      return {
+        intentId,
+        editorRevision: intent.editorRevision,
+        text: intent.text,
+        inputKind: intent.inputKind,
+        surface: intent.surface,
+      };
+    }
+    if (intent.kind === "invokeCommand") {
+      return {
+        intentId,
+        editorRevision: intent.editorRevision,
+        text: intent.text,
+        inputKind: "slash_command",
+        surface: intent.surface ?? "composer",
+      };
+    }
+    if (
+      intent.kind === "reload" &&
+      intent.surface === "unified" &&
+      Number.isInteger(intent.editorRevision) &&
+      typeof intent.editorText === "string"
+    ) {
+      return {
+        intentId,
+        editorRevision: intent.editorRevision,
+        text: intent.editorText,
+        inputKind: "slash_command",
+        surface: "unified",
+      };
+    }
+    return undefined;
+  }
+
+  function editorIntentMatchesSource(intent, intentId) {
+    const request = editorRequestForIntent(intent, intentId);
+    if (!request) return true;
+    const source = inspectSubmissionSource(request);
+    if (source?.accepted !== true) return false;
+    // Slash/reload text is executable source, never renderer decoration.
+    return request.inputKind !== "slash_command" || source.text === request.text;
+  }
+
+  function preclaimEditorIntent(intent, intentId) {
+    const request = editorRequestForIntent(intent, intentId);
+    if (!request) return true;
+    if (!editorIntentMatchesSource(intent, intentId)) return false;
+    try {
+      if (acceptEditorSubmission(request) !== true) return false;
+    } catch {
+      return false;
+    }
+    preclaimedEditorSources.add(intentId);
+    return true;
   }
 
   // Keep this child boundary strict even when a caller bypasses the typed main
@@ -589,10 +715,12 @@ export function createStateAuthority({
       case "reload":
         return (
           Object.keys(intent).every((key) =>
-            ["kind", "editorRevision", "editorText"].includes(key),
+            ["kind", "editorRevision", "editorText", "surface"].includes(key),
           ) &&
           ((intent.editorRevision === undefined && intent.editorText === undefined) ||
-            (nonNegativeInteger(intent.editorRevision) && typeof intent.editorText === "string"))
+            (nonNegativeInteger(intent.editorRevision) && typeof intent.editorText === "string")) &&
+          (intent.surface === undefined || intent.editorRevision !== undefined) &&
+          isOptional(intent.surface, (value) => ["composer", "unified"].includes(value))
         );
       case "submit":
         return (
@@ -667,26 +795,56 @@ export function createStateAuthority({
         );
       case "invokeCommand":
         return (
-          isStrictObject(intent, ["kind", "text", "editorRevision"]) &&
+          Object.keys(intent).every((key) =>
+            ["kind", "text", "editorRevision", "surface"].includes(key),
+          ) &&
           typeof intent.text === "string" &&
-          nonNegativeInteger(intent.editorRevision)
+          nonNegativeInteger(intent.editorRevision) &&
+          isOptional(intent.surface, (value) => ["composer", "unified"].includes(value))
         );
+      case "pickerAction": {
+        if (!isStrictObject(intent, ["kind", "selection", "surface"])) return false;
+        if (!["composer", "unified"].includes(intent.surface)) return false;
+        const selection = intent.selection;
+        if (!selection || typeof selection !== "object" || Array.isArray(selection)) return false;
+        switch (selection.action) {
+          case "fork":
+            return isStrictObject(selection, ["action", "entryId"]) && nonEmpty(selection.entryId);
+          case "setScopedModels":
+            return (
+              isStrictObject(selection, ["action", "enabledIds", "persist"]) &&
+              (selection.enabledIds === null ||
+                (Array.isArray(selection.enabledIds) && selection.enabledIds.every(nonEmpty))) &&
+              typeof selection.persist === "boolean"
+            );
+          case "logoutProvider":
+            return (
+              isStrictObject(selection, ["action", "providerId"]) && nonEmpty(selection.providerId)
+            );
+          default:
+            return false;
+        }
+      }
       case "runBash": {
         const source = shellDraftPayload(intent.editorText);
         return (
-          isStrictObject(intent, [
-            "kind",
-            "command",
-            "excludeFromContext",
-            "editorRevision",
-            "editorText",
-          ]) &&
+          Object.keys(intent).every((key) =>
+            [
+              "kind",
+              "command",
+              "excludeFromContext",
+              "editorRevision",
+              "editorText",
+              "surface",
+            ].includes(key),
+          ) &&
           typeof intent.command === "string" &&
           intent.command.length > 0 &&
           intent.command === intent.command.trim() &&
           Buffer.byteLength(intent.command, "utf8") <= MAX_SHELL_COMMAND_BYTES &&
           typeof intent.excludeFromContext === "boolean" &&
           nonNegativeInteger(intent.editorRevision) &&
+          isOptional(intent.surface, (value) => ["composer", "unified"].includes(value)) &&
           source?.command === intent.command &&
           source.excludeFromContext === intent.excludeFromContext
         );
@@ -705,14 +863,18 @@ export function createStateAuthority({
         );
       case "setModel":
         return (
-          isStrictObject(intent, ["kind", "provider", "modelId"]) &&
+          Object.keys(intent).every((key) =>
+            ["kind", "provider", "modelId", "persist"].includes(key),
+          ) &&
           typeof intent.provider === "string" &&
-          nonEmpty(intent.modelId)
+          nonEmpty(intent.modelId) &&
+          isOptional(intent.persist, (value) => typeof value === "boolean")
         );
       case "setThinking":
         return (
-          isStrictObject(intent, ["kind", "level"]) &&
-          ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(intent.level)
+          Object.keys(intent).every((key) => ["kind", "level", "persist"].includes(key)) &&
+          ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(intent.level) &&
+          isOptional(intent.persist, (value) => typeof value === "boolean")
         );
       case "rename":
         return isStrictObject(intent, ["kind", "name"]) && typeof intent.name === "string";
@@ -878,10 +1040,20 @@ export function createStateAuthority({
               ? intent.text.replace(/^\//, "").trim().split(/\s+/, 1)[0]
               : undefined,
         };
+      case "pickerAction":
+        return {
+          kind: intent.kind,
+          selection: { action: intent.selection.action },
+        };
       case "setModel":
-        return { kind: intent.kind, provider: intent.provider, modelId: intent.modelId };
+        return {
+          kind: intent.kind,
+          provider: intent.provider,
+          modelId: intent.modelId,
+          persist: intent.persist === true,
+        };
       case "setThinking":
-        return { kind: intent.kind, level: intent.level };
+        return { kind: intent.kind, level: intent.level, persist: intent.persist === true };
       case "rename":
         return { kind: intent.kind, name: intent.name };
       case "navigate":
@@ -1522,6 +1694,8 @@ export function createStateAuthority({
           ...(value.response !== undefined ? { response: structuredClone(value.response) } : {}),
         };
       }
+      case "pickerAction":
+        return { action: intent?.selection?.action ?? "fork" };
       case "compact":
         return {
           ...(typeof value.compactionId === "string" ? { compactionId: value.compactionId } : {}),
@@ -1567,7 +1741,12 @@ export function createStateAuthority({
       case "rename":
         return { name: value.name ?? intent?.name ?? "" };
       case "reload":
-        return value.successorIdentity ? { successorIdentity: value.successorIdentity } : {};
+        return {
+          ...(value.successorIdentity ? { successorIdentity: value.successorIdentity } : {}),
+          ...(typeof value.editorSourceConsumed === "boolean"
+            ? { editorSourceConsumed: value.editorSourceConsumed }
+            : {}),
+        };
       case "refreshModels":
         return value.refreshed === true ? { refreshed: true } : undefined;
       case "loginProvider":
@@ -1753,6 +1932,7 @@ export function createStateAuthority({
     }
     const retainedOutcome = retainedIntentOutcome(outcome);
     entry.outcome = retainedOutcome;
+    preclaimedEditorSources.delete(intentId);
     if (
       entry.observedOperationId &&
       owner.hostInstanceId === hostInstanceId &&
@@ -2065,7 +2245,7 @@ export function createStateAuthority({
       reportSubmission(
         resultFor(admission.request, "outcome_unknown", {
           message:
-            "Escape fenced prompt admission before delivery; review this submission before retrying",
+            "Escape fenced prompt admission before delivery; execution outcome is unknown and submitted input was not restored",
         }),
       );
     }
@@ -2210,6 +2390,7 @@ export function createStateAuthority({
 
   async function admit(requestInput, fromCustody = false) {
     let request = requestInput;
+    const editorSourcePreclaimed = preclaimedEditorSources.has(request.intentId);
     if (
       request.expectedHostId !== hostInstanceId ||
       request.expectedEpoch !== sessionEpoch ||
@@ -2228,14 +2409,14 @@ export function createStateAuthority({
     // Custody owns an already admitted GUI intent. Its editor revision may
     // legitimately advance while a compaction/navigation barrier runs; checking
     // it again here would strand that FIFO prefix forever.
-    if (!fromCustody) {
-      const editor = getEditor();
-      if (request.editorRevision !== editor.revision) {
+    if (!fromCustody && !editorSourcePreclaimed) {
+      const source = inspectSubmissionSource(request);
+      if (source?.accepted !== true) {
         return resultFor(request, "not_submitted", {
           message: "Editor revision changed before submission was accepted",
         });
       }
-      const authoritativeInputKind = inputKindForEditorText(editor.text);
+      const authoritativeInputKind = inputKindForEditorText(source.text);
       if (request.inputKind !== undefined && request.inputKind !== authoritativeInputKind) {
         return resultFor(request, "rejected", {
           message: "Submission input classification does not match the authoritative editor",
@@ -2329,6 +2510,16 @@ export function createStateAuthority({
       activeIntents.delete(request.intentId);
       return resultFor(request, "not_submitted", {
         message: "Session replacement started before prompt admission",
+      });
+    }
+    if (
+      !fromCustody &&
+      !editorSourcePreclaimed &&
+      inspectSubmissionSource(request)?.accepted !== true
+    ) {
+      activeIntents.delete(request.intentId);
+      return resultFor(request, "not_submitted", {
+        message: "Editor source changed before prompt admission",
       });
     }
     const wasStreaming = session.isStreaming;
@@ -2438,7 +2629,7 @@ export function createStateAuthority({
                   // Input-handler participation can make the exact text slot
                   // unprovable even though callback-time streaming proves the
                   // prompt used Pi's queue path. Retain its original images as
-                  // unpaired review custody for a later destructive clear.
+                  // unpaired ambiguity evidence for a later destructive clear.
                   rememberAdmissionAttachments(admission);
                 } else {
                   directDeliveryIntentId = request.intentId;
@@ -2512,7 +2703,7 @@ export function createStateAuthority({
       if (winner === "escape_cancelled") {
         return resultFor(request, "outcome_unknown", {
           message:
-            "Escape fenced prompt admission before delivery; review this submission before retrying",
+            "Escape fenced prompt admission before delivery; execution outcome is unknown and submitted input was not restored",
         });
       }
       if (winner === "preflight" && !(admission.queuedAtAcceptance ?? wasStreaming)) {
@@ -2539,7 +2730,7 @@ export function createStateAuthority({
       if (winner === "escape_cancelled" || admission.cancelled) {
         return resultFor(request, "outcome_unknown", {
           message:
-            "Escape fenced prompt admission before delivery; review this submission before retrying",
+            "Escape fenced prompt admission before delivery; execution outcome is unknown and submitted input was not restored",
         });
       }
       if (winner === "rejected") {
@@ -2757,7 +2948,10 @@ export function createStateAuthority({
     if (navigationMutationBlocked(intent)) {
       return Promise.resolve({ status: "not_admitted", intentId, reason: "busy" });
     }
-    if (intent.kind === "runBash" && !shellIntentMatchesEditor(intent)) {
+    if (!editorIntentMatchesSource(intent, intentId)) {
+      return Promise.resolve({ status: "not_admitted", intentId, reason: "stale_editor" });
+    }
+    if (intent.kind === "runBash" && !shellIntentMatchesEditor(intent, intentId)) {
       return Promise.resolve({ status: "not_admitted", intentId, reason: "stale_editor" });
     }
     if (intent.kind === "runBash" && shellAdmissionBusy()) {
@@ -2797,6 +2991,13 @@ export function createStateAuthority({
         reason: "invalid",
         invalidReason: "capacity",
       });
+    }
+    // Unified prompt/slash/reload presentation has already cleared. Claim its
+    // immutable host source before publishing admission or scheduling any SDK
+    // side effect. The later admission path recognizes this reservation after
+    // main retires the host's pending request at the receipt boundary.
+    if (!preclaimEditorIntent(intent, intentId)) {
+      return Promise.resolve({ status: "not_admitted", intentId, reason: "stale_editor" });
     }
     const entry = {
       intentId,
@@ -2859,7 +3060,12 @@ export function createStateAuthority({
         "failed",
         intent.kind === "loginProvider"
           ? undefined
-          : { message: error instanceof Error ? error.message : String(error) },
+          : {
+              message: error instanceof Error ? error.message : String(error),
+              ...(intent.kind === "reload" && error?.editorSourceConsumed === true
+                ? { editorSourceConsumed: true }
+                : {}),
+            },
       );
     };
     // commitTransition already emitted the single successor baseline.
@@ -2897,29 +3103,46 @@ export function createStateAuthority({
           if (owner.hostInstanceId !== hostInstanceId || owner.sessionEpoch !== sessionEpoch) {
             return rejectAdmission("stale_owner");
           }
-          if (!shellIntentMatchesEditor(intent)) return rejectAdmission("stale_editor");
+          if (!shellIntentMatchesEditor(intent, intentId)) return rejectAdmission("stale_editor");
           if (shellAdmissionBusy(entry)) return rejectAdmission("busy");
+
+          // Compare-and-consume is the source transaction. It happens before
+          // durable shell start so a started process can never be acknowledged
+          // while its submitted command remains recoverable editor primary.
+          if (!consumeShellEditor(intent, intentId)) return rejectAdmission("stale_editor");
 
           let result;
           try {
             result = startShell(prepared);
           } catch (error) {
-            return rejectAdmission(rejectionReason(error));
+            if (rollbackConsumedShellEditor(intent, intentId)) {
+              return rejectAdmission(rejectionReason(error));
+            }
+            appendAnomaly(
+              "shell_editor_rollback_failed",
+              "source_consumed_before_shell_start_failure",
+            );
+            result = { deferredOutcome: Promise.reject(error) };
           }
           if (!result || typeof result.deferredOutcome?.then !== "function") {
-            return rejectAdmission("transport_unavailable");
+            const invalidResult = new Error("Shell start did not return a durable outcome");
+            if (rollbackConsumedShellEditor(intent, intentId)) {
+              return rejectAdmission("transport_unavailable");
+            }
+            appendAnomaly(
+              "shell_editor_rollback_failed",
+              "source_consumed_before_invalid_shell_start",
+            );
+            result = { deferredOutcome: Promise.reject(invalidResult) };
           }
 
-          // startShell returns only after the selected PTY/non-PTY path and its
-          // durable start marker succeed. Consume the exact authoritative shell
-          // draft in this same serialized slot before publishing admission. A
-          // false result is an internal invariant failure after execution may
-          // already exist, so never lie with `not_admitted`; keep the visible
-          // turn admitted and publish a bounded, non-secret diagnostic instead.
-          if (!consumeShellEditor(intent, intentId)) {
+          // Publish clear evidence only after durable start. A failed native
+          // start rolled the host editor back before returning not_admitted;
+          // Unified sources were already visually cleared and are never restored.
+          if (!publishConsumedShellEditor(intent, intentId)) {
             appendAnomaly(
-              "shell_editor_custody_lost",
-              "durable_shell_start_without_editor_consumption",
+              "shell_editor_clear_evidence_failed",
+              "durable_shell_start_after_editor_consumption",
             );
           }
 
@@ -2949,7 +3172,7 @@ export function createStateAuthority({
         if (owner.hostInstanceId !== hostInstanceId || owner.sessionEpoch !== sessionEpoch) {
           return { rejection: rejectAdmission("stale_owner") };
         }
-        if (!shellIntentMatchesEditor(intent)) {
+        if (!shellIntentMatchesEditor(intent, intentId)) {
           return { rejection: rejectAdmission("stale_editor") };
         }
         if (shellAdmissionBusy(entry)) return { rejection: rejectAdmission("busy") };
@@ -3012,10 +3235,11 @@ export function createStateAuthority({
           });
           return;
         }
-        if (intent.kind === "invokeCommand") {
+        if (intent.kind === "invokeCommand" || intent.kind === "pickerAction") {
           entry.observedOperationId = observedOperation("command", "invoking", {
             intentId,
-            command: intent.text,
+            command:
+              intent.kind === "invokeCommand" ? intent.text : `picker:${intent.selection.action}`,
           });
         }
         const result = await execute(intent, owner);
@@ -3117,12 +3341,9 @@ export function createStateAuthority({
         reportSubmission(value);
       } else if (value.disposition === "outcome_unknown") {
         // The original prompt may already have crossed the consumption
-        // boundary. Move it permanently to review-only restoration; leaving it
+        // boundary. Move it permanently to non-replayable outcome evidence; leaving it
         // in custody would let a later barrier execute it a second time.
-        restoreCustody(
-          [item],
-          "Custody admission is uncertain; review this submission before retrying",
-        );
+        restoreCustody([item], "Custody admission is uncertain; submitted input was not restored");
       } else {
         // Keep the exact prefix recoverable. Its active marker is restored so
         // duplicate GUI ingress cannot silently replace it.
@@ -3411,7 +3632,7 @@ export function createStateAuthority({
           if (failed) {
             restoreCustody(
               custody.filter((item) => item.phase === "compaction"),
-              "Compaction ended without success; review this submission before retrying",
+              "Compaction ended without success; submitted input was not restored",
             );
           } else {
             scheduleCustodyDrain();
@@ -3461,6 +3682,10 @@ export function createStateAuthority({
         intentId: item.request.intentId,
         images: structuredClone(item.request.images ?? []),
       })),
+      // Entering custody acknowledged and visibly cleared each source. A
+      // later barrier failure can change execution outcome only; it must not
+      // return any of these submitted revisions to editor presentation.
+      clearedIntentIds: items.map((item) => item.request.intentId),
       certainty: "not_processed",
     };
     restorations.set(restorationId, restoration);
@@ -3495,7 +3720,7 @@ export function createStateAuthority({
         shouldDrain = false;
         restoreCancelledNavigationCustody(
           navigationBarrierId,
-          "Navigation was cancelled; review this submission before retrying",
+          "Navigation was cancelled; submitted input was not restored",
         );
       } else {
         observedOperation("navigation", "completed", { operationId: navigationOperationId });
@@ -3509,7 +3734,7 @@ export function createStateAuthority({
       shouldDrain = false;
       restoreCancelledNavigationCustody(
         navigationBarrierId,
-        "Navigation failed; review this submission before retrying",
+        "Navigation failed; submitted input was not restored",
       );
       throw error;
     } finally {
@@ -4120,7 +4345,7 @@ export function createStateAuthority({
       if (failed) {
         restoreCustody(
           custody.filter((item) => item.phase === "compaction"),
-          "Compaction ended without success; review this submission before retrying",
+          "Compaction ended without success; submitted input was not restored",
         );
       } else {
         scheduleCustodyDrain();
@@ -4166,7 +4391,7 @@ export function createStateAuthority({
       })),
       // A child can have accepted a wire intent but lose its process before a
       // terminal semantic frame is delivered. Preserve that exact owner-bound
-      // admission as review-only unknown work; it is never replayed here or by
+      // admission as non-replayable unknown work; it is never replayed here or by
       // a successor authority.
       dispatchedIntents: [...dispatchedIntents.values()]
         .filter((entry) => entry.admitted === true && !entry.outcome)

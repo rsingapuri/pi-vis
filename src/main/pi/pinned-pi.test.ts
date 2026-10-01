@@ -11,10 +11,11 @@ describe("getPinnedPi", () => {
     const info = getPinnedPi();
     expect(info).not.toBeNull();
     expect(info!.path.endsWith(path.join("dist", "cli.js"))).toBe(true);
+    expect(info!.cliPath.endsWith(path.join("dist", "bundle", "cli.js"))).toBe(true);
     expect(info!.path).toContain(path.join("@earendil-works", "pi-coding-agent"));
     expect(existsSync(info!.path)).toBe(true);
     expect(info!.version).toBe(PINNED_PI_VERSION);
-    expect(PINNED_PI_VERSION).toBe("0.84.2");
+    expect(PINNED_PI_VERSION).toBe("0.85.1");
   });
 
   it("ignores an existing override path unless the E2E seam is explicitly active", () => {
@@ -30,7 +31,7 @@ describe("getPinnedPi", () => {
     vi.stubEnv(TEST_PI_BINARY_OVERRIDE_ENV, "1");
     const override = fileURLToPath(import.meta.url);
     const info = getPinnedPi(override);
-    expect(info).toEqual({ path: override, version: "test-override" });
+    expect(info).toEqual({ path: override, cliPath: override, version: "test-override" });
   });
 
   it("falls back to the bundled runtime when the override path does not exist", () => {

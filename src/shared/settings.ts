@@ -19,6 +19,10 @@ const CodeFontSettingsSchema = z.object({
   sizePx: z.number().min(8).max(48),
 });
 
+const FontFamilySettingsSchema = z.object({
+  family: z.string(),
+});
+
 export const AppSettingsSchema = z.object({
   // TEST-ONLY seam: e2e fixtures point this at fake-pi scripts. Production
   // always runs the bundled pinned pi (see src/main/pi/pinned-pi.ts); there is
@@ -34,6 +38,12 @@ export const AppSettingsSchema = z.object({
     .object({
       display: DisplayFontSettingsSchema.default({ sizePx: 14 }),
       code: CodeFontSettingsSchema.default({ family: "IBM Plex Mono", sizePx: 14 }),
+      // Reading typography is independently configurable. These families are
+      // deliberately separate from `display`, which remains the fixed UI and
+      // Composer face so arbitrary font metrics cannot disturb controls.
+      title: FontFamilySettingsSchema.default({ family: "Fraunces" }),
+      transcriptHeader: FontFamilySettingsSchema.default({ family: "IBM Plex Serif" }),
+      transcriptBody: FontFamilySettingsSchema.default({ family: "Inter" }),
     })
     .default({}),
   // Manual workspace ordering. The sidebar renders workspaces in this

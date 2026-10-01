@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test.describe("Pi 0.84.2 extension entry inspectors", () => {
+test.describe("Pi 0.85.1 extension entry inspectors", () => {
   test("shows a collapsed raw card only after the extension renderer accepts the entry", async ({
     page,
   }) => {

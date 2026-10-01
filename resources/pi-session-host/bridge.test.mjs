@@ -143,23 +143,71 @@ function makeRuntime(session) {
 }
 
 function makeUiState(overrides = {}) {
-  const editorSnapshot =
+  const readSourceEditor =
     overrides.editorSnapshot ?? (() => ({ revision: 0, text: "", attachments: [] }));
-  let consumedShellEditor;
+  let consumedEditor;
+  const currentEditor = () => {
+    const source = readSourceEditor();
+    if (
+      consumedEditor &&
+      source.revision === consumedEditor.sourceRevision &&
+      source.text === consumedEditor.sourceText
+    ) {
+      return consumedEditor.editor;
+    }
+    return source;
+  };
+  const consumeEditor = (request, consumeAttachments) => {
+    const editor = currentEditor();
+    if (request.editorRevision !== editor.revision) return false;
+    if (request.inputKind === "slash_command" && request.text !== editor.text) return false;
+    consumedEditor = {
+      sourceRevision: editor.revision,
+      sourceText: editor.text,
+      editor: {
+        ...editor,
+        revision: editor.revision + 1,
+        text: "",
+        ...(consumeAttachments ? { attachments: [] } : {}),
+      },
+    };
+    return true;
+  };
   return {
     catalogSnapshot: () => ({}),
-    acceptEditorSubmission: () => false,
     applyEditorPatch: () => ({ accepted: false }),
     ...overrides,
-    editorSnapshot: () => consumedShellEditor ?? editorSnapshot(),
+    editorSnapshot: currentEditor,
+    acceptEditorSubmission:
+      overrides.acceptEditorSubmission ??
+      ((request) => consumeEditor(request, request.inputKind === "ordinary")),
     acceptShellEditorSubmission:
       overrides.acceptShellEditorSubmission ??
       ((request) => {
-        const editor = consumedShellEditor ?? editorSnapshot();
+        const editor = currentEditor();
         if (request.editorRevision !== editor.revision || request.editorText !== editor.text) {
           return false;
         }
-        consumedShellEditor = { ...editor, revision: editor.revision + 1, text: "" };
+        consumedEditor = {
+          sourceRevision: editor.revision,
+          sourceText: editor.text,
+          editor: { ...editor, revision: editor.revision + 1, text: "" },
+        };
+        return true;
+      }),
+    publishShellEditorSubmission:
+      overrides.publishShellEditorSubmission ??
+      ((request) => {
+        const editor = currentEditor();
+        return editor.revision === request.editorRevision + 1 && editor.text === "";
+      }),
+    rollbackShellEditorSubmission:
+      overrides.rollbackShellEditorSubmission ??
+      ((request) => {
+        if (request.surface === "unified") return true;
+        const editor = currentEditor();
+        if (editor.revision !== request.editorRevision + 1 || editor.text !== "") return false;
+        consumedEditor = undefined;
         return true;
       }),
   };
@@ -384,6 +432,7 @@ describe("setupCommandBridge — wiring", () => {
       intentId: "reload-editor-command",
       editorRevision: 7,
       text: "/reload",
+      inputKind: "slash_command",
     });
     expect(editor).toMatchObject({ text: "", attachments: [{ name: "notes.txt" }] });
     const batch = sendControl.mock.calls
@@ -426,7 +475,7 @@ describe("setupCommandBridge — wiring", () => {
     expect(batch?.terminalSnapshot.editor).toMatchObject(editor);
   });
 
-  it("preserves reload conflict custody instead of clearing the command text", async () => {
+  it("consumes reload command text while preserving independent conflict custody", async () => {
     const editor = {
       revision: 4,
       text: "/reload",
@@ -466,7 +515,16 @@ describe("setupCommandBridge — wiring", () => {
       ),
     );
 
-    expect(acceptEditorSubmission).not.toHaveBeenCalled();
+    expect(acceptEditorSubmission).toHaveBeenCalledWith({
+      intentId: "reload-editor-conflict",
+      editorRevision: 4,
+      text: "/reload",
+      inputKind: "slash_command",
+    });
+    expect(editor).toMatchObject({
+      conflictText: "newer draft",
+      conflictAttachments: [{ name: "conflict.txt" }],
+    });
   });
 
   it("preserves a newer retyped reload command", async () => {
@@ -1270,7 +1328,7 @@ describe("setupCommandBridge — target intent dispatch", () => {
     });
     expect(session.navigateTree).toHaveBeenCalledWith("leaf-9", { summarize: true });
     expect(session.setModel).toHaveBeenCalled();
-    expect(session.setThinkingLevel).toHaveBeenCalledWith("high");
+    expect(session.setThinkingLevel).toHaveBeenCalledWith("high", { persist: false });
     expect(session.setSessionName).toHaveBeenCalledWith("Renamed");
     expect(session.reload).toHaveBeenCalledOnce();
     // Both text intents use the child public prompt/extension path; no
@@ -2233,7 +2291,18 @@ describe("setupCommandBridge — target intent dispatch", () => {
           resolveCompact = resolve;
         }),
     );
-    const { session, send, dispatchIntent } = setup({ compact });
+    const { session, send, dispatchIntent } = setup(
+      { compact },
+      {
+        uiState: makeUiState({
+          editorSnapshot: () => ({
+            revision: 0,
+            text: "queued during compaction",
+            attachments: [],
+          }),
+        }),
+      },
+    );
     session.prompt.mockImplementation(async (_text, options) => options.preflightResult(true));
 
     await expect(
@@ -2243,18 +2312,18 @@ describe("setupCommandBridge — target intent dispatch", () => {
 
     // A prompt dispatched mid-compaction must reach custody immediately —
     // never sit behind the whole compaction in the serialized scheduler.
-    await expect(
-      dispatchIntent(
-        envelope("intent-mid-compaction", {
-          kind: "submit",
-          editorRevision: 0,
-          text: "queued during compaction",
-          images: [],
-          requestedMode: "followUp",
-          surface: "composer",
-        }),
-      ),
-    ).resolves.toMatchObject({ status: "admitted" });
+    const midCompactionReceipt = await dispatchIntent(
+      envelope("intent-mid-compaction", {
+        kind: "submit",
+        editorRevision: 0,
+        text: "queued during compaction",
+        inputKind: "ordinary",
+        images: [],
+        requestedMode: "followUp",
+        surface: "composer",
+      }),
+    );
+    expect(midCompactionReceipt).toMatchObject({ status: "admitted" });
     await vi.waitFor(() =>
       expect(send).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2555,7 +2624,13 @@ describe("setupCommandBridge — target intent dispatch", () => {
   it("runs replacement built-ins through runtime, emits one predecessor outcome, and follows with a valid successor frame", async () => {
     const sendControl = vi.fn();
     const sendFrame = vi.fn();
-    const { session, runtime, dispatchIntent } = setup(undefined, { sendControl, sendFrame });
+    const { session, runtime, dispatchIntent } = setup(undefined, {
+      sendControl,
+      sendFrame,
+      uiState: makeUiState({
+        editorSnapshot: () => ({ revision: 0, text: "/new", attachments: [] }),
+      }),
+    });
     const successor = makeSession({ sessionId: "successor", sessionFile: "/s/successor.jsonl" });
     runtime.newSession.mockImplementationOnce(async () => {
       await runtime.setRebindSession.mock.calls[0][0](successor);
@@ -2604,30 +2679,146 @@ describe("setupCommandBridge — target intent dispatch", () => {
     });
   });
 
-  it("maps app built-ins without falling through to prompt", async () => {
-    const { session, dispatchIntent } = setup({
-      sessionManager: {
-        getLeafId: vi.fn(() => "leaf-9"),
-        appendLabelChange: vi.fn(),
-      },
-      modelRuntime: {
-        getAvailable: vi.fn(async () => [{ provider: "anthropic", id: "claude-x" }]),
-        logout: vi.fn(async () => {}),
+  it("executes one typed fork picker continuation after source clear while ordinary slash remains editor-bound", async () => {
+    const sendFrame = vi.fn();
+    const runWithInvocationSurface = vi.fn((_surface, operation) => operation());
+    const { session, runtime, dispatchIntent } = setup(undefined, {
+      sendFrame,
+      runWithInvocationSurface,
+      uiState: makeUiState({
+        editorSnapshot: () => ({ revision: 8, text: "", attachments: [] }),
+      }),
+    });
+    const successor = makeSession({ sessionId: "forked", sessionFile: "/s/forked.jsonl" });
+    runtime.fork.mockImplementationOnce(async () => {
+      await runtime.setRebindSession.mock.calls[0][0](successor);
+      return { cancelled: false };
+    });
+
+    await expect(
+      dispatchIntent(
+        envelope("stale-slash-fork", {
+          kind: "invokeCommand",
+          text: "/fork entry-7",
+          editorRevision: 8,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "not_admitted", reason: "stale_editor" });
+
+    const continuation = envelope("picker-fork", {
+      kind: "pickerAction",
+      selection: { action: "fork", entryId: "entry-7" },
+      surface: "composer",
+    });
+    const first = dispatchIntent(continuation);
+    const duplicate = dispatchIntent(continuation);
+    await expect(first).resolves.toMatchObject({ status: "admitted" });
+    await expect(duplicate).resolves.toMatchObject({ status: "duplicate" });
+    await vi.waitFor(() => expect(runtime.fork).toHaveBeenCalledOnce());
+    expect(runtime.fork).toHaveBeenCalledWith("entry-7");
+    expect(runWithInvocationSurface).toHaveBeenCalledWith("composer", expect.any(Function));
+    expect(session.prompt).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(sendFrame.mock.calls.flatMap(([frame]) => frame.records)).toContainEqual(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({
+            intentId: "picker-fork",
+            kind: "pickerAction",
+            state: "completed",
+            result: { action: "fork" },
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("settles a cancelled fork picker continuation as terminally cancelled", async () => {
+    const sendFrame = vi.fn();
+    const { runtime, dispatchIntent } = setup(undefined, { sendFrame });
+    runtime.fork.mockResolvedValueOnce({ cancelled: true });
+
+    await expect(
+      dispatchIntent(
+        envelope("cancelled-picker-fork", {
+          kind: "pickerAction",
+          selection: { action: "fork", entryId: "entry-7" },
+          surface: "composer",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "admitted" });
+
+    await vi.waitFor(() =>
+      expect(sendFrame.mock.calls.flatMap(([frame]) => frame.records)).toContainEqual(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({
+            intentId: "cancelled-picker-fork",
+            kind: "pickerAction",
+            state: "cancelled",
+            result: { action: "fork" },
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("keeps bounded picker continuations app-owned when discovered commands collide", async () => {
+    const successor = makeSession({ sessionId: "forked", sessionFile: "/s/forked.jsonl" });
+    const collidingCommand = { name: "fork" };
+    const { session, runtime, dispatchIntent } = setup({
+      extensionRunner: {
+        ...makeSession().extensionRunner,
+        getCommand: vi.fn((name) => (name === "fork" ? collidingCommand : undefined)),
       },
     });
+    runtime.fork.mockImplementationOnce(async () => {
+      await runtime.setRebindSession.mock.calls[0][0](successor);
+      return { cancelled: false };
+    });
+
+    await expect(
+      dispatchIntent(
+        envelope("rebound-picker-fork", {
+          kind: "pickerAction",
+          selection: { action: "fork", entryId: "entry-7" },
+          surface: "composer",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await vi.waitFor(() => expect(runtime.fork).toHaveBeenCalledWith("entry-7"));
+    expect(session.prompt).not.toHaveBeenCalled();
+  });
+
+  it("maps app built-ins without falling through to prompt", async () => {
+    let editor = { revision: 0, text: "", attachments: [] };
+    const { session, dispatchIntent } = setup(
+      {
+        sessionManager: {
+          getLeafId: vi.fn(() => "leaf-9"),
+          appendLabelChange: vi.fn(),
+        },
+        modelRuntime: {
+          getAvailable: vi.fn(async () => [{ provider: "anthropic", id: "claude-x" }]),
+          logout: vi.fn(async () => {}),
+        },
+      },
+      { uiState: makeUiState({ editorSnapshot: () => editor }) },
+    );
     const commands = [
       ["export", "/export /tmp/out.html"],
       ["models", "/models apply anthropic/claude-x"],
       ["logout", "/logout anthropic"],
       ["label", "/label entry-1 checkpoint"],
     ];
-    for (const [id, text] of commands) {
+    for (const [index, [id, text]] of commands.entries()) {
+      editor = { ...editor, revision: index, text };
       await expect(
         dispatchIntent(
           envelope(`builtin-${id}`, {
             kind: "invokeCommand",
             text,
-            editorRevision: 0,
+            editorRevision: index,
           }),
         ),
       ).resolves.toMatchObject({ status: "admitted" });
@@ -2640,19 +2831,54 @@ describe("setupCommandBridge — target intent dispatch", () => {
     expect(session.prompt).not.toHaveBeenCalled();
   });
 
+  it("keeps model/thinking changes session-only unless the typed intent persists them", async () => {
+    const model = { provider: "anthropic", id: "claude-x", name: "Claude X" };
+    const { session, dispatchIntent } = setup({
+      modelRuntime: { getAvailable: vi.fn(async () => [model]) },
+    });
+
+    for (const [id, intent] of [
+      ["session-model", { kind: "setModel", provider: "anthropic", modelId: "claude-x" }],
+      [
+        "default-model",
+        { kind: "setModel", provider: "anthropic", modelId: "claude-x", persist: true },
+      ],
+      ["session-thinking", { kind: "setThinking", level: "high" }],
+      ["default-thinking", { kind: "setThinking", level: "max", persist: true }],
+    ]) {
+      await expect(dispatchIntent(envelope(id, intent))).resolves.toMatchObject({
+        status: "admitted",
+      });
+    }
+    await vi.waitFor(() => expect(session.setThinkingLevel).toHaveBeenCalledTimes(2));
+
+    expect(session.setModel).toHaveBeenNthCalledWith(1, model, { persist: false });
+    expect(session.setModel).toHaveBeenNthCalledWith(2, model, { persist: true });
+    expect(session.setThinkingLevel).toHaveBeenNthCalledWith(1, "high", { persist: false });
+    expect(session.setThinkingLevel).toHaveBeenNthCalledWith(2, "max", { persist: true });
+  });
+
   it("round-trips model-scope patterns containing whitespace and commas", async () => {
     const enabledIds = ["anthropic/claude-x", "Old Claude, Model"];
-    const { session, dispatchIntent } = setup({
-      modelRuntime: {
-        getAvailable: vi.fn(async () => [{ provider: "anthropic", id: "claude-x" }]),
+    const text = `/models save --json ${JSON.stringify(enabledIds)}`;
+    const { session, dispatchIntent } = setup(
+      {
+        modelRuntime: {
+          getAvailable: vi.fn(async () => [{ provider: "anthropic", id: "claude-x" }]),
+        },
       },
-    });
+      {
+        uiState: makeUiState({
+          editorSnapshot: () => ({ revision: 0, text, attachments: [] }),
+        }),
+      },
+    );
 
     await expect(
       dispatchIntent(
         envelope("encoded-model-scope", {
           kind: "invokeCommand",
-          text: `/models save --json ${JSON.stringify(enabledIds)}`,
+          text,
           editorRevision: 0,
         }),
       ),
@@ -2661,6 +2887,51 @@ describe("setupCommandBridge — target intent dispatch", () => {
       expect(session.settingsManager.setEnabledModels).toHaveBeenCalledWith(enabledIds),
     );
     expect(session.setScopedModels).toHaveBeenCalledWith([]);
+    expect(session.prompt).not.toHaveBeenCalled();
+  });
+
+  it("maps scoped-model and logout picker selections through the live built-in resolver", async () => {
+    const enabledIds = ["anthropic/claude-x", "Saved pattern, with spaces"];
+    const runWithInvocationSurface = vi.fn((_surface, operation) => operation());
+    const { session, dispatchIntent } = setup(
+      {
+        promptTemplates: [{ name: "models" }],
+        resourceLoader: { getSkills: vi.fn(() => ({ skills: [{ name: "logout" }] })) },
+        modelRuntime: {
+          ...makeSession().modelRuntime,
+          getAvailable: vi.fn(async () => [{ provider: "anthropic", id: "claude-x" }]),
+          logout: vi.fn(async () => {}),
+        },
+      },
+      { runWithInvocationSurface },
+    );
+
+    await expect(
+      dispatchIntent(
+        envelope("picker-model-scope", {
+          kind: "pickerAction",
+          selection: { action: "setScopedModels", enabledIds, persist: true },
+          surface: "unified",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "admitted" });
+    await expect(
+      dispatchIntent(
+        envelope("picker-logout", {
+          kind: "pickerAction",
+          selection: { action: "logoutProvider", providerId: "anthropic" },
+          surface: "unified",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "admitted" });
+
+    await vi.waitFor(() =>
+      expect(session.settingsManager.setEnabledModels).toHaveBeenCalledWith(enabledIds),
+    );
+    await vi.waitFor(() => expect(session.modelRuntime.logout).toHaveBeenCalledWith("anthropic"));
+    expect(runWithInvocationSurface).toHaveBeenCalledTimes(2);
+    expect(runWithInvocationSurface).toHaveBeenNthCalledWith(1, "unified", expect.any(Function));
+    expect(runWithInvocationSurface).toHaveBeenNthCalledWith(2, "unified", expect.any(Function));
     expect(session.prompt).not.toHaveBeenCalled();
   });
 
@@ -2784,7 +3055,7 @@ describe("setupCommandBridge — target intent dispatch", () => {
     expect(JSON.stringify(send.mock.calls)).not.toContain("never-publish-logout-url-header-secret");
   });
 
-  it("leaves a template that shadows a builtin on Pi's prompt path", async () => {
+  it("keeps app-owned built-ins authoritative over colliding prompt templates", async () => {
     const { session, runtime, dispatchIntent } = setup(
       { promptTemplates: [{ name: "new" }] },
       {
@@ -2793,13 +3064,17 @@ describe("setupCommandBridge — target intent dispatch", () => {
         }),
       },
     );
-    session.prompt.mockImplementation(async (_text, options) => options.preflightResult(true));
+    const successor = makeSession({ sessionId: "new", sessionFile: "/s/new.jsonl" });
+    runtime.newSession.mockImplementationOnce(async () => {
+      await runtime.setRebindSession.mock.calls[0][0](successor);
+      return { cancelled: false };
+    });
 
     await dispatchIntent(
       envelope("template-new", { kind: "invokeCommand", text: "/new", editorRevision: 0 }),
     );
-    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalledWith("/new", expect.any(Object)));
-    expect(runtime.newSession).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(runtime.newSession).toHaveBeenCalledOnce());
+    expect(session.prompt).not.toHaveBeenCalled();
   });
 
   it("deduplicates same-owner IDs, rejects conflicts and fences stale owners before Pi", async () => {

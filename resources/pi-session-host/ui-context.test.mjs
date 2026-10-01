@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { stripVTControlCharacters } from "node:util";
 import { describe, expect, it, vi } from "vitest";
-import { createDialogResolver, createUIContext } from "./ui-context.mjs";
+import { applyTuiRuntimeSettings, createDialogResolver, createUIContext } from "./ui-context.mjs";
 
 // The host's ExtensionUIContext must hand extensions the SAME return values pi's
 // own uiContext does, or extension menu code breaks. The canonical contract
@@ -313,7 +313,7 @@ describe("uiContext fire-and-forget + no-op methods", () => {
 const PNG_1X1 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-function makeHarness(tuiModuleOverrides = {}) {
+function makeHarness(tuiModuleOverrides = {}, tuiConfig = {}) {
   const sendToMain = vi.fn();
   let panelCounter = 0;
   const panelBridge = {
@@ -322,6 +322,8 @@ function makeHarness(tuiModuleOverrides = {}) {
     setPanelMode: vi.fn(),
     setInputHandler: vi.fn(),
     clearInputHandler: vi.fn(),
+    setInputFence: vi.fn(),
+    clearInputFence: vi.fn(),
     writePanel: vi.fn(),
     setResizeHandler: vi.fn(),
     setCanceller: vi.fn(),
@@ -330,8 +332,11 @@ function makeHarness(tuiModuleOverrides = {}) {
 
   const tuis = [];
   class FakeTuiMainScreen {
-    constructor(terminal) {
+    constructor(terminal, showHardwareCursor, logDirectory) {
       this.terminal = terminal;
+      this.showHardwareCursor = showHardwareCursor;
+      this.logDirectory = logDirectory;
+      this.clearOnShrink = undefined;
       this.children = [];
       this.inputListeners = new Set();
       this.stopped = false;
@@ -344,6 +349,9 @@ function makeHarness(tuiModuleOverrides = {}) {
       this.stopped = true;
     }
     requestRender() {}
+    setClearOnShrink(enabled) {
+      this.clearOnShrink = enabled;
+    }
     setFocus(c) {
       this.focused = c;
     }
@@ -421,6 +429,7 @@ function makeHarness(tuiModuleOverrides = {}) {
     createDialog: vi.fn(),
     sendToMain,
     tuiModules,
+    tuiConfig,
   });
 
   return {
@@ -496,6 +505,82 @@ describe("unified TUI: terminal paint publication", () => {
     await Promise.resolve();
     expect(h.panelBridge.writePanel).toHaveBeenLastCalledWith(1, "later-frame");
     expect(h.panelBridge.writePanel).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("pi-tui 0.85 explicit main-screen configuration", () => {
+  it("refreshes public settings and terminal capability overrides on every runtime bind", () => {
+    const piTui = { setCapabilityOverrides: vi.fn() };
+    const tuiConfig = {};
+    const firstSettings = {
+      getShowHardwareCursor: vi.fn(() => true),
+      getClearOnShrink: vi.fn(() => false),
+      getTerminalCapabilityOverrides: vi.fn(() => ({ images: "kitty" })),
+    };
+    const secondSettings = {
+      getShowHardwareCursor: vi.fn(() => false),
+      getClearOnShrink: vi.fn(() => true),
+      getTerminalCapabilityOverrides: vi.fn(() => ({ images: undefined })),
+    };
+
+    expect(applyTuiRuntimeSettings(piTui, firstSettings, "/agent/one", tuiConfig)).toBe(tuiConfig);
+    expect(tuiConfig).toEqual({
+      showHardwareCursor: true,
+      clearOnShrink: false,
+      logDirectory: "/agent/one",
+    });
+    expect(piTui.setCapabilityOverrides).toHaveBeenLastCalledWith({ images: "kitty" });
+
+    applyTuiRuntimeSettings(piTui, secondSettings, "/agent/two", tuiConfig);
+    expect(tuiConfig).toEqual({
+      showHardwareCursor: false,
+      clearOnShrink: true,
+      logDirectory: "/agent/two",
+    });
+    expect(piTui.setCapabilityOverrides).toHaveBeenLastCalledWith({ images: undefined });
+    expect(piTui.setCapabilityOverrides).toHaveBeenCalledTimes(2);
+  });
+
+  it("applies cursor, log, and shrink settings at the unified construction site", () => {
+    const h = makeHarness(
+      {},
+      {
+        showHardwareCursor: true,
+        clearOnShrink: true,
+        logDirectory: "/tmp/pivis-tui-logs",
+      },
+    );
+
+    h.context.setWidget("configured", makeFactory());
+
+    expect(h.tui.showHardwareCursor).toBe(true);
+    expect(h.tui.logDirectory).toBe("/tmp/pivis-tui-logs");
+    expect(h.tui.clearOnShrink).toBe(true);
+  });
+
+  it("applies cursor, log, and shrink settings at the standalone custom construction site", async () => {
+    const h = makeHarness(
+      {},
+      {
+        showHardwareCursor: false,
+        clearOnShrink: true,
+        logDirectory: "/tmp/pivis-standalone-tui-logs",
+      },
+    );
+    let done;
+    const custom = h.context.custom((_tui, _theme, _keybindings, finish) => {
+      done = finish;
+      return { render: () => [], dispose() {} };
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(h.tui.showHardwareCursor).toBe(false);
+    expect(h.tui.logDirectory).toBe("/tmp/pivis-standalone-tui-logs");
+    expect(h.tui.clearOnShrink).toBe(true);
+
+    done(undefined);
+    await custom;
   });
 });
 
@@ -1087,7 +1172,7 @@ describe("unified TUI: setWidget factory routing", () => {
     expect(h.panelBridge.closePanel).toHaveBeenCalledWith(panelId);
   });
 
-  it("a failed/bailed pending submit restores text and keeps a widgetless TUI alive", () => {
+  it("a failed/bailed pending submit never restores text and releases a widgetless TUI", () => {
     const h = makeHarness();
     h.context.setWidget("k", makeFactory());
     const tui = h.tui;
@@ -1098,12 +1183,11 @@ describe("unified TUI: setWidget factory routing", () => {
     h.context.setWidget("k", undefined);
     expect(tui.stopped).toBe(false);
 
-    h.editor.getExpandedText.mockReturnValue("retry me");
     h.unified.resolveSubmit(lastSubmitId(h.sendToMain), { ok: false, bailed: true });
 
-    expect(h.editor.setText).toHaveBeenCalledWith("retry me");
-    expect(tui.stopped).toBe(false);
-    expect(h.panelBridge.closePanel).not.toHaveBeenCalled();
+    expect(h.editor.setText).not.toHaveBeenCalledWith("retry me");
+    expect(tui.stopped).toBe(true);
+    expect(h.panelBridge.closePanel).toHaveBeenCalled();
   });
 
   it("a new factory widget registered while draft-held prevents close after submit", () => {
@@ -1127,33 +1211,33 @@ describe("unified TUI: setWidget factory routing", () => {
   });
 });
 
-describe("unified TUI: authoritative submit draft", () => {
-  it("retains submitted text until custody and preserves concurrent typing as a conflict", () => {
+describe("unified TUI: irreversible submit presentation", () => {
+  it("commits the clear immediately and preserves concurrent typing as the current draft", () => {
     const h = makeHarness();
     h.context.setWidget("k", makeFactory());
 
     h.editor.onSubmit("submitted draft");
     const id = lastSubmitId(h.sendToMain);
     expect(h.bundle.state.editorSnapshot()).toMatchObject({
-      revision: 0,
-      text: "submitted draft",
+      revision: 1,
+      text: "",
     });
 
     expect(
-      h.bundle.state.applyEditorPatch({ baseRevision: 0, revision: 1, text: "new local text" }),
-    ).toMatchObject({ accepted: true, revision: 1 });
+      h.bundle.state.applyEditorPatch({ baseRevision: 1, revision: 2, text: "new local text" }),
+    ).toMatchObject({ accepted: true, revision: 2 });
     expect(h.bundle.state.editorSnapshot()).toMatchObject({
-      text: "submitted draft",
-      conflictText: "new local text",
+      revision: 2,
+      text: "new local text",
     });
 
     h.editor.getText.mockReturnValue("new local text");
     h.unified.resolveSubmit(id, { ok: false, bailed: true });
     expect(h.bundle.state.editorSnapshot()).toMatchObject({
-      revision: 1,
+      revision: 2,
       text: "new local text",
-      conflictText: "submitted draft",
     });
+    expect(h.bundle.state.editorSnapshot().conflictText).toBeUndefined();
   });
 
   it("replicates unsent attachments with revisioned editor patches", () => {
@@ -1205,6 +1289,75 @@ describe("unified TUI: authoritative submit draft", () => {
       revision: 2,
       text: "",
       attachments,
+    });
+  });
+
+  it("Unified slash and Shell clears preserve staged attachments and every conflict", () => {
+    for (const source of ["/widget-on", "!pwd"]) {
+      const h = makeHarness();
+      h.context.setWidget("k", makeFactory());
+      const attachments = [{ kind: "file", name: "notes.txt", path: "/tmp/notes.txt" }];
+      expect(
+        h.bundle.state.applyEditorPatch({
+          baseRevision: 0,
+          revision: 1,
+          text: source,
+          attachments,
+        }),
+      ).toMatchObject({ accepted: true });
+      expect(
+        h.bundle.state.applyEditorPatch({
+          baseRevision: 0,
+          revision: 1,
+          text: "newer conflict",
+          attachments: [{ kind: "file", name: "newer.txt", path: "/tmp/newer.txt" }],
+          alternateConflictText: "alternate conflict",
+          additionalConflictCandidates: [{ text: "third conflict", attachments: [] }],
+        }),
+      ).toMatchObject({ accepted: false });
+
+      h.editor.onSubmit(source);
+
+      expect(h.bundle.state.editorSnapshot()).toMatchObject({
+        revision: 2,
+        text: "",
+        attachments,
+        conflictText: "newer conflict",
+        alternateConflictText: "alternate conflict",
+        additionalConflictCandidates: [{ text: "third conflict", attachments: [] }],
+      });
+      expect(lastSubmitRequest(h.sendToMain).editorAttachments).toEqual(attachments);
+    }
+  });
+
+  it("an ordinary Unified clear consumes its attachments but preserves independent conflicts", () => {
+    const h = makeHarness();
+    h.context.setWidget("k", makeFactory());
+    expect(
+      h.bundle.state.applyEditorPatch({
+        baseRevision: 0,
+        revision: 1,
+        text: "primary prompt",
+        attachments: [{ kind: "file", name: "primary.txt", path: "/tmp/primary.txt" }],
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(
+      h.bundle.state.applyEditorPatch({
+        baseRevision: 0,
+        revision: 1,
+        text: "newer independent draft",
+        attachments: [{ kind: "file", name: "newer.txt", path: "/tmp/newer.txt" }],
+      }),
+    ).toMatchObject({ accepted: false });
+
+    h.editor.onSubmit("primary prompt");
+
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({
+      revision: 2,
+      text: "",
+      attachments: [],
+      conflictText: "newer independent draft",
+      conflictAttachments: [{ kind: "file", name: "newer.txt", path: "/tmp/newer.txt" }],
     });
   });
 
@@ -1332,8 +1485,19 @@ describe("unified TUI: authoritative submit draft", () => {
     ).toMatchObject({ accepted: true });
 
     h.editor.onSubmit("Explain these notes");
+    const request = lastSubmitRequest(h.sendToMain);
+    expect(request).toMatchObject({
+      editorRevision: 1,
+      editorAttachments: attachments,
+    });
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({
+      revision: 2,
+      text: "",
+      attachments: [],
+    });
     expect(
       h.bundle.state.acceptEditorSubmission({
+        intentId: request.submissionIntentId,
         editorRevision: 1,
         text: "/tmp/notes.txt\n\nExplain these notes",
         inputKind: "ordinary",
@@ -1346,7 +1510,33 @@ describe("unified TUI: authoritative submit draft", () => {
     });
   });
 
-  it("acknowledges the exact pending intent when two unified submits share a revision", () => {
+  it("exact-binds a pending Unified slash command before acknowledgement", () => {
+    const h = makeHarness();
+    h.context.setWidget("k", makeFactory());
+    h.editor.onSubmit("/safe");
+    const request = lastSubmitRequest(h.sendToMain);
+
+    expect(
+      h.bundle.state.acceptEditorSubmission({
+        intentId: request.submissionIntentId,
+        editorRevision: request.editorRevision,
+        text: "/different-effect",
+        inputKind: "slash_command",
+        surface: "unified",
+      }),
+    ).toBe(false);
+    expect(
+      h.bundle.state.acceptEditorSubmission({
+        intentId: request.submissionIntentId,
+        editorRevision: request.editorRevision,
+        text: "/safe",
+        inputKind: "slash_command",
+        surface: "unified",
+      }),
+    ).toBe(true);
+  });
+
+  it("acknowledges two rapid pending sources without clearing or masking a newer draft", () => {
     const h = makeHarness();
     h.context.setWidget("k", makeFactory());
     const attachments = [{ kind: "file", name: "notes.txt", path: "/tmp/notes.txt" }];
@@ -1361,43 +1551,67 @@ describe("unified TUI: authoritative submit draft", () => {
 
     h.editor.onSubmit("first prompt");
     const first = lastSubmitRequest(h.sendToMain);
+    expect(
+      h.bundle.state.applyEditorPatch({
+        baseRevision: 2,
+        revision: 3,
+        text: "Explain these notes",
+        attachments,
+      }),
+    ).toMatchObject({ accepted: true, revision: 3 });
     h.editor.onSubmit("Explain these notes");
     const second = lastSubmitRequest(h.sendToMain);
     expect(first.editorRevision).toBe(1);
-    expect(second.editorRevision).toBe(1);
+    expect(second.editorRevision).toBe(3);
+
+    const newerAttachments = [{ kind: "file", name: "newer.txt", path: "/tmp/newer.txt" }];
+    expect(
+      h.bundle.state.applyEditorPatch({
+        baseRevision: 4,
+        revision: 5,
+        text: "newer unsent draft",
+        attachments: newerAttachments,
+      }),
+    ).toMatchObject({ accepted: true, revision: 5 });
+
+    expect(
+      h.bundle.state.acceptEditorSubmission({
+        intentId: first.submissionIntentId,
+        editorRevision: 1,
+        text: "first prompt with transformed diff comments",
+        inputKind: "ordinary",
+      }),
+    ).toBe(true);
 
     expect(
       h.bundle.state.acceptEditorSubmission({
         intentId: second.submissionIntentId,
-        editorRevision: 1,
+        editorRevision: 3,
         text: "/tmp/notes.txt\n\nExplain these notes",
         inputKind: "ordinary",
       }),
     ).toBe(true);
     expect(h.bundle.state.editorSnapshot()).toMatchObject({
-      revision: 1,
-      text: "first prompt",
-      attachments: [],
+      revision: 5,
+      text: "newer unsent draft",
+      attachments: newerAttachments,
     });
 
-    // Resolving the acknowledged second request must not advance the editor a
-    // second time. If the first pending item had been marked by revision
-    // alone, this compare-and-set patch would see revision 3 and be rejected.
+    // Stale replies retire only their source custody, in either order.
     h.unified.resolveSubmit(second.id, { ok: true });
-    expect(
-      h.bundle.state.applyEditorPatch({
-        baseRevision: 2,
-        revision: 3,
-        text: "new draft",
-      }),
-    ).toMatchObject({ accepted: true, revision: 3 });
+    h.unified.resolveSubmit(first.id, { ok: false, bailed: true });
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({
+      revision: 5,
+      text: "newer unsent draft",
+      attachments: newerAttachments,
+    });
   });
 
-  it("clears the authoritative pending draft only after custody", () => {
+  it("keeps the authoritative clear when custody later succeeds", () => {
     const h = makeHarness();
     h.context.setWidget("k", makeFactory());
     h.editor.onSubmit("accepted draft");
-    expect(h.bundle.state.editorSnapshot().text).toBe("accepted draft");
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({ revision: 1, text: "" });
 
     h.unified.resolveSubmit(lastSubmitId(h.sendToMain), { ok: true });
     expect(h.bundle.state.editorSnapshot()).toMatchObject({ revision: 1, text: "" });
@@ -1417,7 +1631,7 @@ describe("unified TUI: authoritative submit draft", () => {
     ).toMatchObject({ accepted: true });
 
     h.editor.onSubmit("/reload");
-    expect(h.bundle.state.editorSnapshot()).toMatchObject({ revision: 1, text: "/reload" });
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({ revision: 2, text: "", attachments });
     expect(h.bundle.state.acceptEditorSubmission({ editorRevision: 1, text: "/reload" })).toBe(
       true,
     );
@@ -1554,7 +1768,7 @@ describe("unified TUI: onTerminalInput (pre-editor input chain)", () => {
   });
 });
 
-describe("unified TUI: editor submit + guard bail-restore", () => {
+describe("unified TUI: editor submit + guard settlement", () => {
   it("onSubmit sends the authoritative editor revision with the text", async () => {
     const h = makeHarness();
     h.context.setWidget("k", makeFactory());
@@ -1591,13 +1805,14 @@ describe("unified TUI: editor submit + guard bail-restore", () => {
     expect(h.editor.setText).not.toHaveBeenCalled();
   });
 
-  it("ok:false + bailed restores the snapshot when the editor is still empty (user did not type)", () => {
+  it("ok:false + bailed never restores the submitted source into an empty editor", () => {
     const h = makeHarness();
     h.context.setWidget("k", makeFactory());
     h.editor.getText.mockReturnValue(""); // pi cleared it; user hasn't typed since
     h.editor.onSubmit("my prompt");
     h.unified.resolveSubmit(lastSubmitId(h.sendToMain), { ok: false, bailed: true });
-    expect(h.editor.setText).toHaveBeenCalledWith("my prompt");
+    expect(h.editor.setText).not.toHaveBeenCalledWith("my prompt");
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({ revision: 1, text: "" });
   });
 
   it("ok:false + bailed does NOT restore when the user typed during the round-trip (new text wins)", () => {
@@ -1609,7 +1824,7 @@ describe("unified TUI: editor submit + guard bail-restore", () => {
     expect(h.editor.setText).not.toHaveBeenCalled();
   });
 
-  it("preserves a pending submit through renderer-loss disposal and restores it on bail", () => {
+  it("preserves dispatch custody through renderer loss without restoring presentation on bail", () => {
     const h = makeHarness();
     h.context.setWidget("k", makeFactory());
     h.editor.onSubmit("reload-safe prompt");
@@ -1621,12 +1836,13 @@ describe("unified TUI: editor submit + guard bail-restore", () => {
         id,
         text: "reload-safe prompt",
         revision: 0,
+        attachments: [],
         submissionIntentId: expect.any(String),
       },
     ]);
     h.unified.resolveSubmit(id, { ok: false, bailed: true });
 
-    expect(h.bundle.state.editorSnapshot()).toMatchObject({ text: "reload-safe prompt" });
+    expect(h.bundle.state.editorSnapshot()).toMatchObject({ revision: 1, text: "" });
   });
 
   it("a resolveSubmit for an id cleared by explicit dispose is a no-op (late reply after teardown)", () => {
@@ -1674,7 +1890,9 @@ describe("unified TUI: clipboard image paste (input-listener driven)", () => {
     for (const l of h.tui.inputListeners) l("\x1bv");
 
     const id = lastClipboardId(h.sendToMain);
-    h.unified.resolveClipboardImage(id, { bytes: PNG_1X1, mimeType: "image/png" });
+    expect(h.unified.resolveClipboardImage(id, { bytes: PNG_1X1, mimeType: "image/png" })).toBe(
+      true,
+    );
 
     expect(h.editor.insertTextAtCursor).toHaveBeenCalledTimes(1);
     const inserted = h.editor.insertTextAtCursor.mock.calls[0][0];
@@ -1730,7 +1948,9 @@ describe("unified TUI: clipboard image paste (input-listener driven)", () => {
     for (const l of h.tui.inputListeners) l("\x1bv");
     const id = lastClipboardId(h.sendToMain);
 
-    h.unified.resolveClipboardImage(id, { bytes: undefined, mimeType: undefined });
+    expect(h.unified.resolveClipboardImage(id, { bytes: undefined, mimeType: undefined })).toBe(
+      false,
+    );
     expect(h.editor.insertTextAtCursor).not.toHaveBeenCalled();
   });
 

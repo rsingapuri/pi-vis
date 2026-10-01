@@ -81,6 +81,19 @@ describe("parseComposerInput — built-ins", () => {
     });
   });
 
+  it("/thinking → thinking picker (no search)", () => {
+    expect(parseComposerInput("/thinking", { discovered: new Map() })).toEqual({
+      kind: "thinking",
+    });
+  });
+
+  it("/thinking high → exact thinking-level search", () => {
+    expect(parseComposerInput("/thinking high", { discovered: new Map() })).toEqual({
+      kind: "thinking",
+      search: "high",
+    });
+  });
+
   it("/name → name with no arg", () => {
     expect(parseComposerInput("/name", { discovered: new Map() })).toEqual({ kind: "name" });
   });

@@ -1,4 +1,5 @@
 import type { SessionId } from "@shared/ids.js";
+import type { IpcInvokeContract } from "@shared/ipc-contract.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
 import type {
   AgentSessionSnapshot,
@@ -1296,6 +1297,12 @@ function outcomeFor(
       return { ...base, kind: "compact", result: {} };
     case "invokeCommand":
       return { ...base, kind: "invokeCommand", result: { commandType: "preview" } };
+    case "pickerAction":
+      return {
+        ...base,
+        kind: "pickerAction",
+        result: { action: intent.selection.action },
+      };
     case "runBash":
       return { ...base, kind: "runBash", result: { started: state === "completed" } };
     case "setTrust":
@@ -1486,6 +1493,9 @@ async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
       case "invokeCommand":
         await sleep(50);
         break;
+      case "pickerAction":
+        await sleep(50);
+        break;
       case "runBash":
         await handlePreviewRequest({ type: "bash", command: intent.command });
         break;
@@ -1624,6 +1634,9 @@ const settingsState = {
   fonts: {
     display: { sizePx: 14 },
     code: { family: "monospace", sizePx: 13 },
+    title: { family: "Fraunces" },
+    transcriptHeader: { family: "IBM Plex Serif" },
+    transcriptBody: { family: "Inter" },
   },
   workspaceOrder: [DEMO_WORKSPACE],
   expandedWorkspaces: [DEMO_WORKSPACE],
@@ -1689,7 +1702,12 @@ const stub = {
   invoke: async (channel: string, req?: unknown) => {
     switch (channel) {
       case "pi.info":
-        return { version: "0.84.2-stub" };
+        return { version: "0.85.1-stub" };
+      case "pi.changelog":
+        return {
+          ok: true,
+          markdown: "# Preview changelog heading\n\nPreview changelog body.",
+        };
       case "extensionUpdates.status":
         return previewExtensionUpdateStatus;
       case "extensionUpdates.check": {
@@ -2031,6 +2049,21 @@ const stub = {
           text: patch.text,
           attachments: patch.attachments,
         };
+      }
+      case "session.consumeEditorSource": {
+        const request = req as IpcInvokeContract["session.consumeEditorSource"]["req"];
+        const stagedAttachments =
+          useSessionsStore.getState().sessions.get(request.sessionId)?.editorAttachments ?? [];
+        const response: IpcInvokeContract["session.consumeEditorSource"]["res"] = {
+          accepted: true,
+          sourceRevision: request.editorRevision,
+          editor: {
+            revision: request.editorRevision + 1,
+            text: "",
+            attachments: request.consumeAttachments ? [] : structuredClone(stagedAttachments),
+          },
+        };
+        return response;
       }
       case "session.transcriptForEntries":
         // Render a tiny representative transcript so designers can iterate on

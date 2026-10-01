@@ -33,6 +33,7 @@ export type ComposerAction =
   // Built-in slash commands. Each variant carries the exact parsed argument
   // shape TUI would extract; executeAction turns them into RPC calls.
   | { kind: "model"; search?: string }
+  | { kind: "thinking"; search?: string }
   | { kind: "name"; name?: string }
   | { kind: "session-info" }
   | { kind: "new-session" }

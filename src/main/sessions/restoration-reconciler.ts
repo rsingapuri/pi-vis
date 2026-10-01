@@ -42,9 +42,10 @@ export function knownUserMessageText(value: unknown): string | undefined {
 }
 
 /**
- * Looks only at JSONL bytes appended after dispatch admission. Any unreadable,
- * malformed, or inconclusive evidence restores the draft; only an exact user
- * message match proves the input was processed.
+ * Reconciles only legacy/pre-clear records against JSONL bytes appended after
+ * dispatch admission. Any unreadable, malformed, or inconclusive evidence
+ * preserves their already-visible draft; only an exact user message match
+ * proves the input was processed. Callers bypass this for `clearedIntentIds`.
  */
 export async function reconcileRestoration(
   sessionFile: string | undefined,

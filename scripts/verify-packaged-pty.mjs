@@ -6,15 +6,22 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { NODE_PTY_PACKAGE, NODE_PTY_VERSION, patchNodePty } from "./patch-node-pty.mjs";
-import { PINNED_PI_PATCH_VERSION, patchPinnedPi } from "./patch-pinned-pi.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(scriptPath), "..");
 const require = createRequire(import.meta.url);
-const PINNED_PI_VERSION = "0.84.2";
-const PACKAGED_PI_PACKAGES = ["pi-coding-agent", "pi-agent-core", "pi-ai", "pi-tui"];
+const PINNED_PI_VERSION = "0.85.1";
+export const PACKAGED_PI_PACKAGES = [
+  "chord",
+  "pi-agent-core",
+  "pi-ai",
+  "pi-coding-agent",
+  "pi-telemetry",
+  "pi-tui",
+];
+export const REMOVED_PI_PACKAGES = ["pi-client", "pi-protocol"];
 
-function packagedPaths(appBundle) {
+export function packagedPaths(appBundle) {
   const resources = path.join(appBundle, "Contents", "Resources");
   const unpacked = path.join(resources, "app.asar.unpacked");
   const packageDirectory = path.join(
@@ -42,8 +49,34 @@ function packagedPaths(appBundle) {
     packageDirectory,
     helper: path.join(packageDirectory, "build", "Release", "spawn-helper"),
     piCli: path.join(piPackageDirectory, "dist", "cli.js"),
+    piBundleCli: path.join(piPackageDirectory, "dist", "bundle", "cli.js"),
+    piPackagesRoot,
     piPackageDirectories,
   };
+}
+
+export function verifyPackagedPiBundleCli(piBundleCli) {
+  const result = spawnSync(process.execPath, [piBundleCli, "--version"], {
+    cwd: path.dirname(piBundleCli),
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+    timeout: 30_000,
+  });
+  if (result.error) {
+    throw new Error(`Packaged Pi bundled CLI failed to start: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `Packaged Pi bundled CLI exited with status ${String(result.status)}: ${(result.stderr ?? "").trim()}`,
+    );
+  }
+  const reportedVersion = (result.stdout ?? "").trim();
+  if (reportedVersion !== PINNED_PI_VERSION) {
+    throw new Error(
+      `Packaged Pi bundled CLI version mismatch: expected ${PINNED_PI_VERSION}, found ${reportedVersion || "<empty>"}.`,
+    );
+  }
+  return reportedVersion;
 }
 
 function runPackagedJourney(executable) {
@@ -72,7 +105,7 @@ function runPackagedJourney(executable) {
   }
 }
 
-async function verifyPackagedApp(appBundle) {
+export async function verifyPackagedApp(appBundle) {
   if (process.platform !== "darwin") {
     throw new Error("The packaged PTY verifier currently supports macOS application bundles only.");
   }
@@ -84,6 +117,7 @@ async function verifyPackagedApp(appBundle) {
     paths.privateAdapter,
     paths.helper,
     paths.piCli,
+    paths.piBundleCli,
     ...Object.values(paths.piPackageDirectories).map((directory) =>
       path.join(directory, "package.json"),
     ),
@@ -100,14 +134,30 @@ async function verifyPackagedApp(appBundle) {
       );
     }
   }
-  if (PINNED_PI_PATCH_VERSION !== PINNED_PI_VERSION) {
-    throw new Error(`Packaged Pi patch version drift: ${PINNED_PI_PATCH_VERSION}.`);
+  const packagedPiNames = fs
+    .readdirSync(paths.piPackagesRoot, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isDirectory() &&
+        fs.existsSync(path.join(paths.piPackagesRoot, entry.name, "package.json")),
+    )
+    .map((entry) => entry.name)
+    .sort();
+  if (JSON.stringify(packagedPiNames) !== JSON.stringify(PACKAGED_PI_PACKAGES)) {
+    throw new Error(
+      `Packaged Pi closure mismatch: expected ${PACKAGED_PI_PACKAGES.join(", ")}; found ${packagedPiNames.join(", ")}.`,
+    );
   }
-  patchPinnedPi({
-    packageDirectory: paths.piPackageDirectories["pi-coding-agent"],
-    piAiPackageDirectory: paths.piPackageDirectories["pi-ai"],
-    verifyOnly: true,
-  });
+  for (const removedName of REMOVED_PI_PACKAGES) {
+    if (packagedPiNames.includes(removedName)) {
+      throw new Error(`Removed Pi runtime package unexpectedly shipped: ${removedName}.`);
+    }
+  }
+
+  // Existence is insufficient for esbuild's published bundle: a missing or
+  // corrupt adjacent chunk can leave the entry file present but unusable.
+  // Execute the completed artifact under this verifier's plain Node runtime.
+  verifyPackagedPiBundleCli(paths.piBundleCli);
 
   const adapter = await import(pathToFileURL(paths.privateAdapter).href);
   const llamaExtension = await adapter.importPinnedLlamaExtension(paths.piCli, PINNED_PI_VERSION);
@@ -122,7 +172,7 @@ async function verifyPackagedApp(appBundle) {
   fs.accessSync(paths.helper, fs.constants.X_OK);
   patchNodePty({ packageDirectory: paths.packageDirectory, verifyOnly: true });
   console.log(
-    `[packaged-pty] Verified packaged Pi ${PINNED_PI_VERSION} runtime closure, exact runtime patches, private llama.cpp adapter, patched ${NODE_PTY_PACKAGE}@${NODE_PTY_VERSION}, and executable spawn-helper in ${appBundle}`,
+    `[packaged-pty] Verified packaged Pi ${PINNED_PI_VERSION} runtime closure and bundled CLI, private llama.cpp adapter, patched ${NODE_PTY_PACKAGE}@${NODE_PTY_VERSION}, and executable spawn-helper in ${appBundle}`,
   );
 
   // The journey launches the completed app. pty.start resolves from Electron's
@@ -131,8 +181,10 @@ async function verifyPackagedApp(appBundle) {
   runPackagedJourney(paths.executable);
 }
 
-const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
-const appBundle = process.argv[2]
-  ? path.resolve(process.argv[2])
-  : path.resolve(projectRoot, `release/${manifest.version}/mac-arm64/Pi-Vis.app`);
-await verifyPackagedApp(appBundle);
+if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+  const appBundle = process.argv[2]
+    ? path.resolve(process.argv[2])
+    : path.resolve(projectRoot, `release/${manifest.version}/mac-arm64/Pi-Vis.app`);
+  await verifyPackagedApp(appBundle);
+}

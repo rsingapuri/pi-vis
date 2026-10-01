@@ -111,7 +111,7 @@ export function isKeyboardProtocolNegotiationSequencePrefix(sequence) {
  * @param {() => void} [deps.onKittyActive]
  *   Invoked once when kitty flags become nonzero for THIS terminal (so the
  *   host can activate pi-tui's module-global decode via the refcounted gate).
- * @returns {object} negotiator with push/filterInput/stop/isActive.
+ * @returns {object} negotiator with push/filterInput/fenceInput/stop/isActive.
  */
 export function createKeyboardProtocolNegotiator({ write, forward, onKittyActive }) {
   let pushed = false;
@@ -265,6 +265,16 @@ export function createKeyboardProtocolNegotiator({ write, forward, onKittyActive
         return true; // consumed — a complete kitty/DA reply
       }
       return false; // real key — caller forwards `sequence`
+    },
+
+    /**
+     * Discard an incomplete renderer-owned reply fragment without changing the
+     * negotiated terminal mode. A retained host TUI calls this when its renderer
+     * detaches: the successor must not complete, absorb, or receive bytes that
+     * began in the predecessor renderer generation.
+     */
+    fenceInput() {
+      clearBuffer();
     },
 
     /** Has THIS terminal successfully negotiated nonzero kitty flags? */

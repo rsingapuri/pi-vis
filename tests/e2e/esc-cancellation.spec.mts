@@ -123,10 +123,24 @@ test.describe("process-level ESC cancellation", () => {
       await waitForOperation(folders, "queued", "steer");
       await textarea.press("Escape");
       await waitForOperation(folders, "cancelled", "streaming");
-      // ESC cleared the queue before consumption (certainty not_processed), so
-      // the text returns straight to the composer with no review decision —
-      // the same custody contract real-sdk-transcript-lifecycle proves on real Pi.
-      await expect(textarea).toHaveValue("queued for explicit review", { timeout: 10_000 });
+      const restoration = await waitForOperation(folders, "restoration_evidence", "queue");
+      expect(restoration.steering).toEqual(["queued for explicit review"]);
+      const restorationId = restoration.restorationId;
+      if (typeof restorationId !== "string" || restorationId.length === 0) {
+        throw new Error("Queue restoration evidence did not include an identity");
+      }
+      await expect
+        .poll(() =>
+          operationEntries(folders).some(
+            (entry) => entry.event === "restoration_ack" && entry.restorationId === restorationId,
+          ),
+        )
+        .toBe(true);
+      // Queue restoration is execution evidence only. Enter permanently
+      // retired the submitted editor source. Once the renderer acknowledges
+      // that exact evidence, it still must not put the source back into the
+      // Composer or open a review decision.
+      await expect(textarea).toHaveValue("");
       await expect(window.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
       await window.waitForTimeout(500);
       expect(

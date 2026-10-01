@@ -162,6 +162,42 @@ describe("fake session host ESC process semantics", () => {
       (attached.data as { baseline: unknown }).baseline,
     );
     expect(baseline.rendererGeneration).toBe(7);
+    expect(baseline.semantic.snapshot.availableThinkingLevels).toEqual(["off"]);
+
+    send({
+      type: "dispatch_intent",
+      id: "authority-model",
+      envelope: {
+        intentId: "authority-model-intent",
+        expectedOwner: baseline.owner,
+        intent: { kind: "setModel", provider: "fake", modelId: "fake-model-2" },
+      },
+    });
+    await expect(response("authority-model")).resolves.toMatchObject({
+      data: { status: "admitted", intentId: "authority-model-intent" },
+    });
+    const modelTerminal = await waitUntil(() =>
+      messages.find(
+        (message) =>
+          message.type === "authority_frame" &&
+          (
+            message.frame as { records?: Array<{ type?: string; outcome?: { intentId?: string } }> }
+          )?.records?.some(
+            (record) =>
+              record.type === "intent_outcome" &&
+              record.outcome?.intentId === "authority-model-intent",
+          ),
+      ),
+    );
+    const modelFrame = AuthorityFrameSchema.parse(modelTerminal.frame);
+    expect(modelFrame.terminalSnapshot.model?.id).toBe("fake-model-2");
+    expect(modelFrame.terminalSnapshot.availableThinkingLevels).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+    ]);
 
     send({
       type: "dispatch_intent",
@@ -203,6 +239,270 @@ describe("fake session host ESC process semantics", () => {
     if (publication.plane === "transcript") {
       expect(publication.payload.cursor.transportSequence).toBeGreaterThan(0);
     }
+  });
+
+  it("compares and consumes an exact editor source with causal evidence and attachment custody", async () => {
+    const initial = latestSnapshot();
+    if (!initial) throw new Error("Missing runtime snapshot");
+    const initialEditor = initial.editor as { revision: number };
+    const sourceRevision = initialEditor.revision + 1;
+    const attachments = [{ kind: "file", name: "context.txt", path: "/tmp/context.txt" }];
+
+    send({
+      type: "editor_patch",
+      id: "consume-source-editor",
+      patch: {
+        baseRevision: initialEditor.revision,
+        revision: sourceRevision,
+        text: "/model",
+        attachments,
+      },
+    });
+    await expect(response("consume-source-editor")).resolves.toMatchObject({
+      data: { accepted: true, revision: sourceRevision, text: "/model", attachments },
+    });
+
+    send({
+      type: "consume_editor_source",
+      id: "consume-exact",
+      request: {
+        intentId: "consume-exact-intent",
+        editorRevision: sourceRevision,
+        editorText: "/model",
+      },
+    });
+    const consumed = await response("consume-exact");
+    expect(consumed).toMatchObject({
+      data: {
+        accepted: true,
+        sourceRevision,
+        editor: { revision: sourceRevision + 1, text: "", attachments },
+      },
+    });
+    const clearEvidence = await waitUntil(() =>
+      messages.find(
+        (message) =>
+          message.type === "editor_source_cleared" && message.intentId === "consume-exact-intent",
+      ),
+    );
+    expect(clearEvidence).toMatchObject({
+      editorRevision: sourceRevision,
+      editor: { revision: sourceRevision + 1, text: "", attachments },
+    });
+    expect(messages.indexOf(clearEvidence)).toBeLessThan(messages.indexOf(consumed));
+
+    send({
+      type: "consume_editor_source",
+      id: "consume-stale",
+      request: {
+        intentId: "consume-stale-intent",
+        editorRevision: sourceRevision,
+        editorText: "/model",
+        consumeAttachments: true,
+      },
+    });
+    await expect(response("consume-stale")).resolves.toMatchObject({
+      data: {
+        accepted: false,
+        editor: { revision: sourceRevision + 1, text: "", attachments },
+      },
+    });
+    expect(
+      messages.some(
+        (message) =>
+          message.type === "editor_source_cleared" && message.intentId === "consume-stale-intent",
+      ),
+    ).toBe(false);
+
+    send({
+      type: "editor_patch",
+      id: "consume-attachments-editor",
+      patch: {
+        baseRevision: sourceRevision + 1,
+        revision: sourceRevision + 2,
+        text: "/login",
+        attachments,
+      },
+    });
+    await response("consume-attachments-editor");
+    send({
+      type: "consume_editor_source",
+      id: "consume-attachments",
+      request: {
+        intentId: "consume-attachments-intent",
+        editorRevision: sourceRevision + 2,
+        editorText: "/login",
+        consumeAttachments: true,
+      },
+    });
+    await expect(response("consume-attachments")).resolves.toMatchObject({
+      data: {
+        accepted: true,
+        sourceRevision: sourceRevision + 2,
+        editor: { revision: sourceRevision + 3, text: "", attachments: [] },
+      },
+    });
+  });
+
+  it("preclaims /new before admission and carries an empty editor into its successor", async () => {
+    const initial = latestSnapshot();
+    if (!initial) throw new Error("Missing runtime snapshot");
+    const owner = {
+      hostInstanceId: String(initial.hostInstanceId),
+      sessionEpoch: Number(initial.sessionEpoch),
+    };
+    const initialEditor = initial.editor as { revision: number };
+    const sourceRevision = initialEditor.revision + 1;
+    const attachments = [{ kind: "file", name: "context.txt", path: "/tmp/context.txt" }];
+
+    send({
+      type: "editor_patch",
+      id: "new-source-editor",
+      patch: {
+        baseRevision: initialEditor.revision,
+        revision: sourceRevision,
+        text: "/new",
+        attachments,
+      },
+    });
+    await response("new-source-editor");
+    send({
+      type: "dispatch_intent",
+      id: "dispatch-new",
+      envelope: {
+        intentId: "new-intent",
+        expectedOwner: owner,
+        intent: {
+          kind: "invokeCommand",
+          text: "/new",
+          editorRevision: sourceRevision,
+          surface: "composer",
+        },
+      },
+    });
+
+    const admitted = await response("dispatch-new");
+    expect(admitted).toMatchObject({
+      data: { status: "admitted", intentId: "new-intent", owner },
+    });
+    const clearEvidence = await waitUntil(() =>
+      messages.find(
+        (message) => message.type === "editor_source_cleared" && message.intentId === "new-intent",
+      ),
+    );
+    expect(clearEvidence).toMatchObject({
+      editorRevision: sourceRevision,
+      editor: { revision: sourceRevision + 1, text: "", attachments },
+    });
+    expect(messages.indexOf(clearEvidence)).toBeLessThan(messages.indexOf(admitted));
+
+    const prepare = await waitUntil(() =>
+      messages.find((message) => message.type === "transition_prepare"),
+    );
+    expect(messages.indexOf(clearEvidence)).toBeLessThan(messages.indexOf(prepare));
+    send({
+      type: "transition_permit",
+      transitionId: prepare.transitionId,
+      allowed: true,
+    });
+    const transitioned = await waitUntil(() =>
+      messages.find(
+        (message) => message.type === "control" && message.payload?.type === "transition_batch",
+      ),
+    );
+    expect(
+      (
+        transitioned.payload as {
+          batch?: { terminalSnapshot?: { editor?: unknown } };
+        }
+      ).batch?.terminalSnapshot?.editor,
+    ).toEqual({ revision: sourceRevision + 1, text: "", attachments });
+  });
+
+  it("deduplicates an admitted invoke command before source checks and rejects conflicts and stale sources", async () => {
+    const initial = latestSnapshot();
+    if (!initial) throw new Error("Missing runtime snapshot");
+    const owner = {
+      hostInstanceId: String(initial.hostInstanceId),
+      sessionEpoch: Number(initial.sessionEpoch),
+    };
+    const initialEditor = initial.editor as { revision: number };
+    const sourceRevision = initialEditor.revision + 1;
+    const envelope = {
+      intentId: "invoke-once-intent",
+      expectedOwner: owner,
+      intent: {
+        kind: "invokeCommand",
+        text: "/widget-on",
+        editorRevision: sourceRevision,
+        surface: "composer",
+      },
+    };
+
+    send({
+      type: "editor_patch",
+      id: "invoke-once-editor",
+      patch: {
+        baseRevision: initialEditor.revision,
+        revision: sourceRevision,
+        text: "/widget-on",
+        attachments: [],
+      },
+    });
+    await response("invoke-once-editor");
+
+    send({ type: "dispatch_intent", id: "invoke-once-first", envelope });
+    await expect(response("invoke-once-first")).resolves.toMatchObject({
+      data: { status: "admitted", intentId: "invoke-once-intent", owner },
+    });
+    send({ type: "dispatch_intent", id: "invoke-once-duplicate", envelope });
+    await expect(response("invoke-once-duplicate")).resolves.toMatchObject({
+      data: { status: "duplicate", intentId: "invoke-once-intent", owner },
+    });
+    send({
+      type: "dispatch_intent",
+      id: "invoke-once-conflict",
+      envelope: {
+        ...envelope,
+        intent: { ...envelope.intent, text: "/widget-off" },
+      },
+    });
+    await expect(response("invoke-once-conflict")).resolves.toMatchObject({
+      data: {
+        status: "not_admitted",
+        intentId: "invoke-once-intent",
+        reason: "invalid",
+        invalidReason: "payload_conflict",
+      },
+    });
+    send({
+      type: "dispatch_intent",
+      id: "invoke-once-stale",
+      envelope: { ...envelope, intentId: "invoke-stale-intent" },
+    });
+    await expect(response("invoke-once-stale")).resolves.toMatchObject({
+      data: { status: "not_admitted", intentId: "invoke-stale-intent", reason: "stale_editor" },
+    });
+
+    await waitUntil(() =>
+      messages.find(
+        (message) =>
+          message.type === "authority_frame" &&
+          (
+            message.frame as { records?: Array<{ type?: string; outcome?: { intentId?: string } }> }
+          )?.records?.some((record) => record.outcome?.intentId === "invoke-once-intent"),
+      ),
+    );
+    send({ type: "command", id: "invoke-once-state", command: { type: "get_state" } });
+    await expect(response("invoke-once-state")).resolves.toMatchObject({
+      data: { messageCount: 1 },
+    });
+    expect(
+      messages.filter(
+        (message) =>
+          message.type === "editor_source_cleared" && message.intentId === "invoke-once-intent",
+      ),
+    ).toHaveLength(1);
   });
 
   it("admits an active Shell Turn only after consuming its exact draft and preserving attachments", async () => {
@@ -442,9 +742,13 @@ describe("fake session host ESC process semantics", () => {
       ),
     );
     expect(restoration).toMatchObject({ steering: [], followUp: [], originalAttachments: [] });
+    send({ type: "restoration_ack", restorationId: result.restorationId });
+    await expect(waitForLog("restoration_ack")).resolves.toMatchObject({
+      restorationId: result.restorationId,
+    });
   });
 
-  it("restores queued follow-up text exactly once when streaming is interrupted", async () => {
+  it("publishes cleared queued follow-up evidence exactly once when streaming is interrupted", async () => {
     await submit("hello queue owner [test:hold-streaming]");
     await waitForLog("started", "streaming");
     await submit("queued for review", "followUp", [
@@ -462,9 +766,10 @@ describe("fake session host ESC process semantics", () => {
     expect(restoration).toMatchObject({
       steering: [],
       followUp: ["queued for review"],
-      // ESC clears the queue before consumption; like real Pi's requestEscape
-      // this is not_processed custody that main always restores to the draft.
+      // ESC clears the queue before consumption, but its submission already
+      // crossed visual clear. Main must drop, never reinsert, this payload.
       certainty: "not_processed",
+      clearedIntentIds: [expect.any(String)],
       originalAttachments: [
         {
           images: [{ type: "image", data: "queued-image", mimeType: "image/png" }],

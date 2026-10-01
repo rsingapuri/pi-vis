@@ -95,16 +95,19 @@ is no supported test-skip path: a rerun must pass the same checks again.
 
 ### Mandatory pre-release checks
 
-The ordered `npm run release` check list begins with `npm ci`; the pinned Pi
-postinstall patch must apply from its known pre-patch hashes, and `prebuild`
-must verify the known post-patch hashes. The automated suite
+The ordered `npm run release` check list begins with `npm ci`; pristine pinned
+Pi 0.85.1 must resolve from the exact lock graph. Root `postinstall` serially
+provisions and verifies Electron before applying the independent, fail-closed
+node-pty compatibility patch; release installs must not suppress lifecycle
+scripts. The automated suite
 (`npm audit --omit=dev`, typecheck, `lint`, `test`, `test:render`, `test:e2e`,
 `npm ls --all`) then runs; its
 Electron lane includes the isolated,
-repository-pinned Pi 0.84.2 SDK-host compatibility journeys described in
+repository-pinned Pi 0.85.1 SDK-host compatibility journeys described in
 `docs/testing.md`. The subsequent `dist` step runs `verify:packaged-pty` against
-the completed app. It checks the exact packaged Pi production closure, pinned
-runtime-patch hashes, private llama registry adapter, bundled CLI, and native
+the completed app. It checks the exact six-package Pi production closure,
+absence of retired client/protocol packages, the modular CLI anchor, exact
+version execution of the bundled CLI, the private llama registry adapter, and native
 PTY paths before the packaged Electron journey; it must not be skipped or
 replaced by a repository-tree smoke.
 
@@ -128,7 +131,7 @@ manually before publishing:
    newline (not a submit) in the unified editor; Enter submits; a multiline
    paste inserts lines without submitting; session-switch keeps Shift+Enter
    working. The gated spec defaults to the repository-local pinned Pi, rejects
-   any version other than 0.84.2 before launch, and requires provider auth
+   any version other than 0.85.1 before launch, and requires provider auth
    (real API spend). `PIVIS_TEST_PI_BIN` is an explicit alternate-path override,
    not a `PATH` search:
 

@@ -16,7 +16,7 @@ vi.mock("./settings-store.js", () => ({
 }));
 
 vi.mock("./pi/pinned-pi.js", () => ({
-  getPinnedPi: () => ({ path: "/tmp/pi", version: "test" }),
+  getPinnedPi: () => ({ path: "/tmp/pi-host", cliPath: "/tmp/pi", version: "test" }),
 }));
 
 import { checkUserExtensionUpdates } from "./extension-update-check.js";

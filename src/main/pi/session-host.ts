@@ -40,6 +40,8 @@ import {
   type LifecyclePermitOperation,
   type LifecyclePermitVerdict,
   LifecyclePermitVerdictSchema,
+  type RuntimeEditorState,
+  RuntimeEditorStateSchema,
   type RuntimeIdentity,
   type SessionRuntimeResumeState,
   SessionRuntimeResumeStateSchema,
@@ -279,6 +281,14 @@ export interface SessionHostEvents {
     text: string,
     editorRevision: number,
     submissionIntentId?: string,
+    editorAttachments?: unknown[],
+    postClearEditor?: RuntimeEditorState,
+  ) => void;
+  /** Child proof that an exact editor revision crossed irreversible clear. */
+  editorSourceCleared: (
+    intentId: string,
+    editorRevision: number,
+    editor: RuntimeEditorState,
   ) => void;
   snapshot: (snapshot: AgentSessionSnapshot, full: boolean) => void;
   transitionBatch: (batch: TransitionBatch) => void;
@@ -362,6 +372,14 @@ type HostWireMessage =
       text: string;
       editorRevision: number;
       submissionIntentId?: string;
+      editorAttachments?: unknown[];
+      postClearEditor?: unknown;
+    }
+  | {
+      type: "editor_source_cleared";
+      intentId: string;
+      editorRevision: number;
+      editor?: unknown;
     }
   | { type: "clipboard_read_image_request"; id: string }
   | { type: "submission_disposition"; result: SubmissionResult }
@@ -1183,13 +1201,46 @@ export class SessionHost extends EventEmitter {
       }
 
       case "unified_submit_request": {
+        const postClearEditor = RuntimeEditorStateSchema.safeParse(msg.postClearEditor);
+        if (
+          typeof msg.id !== "string" ||
+          msg.id.length === 0 ||
+          typeof msg.text !== "string" ||
+          !Number.isInteger(msg.editorRevision) ||
+          msg.editorRevision < 0 ||
+          (msg.submissionIntentId !== undefined &&
+            (typeof msg.submissionIntentId !== "string" || msg.submissionIntentId.length === 0)) ||
+          (msg.editorAttachments !== undefined && !Array.isArray(msg.editorAttachments)) ||
+          !postClearEditor.success ||
+          postClearEditor.data.revision <= msg.editorRevision ||
+          postClearEditor.data.text !== ""
+        ) {
+          break;
+        }
         this.emit(
           "unifiedSubmitRequest",
           msg.id,
           msg.text,
           msg.editorRevision,
           msg.submissionIntentId,
+          msg.editorAttachments,
+          postClearEditor.data,
         );
+        break;
+      }
+
+      case "editor_source_cleared": {
+        const editor = RuntimeEditorStateSchema.safeParse(msg.editor);
+        if (
+          typeof msg.intentId === "string" &&
+          msg.intentId.length > 0 &&
+          Number.isInteger(msg.editorRevision) &&
+          msg.editorRevision >= 0 &&
+          editor.success &&
+          editor.data.revision > msg.editorRevision
+        ) {
+          this.emit("editorSourceCleared", msg.intentId, msg.editorRevision, editor.data);
+        }
         break;
       }
 
@@ -1705,8 +1756,18 @@ export class SessionHost extends EventEmitter {
     alternateConflictText?: string;
     alternateConflictAttachments?: unknown[];
     additionalConflictCandidates?: Array<{ text: string; attachments: unknown[] }>;
+    preserveConflicts?: boolean;
   }): Promise<PiRpcResponse> {
     return this.requestHost({ type: "editor_patch", patch });
+  }
+
+  consumeEditorSource(request: {
+    intentId?: string;
+    editorRevision: number;
+    editorText: string;
+    consumeAttachments?: boolean;
+  }): Promise<PiRpcResponse> {
+    return this.requestHost({ type: "consume_editor_source", request });
   }
 
   acknowledgeRestoration(restorationId: string): void {
@@ -1757,6 +1818,7 @@ export class SessionHost extends EventEmitter {
     acknowledgedThrough: number;
     gap?: { expected: number; received: number };
     repaintRequired?: { revision: number; repaintRequired: boolean };
+    editorCheckpoint?: { revision: number; text: string; clearedConflicts: boolean };
   }>;
   /** @deprecated Compatibility seam for older structural host tests. */
   sendPanelInput(
@@ -1773,6 +1835,7 @@ export class SessionHost extends EventEmitter {
     acknowledgedThrough: number;
     gap?: { expected: number; received: number };
     repaintRequired?: { revision: number; repaintRequired: boolean };
+    editorCheckpoint?: { revision: number; text: string; clearedConflicts: boolean };
   }> {
     const revision = data === undefined ? undefined : revisionOrSequence;
     const sequence = data === undefined ? revisionOrSequence : (sequenceOrData as number);
@@ -1786,17 +1849,30 @@ export class SessionHost extends EventEmitter {
           acknowledgedThrough: number;
           gap?: { expected: number; received: number };
           repaintRequired?: { revision: number; repaintRequired: boolean };
+          editorCheckpoint?: { revision: number; text: string; clearedConflicts: boolean };
         };
       },
     );
   }
 
-  acknowledgePanelRepaint(panelId: number, revision: number): Promise<boolean> {
-    return this.requestHost({ type: "panel_repaint_ack", panelId, revision }).then((response) =>
-      Boolean(
-        response.success && (response.data as { acknowledged?: boolean } | undefined)?.acknowledged,
-      ),
-    );
+  acknowledgePanelRepaint(
+    panelId: number,
+    revision: number,
+  ): Promise<{ acknowledged: boolean; inputAcknowledgedThrough: number }> {
+    return this.requestHost({ type: "panel_repaint_ack", panelId, revision }).then((response) => {
+      const data = response.data as
+        | { acknowledged?: unknown; inputAcknowledgedThrough?: unknown }
+        | undefined;
+      const inputAcknowledgedThrough = data?.inputAcknowledgedThrough;
+      const validWatermark =
+        typeof inputAcknowledgedThrough === "number" &&
+        Number.isSafeInteger(inputAcknowledgedThrough) &&
+        inputAcknowledgedThrough >= 0;
+      return {
+        acknowledged: response.success === true && data?.acknowledged === true && validWatermark,
+        inputAcknowledgedThrough: validWatermark ? inputAcknowledgedThrough : 0,
+      };
+    });
   }
 
   sendPanelResize(panelId: number, cols: number, rows: number, force = false): void {
@@ -1949,7 +2025,13 @@ export interface SessionHost {
       text: string,
       editorRevision: number,
       submissionIntentId?: string,
+      editorAttachments?: unknown[],
+      postClearEditor?: RuntimeEditorState,
     ) => void,
+  ): this;
+  on(
+    event: "editorSourceCleared",
+    listener: (intentId: string, editorRevision: number, editor: RuntimeEditorState) => void,
   ): this;
   on(event: "snapshot", listener: (snapshot: AgentSessionSnapshot, full: boolean) => void): this;
   on(event: "transitionBatch", listener: (batch: TransitionBatch) => void): this;
@@ -2007,6 +2089,14 @@ export interface SessionHost {
     text: string,
     editorRevision: number,
     submissionIntentId?: string,
+    editorAttachments?: unknown[],
+    postClearEditor?: RuntimeEditorState,
+  ): boolean;
+  emit(
+    event: "editorSourceCleared",
+    intentId: string,
+    editorRevision: number,
+    editor: RuntimeEditorState,
   ): boolean;
   emit(event: "snapshot", snapshot: AgentSessionSnapshot, full: boolean): boolean;
   emit(event: "transitionBatch", batch: TransitionBatch): boolean;

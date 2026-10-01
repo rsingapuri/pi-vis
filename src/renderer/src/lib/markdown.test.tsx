@@ -170,3 +170,121 @@ describe("Markdown code highlighting", () => {
     view.unmount();
   });
 });
+
+describe("Markdown external links", () => {
+  const invoke = vi.fn(async () => ({ ok: true as const }));
+
+  beforeEach(() => {
+    invoke.mockClear();
+    Object.defineProperty(window, "pivis", {
+      configurable: true,
+      value: { invoke },
+    });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    Reflect.deleteProperty(window, "pivis");
+  });
+
+  it("opens nested and keyboard-activated links through typed external IPC", async () => {
+    const view = mount(
+      <Markdown>{"Read [the **nested docs**](https://example.com/guide?q=pi#start)."}</Markdown>,
+    );
+    const link = view.container.querySelector<HTMLAnchorElement>("a")!;
+    const nested = link.querySelector("strong")!;
+
+    let allowedNavigation = true;
+    act(() => {
+      allowedNavigation = nested.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          metaKey: true,
+          shiftKey: true,
+        }),
+      );
+    });
+    await flushPromises();
+
+    expect(allowedNavigation).toBe(false);
+    expect(invoke).toHaveBeenLastCalledWith("app.openExternal", {
+      url: "https://example.com/guide?q=pi#start",
+    });
+
+    act(() => {
+      link.focus();
+      link.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, detail: 0 }),
+      );
+    });
+    await flushPromises();
+    expect(invoke).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
+  it("routes middle-clicked linked images externally exactly once", async () => {
+    const view = mount(
+      <Markdown>
+        {"[![diagram](data:image/png;base64,thumb)](https://example.com/full-page)"}
+      </Markdown>,
+    );
+    const image = view.container.querySelector<HTMLImageElement>("a.markdown-image img")!;
+
+    act(() => {
+      image.dispatchEvent(
+        new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 }),
+      );
+    });
+    await flushPromises();
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("app.openExternal", {
+      url: "https://example.com/full-page",
+    });
+    view.unmount();
+  });
+
+  it("opens HTTP links but keeps unsafe, credentialed, and relative targets inert", async () => {
+    const view = mount(
+      <Markdown>
+        {[
+          "[script](javascript:alert(1))",
+          "[data](data:text/html,hello)",
+          "[file](file:///tmp/private)",
+          "[credentials](https://user:secret@example.com/)",
+          "[relative](../secrets)",
+          "[http](http://example.com/)",
+          "[loopback](http://localhost:4317/callback)",
+        ].join(" ")}
+      </Markdown>,
+    );
+
+    for (const label of ["script", "data", "file", "credentials", "relative"]) {
+      const text = Array.from(view.container.querySelectorAll("span")).find(
+        (element) => element.textContent === label,
+      );
+      expect(text?.closest("a")).toBeNull();
+      act(() => text?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })));
+    }
+    expect(invoke).not.toHaveBeenCalled();
+
+    const http = view.container.querySelector<HTMLAnchorElement>('a[href="http://example.com/"]')!;
+    const loopback = view.container.querySelector<HTMLAnchorElement>(
+      'a[href="http://localhost:4317/callback"]',
+    )!;
+    act(() => {
+      http.click();
+      loopback.click();
+    });
+    await flushPromises();
+    expect(invoke).toHaveBeenCalledWith("app.openExternal", {
+      url: "http://example.com/",
+    });
+    expect(invoke).toHaveBeenCalledWith("app.openExternal", {
+      url: "http://localhost:4317/callback",
+    });
+    view.unmount();
+  });
+});

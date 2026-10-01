@@ -1243,7 +1243,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("escrows an admitted envelope submit with byte-identical review custody and never replays it", async () => {
+  it("escrows an admitted envelope submit as byte-identical dropped evidence and never replays it", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
@@ -1267,6 +1267,12 @@ describe("SessionRegistry direct AgentSession authority", () => {
     await vi.waitFor(() =>
       expect(h.fakes[0]!.sent.some((message) => message.type === "dispatch_intent")).toBe(true),
     );
+    h.fakes[0]!.emitWire({
+      type: "editor_source_cleared",
+      intentId: "lost-envelope-submit",
+      editorRevision: 7,
+      editor: { revision: 8, text: "", attachments: [] },
+    });
     h.fakes[0]!.emitExit(1);
     await expect(pending).resolves.toMatchObject({
       status: "delivery_unknown",
@@ -1278,7 +1284,8 @@ describe("SessionRegistry direct AgentSession authority", () => {
           restorationId: `ambiguous-intent:${hostInstanceId}:${sessionEpoch}:lost-envelope-submit`,
           text: "retain exactly this text",
           attachments: images,
-          disposition: "restore",
+          disposition: "dropped",
+          intentIds: ["lost-envelope-submit"],
         }),
       ]),
     );
@@ -1336,6 +1343,12 @@ describe("SessionRegistry direct AgentSession authority", () => {
           message: { role: "user", content: dispatchedText },
         })}\n`,
       );
+      first.emitWire({
+        type: "editor_source_cleared",
+        intentId: "persisted-before-crash",
+        editorRevision: 2,
+        editor: { revision: 3, text: "", attachments: [] },
+      });
       first.emitExit(1);
 
       await expect(pending).resolves.toMatchObject({ status: "delivery_unknown" });
@@ -1355,7 +1368,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       expect(h.fakes[1]!.sent.some((message) => message.type === "editor_patch")).toBe(false);
       expect(h.registry.getSession(id)?.snapshot?.editor).toMatchObject({
         text: "",
-        attachments: [],
+        attachments: [] as unknown[],
       });
     } finally {
       h.registry.stopAll();
@@ -1421,6 +1434,12 @@ describe("SessionRegistry direct AgentSession authority", () => {
         timestamp: Date.now(),
       });
       expect(fs.existsSync(sessionFile)).toBe(true);
+      first.emitWire({
+        type: "editor_source_cleared",
+        intentId: "deferred-first-prompt",
+        editorRevision: 1,
+        editor: { revision: 2, text: "", attachments: [] },
+      });
       first.emitExit(1);
 
       await expect(pending).resolves.toMatchObject({ status: "delivery_unknown" });
@@ -1512,7 +1531,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
     }
   });
 
-  it("restores a same-revision editor when post-dispatch persistence is unproven", async () => {
+  it("never rehydrates an admitted primary when persistence is unproven and preserves its conflict", async () => {
     const { root, sessionFile } = persistedSessionFixture("unknown-persistence-crash");
     const h = harness();
     try {
@@ -1527,6 +1546,8 @@ describe("SessionRegistry direct AgentSession authority", () => {
         revision: 4,
         text: editorText,
         attachments: [{ kind: "file", name: "evidence.txt", path: "/tmp/evidence.txt" }],
+        conflictText: "newer unsent conflict",
+        conflictAttachments: [{ kind: "file", name: "newer.txt", path: "/tmp/newer.txt" }],
       };
       first.emitControl({ type: "snapshot", snapshot: first.snapshot() });
       await vi.waitFor(() => expect(h.registry.getSession(id)?.snapshot?.editor.revision).toBe(4));
@@ -1549,6 +1570,18 @@ describe("SessionRegistry direct AgentSession authority", () => {
       await vi.waitFor(() =>
         expect(first.sent.some((message) => message.type === "dispatch_intent")).toBe(true),
       );
+      first.emitWire({
+        type: "editor_source_cleared",
+        intentId: "unproven-submit",
+        editorRevision: 4,
+        editor: {
+          revision: 5,
+          text: "",
+          attachments: [],
+          conflictText: "newer unsent conflict",
+          conflictAttachments: [{ kind: "file", name: "newer.txt", path: "/tmp/newer.txt" }],
+        },
+      });
       first.emitExit(1);
 
       await expect(pending).resolves.toMatchObject({ status: "delivery_unknown" });
@@ -1557,15 +1590,17 @@ describe("SessionRegistry direct AgentSession authority", () => {
           id,
           expect.objectContaining({
             restorationId: `ambiguous-intent:${hostInstanceId}:${sessionEpoch}:unproven-submit`,
-            disposition: "restore",
+            disposition: "dropped",
+            intentIds: ["unproven-submit"],
           }),
         ]),
       );
       await vi.waitFor(() => expect(h.registry.getSession(id)?.status).toBe("ready"));
       expect(h.registry.getSession(id)?.snapshot?.editor).toMatchObject({
-        text: editorText,
-        attachments: [expect.objectContaining({ name: "evidence.txt" })],
+        text: "newer unsent conflict",
+        attachments: [expect.objectContaining({ name: "newer.txt" })],
       });
+      expect(h.registry.getSession(id)?.snapshot?.editor.text).not.toBe(editorText);
     } finally {
       h.registry.stopAll();
       fs.rmSync(root, { recursive: true, force: true });
@@ -1585,7 +1620,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       first.editor = {
         revision: 6,
         text: dispatchedText,
-        attachments: [],
+        attachments: [] as unknown[],
         conflictText: "first surviving candidate",
         conflictAttachments: [],
         alternateConflictText: "second surviving candidate",
@@ -1627,6 +1662,27 @@ describe("SessionRegistry direct AgentSession authority", () => {
           message: { role: "user", content: dispatchedText },
         })}\n`,
       );
+      first.emitWire({
+        type: "editor_source_cleared",
+        intentId: "delivered-primary-with-conflicts",
+        editorRevision: 6,
+        editor: {
+          revision: 7,
+          text: "",
+          attachments: [],
+          conflictText: "first surviving candidate",
+          conflictAttachments: [],
+          alternateConflictText: "second surviving candidate",
+          alternateConflictAttachments: [],
+          additionalConflictCandidates: [
+            { text: "third surviving candidate", attachments: [] },
+            {
+              text: "fourth surviving candidate",
+              attachments: [{ kind: "file", name: "fourth.txt", path: "/tmp/fourth.txt" }],
+            },
+          ],
+        },
+      });
       first.emitExit(1);
 
       await expect(pending).resolves.toMatchObject({ status: "delivery_unknown" });
@@ -2408,7 +2464,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("publishes retained composer payloads for review when custody becomes ambiguous", async () => {
+  it("retires retained composer payload presentation when custody becomes ambiguous", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
@@ -2436,7 +2492,8 @@ describe("SessionRegistry direct AgentSession authority", () => {
         restorationId: "ambiguous-submission:crash-review",
         text: "recover exact text",
         attachments: [{ type: "image", data: "bytes", mimeType: "image/png" }],
-        disposition: "restore",
+        disposition: "dropped",
+        intentIds: ["crash-review"],
       }),
     ]);
     expect(h.submissions).toContainEqual([
@@ -2461,7 +2518,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("suppresses legacy submit editor recovery only after exact persistence proof", async () => {
+  it("suppresses legacy submitted editor recovery after clear even with exact persistence proof", async () => {
     const { root, sessionFile } = persistedSessionFixture("legacy-persisted-crash");
     const h = harness();
     try {
@@ -2520,7 +2577,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
     }
   });
 
-  it("restores active-turn work that completed prompt admission but remained queued", async () => {
+  it("never restores active-turn work after prompt admission cleared it", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
@@ -2567,7 +2624,8 @@ describe("SessionRegistry direct AgentSession authority", () => {
           restorationId: "ambiguous-submission:queued-before-crash",
           text: "queued follow-up",
           attachments: [{ type: "image", data: "queued-bytes", mimeType: "image/png" }],
-          disposition: "restore",
+          disposition: "dropped",
+          intentIds: ["queued-before-crash"],
         }),
       ]),
     );
@@ -2635,7 +2693,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("turns a predecessor submission settlement into review without publishing successor completion", async () => {
+  it("turns a predecessor submission settlement into dropped evidence without publishing successor completion", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
@@ -2698,13 +2756,14 @@ describe("SessionRegistry direct AgentSession authority", () => {
       expect.objectContaining({
         restorationId: "ambiguous-submission:predecessor-submit",
         text: "possibly consumed by predecessor",
-        disposition: "restore",
+        disposition: "dropped",
+        intentIds: ["predecessor-submit"],
       }),
     ]);
     h.registry.stopAll();
   });
 
-  it("converts an old-epoch async submission disposition during transition into review", async () => {
+  it("converts an old-epoch async submission disposition into dropped outcome evidence", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
@@ -2764,7 +2823,8 @@ describe("SessionRegistry direct AgentSession authority", () => {
       expect.objectContaining({
         restorationId: "ambiguous-submission:transition-terminal",
         text: "terminal during transition",
-        disposition: "restore",
+        disposition: "dropped",
+        intentIds: ["transition-terminal"],
       }),
     ]);
     h.registry.stopAll();
@@ -2815,7 +2875,8 @@ describe("SessionRegistry direct AgentSession authority", () => {
         restorationId: "ambiguous-submission:boundary-crash",
         text: "possibly consumed",
         attachments: [{ type: "image", data: "uncertain-bytes", mimeType: "image/png" }],
-        disposition: "restore",
+        disposition: "dropped",
+        intentIds: ["boundary-crash"],
       }),
     ]);
     h.registry.stopAll();
@@ -3209,7 +3270,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("retains review when reload acknowledgement is lost after dispatch", async () => {
+  it("does not restore a reload command after its presentation cleared", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
@@ -3249,7 +3310,8 @@ describe("SessionRegistry direct AgentSession authority", () => {
       expect.objectContaining({
         restorationId: "ambiguous-reload:lost-reload-intent",
         text: "/reload",
-        disposition: "restore",
+        disposition: "dropped",
+        intentIds: ["lost-reload-intent"],
       }),
     ]);
     h.registry.stopAll();
@@ -3496,6 +3558,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       h.registry.sendPanelInput(id, oldHost, oldEpoch, 1, 1, 1, "stale"),
     ).resolves.toEqual({
       acknowledgedThrough: 0,
+      rejection: "runtime_replaced",
     });
     h.registry.resizePanel(id, oldHost, oldEpoch, 1, 80, 24);
     await expect(h.registry.closePanel(id, oldHost, oldEpoch, 1, "stale-close")).resolves.toBe(
@@ -3714,6 +3777,90 @@ describe("SessionRegistry direct AgentSession authority", () => {
     generations.registry.stopAll();
   });
 
+  it("retries an unacknowledged detach before reopening a same-generation input sequence", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    await h.registry.rendererAttach(id, 1);
+    const record = h.registry.getSession(id)!;
+    const fake = h.fakes[0]!;
+    record._panelInputSequence.set(7, 4);
+    const authorityRequest = vi
+      .spyOn(record.proc!, "requestAuthorityAttach")
+      .mockResolvedValue({ status: "transitioning", transitionId: "after-detach-fence" });
+
+    vi.useFakeTimers();
+    try {
+      const firstAttach = h.registry.rendererAttach(id, 2);
+      expect(
+        fake.sent.filter(
+          (message) => message.type === "renderer_detached" && message.rendererGeneration === 1,
+        ),
+      ).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(firstAttach).resolves.toEqual({
+        status: "unavailable",
+        reason: "host_unresponsive",
+      });
+      expect(h.runtimeStates.at(-1)).toMatchObject({
+        availability: "unavailable",
+        reason: "Renderer cancellation acknowledgement timed out",
+      });
+      expect(record._rendererCancellationObligation).toMatchObject({
+        detachedGeneration: 1,
+        successorGeneration: 2,
+        hostInstanceId: fake.hostInstanceId,
+        sessionEpoch: fake.sessionEpoch,
+      });
+      expect(record._panelInputSequence.get(7)).toBe(4);
+
+      // Model the real stalled-main ordering: the child already fenced its
+      // parser/input baseline, but its acknowledgement and snapshot arrive
+      // only after main's timeout callback has won.
+      fake.emitWire({ type: "renderer_cancelled", rendererGeneration: 1 });
+      fake.emitControl({ type: "snapshot", snapshot: fake.snapshot(), full: true });
+      expect(record.availability).toBe("available");
+      await expect(h.registry.authorityAttach(id, 2)).resolves.toEqual({
+        status: "unavailable",
+        reason: "renderer_detach_pending",
+      });
+      expect(authorityRequest).not.toHaveBeenCalled();
+      await expect(
+        h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 1, 1, "still-fenced"),
+      ).resolves.toEqual({
+        acknowledgedThrough: 0,
+        rejection: "runtime_unavailable",
+      });
+
+      const retry = h.registry.rendererAttach(id, 2);
+      expect(
+        fake.sent.filter(
+          (message) => message.type === "renderer_detached" && message.rendererGeneration === 1,
+        ),
+      ).toHaveLength(2);
+      fake.emitWire({ type: "renderer_cancelled", rendererGeneration: 1 });
+      await expect(retry).resolves.toMatchObject({
+        status: "attached",
+        runtime: { availability: "available" },
+      });
+      await expect(h.registry.authorityAttach(id, 2)).resolves.toEqual({
+        status: "transitioning",
+        transitionId: "after-detach-fence",
+      });
+      expect(authorityRequest).toHaveBeenCalledOnce();
+
+      expect(record._rendererCancellationObligation).toBeUndefined();
+      expect(record._panelInputSequence.size).toBe(0);
+      await expect(
+        h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 1, 1, "x"),
+      ).resolves.toEqual({ acknowledgedThrough: 1 });
+    } finally {
+      vi.useRealTimers();
+      h.registry.stopAll();
+    }
+  });
+
   it("binds a renderer generation early enough to answer a pre-ready trust dialog", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
@@ -3802,6 +3949,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id: "unified-1",
       text: "rapid prompt",
       editorRevision: 8,
+      postClearEditor: { revision: 9, text: "", attachments: [] },
       submissionIntentId: "unified-intent-1",
     });
     await tick();
@@ -3821,6 +3969,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
           id: "unified-1",
           text: "rapid prompt",
           editorRevision: 8,
+          postClearEditor: { revision: 9, text: "", attachments: [] },
           submissionIntentId,
           hostInstanceId,
           sessionEpoch,
@@ -3863,6 +4012,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id: "claimed-unified",
       text: "!touch marker",
       editorRevision: 3,
+      postClearEditor: { revision: 4, text: "", attachments: [] },
     });
     await tick();
     const [hostInstanceId, sessionEpoch] = runtimeIdentity(h.registry.getSession(id)!);
@@ -3922,6 +4072,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id: "settled-unified",
       text: "settled",
       editorRevision: 0,
+      postClearEditor: { revision: 1, text: "", attachments: [] },
     });
     await tick();
     const [hostInstanceId, sessionEpoch] = runtimeIdentity(h.registry.getSession(id)!);
@@ -3944,6 +4095,128 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
+  it("retires a Unified claim at dispatch admission while terminal work may outlive its deadline", async () => {
+    const h = harness({ unifiedClaimTimeoutMs: 15 });
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    await h.registry.rendererAttach(id, 1);
+    const fake = h.fakes[0]!;
+    fake.emitWire({
+      type: "unified_submit_request",
+      id: "long-running-unified",
+      text: "take your time",
+      editorRevision: 4,
+      postClearEditor: { revision: 5, text: "", attachments: [] },
+      submissionIntentId: "long-running-intent",
+    });
+    await vi.waitFor(() => expect(h.unifiedRequests).toHaveLength(1));
+    const record = h.registry.getSession(id)!;
+    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+    const claim = h.registry.claimUnifiedSubmit(id, "long-running-unified", 1, {
+      hostInstanceId,
+      sessionEpoch,
+    });
+    if (!claim.claimed) throw new Error("claim rejected");
+
+    const originalSend = fake.send.bind(fake);
+    let dispatchMessage: { id: string; envelope: IntentEnvelope } | undefined;
+    fake.send = ((message, callback) => {
+      if (message.type !== "dispatch_intent") return originalSend(message, callback);
+      fake.sent.push(message);
+      dispatchMessage = message as unknown as { id: string; envelope: IntentEnvelope };
+      callback?.(null);
+      return true;
+    }) as typeof fake.send;
+    const envelope: IntentEnvelope = {
+      sessionId: id,
+      intentId: "long-running-intent",
+      rendererGeneration: 1,
+      expectedOwner: { hostInstanceId, sessionEpoch },
+      intent: {
+        kind: "submit",
+        editorRevision: 4,
+        text: "take your time",
+        inputKind: "ordinary",
+        images: [],
+        requestedMode: "followUp",
+        surface: "unified",
+      },
+    };
+    const pending = h.registry.dispatchIntent(envelope);
+    await vi.waitFor(() => expect(dispatchMessage).toBeDefined());
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(h.restorations).toEqual([]);
+    expect(record._pendingUnifiedSubmits.get("long-running-unified")?.dispatchStarted).toBe(true);
+
+    fake.emitWire({
+      type: "response",
+      id: dispatchMessage!.id,
+      success: true,
+      data: {
+        status: "admitted",
+        intentId: envelope.intentId,
+        owner: envelope.expectedOwner,
+      },
+    });
+    await expect(pending).resolves.toMatchObject({ status: "admitted" });
+    expect(
+      fake.sent.filter(
+        (message) =>
+          message.type === "unified_submit_response" && message.id === "long-running-unified",
+      ),
+    ).toHaveLength(1);
+    await expect(h.registry.dispatchIntent(envelope)).resolves.toMatchObject({
+      status: "not_admitted",
+      reason: "invalid",
+    });
+    expect(fake.sent.filter((message) => message.type === "dispatch_intent")).toHaveLength(1);
+    h.registry.stopAll();
+  });
+
+  it("never forwards a Unified intent whose source claim already expired", async () => {
+    const h = harness({ unifiedClaimTimeoutMs: 10 });
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    await h.registry.rendererAttach(id, 1);
+    const fake = h.fakes[0]!;
+    fake.emitWire({
+      type: "unified_submit_request",
+      id: "expired-before-dispatch",
+      text: "/reload",
+      editorRevision: 2,
+      postClearEditor: { revision: 3, text: "", attachments: [] },
+      submissionIntentId: "expired-intent",
+    });
+    await vi.waitFor(() => expect(h.unifiedRequests).toHaveLength(1));
+    const [hostInstanceId, sessionEpoch] = runtimeIdentity(h.registry.getSession(id)!);
+    expect(
+      h.registry.claimUnifiedSubmit(id, "expired-before-dispatch", 1, {
+        hostInstanceId,
+        sessionEpoch,
+      }),
+    ).toMatchObject({ claimed: true });
+    await vi.waitFor(() =>
+      expect(h.registry.getSession(id)!._expiredUnifiedIntents.has("expired-intent")).toBe(true),
+    );
+
+    await expect(
+      h.registry.dispatchIntent({
+        sessionId: id,
+        intentId: "expired-intent",
+        rendererGeneration: 1,
+        expectedOwner: { hostInstanceId, sessionEpoch },
+        intent: {
+          kind: "reload",
+          editorRevision: 2,
+          editorText: "/reload",
+          surface: "unified",
+        },
+      }),
+    ).resolves.toMatchObject({ status: "not_admitted", reason: "invalid" });
+    expect(fake.sent.filter((message) => message.type === "dispatch_intent")).toEqual([]);
+    h.registry.stopAll();
+  });
+
   it("expires a hanging unified claim into one non-replayable review", async () => {
     const h = harness({ unifiedClaimTimeoutMs: 15 });
     const id = h.registry.openSession("/tmp/project");
@@ -3954,6 +4227,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id: "hanging-unified",
       text: "hang forever",
       editorRevision: 0,
+      postClearEditor: { revision: 1, text: "", attachments: [] },
     });
     await vi.waitFor(() => expect(h.unifiedRequests).toHaveLength(1));
     const request = (h.unifiedRequests[0] as [SessionId, { submissionIntentId: string }])[1];
@@ -4022,6 +4296,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id: "hanging-unified",
       text: "hang forever",
       editorRevision: 0,
+      postClearEditor: { revision: 1, text: "", attachments: [] },
     });
     await tick();
     expect(h.unifiedRequests).toEqual([]);
@@ -4046,6 +4321,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id: "inflight-unified",
       text: "possibly consumed",
       editorRevision: 0,
+      postClearEditor: { revision: 1, text: "", attachments: [] },
     });
     await vi.waitFor(() => expect(h.unifiedRequests).toHaveLength(1));
     const request = (h.unifiedRequests[0] as [SessionId, { submissionIntentId: string }])[1];
@@ -4125,6 +4401,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id: "unified-stale",
       text: "retain stale editor text",
       editorRevision: 3,
+      postClearEditor: { revision: 4, text: "", attachments: [] },
     });
     await tick();
     await h.registry.rendererAttach(id, 1);
@@ -4159,7 +4436,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("silently restores a pending unified submission once after a host crash", async () => {
+  it("silently drops a cleared pending unified submission after a host crash", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
     await h.registry.activateSession(id, "/tmp/pi", {});
@@ -4168,6 +4445,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
       id: "unified-crash",
       text: "do not replay me",
       editorRevision: 5,
+      postClearEditor: { revision: 6, text: "", attachments: [] },
     });
     await tick();
     h.unifiedRequests.length = 0;
@@ -4183,21 +4461,531 @@ describe("SessionRegistry direct AgentSession authority", () => {
         id,
         expect.objectContaining({
           restorationId: "interrupted-unified:unified-crash",
-          text: "do not replay me",
+          text: "",
           attachments: [],
-          disposition: "restore",
+          disposition: "dropped",
+          intentIds: [expect.any(String)],
         }),
       ],
       [
         id,
         expect.objectContaining({
           restorationId: "interrupted-unified:unified-crash",
-          text: "do not replay me",
+          text: "",
           attachments: [],
-          disposition: "restore",
+          disposition: "dropped",
+          intentIds: [expect.any(String)],
         }),
       ],
     ]);
+  });
+
+  it.each([
+    ["Unified prompt", "unified", "prompt body", "submit"],
+    ["Unified slash", "unified", "/safe", "invokeCommand"],
+    ["Unified shell", "unified", "!pwd", "runBash"],
+    ["Composer prompt", "composer", "prompt body", "submit"],
+    ["Composer slash", "composer", "/safe", "invokeCommand"],
+    ["Composer shell", "composer", "!pwd", "runBash"],
+    ["Composer reload", "composer", "/reload", "reload"],
+  ] as const)(
+    "%s clear fences a stale cached prefix across immediate host death",
+    async (_label, surface, source, kind) => {
+      const h = harness();
+      const id = h.registry.openSession("/tmp/project");
+      await h.registry.activateSession(id, "/tmp/pi", {});
+      await h.registry.rendererAttach(id, 1);
+      const first = h.fakes[0]!;
+      first.editor = {
+        revision: 1,
+        text: "stale cached prefix",
+        attachments: [],
+        conflictText: "newer independent draft",
+        conflictAttachments: [{ kind: "file", name: "newer.txt", path: "/tmp/newer.txt" }],
+      };
+      first.emitControl({ type: "snapshot", snapshot: first.snapshot() });
+      await vi.waitFor(() =>
+        expect(h.registry.getSession(id)?.snapshot?.editor.text).toBe("stale cached prefix"),
+      );
+      const record = h.registry.getSession(id)!;
+      const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+      const intentId = `${surface}-${kind}-clear`;
+
+      if (surface === "unified") {
+        first.emitWire({
+          type: "unified_submit_request",
+          id: `${intentId}-request`,
+          text: source,
+          editorRevision: 2,
+          postClearEditor: {
+            revision: 3,
+            text: "",
+            attachments: [],
+            conflictText: "newer independent draft",
+            conflictAttachments: [{ kind: "file", name: "newer.txt", path: "/tmp/newer.txt" }],
+          },
+          submissionIntentId: intentId,
+        });
+        await vi.waitFor(() => expect(h.unifiedRequests.length).toBeGreaterThan(0));
+        expect(
+          h.registry.claimUnifiedSubmit(id, `${intentId}-request`, 1, {
+            hostInstanceId,
+            sessionEpoch,
+          }),
+        ).toMatchObject({ claimed: true });
+      }
+
+      const intent: IntentEnvelope["intent"] =
+        kind === "submit"
+          ? {
+              kind,
+              editorRevision: 2,
+              text: source,
+              inputKind: "ordinary",
+              images: [],
+              requestedMode: "followUp",
+              surface,
+            }
+          : kind === "invokeCommand"
+            ? { kind, editorRevision: 2, text: source, surface }
+            : kind === "runBash"
+              ? {
+                  kind,
+                  command: "pwd",
+                  excludeFromContext: false,
+                  editorRevision: 2,
+                  editorText: source,
+                  surface,
+                }
+              : {
+                  kind,
+                  editorRevision: 2,
+                  editorText: source,
+                  surface,
+                };
+      const envelope: IntentEnvelope = {
+        sessionId: id,
+        intentId,
+        rendererGeneration: 1,
+        expectedOwner: { hostInstanceId, sessionEpoch },
+        intent,
+      };
+      const originalSend = first.send.bind(first);
+      first.send = ((message, callback) => {
+        if (message.type !== "dispatch_intent") return originalSend(message, callback);
+        first.sent.push(message);
+        callback?.(null);
+        queueMicrotask(() => {
+          first.emitWire({
+            type: "editor_source_cleared",
+            intentId,
+            editorRevision: 2,
+            editor: {
+              revision: 3,
+              text: "",
+              attachments: [],
+              conflictText: "newer independent draft",
+              conflictAttachments: [{ kind: "file", name: "newer.txt", path: "/tmp/newer.txt" }],
+            },
+          });
+          first.emitWire({
+            type: "response",
+            id: message.id,
+            success: true,
+            data: { status: "admitted", intentId, owner: envelope.expectedOwner },
+          });
+        });
+        return true;
+      }) as typeof first.send;
+
+      await expect(h.registry.dispatchIntent(envelope)).resolves.toMatchObject({
+        status: "admitted",
+      });
+      first.emitExit(1);
+      await vi.waitFor(() => expect(h.fakes).toHaveLength(2));
+      await vi.waitFor(() => expect(h.registry.getSession(id)?._procReady).toBe(true));
+
+      const recovered = h.registry.getSession(id)?.snapshot?.editor;
+      expect(recovered?.text).toBe("newer independent draft");
+      expect(recovered?.attachments).toEqual([
+        { kind: "file", name: "newer.txt", path: "/tmp/newer.txt" },
+      ]);
+      expect(recovered?.text).not.toContain("stale cached prefix");
+      h.registry.stopAll();
+    },
+  );
+
+  it.each([
+    ["ordinary no-model guard", "guarded prompt", false],
+    ["local settings command", "/settings", true],
+  ] as const)(
+    "%s clear survives renderer settlement and a crash before the next snapshot",
+    async (_label, source, accepted) => {
+      const h = harness();
+      const id = h.registry.openSession("/tmp/project");
+      await h.registry.activateSession(id, "/tmp/pi", {});
+      await h.registry.rendererAttach(id, 1);
+      const first = h.fakes[0]!;
+      first.editor = {
+        revision: 1,
+        text: "cached predecessor",
+        attachments: [],
+        conflictText: "newer independent draft",
+        conflictAttachments: [],
+      };
+      first.emitControl({ type: "snapshot", snapshot: first.snapshot() });
+      await vi.waitFor(() =>
+        expect(h.registry.getSession(id)?.snapshot?.editor.text).toBe("cached predecessor"),
+      );
+      const record = h.registry.getSession(id)!;
+      const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+      const requestId = `local-clear-${accepted ? "accepted" : "guarded"}`;
+      first.emitWire({
+        type: "unified_submit_request",
+        id: requestId,
+        text: source,
+        editorRevision: 2,
+        postClearEditor: {
+          revision: 3,
+          text: "",
+          attachments: [],
+          conflictText: "newer independent draft",
+          conflictAttachments: [],
+        },
+        submissionIntentId: `${requestId}-intent`,
+      });
+      await vi.waitFor(() => expect(h.unifiedRequests).toHaveLength(1));
+      expect(record._editorClearedThroughRevision).toBe(2);
+      const claim = h.registry.claimUnifiedSubmit(id, requestId, 1, {
+        hostInstanceId,
+        sessionEpoch,
+      });
+      if (!claim.claimed) throw new Error("claim rejected");
+      expect(
+        h.registry.respondToUnifiedSubmit(
+          id,
+          requestId,
+          { rendererGeneration: 1, claimId: claim.claimId },
+          { hostInstanceId, sessionEpoch },
+          accepted ? { ok: true } : { ok: false, bailed: true, error: "No model selected" },
+        ).accepted,
+      ).toBe(true);
+
+      first.emitExit(1);
+      await vi.waitFor(() => expect(h.fakes).toHaveLength(2));
+      await vi.waitFor(() => expect(h.registry.getSession(id)?._procReady).toBe(true));
+      expect(h.registry.getSession(id)?.snapshot?.editor).toMatchObject({
+        text: "newer independent draft",
+      });
+      expect(h.registry.getSession(id)?.snapshot?.editor.text).not.toContain("cached predecessor");
+      h.registry.stopAll();
+    },
+  );
+
+  it.each([
+    [
+      "typed text",
+      "original prompt",
+      {
+        baseRevision: 1,
+        revision: 2,
+        text: "local successor",
+        attachments: [] as unknown[],
+        preserveConflicts: true,
+        sourceConsumeRevision: 0,
+        sourceConsumeText: "original prompt",
+      },
+      "local successor",
+    ],
+    [
+      "attachment-only edit",
+      "/fork",
+      {
+        baseRevision: 1,
+        revision: 2,
+        text: "",
+        attachments: [{ kind: "file", name: "notes.txt", path: "/tmp/notes.txt" }] as unknown[],
+        preserveConflicts: true,
+        sourceConsumeRevision: 0,
+        sourceConsumeText: "/fork",
+        inheritsSourceTextOnConsumeFailure: true,
+      },
+      "/fork",
+    ],
+  ] as const)(
+    "never ABA-overwrites an external R+1 with a delayed consume %s successor",
+    async (_label, sourceText, patch, expectedConflictText) => {
+      const h = harness();
+      const id = h.registry.openSession("/tmp/project");
+      await h.registry.activateSession(id, "/tmp/pi", {});
+      const record = h.registry.getSession(id)!;
+      record.snapshot = {
+        ...record.snapshot!,
+        editor: { revision: 0, text: sourceText, attachments: [] },
+      };
+      const owner = runtimeIdentity(record);
+      let resolveConsume!: (value: PiRpcResponse) => void;
+      record.proc!.consumeEditorSource = vi.fn(
+        () =>
+          new Promise<PiRpcResponse>((resolve) => {
+            resolveConsume = resolve;
+          }),
+      );
+      record.proc!.sendEditorPatch = vi.fn();
+
+      const consume = h.registry.consumeEditorSource(id, ...owner, {
+        editorRevision: 0,
+        editorText: sourceText,
+      });
+      await vi.waitFor(() => expect(record.proc!.consumeEditorSource).toHaveBeenCalledOnce());
+      const successor = h.registry.applyEditorPatch(id, ...owner, patch);
+      expect(record._pendingEditorSuccessors.size).toBe(1);
+
+      resolveConsume({
+        type: "response",
+        command: "consume_editor_source",
+        success: true,
+        data: {
+          accepted: false,
+          editor: { revision: 1, text: "extension primary", attachments: [] },
+        },
+      });
+
+      await expect(consume).resolves.toMatchObject({
+        accepted: false,
+        editor: { revision: 1, text: "extension primary" },
+      });
+      await expect(successor).resolves.toMatchObject({
+        accepted: false,
+        text: "extension primary",
+        conflictText: expectedConflictText,
+      });
+      expect(record.proc!.sendEditorPatch).not.toHaveBeenCalled();
+      expect(record.snapshot?.editor).toMatchObject({
+        revision: 1,
+        text: "extension primary",
+        conflictText: expectedConflictText,
+      });
+      if (_label === "attachment-only edit") {
+        expect(record.snapshot?.editor.conflictAttachments).toEqual(patch.attachments);
+      }
+      h.registry.stopAll();
+    },
+  );
+
+  it("keeps a delayed consume successor chain bounded to its exact latest candidate", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    record.snapshot = {
+      ...record.snapshot!,
+      editor: { revision: 0, text: "source", attachments: [] },
+    };
+    const owner = runtimeIdentity(record);
+    let resolveConsume!: (value: PiRpcResponse) => void;
+    record.proc!.consumeEditorSource = vi.fn(
+      () =>
+        new Promise<PiRpcResponse>((resolve) => {
+          resolveConsume = resolve;
+        }),
+    );
+    record.proc!.sendEditorPatch = vi.fn();
+    const consume = h.registry.consumeEditorSource(id, ...owner, {
+      editorRevision: 0,
+      editorText: "source",
+    });
+    await vi.waitFor(() => expect(record.proc!.consumeEditorSource).toHaveBeenCalledOnce());
+
+    const successors = Array.from({ length: 64 }, (_, index) =>
+      h.registry.applyEditorPatch(id, ...owner, {
+        baseRevision: index + 1,
+        revision: index + 2,
+        text: `latest-${"x".repeat(index + 1)}`,
+        attachments: [],
+        preserveConflicts: true,
+        sourceConsumeRevision: 0,
+        sourceConsumeText: "source",
+      }),
+    );
+    expect(record._pendingEditorSuccessors.size).toBe(1);
+    expect([...record._pendingEditorSuccessors.values()][0]).toMatchObject({
+      revision: 65,
+      text: `latest-${"x".repeat(64)}`,
+    });
+
+    resolveConsume({
+      type: "response",
+      command: "consume_editor_source",
+      success: true,
+      data: {
+        accepted: false,
+        editor: { revision: 1, text: "external", attachments: [] },
+      },
+    });
+    await consume;
+    await Promise.all(successors);
+
+    const editor = record.snapshot!.editor;
+    const candidates = [
+      editor.conflictText,
+      editor.alternateConflictText,
+      ...(editor.additionalConflictCandidates ?? []).map((candidate) => candidate.text),
+    ].filter((value): value is string => typeof value === "string");
+    expect(candidates).toEqual([`latest-${"x".repeat(64)}`]);
+    expect(record._pendingEditorSuccessors.size).toBe(0);
+    expect(record.proc!.sendEditorPatch).not.toHaveBeenCalled();
+    h.registry.stopAll();
+  });
+
+  it.each([
+    ["typed successor", "prompt", "next draft", [], false],
+    [
+      "attachment-only successor",
+      "/fork",
+      "",
+      [{ kind: "file", name: "next.txt", path: "/tmp/next.txt" }],
+      true,
+    ],
+  ] as const)(
+    "recovers an accepted %s as primary when the host dies before its patch response",
+    async (_label, sourceText, successorText, successorAttachments, inheritsSourceText) => {
+      const h = harness();
+      const id = h.registry.openSession("/tmp/project");
+      await h.registry.activateSession(id, "/tmp/pi", {});
+      const record = h.registry.getSession(id)!;
+      const first = h.fakes[0]!;
+      record.snapshot = {
+        ...record.snapshot!,
+        editor: {
+          revision: 0,
+          text: sourceText,
+          attachments: [],
+          conflictText: "independent draft",
+          conflictAttachments: [],
+        },
+      };
+      const owner = runtimeIdentity(record);
+      let resolveConsume!: (value: PiRpcResponse) => void;
+      record.proc!.consumeEditorSource = vi.fn(
+        () =>
+          new Promise<PiRpcResponse>((resolve) => {
+            resolveConsume = resolve;
+          }),
+      );
+      const consume = h.registry.consumeEditorSource(id, ...owner, {
+        editorRevision: 0,
+        editorText: sourceText,
+      });
+      await vi.waitFor(() => expect(record.proc!.consumeEditorSource).toHaveBeenCalledOnce());
+      const consumeIntentId = (record.proc!.consumeEditorSource as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0]?.intentId as string;
+      const successor = h.registry.applyEditorPatch(id, ...owner, {
+        baseRevision: 1,
+        revision: 2,
+        text: successorText,
+        attachments: [...successorAttachments],
+        preserveConflicts: true,
+        sourceConsumeRevision: 0,
+        sourceConsumeText: sourceText,
+        ...(inheritsSourceText ? { inheritsSourceTextOnConsumeFailure: true } : {}),
+      });
+      expect(record._pendingEditorSuccessors.size).toBe(1);
+
+      // The child publishes the residual before its RPC response. That event
+      // is already causal proof of exact consumption and must promote the
+      // same-chain successor before a crash can capture recovery.
+      first.emitWire({
+        type: "editor_source_cleared",
+        intentId: consumeIntentId,
+        editorRevision: 0,
+        editor: {
+          revision: 1,
+          text: "",
+          attachments: [],
+          conflictText: "independent draft",
+          conflictAttachments: [],
+        },
+      });
+      expect(record.snapshot?.editor).toMatchObject({
+        revision: 2,
+        text: successorText,
+        attachments: successorAttachments,
+        conflictText: "independent draft",
+      });
+
+      first.emitExit(1);
+      // Unblock the retired request after crash capture. Its late response
+      // cannot rewrite the replacement owner or demote the recovered primary.
+      resolveConsume({
+        type: "response",
+        command: "consume_editor_source",
+        success: true,
+        data: {
+          accepted: true,
+          sourceRevision: 0,
+          editor: { revision: 1, text: "", attachments: [] },
+        },
+      });
+      await expect(consume).resolves.toMatchObject({
+        accepted: false,
+        rejection: "runtime_replaced",
+      });
+      await successor;
+      await vi.waitFor(() => expect(h.fakes).toHaveLength(2));
+      await vi.waitFor(() => expect(h.registry.getSession(id)?._procReady).toBe(true));
+      expect(h.registry.getSession(id)?.snapshot?.editor).toMatchObject({
+        text: successorText,
+        attachments: successorAttachments,
+        conflictText: "independent draft",
+      });
+      expect(h.registry.getSession(id)?.snapshot?.editor.text).not.toBe(sourceText);
+      h.registry.stopAll();
+    },
+  );
+
+  it("rejects an overlapping exact editor consume without replacing the active lineage", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    record.snapshot = {
+      ...record.snapshot!,
+      editor: { revision: 0, text: "first", attachments: [] },
+    };
+    const owner = runtimeIdentity(record);
+    let resolveConsume!: (value: PiRpcResponse) => void;
+    record.proc!.consumeEditorSource = vi.fn(
+      () =>
+        new Promise<PiRpcResponse>((resolve) => {
+          resolveConsume = resolve;
+        }),
+    );
+    const first = h.registry.consumeEditorSource(id, ...owner, {
+      editorRevision: 0,
+      editorText: "first",
+    });
+    await vi.waitFor(() => expect(record.proc!.consumeEditorSource).toHaveBeenCalledOnce());
+    const token = record._activeEditorConsume;
+    await expect(
+      h.registry.consumeEditorSource(id, ...owner, {
+        editorRevision: 0,
+        editorText: "first",
+      }),
+    ).resolves.toMatchObject({ accepted: false, rejection: "runtime_unavailable" });
+    expect(record._activeEditorConsume).toBe(token);
+    expect(record.proc!.consumeEditorSource).toHaveBeenCalledOnce();
+    resolveConsume({
+      type: "response",
+      command: "consume_editor_source",
+      success: true,
+      data: {
+        accepted: false,
+        editor: { revision: 0, text: "first", attachments: [] },
+      },
+    });
+    await first;
+    h.registry.stopAll();
   });
 
   it("rejects an editor-patch acknowledgement that crosses an epoch boundary", async () => {
@@ -4265,6 +5053,192 @@ describe("SessionRegistry direct AgentSession authority", () => {
     await expect(first).resolves.toEqual({ acknowledgedThrough: 1 });
     await expect(second).resolves.toEqual({ acknowledgedThrough: 2 });
     expect(record.proc!.sendPanelInput).toHaveBeenCalledTimes(2);
+  });
+
+  it("advances main's input gate from the host watermark before repaint reopens input", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const fake = h.fakes[0]!;
+    fake.emitWire({ type: "panel_open", panelId: 7, overlay: false, unified: true });
+    expect(record._panelInputSequence.get(7)).toBe(0);
+    vi.spyOn(record.proc!, "acknowledgePanelRepaint").mockResolvedValue({
+      acknowledged: true,
+      // Sequence 1 reached the host, but its correlated panel_input response
+      // timed out before main could advance its own cumulative mirror.
+      inputAcknowledgedThrough: 1,
+    });
+
+    await expect(
+      h.registry.acknowledgePanelRepaint(id, ...runtimeIdentity(record), 7, 3),
+    ).resolves.toEqual({ acknowledged: true });
+    expect(record._panelInputSequence.get(7)).toBe(1);
+    await expect(
+      h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 3, 2, "successor"),
+    ).resolves.toEqual({ acknowledgedThrough: 2 });
+    expect(
+      fake.sent.some(
+        (message) =>
+          message.type === "panel_input" && message.sequence === 2 && message.data === "successor",
+      ),
+    ).toBe(true);
+    h.registry.stopAll();
+  });
+
+  it("reconciles a late keyframe watermark after the repaint acknowledgement RPC times out", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    await h.registry.rendererAttach(id, 1);
+    const record = h.registry.getSession(id)!;
+    const fake = h.fakes[0]!;
+    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+    const owner = { hostInstanceId, sessionEpoch };
+    fake.emitWire({ type: "panel_open", panelId: 8, overlay: false, unified: true });
+    expect(record._panelInputSequence.get(8)).toBe(0);
+
+    vi.useFakeTimers();
+    try {
+      const repaintAck = h.registry.acknowledgePanelRepaint(id, ...runtimeIdentity(record), 8, 5);
+      const repaintOutcome = repaintAck.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const request = fake.sent.find(
+        (message) => message.type === "panel_repaint_ack" && message.panelId === 8,
+      );
+      if (!request || typeof request.id !== "string") throw new Error("missing repaint request");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(repaintOutcome).resolves.toMatchObject({
+        message: expect.stringContaining("Host request timeout for panel_repaint_ack"),
+      });
+
+      // The response is too late for its request promise, but the immediately
+      // following current-owner keyframe independently proves sequence 1 was
+      // consumed and must advance main before it is routed to the renderer.
+      fake.emitWire({
+        type: "response",
+        id: request.id,
+        success: true,
+        data: { acknowledged: true, inputAcknowledgedThrough: 1 },
+      });
+      const cursor = { ...owner, transportSequence: 10, snapshotSequence: 10 };
+      h.registry.routeAuthorityPublication(id, {
+        plane: "panel",
+        owner,
+        payload: {
+          kind: "keyframe",
+          cursor,
+          panel: {
+            panelKey: "panel:8",
+            panelId: 8,
+            owner,
+            sync: { state: "following", cursor },
+            overlay: false,
+            unified: true,
+            mode: "content",
+            inputAcknowledgedThrough: 1,
+            keyframe: { kind: "keyframe", ansi: "", renderRevision: 5 },
+          },
+        },
+      });
+      expect(record._panelInputSequence.get(8)).toBe(1);
+
+      await expect(
+        h.registry.sendPanelInput(id, ...runtimeIdentity(record), 8, 5, 2, "successor"),
+      ).resolves.toEqual({ acknowledgedThrough: 2 });
+    } finally {
+      vi.useRealTimers();
+      h.registry.stopAll();
+    }
+  });
+
+  it("reports definitive no-delivery when panel ownership changes during the host await", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const owner = runtimeIdentity(record);
+    record._panelInputSequence.set(7, 0);
+    let resolveInput!: (result: { acknowledgedThrough: number }) => void;
+    record.proc!.sendPanelInput = vi.fn(
+      () =>
+        new Promise<{ acknowledgedThrough: number }>((resolve) => {
+          resolveInput = resolve;
+        }),
+    );
+
+    const pending = h.registry.sendPanelInput(id, ...owner, 7, 1, 1, "first-key");
+    await vi.waitFor(() => expect(record.proc!.sendPanelInput).toHaveBeenCalledOnce());
+    record.proc!.sessionEpoch = owner[1] + 1;
+    record.snapshot = { ...record.snapshot!, sessionEpoch: owner[1] + 1 };
+    resolveInput({ acknowledgedThrough: 1 });
+
+    await expect(pending).resolves.toEqual({
+      acknowledgedThrough: 0,
+      rejection: "runtime_replaced",
+    });
+    expect(record._panelInputSequence.get(7)).toBe(0);
+    h.registry.stopAll();
+  });
+
+  it("reports unavailable without dispatch when a panel owner has died", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const owner = runtimeIdentity(record);
+    const send = vi.spyOn(record.proc!, "sendPanelInput");
+    record._dead = true;
+    record.availability = "unavailable";
+
+    await expect(h.registry.sendPanelInput(id, ...owner, 7, 1, 1, "first-key")).resolves.toEqual({
+      acknowledgedThrough: 0,
+      rejection: "runtime_unavailable",
+    });
+    expect(send).not.toHaveBeenCalled();
+    h.registry.stopAll();
+  });
+
+  it("checkpoints panel editor text without echoing large attachment payloads to the renderer", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const hugeDataUrl = `data:image/png;base64,${"a".repeat(2_000_000)}`;
+    const attachments = [{ kind: "image", data: hugeDataUrl, mimeType: "image/png" }];
+    record.snapshot = {
+      ...record.snapshot!,
+      editor: {
+        revision: 7,
+        text: "before",
+        attachments,
+        conflictText: "retired conflict",
+        conflictAttachments: [],
+      },
+    };
+    record._editorRecovery = structuredClone(record.snapshot.editor);
+    record._panelInputSequence.set(7, 0);
+    record.proc!.sendPanelInput = vi.fn(async () => ({
+      acknowledgedThrough: 1,
+      editorCheckpoint: { revision: 8, text: "beforex", clearedConflicts: true },
+    }));
+
+    const result = await h.registry.sendPanelInput(id, ...runtimeIdentity(record), 7, 1, 1, "x");
+
+    expect(result).toEqual({ acknowledgedThrough: 1 });
+    expect(JSON.stringify(result)).not.toContain("data:image");
+    expect(record.snapshot?.editor).toEqual({
+      revision: 8,
+      text: "beforex",
+      attachments,
+    });
+    expect(record._editorRecovery).toEqual(record.snapshot?.editor);
+    const childCheckpoint = (record.proc!.sendPanelInput as ReturnType<typeof vi.fn>).mock
+      .results[0]?.value;
+    expect(JSON.stringify(await childCheckpoint)).not.toContain(hugeDataUrl);
+    h.registry.stopAll();
   });
 
   it("acknowledges panel input cumulatively and rejects gaps", async () => {

@@ -2,6 +2,8 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { verifyElectronInstallation } from "./postinstall.mjs";
 
 function execGit(args, cwd) {
   return execFileSync("git", args, {
@@ -74,41 +76,129 @@ function worktreeRoots(root) {
   }
 }
 
-function main() {
-  const root = repoRoot();
+function electronInstallError(root, error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `[ensure-worktree-dev] Electron is not provisioned in ${path.join(root, "node_modules")}: ${reason}\nRun \`npm install\` without \`--ignore-scripts\` in that dependency-owning worktree, then retry this command.`,
+    { cause: error },
+  );
+}
+
+function verifyWorktreeElectron(root, verifyElectron) {
+  try {
+    return verifyElectron({ packageDirectory: path.join(root, "node_modules", "electron") });
+  } catch (error) {
+    throw electronInstallError(root, error);
+  }
+}
+
+export function ensureWorktreeDev({
+  root = repoRoot(),
+  roots = worktreeRoots(root),
+  verifyElectron = verifyElectronInstallation,
+  log = console.error,
+} = {}) {
   const nodeModules = path.join(root, "node_modules");
 
   if (hasUsableNodeModules(root)) {
     const linkedRoot = linkedDependencyRoot(root);
     // A branch can change package-lock.json after this symlink was created.
     // Never silently run it against a sibling's incompatible dependency tree.
-    if (!linkedRoot || dependenciesMatch(root, linkedRoot)) return;
+    if (!linkedRoot || dependenciesMatch(root, linkedRoot)) {
+      // Electron 43 lazily installs from index.js. This preflight must remain
+      // read-only so parallel workers never become competing installers when
+      // a local or shared dependency tree skipped its root postinstall.
+      verifyWorktreeElectron(linkedRoot ?? root, verifyElectron);
+      return { root, dependencyRoot: linkedRoot ?? root, linked: linkedRoot !== undefined };
+    }
     fs.rmSync(nodeModules, { force: true });
-    console.error("[ensure-worktree-dev] removed an incompatible node_modules worktree link");
+    log("[ensure-worktree-dev] removed an incompatible node_modules worktree link");
   } else {
+    let stat;
     try {
-      const stat = fs.lstatSync(nodeModules);
-      if (stat.isSymbolicLink()) fs.rmSync(nodeModules, { force: true });
-    } catch {
-      // Missing is expected in fresh git worktrees.
+      stat = fs.lstatSync(nodeModules);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw new Error(
+          `[ensure-worktree-dev] ${nodeModules} could not be validated.\nRepair or move that path, then run \`npm install\` without \`--ignore-scripts\` in this worktree.`,
+          { cause: error },
+        );
+      }
+    }
+    if (stat?.isSymbolicLink()) {
+      fs.rmSync(nodeModules, { force: true });
+    } else if (stat) {
+      throw new Error(
+        `[ensure-worktree-dev] ${nodeModules} exists but is not a complete dependency install.\nRun \`npm install\` without \`--ignore-scripts\` in this worktree, then retry this command.`,
+      );
     }
   }
 
-  const sourceRoot = worktreeRoots(root).find(
-    (candidate) =>
-      candidate !== root && hasUsableNodeModules(candidate) && dependenciesMatch(root, candidate),
-  );
+  let invalidElectronError;
+  const sourceRoot = roots.find((candidate) => {
+    if (
+      candidate === root ||
+      !hasUsableNodeModules(candidate) ||
+      !dependenciesMatch(root, candidate)
+    ) {
+      return false;
+    }
+    try {
+      verifyWorktreeElectron(candidate, verifyElectron);
+      return true;
+    } catch (error) {
+      invalidElectronError ??= error;
+      return false;
+    }
+  });
   if (!sourceRoot) {
-    console.error(
+    if (invalidElectronError) throw invalidElectronError;
+    throw new Error(
       "[ensure-worktree-dev] node_modules is missing and no sibling worktree with installed dependencies was found.\n" +
         "Run `npm install` once in this worktree (or in a sibling with the same package-lock.json), then retry this command.",
     );
-    process.exit(1);
   }
 
   const target = path.join(sourceRoot, "node_modules");
   fs.symlinkSync(target, nodeModules, "dir");
-  console.error(`[ensure-worktree-dev] linked ${nodeModules} -> ${target}`);
+  const createdLink = fs.lstatSync(nodeModules);
+  const createdLinkTarget = fs.readlinkSync(nodeModules);
+  if (!createdLink.isSymbolicLink() || createdLinkTarget !== target) {
+    throw new Error(
+      `[ensure-worktree-dev] ${nodeModules} changed while its dependency link was being created.`,
+    );
+  }
+  // Re-resolve through the new link before returning. This turns a concurrent
+  // source removal or incomplete link into the same actionable failure.
+  try {
+    verifyWorktreeElectron(root, verifyElectron);
+  } catch (error) {
+    try {
+      const currentLink = fs.lstatSync(nodeModules);
+      if (
+        currentLink.isSymbolicLink() &&
+        currentLink.dev === createdLink.dev &&
+        currentLink.ino === createdLink.ino &&
+        fs.readlinkSync(nodeModules) === createdLinkTarget
+      ) {
+        fs.rmSync(nodeModules, { force: true });
+      }
+    } catch {
+      // Preserve the verification failure. Cleanup is deliberately limited to
+      // the unchanged symlink created above; never remove a replacement path.
+    }
+    throw error;
+  }
+  log(`[ensure-worktree-dev] linked ${nodeModules} -> ${target}`);
+  return { root, dependencyRoot: sourceRoot, linked: true };
 }
 
-main();
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  try {
+    ensureWorktreeDev();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}

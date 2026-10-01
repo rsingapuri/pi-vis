@@ -18,6 +18,7 @@ import type {
   IntentOutcome,
   NavigationPresentation,
   RendererPublication,
+  RuntimeEditorState,
   RuntimeIdentity,
   RuntimeRecord,
   RuntimeStateUpdate,
@@ -35,7 +36,6 @@ import { InputNotConsumedError, executeAction } from "../lib/commands/execute.js
 import { parseComposerInput } from "../lib/commands/parse.js";
 import {
   parseReplicatedAttachments,
-  restorationImagesToComposerAttachments,
   runtimeImagesFromAttachments,
   textWithAppendedFilePaths,
   textWithPrependedFilePaths,
@@ -45,7 +45,9 @@ import {
   codeCommentKey,
   createCodeCommentId,
   loadPersistedCodeComments,
+  loadUnifiedCommentCustodies,
   persistCodeComments,
+  persistUnifiedCommentCustodies,
   prependCodeCommentsToPrompt,
 } from "../lib/diff-comments.js";
 import type { DiffModel } from "../lib/diff/diff-model.js";
@@ -54,6 +56,7 @@ import { describeIpcError } from "../lib/ipc-errors.js";
 import { findCurrentModel } from "../lib/model-utils.js";
 import {
   activatePanelInputIdentity,
+  ensurePanelInputIdentity,
   forgetPanelInputSequence,
   forgetPanelInputSession,
   retirePanelInputIdentity,
@@ -79,6 +82,201 @@ interface ModelRefreshFlight {
 // Coalesce only work for the same authority owner. A successor must never be
 // held behind the predecessor's delayed refresh/outcome timeout.
 const modelRefreshFlights = new Map<SessionId, ModelRefreshFlight>();
+
+// A Unified editor can clear and forward multiple sources without waiting for
+// the preceding Pi turn to finish. Keep only the short claim/admission phase
+// FIFO per session so async renderer continuations cannot reverse those source
+// revisions. The gate is released at the dispatch receipt boundary; terminal
+// outcome tracking continues independently and never blocks typing/submission.
+const unifiedAdmissionTails = new Map<SessionId, Promise<void>>();
+const unifiedCommentCustodies = loadUnifiedCommentCustodies();
+const transientUnifiedCommentTombstones = new Set<string>();
+const preAuthorityUnifiedSubmits = new Map<SessionId, DeferredUnifiedSubmitRequest[]>();
+const unifiedNativeRevealFlights = new Map<
+  SessionId,
+  { requestId: number; promise: Promise<boolean> }
+>();
+const unifiedNativeRevealRequestIds = new Map<SessionId, number>();
+let unifiedNativeRevealRequestCounter = 0;
+const MAX_UNIFIED_COMMENT_CUSTODIES = 512;
+// Redelivery after renderer reattachment must not retire an identical draft or
+// attachment tuple created after the first clear receipt.
+const seenUnifiedSourceReceipts = new Set<string>();
+const MAX_PRE_ATTACH_AUTHORITY_PUBLICATIONS = 256;
+
+function rememberUnifiedSourceReceipt(key: string): boolean {
+  if (seenUnifiedSourceReceipts.has(key)) return false;
+  seenUnifiedSourceReceipts.add(key);
+  while (seenUnifiedSourceReceipts.size > MAX_UNIFIED_COMMENT_CUSTODIES) {
+    const oldest = seenUnifiedSourceReceipts.values().next().value;
+    if (oldest === undefined) break;
+    seenUnifiedSourceReceipts.delete(oldest);
+  }
+  return true;
+}
+
+function trimUnifiedCommentCustodies(
+  candidate: Map<string, readonly CodeComment[]>,
+  protectedKey: string,
+): boolean {
+  while (candidate.size > MAX_UNIFIED_COMMENT_CUSTODIES) {
+    const evictable = [...candidate].find(
+      ([key, comments]) => key !== protectedKey && comments.length === 0,
+    )?.[0];
+    if (evictable === undefined) return false;
+    candidate.delete(evictable);
+  }
+  return true;
+}
+
+function rememberTransientUnifiedCommentTombstone(key: string): void {
+  transientUnifiedCommentTombstones.add(key);
+  while (transientUnifiedCommentTombstones.size > MAX_UNIFIED_COMMENT_CUSTODIES) {
+    const oldest = transientUnifiedCommentTombstones.values().next().value;
+    if (oldest === undefined) break;
+    transientUnifiedCommentTombstones.delete(oldest);
+  }
+}
+
+function authorityAttachWithEarlyPublications(
+  response: Extract<AuthorityAttachResponse, { status: "ready" }>,
+  early: readonly RendererPublication[],
+): Extract<AuthorityAttachResponse, { status: "ready" }> {
+  if (early.length === 0) return response;
+  const replay = new Map<number, RendererPublication>();
+  // Main's attach replay is the canonical copy when the same publication also
+  // crossed renderer IPC before the Promise continuation installed its
+  // baseline. The early renderer copy fills only the delivery-order gap.
+  for (const publication of response.replay) {
+    replay.set(publication.publicationSequence, publication);
+  }
+  for (const publication of early) {
+    if (
+      publication.sessionId !== response.baseline.sessionId ||
+      publication.rendererGeneration !== response.baseline.rendererGeneration ||
+      publication.publicationSequence <= response.baseline.publicationHighWatermark ||
+      replay.has(publication.publicationSequence)
+    ) {
+      continue;
+    }
+    replay.set(publication.publicationSequence, publication);
+  }
+  return {
+    ...response,
+    replay: [...replay.values()].sort(
+      (left, right) => left.publicationSequence - right.publicationSequence,
+    ),
+  };
+}
+
+function takeUnifiedCommentCustody(
+  key: string,
+  sessionId: SessionId,
+  sourceCarriesComments: boolean,
+  firstSourceReceipt: boolean,
+  eventTimeComments: readonly CodeComment[] | undefined,
+  getState: () => SessionsStore,
+): { comments: readonly CodeComment[]; persistenceFailed: boolean } {
+  if (transientUnifiedCommentTombstones.has(key)) {
+    return { comments: [], persistenceFailed: false };
+  }
+  const existing = unifiedCommentCustodies.get(key);
+  if (existing) return { comments: existing, persistenceFailed: false };
+  // A settled/redelivered request may not capture comment revisions created
+  // after its first clear receipt.
+  if (!firstSourceReceipt) return { comments: [], persistenceFailed: false };
+  const reservedRevisions = new Set<string>();
+  const sessionPrefix = `${sessionId}\0`;
+  for (const [existingKey, existingComments] of unifiedCommentCustodies) {
+    if (!existingKey.startsWith(sessionPrefix)) continue;
+    for (const comment of existingComments) {
+      reservedRevisions.add(`${comment.id}\0${comment.revision}`);
+    }
+  }
+  const comments = sourceCarriesComments
+    ? structuredClone(eventTimeComments ?? getState().getDiffCommentsForPrompt(sessionId)).filter(
+        (comment) => !reservedRevisions.has(`${comment.id}\0${comment.revision}`),
+      )
+    : [];
+  const candidateCustodies = new Map(unifiedCommentCustodies);
+  for (const settledKey of transientUnifiedCommentTombstones) {
+    candidateCustodies.set(settledKey, []);
+  }
+  candidateCustodies.set(key, comments);
+  if (!trimUnifiedCommentCustodies(candidateCustodies, key)) {
+    if (sourceCarriesComments) rememberTransientUnifiedCommentTombstone(key);
+    return { comments: [], persistenceFailed: sourceCarriesComments };
+  }
+  // Persist custody before deleting the active-comment copy. Without durable
+  // custody, including these revisions and then crashing could let a reload
+  // submit them again. Fail closed: keep the active revisions, discard the
+  // transient reservation, and omit them from this request.
+  const persisted = persistUnifiedCommentCustodies(candidateCustodies);
+  if (!persisted) {
+    if (sourceCarriesComments) rememberTransientUnifiedCommentTombstone(key);
+    return { comments: [], persistenceFailed: sourceCarriesComments };
+  }
+  unifiedCommentCustodies.clear();
+  for (const [custodyKey, custodyComments] of candidateCustodies) {
+    unifiedCommentCustodies.set(custodyKey, custodyComments);
+  }
+  transientUnifiedCommentTombstones.clear();
+  if (comments.length > 0) getState().clearSubmittedDiffComments(sessionId, comments);
+  return { comments, persistenceFailed: false };
+}
+
+function settleUnifiedCommentCustody(
+  key: string,
+  sessionId: SessionId,
+  comments: readonly CodeComment[],
+  getState: () => SessionsStore,
+): void {
+  // Exact revision comparison preserves comments edited after submission.
+  if (comments.length > 0) getState().clearSubmittedDiffComments(sessionId, comments);
+  // Keep a bounded durable empty tombstone. A renderer reload can otherwise
+  // forget the in-memory seen set and let a redelivered request capture code
+  // comments created after its original submission.
+  const candidateCustodies = new Map(unifiedCommentCustodies);
+  for (const settledKey of transientUnifiedCommentTombstones) {
+    candidateCustodies.set(settledKey, []);
+  }
+  candidateCustodies.set(key, []);
+  if (
+    trimUnifiedCommentCustodies(candidateCustodies, key) &&
+    persistUnifiedCommentCustodies(candidateCustodies)
+  ) {
+    unifiedCommentCustodies.clear();
+    for (const [custodyKey, custodyComments] of candidateCustodies) {
+      unifiedCommentCustodies.set(custodyKey, custodyComments);
+    }
+    transientUnifiedCommentTombstones.clear();
+  } else {
+    // Suppress duplicate delivery in this renderer, but do not evict any
+    // previously durable custody while storage is unavailable. The next
+    // successful transition persists the complete bounded candidate.
+    rememberTransientUnifiedCommentTombstone(key);
+  }
+}
+
+async function enterUnifiedAdmissionTurn(sessionId: SessionId): Promise<() => void> {
+  const predecessor = unifiedAdmissionTails.get(sessionId) ?? Promise.resolve();
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  const tail = predecessor.catch(() => {}).then(() => gate);
+  unifiedAdmissionTails.set(sessionId, tail);
+  void tail.then(() => {
+    if (unifiedAdmissionTails.get(sessionId) === tail) unifiedAdmissionTails.delete(sessionId);
+  });
+  await predecessor.catch(() => {});
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseGate();
+  };
+}
 import { openDiffForSession } from "./diff-store.js";
 import { useSettingsStore } from "./settings-store.js";
 import {
@@ -87,7 +285,6 @@ import {
   addCustomMessageBlock,
   addUserBlock,
   applyPiEvent,
-  clearPendingUserEcho,
   createTranscriptState,
   finalizeActiveBlocks,
   finishBashBlock,
@@ -116,9 +313,133 @@ interface PendingComposerSubmission {
   composerText: string;
   /** Replicated attachment payload paired with composerText at dispatch. */
   composerAttachments?: unknown[] | undefined;
+  /** Ordinary prompts consume their exact staged attachments; slash commands do not. */
+  consumeComposerAttachments?: boolean | undefined;
+  /** Exact renderer-owned injection whose submitted source must retire with custody. */
+  editorInjectionNonce?: number | undefined;
+  /** Store-owned lineage; value equality alone cannot distinguish an identical retype. */
+  draftRevision?: number | undefined;
+  attachmentGeneration?: number | undefined;
   /** Actual prompt after staged files/comments; used for untagged legacy echoes. */
   submittedText: string;
   submittedComments: CodeComment[];
+}
+
+interface UnifiedSourceClearReceipt {
+  key: string;
+  owner: RuntimeIdentity;
+  sourceRevision: number;
+  sourceText: string;
+  projectedAttachments: unknown[];
+  postClearEditor: RuntimeEditorState;
+  consumeAttachments: boolean;
+  draftScope: "workspace" | "session";
+  workspacePath: string;
+  draftText: string;
+  draftRevision: number;
+  attachmentGeneration: number;
+}
+
+interface UnifiedComposerProjectionToken {
+  owner: RuntimeIdentity;
+  editorRevision: number;
+  draftScope: "workspace" | "session";
+  workspacePath: string;
+  draftText: string;
+  draftRevision: number;
+  attachmentGeneration: number;
+  attachments: unknown[];
+  /** Residual custody for attachments intentionally preserved by slash/shell. */
+  attachmentLineageOnly?: boolean | undefined;
+  editorInjectionNonce?: number | undefined;
+}
+
+interface DeferredUnifiedSubmitRequest {
+  id: string;
+  text: string;
+  editorRevision: number;
+  submissionIntentId: string;
+  hostInstanceId: string;
+  sessionEpoch: number;
+  submittedEditorAttachments: unknown[] | undefined;
+  postClearEditor: RuntimeEditorState | undefined;
+  /** Exact renderer comment revisions visible when the child event arrived. */
+  eventTimeComments: CodeComment[];
+}
+
+function deferUnifiedSubmitUntilAuthority(
+  sessionId: SessionId,
+  request: DeferredUnifiedSubmitRequest,
+): void {
+  const requests = preAuthorityUnifiedSubmits.get(sessionId) ?? [];
+  const key = `${request.hostInstanceId}\0${request.sessionEpoch}\0${request.id}`;
+  if (
+    requests.some(
+      (candidate) =>
+        `${candidate.hostInstanceId}\0${candidate.sessionEpoch}\0${candidate.id}` === key,
+    )
+  )
+    return;
+  // Main retains every unclaimed source until it is explicitly settled. Mirror
+  // that custody exactly: evicting a renderer replay here would strand the
+  // corresponding cleared source forever.
+  preAuthorityUnifiedSubmits.set(sessionId, [...requests, request]);
+}
+
+function drainUnifiedSubmitsForAuthority(
+  sessionId: SessionId,
+  getState: () => SessionsStore,
+): void {
+  const requests = preAuthorityUnifiedSubmits.get(sessionId);
+  if (!requests || requests.length === 0) return;
+  const session = getState().sessions.get(sessionId);
+  const owner = authoritySnapshotFor(session)?.owner;
+  if (!owner || !sessionMatchesRuntime(session, owner)) return;
+  preAuthorityUnifiedSubmits.delete(sessionId);
+  for (const request of requests) {
+    if (
+      request.hostInstanceId !== owner.hostInstanceId ||
+      request.sessionEpoch !== owner.sessionEpoch
+    ) {
+      continue;
+    }
+    void getState().handleUnifiedSubmitRequest(
+      sessionId,
+      request.id,
+      request.text,
+      request.editorRevision,
+      request.submissionIntentId,
+      request.hostInstanceId,
+      request.sessionEpoch,
+      request.submittedEditorAttachments,
+      request.postClearEditor,
+      request.eventTimeComments,
+    );
+  }
+}
+
+function retireSubmittedEditorProjection(
+  current: SessionViewState,
+  pending: PendingComposerSubmission,
+): SessionViewState {
+  const submittedAttachments = pending.composerAttachments ?? [];
+  const attachmentsStillExact =
+    current.editorAttachmentGeneration === pending.attachmentGeneration &&
+    JSON.stringify(current.editorAttachments) === JSON.stringify(submittedAttachments);
+  const injectionStillExact = current.editorInjection?.nonce === pending.editorInjectionNonce;
+  if (
+    !(pending.consumeComposerAttachments === true && attachmentsStillExact) &&
+    !injectionStillExact
+  ) {
+    return current;
+  }
+  return {
+    ...current,
+    ...(pending.consumeComposerAttachments === true && attachmentsStillExact
+      ? { editorAttachments: [] }
+      : {}),
+    ...(injectionStillExact ? { editorInjection: undefined } : {}),
+  };
 }
 
 export interface SessionViewState {
@@ -134,6 +455,12 @@ export interface SessionViewState {
   runtimeSnapshot?: AgentSessionSnapshot | undefined;
   /** Sole renderer semantic projection. Only a following semantic plane is authoritative. */
   authorityProjection?: RendererAuthorityState | undefined;
+  /**
+   * Same-generation publications delivered before the attach Promise resumes.
+   * They are drained atomically with that baseline so a legacy panel cannot
+   * disappear for one render and replace its focused xterm.
+   */
+  preAttachAuthorityPublications?: RendererPublication[] | undefined;
   /** Renderer-local identity of the last live-shell reconstruction this
    * session successfully acknowledged. A remounted xterm requests a new host
    * fence only when it would otherwise reuse this already-consumed keyframe. */
@@ -142,14 +469,29 @@ export interface SessionViewState {
   sessionEpoch: number;
   editorRevision: number;
   editorAttachments: unknown[];
+  editorAttachmentGeneration: number;
   editorAttachmentReads: number;
   editorPatchPending: number;
+  /** A following editor projection withheld while a local patch owned custody. */
+  editorProjectionDeferred?: boolean | undefined;
   /**
    * Component-independent custody for one ordinary Composer submission.
    * Survives switching away from the session so correlated acceptance can
    * retire the exact draft/comment revisions while its Composer is unmounted.
    */
   pendingComposerSubmission?: PendingComposerSubmission | undefined;
+  /**
+   * One-shot causal clears emitted after Unified Editor.submitValue(). A
+   * mounted native Composer consumes these with its local edit-generation
+   * fences; merely clearing store drafts cannot clear a textarea that already
+   * seeded the submitted source during an Input-toggle race.
+   */
+  unifiedSourceClearReceipts?: UnifiedSourceClearReceipt[] | undefined;
+  /** Exact renderer projection handed to the shared host editor when the
+   * native Composer yields to the Unified surface. A later Unified clear may
+   * retire only this lineage; native edits made after toggling back advance
+   * the store generations and survive even when their bytes are identical. */
+  unifiedComposerProjectionTokens?: UnifiedComposerProjectionToken[] | undefined;
   /** Cold→live activation owned by the current view-only visit, if any. */
   activationVisitId?: string | undefined;
   activationVisitReleasePending?: boolean | undefined;
@@ -222,8 +564,6 @@ export interface SessionViewState {
         revision?: number;
         /** Only a fresh owner baseline may yield to an existing renderer draft. */
         preserveRendererDraft?: boolean;
-        /** Renderer-owned restored attachments to apply with this injection. */
-        attachments?: unknown[];
       }
     | undefined;
   pendingPicker?: PickerRequest | undefined;
@@ -333,6 +673,8 @@ export interface SessionViewState {
    *  live; `true` shows the Composer instead. Reset to `false` whenever a
    *  panel opens/closes/resets so a fresh panel always starts visible. */
   unifiedPanelHidden?: boolean | undefined;
+  /** Extension reveal requested while a native editor revision is still settling. */
+  unifiedPanelRevealPending?: boolean | undefined;
   /** pi version reported by the SDK host on ready.
    *  Surfaced in the SessionHeader tooltip. See P1-c. */
   piVersion?: string | undefined;
@@ -440,6 +782,7 @@ function retireSupersededPanelInputIdentities(
         identity.panelId === currentIdentity.panelId,
     );
     if (!retained) activatePanelInputIdentity(sessionId, currentIdentity);
+    else ensurePanelInputIdentity(sessionId, currentIdentity);
   }
 }
 
@@ -482,6 +825,71 @@ export function isNewSessionPending(s: SessionViewState | undefined | null): boo
   return !!s?.isNewPending && !sessionHasHistory(s);
 }
 
+function captureUnifiedComposerProjection(
+  state: SessionsStore,
+  session: SessionViewState,
+): UnifiedComposerProjectionToken {
+  const draftScope = isNewSessionPending(session) ? "workspace" : "session";
+  const authority = authoritySnapshotFor(session);
+  return {
+    owner: authority?.owner ?? {
+      hostInstanceId: session.hostInstanceId ?? "",
+      sessionEpoch: session.sessionEpoch,
+    },
+    editorRevision: session.editorRevision,
+    draftScope,
+    workspacePath: session.workspacePath,
+    draftText:
+      draftScope === "workspace"
+        ? (state.newSessionDrafts.get(session.workspacePath) ?? "")
+        : (state.sessionDrafts.get(session.sessionId) ?? ""),
+    draftRevision:
+      draftScope === "workspace"
+        ? (state.newSessionDraftRevisions.get(session.workspacePath) ?? 0)
+        : (state.sessionDraftRevisions.get(session.sessionId) ?? 0),
+    attachmentGeneration: session.editorAttachmentGeneration,
+    attachments: structuredClone(session.editorAttachments),
+    ...(session.editorInjection?.nonce !== undefined
+      ? { editorInjectionNonce: session.editorInjection.nonce }
+      : {}),
+  };
+}
+
+function unifiedPanelCanOwnCurrentDraft(state: SessionsStore, session: SessionViewState): boolean {
+  if (session.editorPatchPending > 0) return false;
+  const authority = authoritySnapshotFor(session);
+  const draft = isNewSessionPending(session)
+    ? (state.newSessionDrafts.get(session.workspacePath) ?? "")
+    : (state.sessionDrafts.get(session.sessionId) ?? "");
+  if (!authority) return draft === "" && session.editorAttachments.length === 0;
+  return (
+    authority.editor.text === draft &&
+    JSON.stringify(authority.editor.attachments) === JSON.stringify(session.editorAttachments)
+  );
+}
+
+function appendUnifiedComposerProjectionToken(
+  existing: readonly UnifiedComposerProjectionToken[] | undefined,
+  token: UnifiedComposerProjectionToken,
+): UnifiedComposerProjectionToken[] {
+  const tokens = existing ?? [];
+  const duplicate = tokens.some(
+    (candidate) =>
+      candidate.owner.hostInstanceId === token.owner.hostInstanceId &&
+      candidate.owner.sessionEpoch === token.owner.sessionEpoch &&
+      candidate.editorRevision === token.editorRevision &&
+      candidate.draftScope === token.draftScope &&
+      candidate.workspacePath === token.workspacePath &&
+      candidate.draftText === token.draftText &&
+      candidate.draftRevision === token.draftRevision &&
+      candidate.attachmentGeneration === token.attachmentGeneration &&
+      JSON.stringify(candidate.attachments) === JSON.stringify(token.attachments) &&
+      candidate.attachmentLineageOnly === token.attachmentLineageOnly &&
+      candidate.editorInjectionNonce === token.editorInjectionNonce,
+  );
+  return duplicate ? [...tokens] : [...tokens, token].slice(-16);
+}
+
 /**
  * Whether the active session is a still-pending new session for
  * `workspacePath` — i.e. the workspace's "+ New session" button should render
@@ -507,6 +915,8 @@ function shouldReapPendingNewSession(s: SessionViewState | undefined | null): bo
     !s.worktreeCreating &&
     !s.panel &&
     !s.unifiedPanel &&
+    !s.pendingComposerSubmission &&
+    s.editorPatchPending === 0 &&
     s.editorAttachments.length === 0 &&
     s.editorAttachmentReads === 0
   );
@@ -1105,8 +1515,8 @@ function appendQueueRestorations(
     const transcript = restoration.clearedIntentIds?.length
       ? retirePendingUserEchoesByIntent(next.transcript, restoration.clearedIntentIds)
       : next.transcript;
-    // Keep original image objects as review custody; never convert or drop
-    // them while applying a semantic frame or attach baseline.
+    // Preserve opaque outcome evidence until main's idempotent acknowledgement;
+    // these records never become composer input.
     next = {
       ...next,
       transcript,
@@ -1121,12 +1531,6 @@ function applyAuthoritySemanticProjection(
   authorityProjection: RendererAuthorityState,
 ): SessionViewState {
   const snapshot = authorityProjection.authoritativeSnapshot;
-  // Restore instructions carry renderer-owned attachment custody until the
-  // mounted Composer has staged the complete candidate. A baseline can race
-  // that effect during startup, so do not replace an unconsumed restoration
-  // with an empty authoritative editor projection.
-  const rendererOwnedEditorInjection =
-    current.editorInjection?.attachments !== undefined ? current.editorInjection : undefined;
   const extensionPresentation =
     authorityProjection.extensionUi.state === "following"
       ? {
@@ -1152,7 +1556,9 @@ function applyAuthoritySemanticProjection(
       pendingQueueMessages: undefined,
       queuedMessages: undefined,
       ...extensionPresentation,
-      editorInjection: rendererOwnedEditorInjection,
+      // Keep an unconsumed same-owner injection across a transient semantic
+      // fence. A same-revision reattach otherwise has no way to recreate it.
+      editorInjection: current.editorInjection,
     };
   }
   const priorOwner =
@@ -1171,9 +1577,11 @@ function applyAuthoritySemanticProjection(
   // acceptance already leaves the optimistic value in place, while rejection
   // is represented explicitly by snapshot.editor conflict candidates.
   const editorRevisionChanged = ownerChanged || snapshot.editor.revision !== current.editorRevision;
+  const editorAttachmentsChanged =
+    ownerChanged ||
+    JSON.stringify(snapshot.editor.attachments) !== JSON.stringify(current.editorAttachments);
   const editorInjection =
-    rendererOwnedEditorInjection ??
-    (snapshot.editor.conflictText !== undefined || current.editorPatchPending > 0
+    snapshot.editor.conflictText !== undefined || current.editorPatchPending > 0
       ? undefined
       : editorRevisionChanged
         ? {
@@ -1182,7 +1590,13 @@ function applyAuthoritySemanticProjection(
             revision: snapshot.editor.revision,
             ...(ownerChanged && snapshot.editor.text === "" ? { preserveRendererDraft: true } : {}),
           }
-        : current.editorInjection);
+        : current.editorInjection;
+  const editorProjectionDeferred =
+    snapshot.editor.conflictText === undefined &&
+    current.editorPatchPending > 0 &&
+    (editorRevisionChanged ||
+      editorAttachmentsChanged ||
+      current.editorProjectionDeferred === true);
 
   // This is deliberately one object construction: frame records and every
   // compatibility projection of its terminal semantic snapshot commit together.
@@ -1199,8 +1613,12 @@ function applyAuthoritySemanticProjection(
     sessionName: snapshot.sessionName,
     editorRevision: snapshot.editor.revision,
     editorAttachments: snapshot.editor.attachments,
+    editorAttachmentGeneration: editorAttachmentsChanged
+      ? current.editorAttachmentGeneration + 1
+      : current.editorAttachmentGeneration,
     editorConflict: editorConflictFromCandidates(snapshot.editor),
     editorInjection,
+    editorProjectionDeferred,
     runningSince:
       !priorStreaming && snapshot.sdk.isStreaming
         ? Date.now()
@@ -1271,6 +1689,7 @@ interface SessionsStore {
    *  while the active session is pending (`isNewSessionPending`) and the slot
    *  is cleared the moment a message is actually sent. */
   newSessionDrafts: Map<string, string>;
+  newSessionDraftRevisions: Map<string, number>;
   /** Update (replace) the per-workspace draft for a pending new session. */
   setNewSessionDraft: (workspacePath: string, text: string) => void;
   /** Clear the per-workspace draft (called when the pending session sends). */
@@ -1295,6 +1714,7 @@ interface SessionsStore {
    *  placeholder, while the workspace-scoped draft remains available for the
    *  next pending placeholder. Cleared the moment a message is actually sent. */
   sessionDrafts: Map<SessionId, string>;
+  sessionDraftRevisions: Map<SessionId, number>;
   /** Update (replace) the per-session draft. Empty text deletes the entry. */
   setSessionDraft: (sessionId: SessionId, text: string) => void;
   registerPendingComposerSubmission: (
@@ -1424,7 +1844,6 @@ interface SessionsStore {
       intentId?: string;
     },
   ) => void;
-  clearPendingUserEcho: (sessionId: SessionId, content: string) => void;
   addBashCommand: (sessionId: SessionId, command: string) => void;
   finishBashCommand: (sessionId: SessionId, output: string, exitCode?: number) => void;
   applyRuntimeState: (sessionId: SessionId, state: RuntimeStateUpdate) => void;
@@ -1469,10 +1888,12 @@ interface SessionsStore {
   abortSession: (sessionId: SessionId) => void;
   addUiRequest: (sessionId: SessionId, request: ExtensionUiRequest) => void;
   handlePanelEvent: (sessionId: SessionId, event: PanelEvent) => void;
-  /** Run the unified-TUI editor's submitted text through the shared submit
-   *  pipeline (parseComposerInput + executeAction), then reply to the host
-   *  via `session.unifiedSubmitResponse` so it can restore the editor text on
-   *  a guard bail (e.g. no model). Deps mirror the React Composer's exactly —
+  /** Run the unified-TUI editor's immutable submitted source through the
+   *  shared submit pipeline (parseComposerInput + executeAction), then retire
+   *  correlated dispatch custody via `session.unifiedSubmitResponse`. The
+   *  host committed its visible clear before emitting this request, so no
+   *  response is allowed to restore editor presentation. Deps mirror the
+   *  React Composer's exactly —
    *  including `adoptSessionFileAndHydrate` (adopt + load history + refresh the
    *  sidebar), so /fork, /clone, /switch_session, /resume work identically to
    *  the native Composer. Main assigns one stable submission intent to the
@@ -1486,7 +1907,15 @@ interface SessionsStore {
     submissionIntentId: string,
     hostInstanceId: string,
     sessionEpoch: number,
+    editorAttachments?: unknown[],
+    postClearEditor?: RuntimeEditorState,
+    eventTimeComments?: readonly CodeComment[],
   ) => Promise<void>;
+  consumeUnifiedSourceClearReceipt: (
+    sessionId: SessionId,
+    key: string,
+    retirement: { draft: boolean; attachments: boolean },
+  ) => void;
   dismissUiRequest: (sessionId: SessionId, requestId: string) => void;
   addToast: (sessionId: SessionId, message: string, type?: string) => void;
   dismissToast: (sessionId: SessionId, toastId: string) => void;
@@ -1527,6 +1956,12 @@ interface SessionsStore {
    *  editor contents, composer draft — is owned by its own process/store
    *  and survives the toggle). */
   setUnifiedPanelHidden: (sessionId: SessionId, hidden: boolean) => void;
+  /**
+   * Refresh the owner-bound authority baseline before revealing native Input.
+   * This closes the child-clear/event-delivery window without treating a mere
+   * Extension handoff as proof that anything was submitted.
+   */
+  revealNativeComposerFromUnified: (sessionId: SessionId) => Promise<boolean>;
   setStats: (sessionId: SessionId, stats: SessionStats) => void;
   setTreeHistoryPresent: (sessionId: SessionId, present: boolean) => void;
   setAvailableModels: (sessionId: SessionId, models: ModelInfo[]) => void;
@@ -1604,7 +2039,7 @@ interface SessionsStore {
   /** Clear a stale editorInjection so it won't re-fire on Composer remount.
    *  Called when the user takes over the textarea (types / picks a suggestion)
    *  or when content is sent — the injection is "consumed" and must not
-   *  clobber the restored draft on the next switch-back. */
+   *  clobber the current authoritative draft on the next switch-back. */
   clearEditorInjection: (sessionId: SessionId) => void;
   /** Open a built-in picker (model / fork / resume). Single slot. */
   openPicker: (sessionId: SessionId, picker: PickerRequest) => void;
@@ -1785,8 +2220,10 @@ const buildSessionsStore = (
   expandedWorkspaces: [],
   headerCompact: false,
   newSessionDrafts: new Map(),
+  newSessionDraftRevisions: new Map(),
   newSessionSetupDrafts: new Map(),
   sessionDrafts: new Map(),
+  sessionDraftRevisions: new Map(),
   diffComments: loadPersistedCodeComments(),
 
   addWorkspace: (path) => {
@@ -1867,6 +2304,9 @@ const buildSessionsStore = (
     // A reused renderer session id is a new input generation. In-flight work
     // from the removed record may settle, but can never mutate this successor.
     forgetPanelInputSession(sessionId);
+    preAuthorityUnifiedSubmits.delete(sessionId);
+    unifiedNativeRevealRequestIds.delete(sessionId);
+    unifiedNativeRevealFlights.delete(sessionId);
     set((state) => {
       const sessions = new Map(state.sessions);
       const pendingSetup = sessionFile ? undefined : state.newSessionSetupDrafts.get(workspacePath);
@@ -1881,10 +2321,12 @@ const buildSessionsStore = (
         availability: "unavailable",
         runtimeSnapshot: undefined,
         authorityProjection: createRendererAuthorityState(),
+        preAttachAuthorityPublications: [],
         hostInstanceId: undefined,
         sessionEpoch: 0,
         editorRevision: 0,
         editorAttachments: [],
+        editorAttachmentGeneration: 0,
         editorAttachmentReads: 0,
         editorPatchPending: 0,
         queuedMessages: undefined,
@@ -1950,6 +2392,9 @@ const buildSessionsStore = (
 
   removeSession: (sessionId, opts) => {
     forgetPanelInputSession(sessionId);
+    preAuthorityUnifiedSubmits.delete(sessionId);
+    unifiedNativeRevealRequestIds.delete(sessionId);
+    unifiedNativeRevealFlights.delete(sessionId);
     clearNavigationRetriesForSession(sessionId);
     navigationReconciliationFlights.delete(sessionId);
     scheduledPresentationRehydrates.delete(sessionId);
@@ -2193,7 +2638,12 @@ const buildSessionsStore = (
           // is retained for older hosts and remains scoped to the single
           // registered submission. Clear only the draft text and comment
           // revisions that were actually dispatched so later edits survive.
-          if (pendingSubmission.draftScope === "workspace") {
+          const draftRevisionStillExact =
+            pendingSubmission.draftScope === "workspace"
+              ? state.newSessionDraftRevisions.get(current.workspacePath) ===
+                pendingSubmission.draftRevision
+              : state.sessionDraftRevisions.get(sessionId) === pendingSubmission.draftRevision;
+          if (pendingSubmission.draftScope === "workspace" && draftRevisionStillExact) {
             newSessionDrafts = clearMatchingDraft(
               newSessionDrafts,
               current.workspacePath,
@@ -2210,7 +2660,7 @@ const buildSessionsStore = (
                 pendingSubmission.composerText,
               );
             }
-          } else {
+          } else if (draftRevisionStillExact) {
             sessionDrafts = clearMatchingDraft(
               sessionDrafts,
               sessionId,
@@ -2229,6 +2679,10 @@ const buildSessionsStore = (
           }
           acceptedPendingSubmission = true;
         }
+        const editorProjection =
+          submissionEchoed && pendingSubmission
+            ? retireSubmittedEditorProjection(current, pendingSubmission)
+            : current;
         const toasts =
           event.type === "extension_error"
             ? [
@@ -2256,7 +2710,8 @@ const buildSessionsStore = (
           lastActivityAt: userMessageDelivered
             ? Math.max(current.lastActivityAt ?? 0, userMessageActivityTimestamp(event.message))
             : current.lastActivityAt,
-          editorInjection: promoted ? undefined : current.editorInjection,
+          editorAttachments: editorProjection.editorAttachments,
+          editorInjection: editorProjection.editorInjection,
           pendingComposerSubmission: submissionEchoed
             ? undefined
             : current.pendingComposerSubmission,
@@ -2614,10 +3069,10 @@ const buildSessionsStore = (
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
       if (!s) return {};
-      // ESC restoration can win the race with a queued submission's terminal
-      // outcome. Once review custody names that intent, a late Composer
-      // acknowledgement must not recreate its optimistic user bubble beside
-      // the review card (or imply it was delivered).
+      // A destructive queue outcome can win the race with a queued
+      // submission's terminal outcome. Once it names that cleared intent, a
+      // late Composer acknowledgement must not recreate its optimistic bubble
+      // or imply delivery.
       const optimisticIntentId = opts?.intentId;
       const alreadyRestored =
         optimisticIntentId !== undefined &&
@@ -2710,31 +3165,6 @@ const buildSessionsStore = (
     });
   },
 
-  clearPendingUserEcho: (sessionId, content) => {
-    set((state) => {
-      const sessions = new Map(state.sessions);
-      const s = sessions.get(sessionId);
-      if (!s) return {};
-      const wasEmptyBeforeOptimisticSend = transcriptBlockCount(s.transcript) <= 1;
-      const transcript = clearPendingUserEcho(s.transcript, content);
-      if (transcript === s.transcript) return {};
-      const restoredPending =
-        !s.resumed && wasEmptyBeforeOptimisticSend && !transcriptHasBlocks(transcript);
-      sessions.set(sessionId, {
-        ...s,
-        transcript,
-        isNewPending: restoredPending ? true : s.isNewPending,
-      });
-      const newSessionDrafts = restoredPending
-        ? setNewSessionDraftFor(state.newSessionDrafts, s.workspacePath, content)
-        : state.newSessionDrafts;
-      const sessionDrafts = restoredPending
-        ? state.sessionDrafts
-        : setSessionDraftFor(state.sessionDrafts, sessionId, content);
-      return { sessions, newSessionDrafts, sessionDrafts };
-    });
-  },
-
   addBashCommand: (sessionId, command) => {
     set((state) => {
       const sessions = new Map(state.sessions);
@@ -2810,6 +3240,10 @@ const buildSessionsStore = (
 
   applyAuthorityAttach: (sessionId, response) => {
     if (response.status !== "ready") return;
+    const responseWithEarlyPublications = authorityAttachWithEarlyPublications(
+      response,
+      get().sessions.get(sessionId)?.preAttachAuthorityPublications ?? [],
+    );
     // A serialized baseline is a fresh retry boundary and may install a
     // successor owner; predecessor failures must not exhaust its retry budget.
     clearNavigationRetriesForSession(sessionId);
@@ -2821,8 +3255,8 @@ const buildSessionsStore = (
     // rendered. Parse before the atomic commit and apply only if the transcript
     // plane accepts the attach.
     const streamingCheckpointThrough =
-      response.baseline.transcript.currentStreamingMessageThroughSequence;
-    const replayTranscriptRecords = response.replay.flatMap((publication) =>
+      responseWithEarlyPublications.baseline.transcript.currentStreamingMessageThroughSequence;
+    const replayTranscriptRecords = responseWithEarlyPublications.replay.flatMap((publication) =>
       publication.plane === "transcript" && publication.payload.kind === "delta"
         ? publication.payload.entries.map((entry) => ({
             entry,
@@ -2856,14 +3290,14 @@ const buildSessionsStore = (
         if (!current) return {};
         const authorityProjection = reduceAuthorityAttach(
           current.authorityProjection ?? createRendererAuthorityState(),
-          response,
+          responseWithEarlyPublications,
         );
         if (authorityProjection === current.authorityProjection) return {};
         following = authorityProjection.semantic.state === "following";
         transcriptFollowing = authorityProjection.transcript.state === "following";
         const restorations = [
-          ...response.baseline.restorations,
-          ...response.replay.flatMap((publication) =>
+          ...responseWithEarlyPublications.baseline.restorations,
+          ...responseWithEarlyPublications.replay.flatMap((publication) =>
             publication.plane === "semantic"
               ? publication.payload.records.filter(
                   (record): record is Extract<typeof record, { type: "queue_restoration" }> =>
@@ -2881,9 +3315,13 @@ const buildSessionsStore = (
           ? invalidReplayEntries.length
           : replayTranscriptEntries.length;
         const semanticProjection = applyAuthoritySemanticProjection(current, authorityProjection);
+        const unifiedPanelIsNew = unifiedPanel !== undefined && current.unifiedPanel === undefined;
+        const unifiedRevealNow =
+          !unifiedPanelIsNew || unifiedPanelCanOwnCurrentDraft(state, semanticProjection);
         sessions.set(sessionId, {
           ...appendQueueRestorations(semanticProjection, restorations),
           authorityProjection,
+          preAttachAuthorityPublications: [],
           panel: customPanel
             ? {
                 id: customPanel.baseline.panelId,
@@ -2929,6 +3367,19 @@ const buildSessionsStore = (
                 syncState: unifiedPanel.sync.state,
               }
             : undefined,
+          unifiedComposerProjectionTokens:
+            unifiedPanelIsNew && unifiedRevealNow
+              ? appendUnifiedComposerProjectionToken(
+                  current.unifiedComposerProjectionTokens,
+                  captureUnifiedComposerProjection(state, semanticProjection),
+                )
+              : current.unifiedComposerProjectionTokens,
+          ...(unifiedPanelIsNew
+            ? {
+                unifiedPanelHidden: !unifiedRevealNow,
+                unifiedPanelRevealPending: unifiedRevealNow ? undefined : true,
+              }
+            : {}),
           ...(extension
             ? {
                 pendingDialogs: extension.dialogs
@@ -2961,8 +3412,9 @@ const buildSessionsStore = (
       if (transcriptFollowing && checkpointCoveredReplayEvents.length > 0) {
         get().applyEvents(sessionId, checkpointCoveredReplayEvents);
       }
-      const streamingMessage = response.baseline.transcript.currentStreamingMessage;
-      const shellSnapshot = response.baseline.transcript.currentShellTurn;
+      const streamingMessage =
+        responseWithEarlyPublications.baseline.transcript.currentStreamingMessage;
+      const shellSnapshot = responseWithEarlyPublications.baseline.transcript.currentShellTurn;
       if (transcriptFollowing && (streamingMessage !== undefined || shellSnapshot !== undefined)) {
         set((state) => {
           const current = state.sessions.get(sessionId);
@@ -3004,6 +3456,10 @@ const buildSessionsStore = (
       void get().refreshCommands(sessionId);
     }
     if (following) scheduleNavigationReconciliation(sessionId);
+    if (following) drainUnifiedSubmitsForAuthority(sessionId, get);
+    if (following && get().sessions.get(sessionId)?.unifiedPanelRevealPending) {
+      get().setUnifiedPanelHidden(sessionId, false);
+    }
   },
 
   acknowledgeShellReconstruction: (sessionId, reconstructionKey) => {
@@ -3022,6 +3478,22 @@ const buildSessionsStore = (
   applyAuthorityPublication: (publication) => {
     const sessionId = publication.sessionId as SessionId;
     const previousSession = get().sessions.get(sessionId);
+    if (
+      previousSession?.authorityProjection?.rendererGeneration === undefined &&
+      publication.rendererGeneration === RENDERER_GENERATION
+    ) {
+      set((state) => {
+        const current = state.sessions.get(sessionId);
+        if (!current || current.authorityProjection?.rendererGeneration !== undefined) return {};
+        const pending = [...(current.preAttachAuthorityPublications ?? []), publication].slice(
+          -MAX_PRE_ATTACH_AUTHORITY_PUBLICATIONS,
+        );
+        const sessions = new Map(state.sessions);
+        sessions.set(sessionId, { ...current, preAttachAuthorityPublications: pending });
+        return { sessions };
+      });
+      return;
+    }
     // Transcript is a separate presentation plane. Semantic frames intentionally
     // carry no Pi event records, so no event can become a liveness authority.
     const transcriptEntries =
@@ -3166,11 +3638,12 @@ const buildSessionsStore = (
         pendingCompactionReconciliations = Object.fromEntries(
           Object.entries(pendingCompactionReconciliations).slice(-128),
         );
+        const semanticProjection = applyAuthoritySemanticProjection(current, authorityProjection);
+        const unifiedPanelIsNew = unifiedPanel !== undefined && current.unifiedPanel === undefined;
+        const unifiedRevealNow =
+          !unifiedPanelIsNew || unifiedPanelCanOwnCurrentDraft(state, semanticProjection);
         sessions.set(sessionId, {
-          ...appendQueueRestorations(
-            applyAuthoritySemanticProjection(current, authorityProjection),
-            restorations,
-          ),
+          ...appendQueueRestorations(semanticProjection, restorations),
           authorityProjection,
           panel: customPanel
             ? {
@@ -3217,6 +3690,19 @@ const buildSessionsStore = (
                 syncState: unifiedPanel.sync.state,
               }
             : undefined,
+          unifiedComposerProjectionTokens:
+            unifiedPanelIsNew && unifiedRevealNow
+              ? appendUnifiedComposerProjectionToken(
+                  current.unifiedComposerProjectionTokens,
+                  captureUnifiedComposerProjection(state, semanticProjection),
+                )
+              : current.unifiedComposerProjectionTokens,
+          ...(unifiedPanelIsNew
+            ? {
+                unifiedPanelHidden: !unifiedRevealNow,
+                unifiedPanelRevealPending: unifiedRevealNow ? undefined : true,
+              }
+            : {}),
           droppedTranscriptEntryCount: current.droppedTranscriptEntryCount + droppedCount,
           transcriptPresentationDirty:
             current.transcriptPresentationDirty || droppedCount > 0 || compactionResultMissing,
@@ -3252,6 +3738,10 @@ const buildSessionsStore = (
     if (accepted || authorityRejectedTranscript) schedulePresentationRehydrateIfIdle(sessionId);
     if (accepted && publication.plane === "semantic") {
       scheduleNavigationReconciliation(sessionId);
+      drainUnifiedSubmitsForAuthority(sessionId, get);
+      if (get().sessions.get(sessionId)?.unifiedPanelRevealPending) {
+        get().setUnifiedPanelHidden(sessionId, false);
+      }
     }
   },
 
@@ -3312,7 +3802,6 @@ const buildSessionsStore = (
   },
 
   applyRestoreDraft: (sessionId, restoration) => {
-    let applied = false;
     let shouldAcknowledge = false;
     set((state) => {
       const current = state.sessions.get(sessionId);
@@ -3324,140 +3813,28 @@ const buildSessionsStore = (
       // must retry the idempotent acknowledgement so custody can retire.
       shouldAcknowledge = true;
       if (current.appliedRestoreDraftIds?.includes(restoration.restorationId)) return {};
-      applied = true;
       const sessions = new Map(state.sessions);
       const appliedRestoreDraftIds = [
         ...(current.appliedRestoreDraftIds ?? []),
         restoration.restorationId,
       ];
-      if (restoration.disposition === "dropped") {
-        const pending = current.pendingComposerSubmission;
-        const matchesPending =
-          pending !== undefined && restoration.intentIds?.includes(pending.intentId) === true;
-        if (!matchesPending || !pending) {
-          sessions.set(sessionId, { ...current, appliedRestoreDraftIds });
-          return { sessions };
-        }
-
-        const draftKey = pending.draftScope === "workspace" ? current.workspacePath : sessionId;
-        const drafts =
-          pending.draftScope === "workspace" ? state.newSessionDrafts : state.sessionDrafts;
-        const matchingDraft = drafts.get(draftKey) === pending.composerText;
-        const submittedAttachments = pending.composerAttachments;
-        // A prior resolved restoration can install a newer renderer-owned
-        // text/attachment candidate before React consumes the injection. That
-        // candidate outranks the older authoritative attachment snapshot just
-        // as a newer draft-map edit does; never replace it with an empty clear.
-        const injectedCandidate =
-          current.editorInjection?.attachments !== undefined ? current.editorInjection : undefined;
-        const candidateTextStillMatches =
-          injectedCandidate === undefined || injectedCandidate.text === pending.composerText;
-        const candidateAttachments = injectedCandidate?.attachments ?? current.editorAttachments;
-        const attachmentsStillMatch =
-          submittedAttachments === undefined ||
-          JSON.stringify(candidateAttachments) === JSON.stringify(submittedAttachments);
-        const matchingRendererCandidate =
-          matchingDraft &&
-          candidateTextStillMatches &&
-          attachmentsStillMatch &&
-          current.editorAttachmentReads === 0;
-        const newSessionDrafts =
-          matchingRendererCandidate && pending.draftScope === "workspace"
-            ? clearMatchingDraft(
-                state.newSessionDrafts,
-                current.workspacePath,
-                pending.composerText,
-              )
-            : state.newSessionDrafts;
-        const sessionDrafts =
-          matchingRendererCandidate && pending.draftScope === "session"
-            ? clearMatchingDraft(state.sessionDrafts, sessionId, pending.composerText)
-            : state.sessionDrafts;
-        const existingComments = state.diffComments.get(sessionId);
-        const remainingComments = withoutSubmittedCommentRevisions(
-          existingComments,
-          pending.submittedComments,
-        );
-        let diffComments = state.diffComments;
-        if (remainingComments !== existingComments) {
-          diffComments = new Map(state.diffComments);
-          if (!remainingComments || remainingComments.size === 0) diffComments.delete(sessionId);
-          else diffComments.set(sessionId, remainingComments);
-          persistCodeComments(diffComments);
-        }
-        sessions.set(sessionId, {
-          ...current,
-          appliedRestoreDraftIds,
-          pendingComposerSubmission: undefined,
-          ...(matchingRendererCandidate
-            ? {
-                // This renderer-owned injection clears a mounted Composer and
-                // revision-patches the restarted host. Explicit attachments
-                // make the injection authoritative instead of draft-preserving.
-                editorInjection: {
-                  text: "",
-                  attachments: [],
-                  nonce: ++editorInjectionNonce,
-                },
-              }
-            : {}),
-        });
-        return { sessions, newSessionDrafts, sessionDrafts, diffComments };
-      }
       const pending = current.pendingComposerSubmission;
       const matchesPending =
         pending !== undefined && restoration.intentIds?.includes(pending.intentId) === true;
-      const pendingDraftStillPresent =
-        pending?.draftScope === "workspace"
-          ? state.newSessionDrafts.get(current.workspacePath) === pending.composerText
-          : pending?.draftScope === "session"
-            ? state.sessionDrafts.get(sessionId) === pending.composerText
-            : false;
-      const pendingAttachmentsStillPresent =
-        pending?.composerAttachments === undefined ||
-        JSON.stringify(current.editorAttachments) === JSON.stringify(pending.composerAttachments);
-      if (matchesPending && pendingDraftStillPresent && pendingAttachmentsStillPresent) {
-        // Preflight interruption can return recovery custody while the
-        // renderer still visibly owns the exact raw submission. Do not append
-        // the host's transformed transport text or duplicate its attachments;
-        // the restoration is the terminal handoff for this correlation.
-        sessions.set(sessionId, {
-          ...current,
-          appliedRestoreDraftIds,
-          pendingComposerSubmission: undefined,
-        });
-        return { sessions };
-      }
-      const rendererDraft =
-        pending?.draftScope === "workspace" || current.isNewPending
-          ? state.newSessionDrafts.get(current.workspacePath)
-          : state.sessionDrafts.get(sessionId);
-      const draft =
-        rendererDraft ??
-        current.editorInjection?.text ??
-        current.runtimeSnapshot?.editor.text ??
-        "";
-      const text = restoration.text.trim()
-        ? draft.trim()
-          ? `${draft}\n\n${restoration.text}`
-          : restoration.text
-        : draft;
-      const attachments = [
-        ...(current.editorInjection?.attachments ?? current.editorAttachments ?? []),
-        ...restorationImagesToComposerAttachments(restoration.attachments),
-      ];
+      // A restoration record describes a payload that crossed the submission
+      // boundary. It may retire the exact pending correlation, but it is never
+      // editor input. If a pre-clear refusal left that exact draft visibly in
+      // Composer, it stays there; if the clear already committed, no delayed
+      // record can recreate its text, attachments, comments, or injection.
+      // Newer editor state is likewise untouched.
       sessions.set(sessionId, {
         ...current,
         appliedRestoreDraftIds,
         ...(matchesPending ? { pendingComposerSubmission: undefined } : {}),
-        editorInjection: { text, attachments, nonce: ++editorInjectionNonce },
       });
       return { sessions };
     });
     if (!shouldAcknowledge) return;
-    if (applied && restoration.disposition === "dropped") {
-      get().addToast(sessionId, "Interrupted command was not restored.", "info");
-    }
     void window.pivis
       .invoke("session.acknowledgeRestoration", {
         sessionId,
@@ -3506,13 +3883,16 @@ const buildSessionsStore = (
       }
 
       const sessions = new Map(state.sessions);
-      sessions.set(sessionId, { ...current, pendingComposerSubmission: undefined });
+      const settledEditor = retireSubmittedEditorProjection(current, pending);
+      sessions.set(sessionId, { ...settledEditor, pendingComposerSubmission: undefined });
       const newSessionDrafts =
-        pending.draftScope === "workspace"
+        pending.draftScope === "workspace" &&
+        state.newSessionDraftRevisions.get(current.workspacePath) === pending.draftRevision
           ? clearMatchingDraft(state.newSessionDrafts, current.workspacePath, pending.composerText)
           : state.newSessionDrafts;
       const sessionDrafts =
-        pending.draftScope === "session"
+        pending.draftScope === "session" &&
+        state.sessionDraftRevisions.get(sessionId) === pending.draftRevision
           ? clearMatchingDraft(state.sessionDrafts, sessionId, pending.composerText)
           : state.sessionDrafts;
       const existingComments = state.diffComments.get(sessionId);
@@ -3706,6 +4086,7 @@ const buildSessionsStore = (
             // UnifiedTuiHost, NOT the transient custom() overlay path.
             // A fresh panel always starts visible (user can toggle to the
             // Composer via the view switcher afterwards).
+            const revealNow = unifiedPanelCanOwnCurrentDraft(state, s);
             sessions.set(sessionId, {
               ...s,
               unifiedPanel: {
@@ -3714,7 +4095,14 @@ const buildSessionsStore = (
                 sessionEpoch: event.sessionEpoch ?? s.sessionEpoch,
                 buffer: [],
               },
-              unifiedPanelHidden: false,
+              unifiedPanelHidden: !revealNow,
+              unifiedPanelRevealPending: revealNow ? undefined : true,
+              unifiedComposerProjectionTokens: revealNow
+                ? appendUnifiedComposerProjectionToken(
+                    s.unifiedComposerProjectionTokens,
+                    captureUnifiedComposerProjection(state, s),
+                  )
+                : s.unifiedComposerProjectionTokens,
             });
           } else {
             sessions.set(sessionId, {
@@ -3748,7 +4136,12 @@ const buildSessionsStore = (
           break;
         case "panel_close":
           if (s.unifiedPanel?.id === event.panelId) {
-            sessions.set(sessionId, { ...s, unifiedPanel: undefined, unifiedPanelHidden: false });
+            sessions.set(sessionId, {
+              ...s,
+              unifiedPanel: undefined,
+              unifiedPanelHidden: false,
+              unifiedPanelRevealPending: undefined,
+            });
           } else if (s.panel?.id === event.panelId) {
             sessions.set(sessionId, { ...s, panel: undefined });
           }
@@ -3775,7 +4168,12 @@ const buildSessionsStore = (
           // couldn't emit a reliable panel_close. Drop stale unified-panel
           // state so the native Composer is restored. (Does NOT clear custom()
           // overlay panels — those are handled by panel_clear_all.)
-          sessions.set(sessionId, { ...s, unifiedPanel: undefined, unifiedPanelHidden: false });
+          sessions.set(sessionId, {
+            ...s,
+            unifiedPanel: undefined,
+            unifiedPanelHidden: false,
+            unifiedPanelRevealPending: undefined,
+          });
           break;
         case "session_warning":
           // Non-fatal warning (e.g. session file open elsewhere). Toast it.
@@ -3805,393 +4203,773 @@ const buildSessionsStore = (
     submissionIntentId,
     hostInstanceId,
     sessionEpoch,
+    submittedEditorAttachments,
+    postClearEditor,
+    eventTimeComments,
   ) => {
     const trimmed = text.trim();
-    const state = get();
-    const session = state.sessions.get(sessionId);
-    const pendingDiffComments = state.getDiffCommentsForPrompt(sessionId);
-    const claim = await window.pivis.invoke("session.claimUnifiedSubmit", {
-      sessionId,
-      id,
-      rendererGeneration: RENDERER_GENERATION,
-      expectedHostInstanceId: hostInstanceId,
-      expectedSessionEpoch: sessionEpoch,
-    });
-    if (!claim.claimed) return;
     const origin = { hostInstanceId, sessionEpoch };
-    const claimCurrent = (): boolean =>
-      Date.now() < claim.expiresAt && sessionMatchesRuntime(get().sessions.get(sessionId), origin);
-    const ensureClaimCurrent = (): void => {
-      if (!claimCurrent()) {
-        throw new InputNotConsumedError("Unified action claim expired or changed runtime");
+    const entryAction = parseComposerInput(text, { discovered: new Map() });
+    const entryCarriesComments = entryAction.kind === "send-prompt" && !text.startsWith("/");
+    const sourceConsumesAttachments = entryCarriesComments && !text.startsWith("!");
+    // A delayed predecessor host can race a successor's newly staged review
+    // comments before its async main claim is rejected. Fence origin
+    // synchronously, before transferring any renderer-owned comment custody.
+    const initialSession = get().sessions.get(sessionId);
+    if (!sessionMatchesRuntime(initialSession, origin)) {
+      if (initialSession) {
+        // Main replays unclaimed Unified sources before rendererAttach returns
+        // the new authority baseline. The renderer may therefore still follow
+        // predecessor A when successor B's request arrives. Retain every
+        // owner-bound request until an authority frame proves which owner won;
+        // the drain below dispatches only the exact matching owner and drops
+        // stale predecessor/foreign entries without touching their comments.
+        deferUnifiedSubmitUntilAuthority(sessionId, {
+          id,
+          text,
+          editorRevision,
+          submissionIntentId,
+          hostInstanceId,
+          sessionEpoch,
+          submittedEditorAttachments: submittedEditorAttachments
+            ? structuredClone(submittedEditorAttachments)
+            : undefined,
+          postClearEditor: postClearEditor ? structuredClone(postClearEditor) : undefined,
+          eventTimeComments: entryCarriesComments
+            ? structuredClone(get().getDiffCommentsForPrompt(sessionId))
+            : [],
+        });
       }
+      return;
+    }
+    const sourceReceiptKey = `${sessionId}\0${hostInstanceId}\0${sessionEpoch}\0${id}`;
+    const firstSourceReceipt = rememberUnifiedSourceReceipt(sourceReceiptKey);
+    const sourceEditorAttachments = submittedEditorAttachments ?? [];
+    // Comment custody follows the visually-cleared source, not an async claim
+    // continuation. Transfer exact revisions before the first await so a
+    // second rapid prompt cannot snapshot them while this request is paused.
+    // Slash and runnable shell sources never consume staged code comments.
+    if (firstSourceReceipt) {
+      // This host event is causal proof that Editor.submitValue() already
+      // cleared source revision R. Retire every renderer copy of that exact
+      // source before the first await so toggling immediately back to Composer
+      // cannot resurrect it. Store revision/generation bumps make an identical
+      // post-receipt retype or reattachment a distinct successor.
+      set((state) => {
+        const current = state.sessions.get(sessionId);
+        if (!current || !sessionMatchesRuntime(current, origin)) return {};
+        const authoritativeEditor = authoritySnapshotFor(current)?.editor;
+        const stillAtSubmittedSource = current.editorRevision === editorRevision;
+        const exactPostClearProjection =
+          postClearEditor !== undefined &&
+          current.editorRevision === postClearEditor.revision &&
+          authoritativeEditor?.revision === postClearEditor.revision &&
+          authoritativeEditor.text === postClearEditor.text &&
+          JSON.stringify(authoritativeEditor.attachments) ===
+            JSON.stringify(postClearEditor.attachments);
+        const projectionTokens = current.unifiedComposerProjectionTokens ?? [];
+        let projectionTokenIndex = -1;
+        for (let index = projectionTokens.length - 1; index >= 0; index--) {
+          const candidate = projectionTokens[index];
+          if (
+            candidate &&
+            candidate.owner.hostInstanceId === origin.hostInstanceId &&
+            candidate.owner.sessionEpoch === origin.sessionEpoch &&
+            candidate.editorRevision <= editorRevision
+          ) {
+            // Input reveal settles and removes the preceding handoff, while a
+            // new Input→Extension transition is deferred until its editor
+            // patch is authoritative. Therefore the newest compatible token
+            // is the one causal handoff for this source revision; lower
+            // revisions remain available only for genuinely delayed receipts.
+            projectionTokenIndex = index;
+            break;
+          }
+        }
+        const projectionToken =
+          projectionTokenIndex >= 0 ? projectionTokens[projectionTokenIndex] : undefined;
+        if (!projectionToken && !stillAtSubmittedSource && !exactPostClearProjection) return {};
+
+        let nextSession = current;
+        const exactInjection =
+          projectionToken?.editorInjectionNonce !== undefined
+            ? current.editorInjection?.nonce === projectionToken.editorInjectionNonce
+            : current.editorInjection?.revision === editorRevision &&
+              current.editorInjection.text === text;
+        const projectedAttachments =
+          projectionToken?.attachments ?? structuredClone(sourceEditorAttachments);
+        const exactAttachments =
+          current.editorAttachmentGeneration ===
+            (projectionToken?.attachmentGeneration ?? current.editorAttachmentGeneration) &&
+          JSON.stringify(current.editorAttachments) === JSON.stringify(projectedAttachments);
+        const draftScope =
+          projectionToken?.draftScope ?? (isNewSessionPending(current) ? "workspace" : "session");
+        const sourceWorkspacePath = projectionToken?.workspacePath ?? current.workspacePath;
+        const draftText = projectionToken?.draftText ?? text;
+        const draftRevision =
+          projectionToken?.draftRevision ??
+          (draftScope === "workspace"
+            ? (state.newSessionDraftRevisions.get(sourceWorkspacePath) ?? 0)
+            : (state.sessionDraftRevisions.get(sessionId) ?? 0));
+        const nativeComposerAlreadyVisible = current.unifiedPanelHidden === true;
+        const projectionCanRetireInStore =
+          projectionToken !== undefined || current.editorPatchPending === 0;
+        const draftStillExact =
+          draftScope === "workspace"
+            ? state.newSessionDraftRevisions.get(sourceWorkspacePath) === draftRevision &&
+              state.newSessionDrafts.get(sourceWorkspacePath) === draftText
+            : state.sessionDraftRevisions.get(sessionId) === draftRevision &&
+              state.sessionDrafts.get(sessionId) === draftText;
+        const draftWillRetire = projectionCanRetireInStore && draftStillExact;
+        const sourceClearReceipt: UnifiedSourceClearReceipt = {
+          key: sourceReceiptKey,
+          owner: origin,
+          sourceRevision: editorRevision,
+          sourceText: text,
+          projectedAttachments: structuredClone(projectedAttachments),
+          postClearEditor: structuredClone(
+            postClearEditor ?? {
+              revision: editorRevision + 1,
+              text: "",
+              attachments: sourceConsumesAttachments
+                ? []
+                : structuredClone(sourceEditorAttachments),
+            },
+          ),
+          consumeAttachments: sourceConsumesAttachments,
+          draftScope,
+          workspacePath: sourceWorkspacePath,
+          draftText,
+          draftRevision,
+          attachmentGeneration:
+            projectionToken?.attachmentGeneration ?? current.editorAttachmentGeneration,
+        };
+        let nextProjectionTokens = projectionTokens;
+        if (projectionToken) {
+          nextProjectionTokens = sourceConsumesAttachments
+            ? projectionTokens.filter(
+                (candidate, index) =>
+                  index !== projectionTokenIndex &&
+                  !(
+                    candidate.attachmentLineageOnly === true &&
+                    candidate.owner.hostInstanceId === origin.hostInstanceId &&
+                    candidate.owner.sessionEpoch === origin.sessionEpoch &&
+                    candidate.attachmentGeneration === projectionToken.attachmentGeneration &&
+                    JSON.stringify(candidate.attachments) ===
+                      JSON.stringify(projectionToken.attachments)
+                  ),
+              )
+            : projectionTokens.filter(
+                (candidate, index) =>
+                  index !== projectionTokenIndex &&
+                  !(
+                    candidate.draftText === "" &&
+                    candidate.owner.hostInstanceId === origin.hostInstanceId &&
+                    candidate.owner.sessionEpoch === origin.sessionEpoch &&
+                    candidate.attachmentGeneration === projectionToken.attachmentGeneration &&
+                    JSON.stringify(candidate.attachments) ===
+                      JSON.stringify(projectionToken.attachments)
+                  ),
+              );
+          if (!sourceConsumesAttachments && projectedAttachments.length > 0) {
+            nextProjectionTokens = appendUnifiedComposerProjectionToken(nextProjectionTokens, {
+              owner: origin,
+              editorRevision: sourceClearReceipt.postClearEditor.revision,
+              draftScope,
+              workspacePath: sourceWorkspacePath,
+              draftText: "",
+              draftRevision: draftWillRetire ? draftRevision + 1 : draftRevision,
+              attachmentGeneration: projectionToken.attachmentGeneration,
+              attachments: structuredClone(projectedAttachments),
+              attachmentLineageOnly: true,
+            });
+          }
+        }
+        if (
+          exactInjection ||
+          (projectionCanRetireInStore && sourceConsumesAttachments && exactAttachments) ||
+          (nativeComposerAlreadyVisible && projectionCanRetireInStore) ||
+          projectionToken !== undefined
+        ) {
+          nextSession = {
+            ...current,
+            ...(exactInjection ? { editorInjection: undefined } : {}),
+            ...(projectionCanRetireInStore && sourceConsumesAttachments && exactAttachments
+              ? {
+                  editorAttachments: [],
+                  editorAttachmentGeneration: current.editorAttachmentGeneration + 1,
+                }
+              : {}),
+            ...(nativeComposerAlreadyVisible && projectionCanRetireInStore
+              ? {
+                  unifiedSourceClearReceipts: [
+                    ...(current.unifiedSourceClearReceipts ?? []),
+                    sourceClearReceipt,
+                  ].slice(-16),
+                }
+              : {}),
+            ...(projectionToken
+              ? {
+                  unifiedComposerProjectionTokens: nextProjectionTokens,
+                }
+              : {}),
+          };
+        }
+
+        let newSessionDrafts = state.newSessionDrafts;
+        let newSessionDraftRevisions = state.newSessionDraftRevisions;
+        let sessionDrafts = state.sessionDrafts;
+        let sessionDraftRevisions = state.sessionDraftRevisions;
+        if (projectionCanRetireInStore && draftScope === "workspace") {
+          if (draftStillExact) {
+            newSessionDrafts = new Map(state.newSessionDrafts);
+            newSessionDrafts.delete(sourceWorkspacePath);
+            newSessionDraftRevisions = new Map(state.newSessionDraftRevisions);
+            newSessionDraftRevisions.set(
+              sourceWorkspacePath,
+              (newSessionDraftRevisions.get(sourceWorkspacePath) ?? 0) + 1,
+            );
+          }
+        } else if (projectionCanRetireInStore && draftStillExact) {
+          sessionDrafts = new Map(state.sessionDrafts);
+          sessionDrafts.delete(sessionId);
+          sessionDraftRevisions = new Map(state.sessionDraftRevisions);
+          sessionDraftRevisions.set(sessionId, (sessionDraftRevisions.get(sessionId) ?? 0) + 1);
+        }
+
+        if (
+          nextSession === current &&
+          newSessionDrafts === state.newSessionDrafts &&
+          sessionDrafts === state.sessionDrafts
+        ) {
+          return {};
+        }
+        const sessions =
+          nextSession === current
+            ? state.sessions
+            : new Map(state.sessions).set(sessionId, nextSession);
+        return {
+          sessions,
+          newSessionDrafts,
+          newSessionDraftRevisions,
+          sessionDrafts,
+          sessionDraftRevisions,
+        };
+      });
+    }
+
+    const commentCustody = takeUnifiedCommentCustody(
+      sourceReceiptKey,
+      sessionId,
+      entryCarriesComments,
+      firstSourceReceipt,
+      eventTimeComments,
+      get,
+    );
+    const pendingDiffComments = commentCustody.comments;
+    if (commentCustody.persistenceFailed) {
+      get().addToast(
+        sessionId,
+        (eventTimeComments ?? get().getDiffCommentsForPrompt(sessionId)).length > 0
+          ? "Prompt was not sent because code comments could not be attached safely; they remain staged"
+          : "Prompt was not sent because review-comment custody could not be recorded safely",
+        "warning",
+      );
+    }
+    let commentCustodySettled = false;
+    const settleCommentCustody = (): void => {
+      if (commentCustodySettled) return;
+      commentCustodySettled = true;
+      settleUnifiedCommentCustody(sourceReceiptKey, sessionId, pendingDiffComments, get);
     };
-    const respond = async (result: { ok: boolean; bailed?: boolean; error?: string }) => {
-      if (!claimCurrent()) return { ok: false };
-      return window.pivis.invoke("session.unifiedSubmitResponse", {
+
+    const releaseAdmissionTurn = await enterUnifiedAdmissionTurn(sessionId);
+    let claimAcquired = false;
+    try {
+      const claim = await window.pivis.invoke("session.claimUnifiedSubmit", {
         sessionId,
         id,
         rendererGeneration: RENDERER_GENERATION,
-        claimId: claim.claimId,
         expectedHostInstanceId: hostInstanceId,
         expectedSessionEpoch: sessionEpoch,
-        ...result,
       });
-    };
-    if (!session || !claimCurrent()) {
-      void respond({
-        ok: false,
-        bailed: true,
-        error: "Session runtime is unavailable",
-      });
-      return;
-    }
-
-    // Mirror the React Composer's early bail: an empty/whitespace submit is a
-    // no-op unless pending diff comments are the prompt body. Tell the host it
-    // bailed so it can restore — though empty restore is a no-op, keeping the
-    // contract uniform is simplest.
-    if (
-      !trimmed &&
-      pendingDiffComments.length === 0 &&
-      (session?.editorAttachments.length ?? 0) === 0
-    ) {
-      void respond({ ok: false, bailed: true });
-      return;
-    }
-    if ((session?.editorAttachmentReads ?? 0) > 0) {
-      get().addToast(sessionId, "Wait for image attachments to finish loading", "warning");
-      void respond({ ok: false, bailed: true, error: "Attachment reads are still pending" });
-      return;
-    }
-
-    const discovered = new Map((session?.commands ?? []).map((c) => [c.name, c]));
-    const parsedAction = parseComposerInput(text, { discovered });
-    const isRealPrompt = parsedAction.kind === "send-prompt" && !text.startsWith("/");
-    const replicated = parseReplicatedAttachments(session?.editorAttachments ?? []);
-    let promptText = parsedAction.kind === "send-prompt" ? parsedAction.text : text;
-    let promptImages = isRealPrompt ? replicated.images : [];
-    if (isRealPrompt && replicated.files.length > 0) {
-      promptText = textWithPrependedFilePaths(
-        promptText,
-        replicated.files.map((attachment) => attachment.path),
-      );
-    }
-    if (isRealPrompt && pendingDiffComments.length > 0) {
-      promptText = prependCodeCommentsToPrompt(promptText, pendingDiffComments);
-    }
-    const currentModelInfo = findCurrentModel(
-      session?.availableModels ?? [],
-      session?.currentModel,
-      session?.currentProvider,
-    );
-    const modelSupportsImages = currentModelInfo?.input
-      ? currentModelInfo.input.includes("image")
-      : true;
-    if (isRealPrompt && promptImages.length > 0 && !modelSupportsImages) {
-      const modelLabel = currentModelInfo?.name ?? session?.currentModel ?? "This model";
-      get().addToast(
-        sessionId,
-        `${modelLabel} doesn't support image input — sending image file paths instead`,
-        "warning",
-      );
-      promptText = textWithAppendedFilePaths(
-        promptText,
-        promptImages.map((attachment) => attachment.path),
-      );
-      promptImages = [];
-    }
-    const action =
-      parsedAction.kind === "send-prompt"
-        ? {
-            ...parsedAction,
-            text: promptText,
-            inputKind: text.startsWith("/") ? ("slash_command" as const) : ("ordinary" as const),
-            ...(promptImages.length > 0
-              ? { images: runtimeImagesFromAttachments(promptImages) }
-              : {}),
-          }
-        : parsedAction;
-
-    // No-model guard (send-prompt only; /model and bash bypass). A bail here
-    // tells the host to restore the editor text so the prompt isn't lost.
-    if (
-      action.kind === "send-prompt" &&
-      !session?.currentModel &&
-      action.commandSource === undefined
-    ) {
-      get().addToast(sessionId, "No model selected", "error");
-      void respond({
-        ok: false,
-        bailed: true,
-        error: "No model selected",
-      });
-      return;
-    }
-
-    const guarded =
-      <Args extends unknown[]>(fn: (...args: Args) => void) =>
-      (...args: Args): void => {
-        if (claimCurrent()) fn(...args);
-      };
-
-    // Build the same deps the React Composer builds, but from store state (the
-    // TUI path has no attachments/worktree pre-send block). executeAction + the
-    // store actions it calls fire the optimistic bubble, draft clear, etc.
-    const intentObservation = (sid: SessionId) => {
-      if (!claimCurrent()) return undefined;
-      const current = get().sessions.get(sid);
-      const observation = current ? authorityObservation(current) : undefined;
-      if (!observation) return undefined;
-      return {
-        ...observation,
-        editorRevision,
-        userMessageSequence: current?.transcript.userMessageSequence ?? 0,
-      };
-    };
-    const awaitIntentOutcome = (
-      sid: SessionId,
-      intentId: string,
-      owner: RuntimeIdentity,
-    ): Promise<IntentOutcome> => {
-      const findOutcome = (): IntentOutcome | undefined =>
-        get()
-          .sessions.get(sid)
-          ?.authorityProjection?.authoritativeSnapshot?.recentIntentOutcomes.find(
-            (outcome) =>
-              outcome.intentId === intentId &&
-              outcome.owner.hostInstanceId === owner.hostInstanceId &&
-              outcome.owner.sessionEpoch === owner.sessionEpoch,
-          );
-      const immediate = findOutcome();
-      if (immediate) return Promise.resolve(immediate);
-      return new Promise((resolve, reject) => {
-        let settled = false;
-        const finish = (operation: () => void) => {
-          if (settled) return;
-          settled = true;
-          globalThis.clearTimeout(expiryTimer);
-          unsubscribe();
-          operation();
-        };
-        const unsubscribe = useSessionsStore.subscribe(() => {
-          const outcome = findOutcome();
-          if (outcome) {
-            finish(() => resolve(outcome));
-            return;
-          }
-          const current = get().sessions.get(sid);
-          const projection = current?.authorityProjection;
-          if (
-            !claimCurrent() ||
-            projection?.semantic.state !== "following" ||
-            projection.semantic.cursor.hostInstanceId !== owner.hostInstanceId ||
-            projection.semantic.cursor.sessionEpoch !== owner.sessionEpoch
-          ) {
-            finish(() => reject(new InputNotConsumedError("Intent authority became unavailable")));
-          }
-        });
-        const expiryTimer = globalThis.setTimeout(
-          () =>
-            finish(() =>
-              reject(new InputNotConsumedError("Unified action claim expired before settlement")),
-            ),
-          Math.max(0, claim.expiresAt - Date.now() + 1),
-        );
-      });
-    };
-
-    const deps = {
-      dispatch: (sid: SessionId, intent: SessionIntent, intentId?: string) => {
-        ensureClaimCurrent();
-        const observation = intentObservation(sid);
-        if (!observation) throw new InputNotConsumedError("Session runtime is unavailable");
-        return dispatchSessionIntent(sid, intent, observation, intentId);
-      },
-      query: (sid: SessionId, query: SessionQuery) => {
-        ensureClaimCurrent();
-        const observation = intentObservation(sid);
-        if (!observation) throw new InputNotConsumedError("Session runtime is unavailable");
-        return querySession(sid, query, observation);
-      },
-      awaitIntentOutcome,
-      getIntentObservation: intentObservation,
-      ...(action.kind === "reload"
-        ? {
-            getReloadEditorCommand: () => ({ editorRevision, editorText: text }),
-          }
-        : {}),
-      createIntentId: () => submissionIntentId,
-      invoke: async <T = unknown>(channel: string, payload: unknown) => {
-        ensureClaimCurrent();
-        const result = (await window.pivis.invoke(
-          channel as Parameters<typeof window.pivis.invoke>[0],
-          payload as Parameters<typeof window.pivis.invoke>[1],
-        )) as { success: boolean; data?: T; error?: string };
-        ensureClaimCurrent();
-        return result;
-      },
-      uiSurface: "unified" as const,
-      submit: async (
-        sid: SessionId,
-        submission: import("@shared/pi-protocol/runtime-state.js").SessionSubmission,
-      ) => {
-        ensureClaimCurrent();
-        const current = get().sessions.get(sid);
-        const observation = current ? authorityObservation(current) : undefined;
-        if (!observation) throw new InputNotConsumedError("Session runtime is unavailable");
-        const receipt = await dispatchSessionIntent(
-          sid,
-          {
-            kind: "submit",
-            editorRevision: submission.editorRevision,
-            text: submission.text,
-            inputKind: submission.inputKind,
-            images: submission.images,
-            requestedMode: submission.requestedMode,
-            surface: submission.surface,
-          },
-          observation,
-          submission.intentId as ReturnType<typeof crypto.randomUUID>,
-        );
-        ensureClaimCurrent();
-        // Receipts are not dispositions. This compatibility return only keeps
-        // executeAction from treating delivery feedback as a transcript/editor
-        // settlement; canonical submission state arrives in an authority frame.
-        const disposition: SubmissionResult["disposition"] =
-          receipt.status === "admitted" || receipt.status === "duplicate"
-            ? "consumed"
-            : receipt.status === "delivery_unknown"
-              ? "outcome_unknown"
-              : "rejected";
-        return {
-          intentId: submission.intentId,
-          hostInstanceId: observation.owner.hostInstanceId,
-          sessionEpoch: observation.owner.sessionEpoch,
-          editorRevision: submission.editorRevision,
-          disposition,
-          queued: false,
-          ...(receipt.status === "not_admitted"
-            ? { message: `Submission was not admitted: ${receipt.reason}` }
-            : {}),
-        };
-      },
-      getSubmissionContext: (sid: SessionId) => {
-        if (!claimCurrent()) return undefined;
-        const current = get().sessions.get(sid);
-        const origin = { hostInstanceId, sessionEpoch };
-        if (!sessionMatchesRuntime(current, origin)) return undefined;
-        return {
-          ...origin,
-          editorRevision,
-          userMessageSequence: current.transcript.userMessageSequence,
-          intentId: submissionIntentId,
-        };
-      },
-      addToast: guarded(get().addToast),
-      addUserMessage: guarded(get().addUserMessage),
-      clearPendingUserEcho: guarded(get().clearPendingUserEcho),
-      addBashCommand: guarded(get().addBashCommand),
-      finishBashCommand: guarded(get().finishBashCommand),
-      applyModelChange: async (
-        sid: SessionId,
-        model: ModelInfo,
-        expectedRuntime?: { hostInstanceId: string; sessionEpoch: number },
-      ) => {
-        ensureClaimCurrent();
-        const result = await get().applyModelChange(sid, model, expectedRuntime);
-        ensureClaimCurrent();
-        return result;
-      },
-      addCustomMessage: guarded(get().addCustomMessage),
-      openChangelog: guarded((markdown: string) =>
-        useChangelogStore.getState().openChangelog(markdown),
-      ),
-      openPicker: guarded((sid: SessionId, picker: PickerRequest) =>
-        get().openPicker(sid, {
-          ...picker,
-          expectedHostInstanceId: session.hostInstanceId!,
-          expectedSessionEpoch: session.sessionEpoch,
-        }),
-      ),
-      adoptSessionFile: (sid: SessionId, file?: string, name?: string) =>
-        get().adoptSessionFileAndHydrate(sid, file, name, undefined, claimCurrent),
-      closeSessionTab: async (sid: SessionId) => {
-        ensureClaimCurrent();
-        await get().closeSessionTab(sid);
-        ensureClaimCurrent();
-      },
-      openAppSettings: guarded(() => window.dispatchEvent(new CustomEvent("pivis:open-settings"))),
-      openDiffViewer: guarded((sid: SessionId) => openDiffForSession(sid)),
-      // Lazy import: tree-store imports sessions-store, so a static import here
-      // would be circular. The unified-TUI submit path rarely hits /tree, so
-      // deferring the module load is fine.
-      openTreeViewer: (sid: SessionId) => {
-        if (!claimCurrent()) return;
-        void import("./tree-store.js").then((m) => {
-          if (claimCurrent()) m.useTreeStore.getState().openTreeForSession(sid);
-        });
-      },
-      openLogin: guarded(() => window.dispatchEvent(new CustomEvent("pivis:open-login"))),
-      copyToClipboard: async (t: string) => {
-        ensureClaimCurrent();
-        await window.pivis.invoke("clipboard.writeText", { text: t });
-        ensureClaimCurrent();
-      },
-      getAvailableModels: (sid: SessionId): ModelInfo[] =>
-        get().sessions.get(sid)?.availableModels ?? [],
-      getSessionName: (sid: SessionId) => get().sessions.get(sid)?.sessionName,
-      // A rename receipt is admission-only; the semantic frame/outcome owns
-      // the canonical label.
-      setSessionName: () => {},
-      getCurrentModel: (sid: SessionId) => get().sessions.get(sid)?.currentModel,
-      isWorking: (sid: SessionId) => isSessionWorking(get().sessions.get(sid)),
-      getSessionWorkspacePath: (sid: SessionId) => get().sessions.get(sid)?.workspacePath,
-      listSessions: async (p: string) => {
-        ensureClaimCurrent();
-        const result = await window.pivis.invoke("workspace.listSessions", { workspacePath: p });
-        ensureClaimCurrent();
-        return result;
-      },
-      onPromptAccepted: () => {
-        if (claimCurrent() && isRealPrompt && pendingDiffComments.length > 0) {
-          get().clearSubmittedDiffComments(sessionId, pendingDiffComments);
+      if (!claim.claimed) return;
+      claimAcquired = true;
+      let admissionCommitted = false;
+      let sourceSettled = false;
+      const claimCurrent = (): boolean =>
+        (admissionCommitted || Date.now() < claim.expiresAt) &&
+        sessionMatchesRuntime(get().sessions.get(sessionId), origin);
+      const ensureClaimCurrent = (): void => {
+        if (!claimCurrent()) {
+          throw new InputNotConsumedError("Unified action claim expired or changed runtime");
         }
-      },
-    };
-
-    try {
-      const result = await executeAction(sessionId, action, deps);
-      ensureClaimCurrent();
-      const submissionResult = result && "disposition" in result ? result : undefined;
-      const promptAccepted =
-        action.kind !== "send-prompt" ||
-        (submissionResult !== undefined &&
-          ["in_custody", "consumed", "completed", "extension_error"].includes(
-            submissionResult.disposition,
-          ));
-      if (!promptAccepted) {
-        void respond({
+      };
+      const respond = async (result: { ok: boolean; bailed?: boolean; error?: string }) => {
+        if (sourceSettled || !claimCurrent()) return { accepted: false };
+        const response = await window.pivis.invoke("session.unifiedSubmitResponse", {
+          sessionId,
+          id,
+          rendererGeneration: RENDERER_GENERATION,
+          claimId: claim.claimId,
+          expectedHostInstanceId: hostInstanceId,
+          expectedSessionEpoch: sessionEpoch,
+          ...result,
+        });
+        if (response.ok) settleCommentCustody();
+        return response;
+      };
+      // Claim acquisition is an async ownership boundary. Always refresh the
+      // session afterward: model/catalog/editor metadata captured before it can
+      // belong to a stale authority frame and cause an irreversible false bail.
+      const session = get().sessions.get(sessionId);
+      if (!session || !claimCurrent()) {
+        await respond({
           ok: false,
           bailed: true,
-          error: submissionResult?.message ?? "Submission was not accepted by the runtime",
+          error: "Session runtime is unavailable",
         });
         return;
       }
-      if (isRealPrompt && pendingDiffComments.length > 0) {
-        get().clearSubmittedDiffComments(sessionId, pendingDiffComments);
+      if (commentCustody.persistenceFailed) {
+        await respond({
+          ok: false,
+          bailed: true,
+          error: "Review-comment custody could not be recorded safely",
+        });
+        return;
       }
-      void respond({ ok: true });
-    } catch (err) {
-      // executeAction threw (invoke failure, etc.) — tell the host to restore
-      // so the user can retry. The error itself surfaces via addToast inside
-      // executeAction's error handling where applicable.
-      void respond({
-        ok: false,
-        bailed: true,
-        error: err instanceof Error ? err.message : String(err),
-      });
+
+      const discovered = new Map((session.commands ?? []).map((c) => [c.name, c]));
+      const parsedAction = parseComposerInput(text, { discovered });
+      const isRealPrompt = parsedAction.kind === "send-prompt" && !text.startsWith("/");
+      // Unified requests carry an immutable source snapshot. A legacy/missing
+      // attachment field must never fall back to the mutable current editor,
+      // which may already belong to a rapid successor draft.
+      // Mirror the React Composer's early bail: an empty/whitespace submit is a
+      // no-op unless pending diff comments or submitted attachments are the
+      // prompt body. The host already committed the clear; a failed guard only
+      // retires this request and never returns presentation custody.
+      if (!trimmed && pendingDiffComments.length === 0 && sourceEditorAttachments.length === 0) {
+        await respond({ ok: false, bailed: true });
+        return;
+      }
+      const replicated = parseReplicatedAttachments(sourceEditorAttachments);
+      let promptText = parsedAction.kind === "send-prompt" ? parsedAction.text : text;
+      let promptImages = isRealPrompt ? replicated.images : [];
+      if (isRealPrompt && replicated.files.length > 0) {
+        promptText = textWithPrependedFilePaths(
+          promptText,
+          replicated.files.map((attachment) => attachment.path),
+        );
+      }
+      if (isRealPrompt && pendingDiffComments.length > 0) {
+        promptText = prependCodeCommentsToPrompt(promptText, pendingDiffComments);
+      }
+      const currentModelInfo = findCurrentModel(
+        session?.availableModels ?? [],
+        session?.currentModel,
+        session?.currentProvider,
+      );
+      const modelSupportsImages = currentModelInfo?.input
+        ? currentModelInfo.input.includes("image")
+        : true;
+      if (isRealPrompt && promptImages.length > 0 && !modelSupportsImages) {
+        const modelLabel = currentModelInfo?.name ?? session?.currentModel ?? "This model";
+        get().addToast(
+          sessionId,
+          `${modelLabel} doesn't support image input — sending image file paths instead`,
+          "warning",
+        );
+        promptText = textWithAppendedFilePaths(
+          promptText,
+          promptImages.map((attachment) => attachment.path),
+        );
+        promptImages = [];
+      }
+      const action =
+        parsedAction.kind === "send-prompt"
+          ? {
+              ...parsedAction,
+              text: promptText,
+              inputKind: text.startsWith("/") ? ("slash_command" as const) : ("ordinary" as const),
+              ...(promptImages.length > 0
+                ? { images: runtimeImagesFromAttachments(promptImages) }
+                : {}),
+            }
+          : parsedAction;
+
+      // No-model guard (send-prompt only; /model and bash bypass). The visible
+      // clear remains committed; the toast is the terminal presentation.
+      if (
+        action.kind === "send-prompt" &&
+        !session?.currentModel &&
+        action.commandSource === undefined
+      ) {
+        get().addToast(sessionId, "No model selected", "error");
+        await respond({
+          ok: false,
+          bailed: true,
+          error: "No model selected",
+        });
+        return;
+      }
+
+      const guarded =
+        <Args extends unknown[]>(fn: (...args: Args) => void) =>
+        (...args: Args): void => {
+          if (claimCurrent()) fn(...args);
+        };
+
+      // Build the same deps the React Composer builds, but from store state (the
+      // TUI path has no attachments/worktree pre-send block). executeAction + the
+      // store actions it calls fire the optimistic bubble, draft clear, etc.
+      const intentObservation = (sid: SessionId) => {
+        if (!claimCurrent()) return undefined;
+        const current = get().sessions.get(sid);
+        const observation = current ? authorityObservation(current) : undefined;
+        if (!observation) return undefined;
+        return {
+          ...observation,
+          editorRevision,
+          userMessageSequence: current?.transcript.userMessageSequence ?? 0,
+        };
+      };
+      const awaitIntentOutcome = (
+        sid: SessionId,
+        intentId: string,
+        owner: RuntimeIdentity,
+      ): Promise<IntentOutcome> => {
+        const findOutcome = (): IntentOutcome | undefined =>
+          get()
+            .sessions.get(sid)
+            ?.authorityProjection?.authoritativeSnapshot?.recentIntentOutcomes.find(
+              (outcome) =>
+                outcome.intentId === intentId &&
+                outcome.owner.hostInstanceId === owner.hostInstanceId &&
+                outcome.owner.sessionEpoch === owner.sessionEpoch,
+            );
+        const immediate = findOutcome();
+        if (immediate) return Promise.resolve(immediate);
+        return new Promise((resolve, reject) => {
+          let settled = false;
+          let expiryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+          let unsubscribe = () => {};
+          const finish = (operation: () => void) => {
+            if (settled) return;
+            settled = true;
+            if (expiryTimer !== undefined) globalThis.clearTimeout(expiryTimer);
+            unsubscribe();
+            operation();
+          };
+          unsubscribe = useSessionsStore.subscribe(() => {
+            const outcome = findOutcome();
+            if (outcome) {
+              finish(() => resolve(outcome));
+              return;
+            }
+            const current = get().sessions.get(sid);
+            const projection = current?.authorityProjection;
+            if (
+              !claimCurrent() ||
+              projection?.semantic.state !== "following" ||
+              projection.semantic.cursor.hostInstanceId !== owner.hostInstanceId ||
+              projection.semantic.cursor.sessionEpoch !== owner.sessionEpoch
+            ) {
+              finish(() =>
+                reject(new InputNotConsumedError("Intent authority became unavailable")),
+              );
+            }
+          });
+          // Claim expiry governs source admission only. Once dispatch is
+          // admitted, its terminal outcome can legitimately take much longer.
+          if (!admissionCommitted) {
+            expiryTimer = globalThis.setTimeout(
+              () =>
+                finish(() =>
+                  reject(
+                    new InputNotConsumedError("Unified action claim expired before admission"),
+                  ),
+                ),
+              Math.max(0, claim.expiresAt - Date.now() + 1),
+            );
+          }
+        });
+      };
+
+      const deps = {
+        dispatch: async (sid: SessionId, intent: SessionIntent, intentId?: string) => {
+          ensureClaimCurrent();
+          const observation = intentObservation(sid);
+          if (!observation) throw new InputNotConsumedError("Session runtime is unavailable");
+          const receipt = await dispatchSessionIntent(sid, intent, observation, intentId);
+          sourceSettled = true;
+          settleCommentCustody();
+          if (receipt.status === "admitted" || receipt.status === "duplicate") {
+            admissionCommitted = true;
+          }
+          releaseAdmissionTurn();
+          return receipt;
+        },
+        query: (sid: SessionId, query: SessionQuery) => {
+          ensureClaimCurrent();
+          const observation = intentObservation(sid);
+          if (!observation) throw new InputNotConsumedError("Session runtime is unavailable");
+          return querySession(sid, query, observation);
+        },
+        awaitIntentOutcome,
+        getIntentObservation: intentObservation,
+        ...(action.kind === "reload"
+          ? {
+              getReloadEditorCommand: () => ({
+                editorRevision,
+                editorText: text,
+                surface: "unified" as const,
+              }),
+            }
+          : {}),
+        createIntentId: () => submissionIntentId,
+        invoke: async <T = unknown>(channel: string, payload: unknown) => {
+          ensureClaimCurrent();
+          const result = (await window.pivis.invoke(
+            channel as Parameters<typeof window.pivis.invoke>[0],
+            payload as Parameters<typeof window.pivis.invoke>[1],
+          )) as { success: boolean; data?: T; error?: string };
+          ensureClaimCurrent();
+          return result;
+        },
+        uiSurface: "unified" as const,
+        submit: async (
+          sid: SessionId,
+          submission: import("@shared/pi-protocol/runtime-state.js").SessionSubmission,
+        ) => {
+          ensureClaimCurrent();
+          const current = get().sessions.get(sid);
+          const observation = current ? authorityObservation(current) : undefined;
+          if (!observation) throw new InputNotConsumedError("Session runtime is unavailable");
+          const receipt = await dispatchSessionIntent(
+            sid,
+            {
+              kind: "submit",
+              editorRevision: submission.editorRevision,
+              text: submission.text,
+              inputKind: submission.inputKind,
+              images: submission.images,
+              requestedMode: submission.requestedMode,
+              surface: submission.surface,
+            },
+            observation,
+            submission.intentId as ReturnType<typeof crypto.randomUUID>,
+          );
+          sourceSettled = true;
+          if (receipt.status === "admitted" || receipt.status === "duplicate") {
+            admissionCommitted = true;
+          }
+          releaseAdmissionTurn();
+          // Receipts are not dispositions. This compatibility return only keeps
+          // executeAction from treating delivery feedback as a transcript/editor
+          // settlement; canonical submission state arrives in an authority frame.
+          const disposition: SubmissionResult["disposition"] =
+            receipt.status === "admitted" || receipt.status === "duplicate"
+              ? "consumed"
+              : receipt.status === "delivery_unknown"
+                ? "outcome_unknown"
+                : "rejected";
+          return {
+            intentId: submission.intentId,
+            hostInstanceId: observation.owner.hostInstanceId,
+            sessionEpoch: observation.owner.sessionEpoch,
+            editorRevision: submission.editorRevision,
+            disposition,
+            queued: false,
+            ...(receipt.status === "not_admitted"
+              ? { message: `Submission was not admitted: ${receipt.reason}` }
+              : {}),
+          };
+        },
+        getSubmissionContext: (sid: SessionId) => {
+          if (!claimCurrent()) return undefined;
+          const current = get().sessions.get(sid);
+          const origin = { hostInstanceId, sessionEpoch };
+          if (!sessionMatchesRuntime(current, origin)) return undefined;
+          return {
+            ...origin,
+            editorRevision,
+            userMessageSequence: current.transcript.userMessageSequence,
+            intentId: submissionIntentId,
+          };
+        },
+        addToast: guarded(get().addToast),
+        addUserMessage: guarded(get().addUserMessage),
+        addBashCommand: guarded(get().addBashCommand),
+        finishBashCommand: guarded(get().finishBashCommand),
+        applyModelChange: async (
+          sid: SessionId,
+          model: ModelInfo,
+          expectedRuntime?: { hostInstanceId: string; sessionEpoch: number },
+        ) => {
+          ensureClaimCurrent();
+          const result = await get().applyModelChange(sid, model, expectedRuntime);
+          ensureClaimCurrent();
+          return result;
+        },
+        addCustomMessage: guarded(get().addCustomMessage),
+        openChangelog: guarded((markdown: string) =>
+          useChangelogStore.getState().openChangelog(markdown),
+        ),
+        openPicker: guarded((sid: SessionId, picker: PickerRequest) =>
+          get().openPicker(sid, {
+            ...picker,
+            expectedHostInstanceId: origin.hostInstanceId,
+            expectedSessionEpoch: origin.sessionEpoch,
+          }),
+        ),
+        adoptSessionFile: (sid: SessionId, file?: string, name?: string) =>
+          get().adoptSessionFileAndHydrate(sid, file, name, undefined, claimCurrent),
+        closeSessionTab: async (sid: SessionId) => {
+          ensureClaimCurrent();
+          await get().closeSessionTab(sid);
+          ensureClaimCurrent();
+        },
+        openAppSettings: guarded(() =>
+          window.dispatchEvent(new CustomEvent("pivis:open-settings")),
+        ),
+        openDiffViewer: guarded((sid: SessionId) => openDiffForSession(sid)),
+        // Lazy import: tree-store imports sessions-store, so a static import here
+        // would be circular. The unified-TUI submit path rarely hits /tree, so
+        // deferring the module load is fine.
+        openTreeViewer: async (sid: SessionId) => {
+          ensureClaimCurrent();
+          // This local action has accepted its exact cleared source. Keep the
+          // ownership lease alive while the lazily loaded viewer establishes
+          // its own query/UI state, then acknowledge main in the normal path.
+          admissionCommitted = true;
+          const module = await import("./tree-store.js");
+          ensureClaimCurrent();
+          await module.useTreeStore.getState().openTreeForSession(sid);
+          ensureClaimCurrent();
+        },
+        openLogin: guarded(() => window.dispatchEvent(new CustomEvent("pivis:open-login"))),
+        copyToClipboard: async (t: string) => {
+          ensureClaimCurrent();
+          await window.pivis.invoke("clipboard.writeText", { text: t });
+          ensureClaimCurrent();
+        },
+        getAvailableModels: (sid: SessionId): ModelInfo[] =>
+          get().sessions.get(sid)?.availableModels ?? [],
+        getSessionName: (sid: SessionId) => get().sessions.get(sid)?.sessionName,
+        // A rename receipt is admission-only; the semantic frame/outcome owns
+        // the canonical label.
+        setSessionName: () => {},
+        getCurrentModel: (sid: SessionId) => get().sessions.get(sid)?.currentModel,
+        isWorking: (sid: SessionId) => isSessionWorking(get().sessions.get(sid)),
+        getSessionWorkspacePath: (sid: SessionId) => get().sessions.get(sid)?.workspacePath,
+        listSessions: async (p: string) => {
+          ensureClaimCurrent();
+          const result = await window.pivis.invoke("workspace.listSessions", { workspacePath: p });
+          ensureClaimCurrent();
+          return result;
+        },
+        onPromptAccepted: () => {
+          // Unified comment custody transferred synchronously after the source
+          // claim, before dispatch. Terminal acceptance must not touch newer
+          // comment revisions.
+        },
+      };
+
+      try {
+        const result = await executeAction(sessionId, action, deps);
+        ensureClaimCurrent();
+        const submissionResult = result && "disposition" in result ? result : undefined;
+        const promptAccepted =
+          action.kind !== "send-prompt" ||
+          (submissionResult !== undefined &&
+            ["in_custody", "consumed", "completed", "extension_error"].includes(
+              submissionResult.disposition,
+            ));
+        if (!promptAccepted) {
+          await respond({
+            ok: false,
+            bailed: true,
+            error: submissionResult?.message ?? "Submission was not accepted by the runtime",
+          });
+          return;
+        }
+        if (!sourceSettled) await respond({ ok: true });
+      } catch (err) {
+        // executeAction threw (invoke failure, etc.). Retire the correlated
+        // request without mutating editor state; executeAction surfaces the
+        // error via a toast where applicable.
+        if (!sourceSettled) {
+          await respond({
+            ok: false,
+            bailed: true,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } finally {
+      releaseAdmissionTurn();
+      if (claimAcquired) settleCommentCustody();
     }
+  },
+
+  consumeUnifiedSourceClearReceipt: (sessionId, key, retirement) => {
+    set((state) => {
+      const current = state.sessions.get(sessionId);
+      const receipts = current?.unifiedSourceClearReceipts ?? [];
+      const receipt = receipts.find((candidate) => candidate.key === key);
+      if (!current || !receipt) return {};
+
+      const remainingReceipts = receipts.filter((candidate) => candidate.key !== key);
+      const attachmentsStillExact =
+        current.editorAttachmentGeneration === receipt.attachmentGeneration &&
+        JSON.stringify(current.editorAttachments) === JSON.stringify(receipt.projectedAttachments);
+      const nextSession: SessionViewState = {
+        ...current,
+        unifiedSourceClearReceipts: remainingReceipts.length > 0 ? remainingReceipts : undefined,
+        ...(retirement.attachments && receipt.consumeAttachments && attachmentsStillExact
+          ? {
+              editorAttachments: [],
+              editorAttachmentGeneration: current.editorAttachmentGeneration + 1,
+            }
+          : {}),
+      };
+
+      let newSessionDrafts = state.newSessionDrafts;
+      let newSessionDraftRevisions = state.newSessionDraftRevisions;
+      let sessionDrafts = state.sessionDrafts;
+      let sessionDraftRevisions = state.sessionDraftRevisions;
+      if (
+        retirement.draft &&
+        receipt.draftScope === "workspace" &&
+        state.newSessionDraftRevisions.get(receipt.workspacePath) === receipt.draftRevision &&
+        state.newSessionDrafts.get(receipt.workspacePath) === receipt.draftText
+      ) {
+        newSessionDrafts = new Map(state.newSessionDrafts);
+        newSessionDrafts.delete(receipt.workspacePath);
+        newSessionDraftRevisions = new Map(state.newSessionDraftRevisions);
+        newSessionDraftRevisions.set(receipt.workspacePath, receipt.draftRevision + 1);
+      } else if (
+        retirement.draft &&
+        receipt.draftScope === "session" &&
+        state.sessionDraftRevisions.get(sessionId) === receipt.draftRevision &&
+        state.sessionDrafts.get(sessionId) === receipt.draftText
+      ) {
+        sessionDrafts = new Map(state.sessionDrafts);
+        sessionDrafts.delete(sessionId);
+        sessionDraftRevisions = new Map(state.sessionDraftRevisions);
+        sessionDraftRevisions.set(sessionId, receipt.draftRevision + 1);
+      }
+
+      return {
+        sessions: new Map(state.sessions).set(sessionId, nextSession),
+        newSessionDrafts,
+        newSessionDraftRevisions,
+        sessionDrafts,
+        sessionDraftRevisions,
+      };
+    });
   },
 
   addToast: (sessionId, message, type) => {
@@ -4384,6 +5162,13 @@ const buildSessionsStore = (
   },
 
   setUnifiedPanelHidden: (sessionId, hidden) => {
+    if (!hidden) {
+      // A newer Extension choice cancels an outstanding async Input reveal.
+      // The attach itself is read-only and may finish, but its stale
+      // continuation must not replace the user's latest surface choice.
+      unifiedNativeRevealRequestIds.delete(sessionId);
+      unifiedNativeRevealFlights.delete(sessionId);
+    }
     set((state) => {
       const sessions = new Map(state.sessions);
       const s = sessions.get(sessionId);
@@ -4391,9 +5176,163 @@ const buildSessionsStore = (
       // No-op if there's no live unified panel to toggle away from — avoids
       // leaving a stale `hidden` flag that would suppress a future panel.
       if (!s.unifiedPanel) return {};
-      sessions.set(sessionId, { ...s, unifiedPanelHidden: hidden });
+      const transitioningToExtension = !hidden && s.unifiedPanelHidden === true;
+      const revealNow = !transitioningToExtension || unifiedPanelCanOwnCurrentDraft(state, s);
+      sessions.set(sessionId, {
+        ...s,
+        unifiedPanelHidden: hidden ? true : !revealNow,
+        unifiedPanelRevealPending: !hidden && !revealNow ? true : undefined,
+        ...(!hidden && revealNow
+          ? {
+              unifiedComposerProjectionTokens: appendUnifiedComposerProjectionToken(
+                s.unifiedComposerProjectionTokens,
+                captureUnifiedComposerProjection(state, s),
+              ),
+            }
+          : {}),
+      });
       return { sessions };
     });
+  },
+
+  revealNativeComposerFromUnified: async (sessionId) => {
+    const existing = unifiedNativeRevealFlights.get(sessionId);
+    if (existing && unifiedNativeRevealRequestIds.get(sessionId) === existing.requestId) {
+      return existing.promise;
+    }
+
+    const before = get().sessions.get(sessionId);
+    const panel = before?.unifiedPanel;
+    const owner = authoritySnapshotFor(before)?.owner;
+    if (!before || !panel || !owner || before.unifiedPanelHidden === true) {
+      return before?.unifiedPanelHidden === true;
+    }
+
+    const requestId = ++unifiedNativeRevealRequestCounter;
+    unifiedNativeRevealRequestIds.set(sessionId, requestId);
+    const promise = (async (): Promise<boolean> => {
+      let response: AuthorityAttachResponse;
+      try {
+        response = await window.pivis.invoke("session.authorityAttach", {
+          sessionId,
+          rendererGeneration: RENDERER_GENERATION,
+        });
+      } catch (error) {
+        if (unifiedNativeRevealRequestIds.get(sessionId) === requestId) {
+          get().addToast(
+            sessionId,
+            describeIpcError(error) || "Input is still synchronizing",
+            "warning",
+          );
+        }
+        return false;
+      }
+      if (unifiedNativeRevealRequestIds.get(sessionId) !== requestId) return false;
+      if (response.status !== "ready") {
+        get().addToast(sessionId, "Input is still synchronizing", "warning");
+        return false;
+      }
+
+      get().applyAuthorityAttach(sessionId, response);
+      if (unifiedNativeRevealRequestIds.get(sessionId) !== requestId) return false;
+
+      let revealed = false;
+      set((state) => {
+        const current = state.sessions.get(sessionId);
+        const authoritative = authoritySnapshotFor(current);
+        if (
+          !current?.unifiedPanel ||
+          current.unifiedPanel.id !== panel.id ||
+          !authoritative ||
+          authoritative.owner.hostInstanceId !== owner.hostInstanceId ||
+          authoritative.owner.sessionEpoch !== owner.sessionEpoch ||
+          response.baseline.owner.hostInstanceId !== owner.hostInstanceId ||
+          response.baseline.owner.sessionEpoch !== owner.sessionEpoch
+        ) {
+          return {};
+        }
+
+        const tokens = current.unifiedComposerProjectionTokens ?? [];
+        const ownerTokens = tokens.filter(
+          (token) =>
+            token.owner.hostInstanceId === owner.hostInstanceId &&
+            token.owner.sessionEpoch === owner.sessionEpoch,
+        );
+        const projectionToken = ownerTokens.at(-1);
+        const authorityStillOwnsHandoff =
+          projectionToken !== undefined &&
+          authoritative.editor.revision === projectionToken.editorRevision &&
+          authoritative.editor.text === projectionToken.draftText &&
+          JSON.stringify(authoritative.editor.attachments) ===
+            JSON.stringify(projectionToken.attachments);
+
+        let newSessionDrafts = state.newSessionDrafts;
+        let newSessionDraftRevisions = state.newSessionDraftRevisions;
+        let sessionDrafts = state.sessionDrafts;
+        let sessionDraftRevisions = state.sessionDraftRevisions;
+        if (projectionToken && !authorityStillOwnsHandoff) {
+          if (
+            projectionToken.draftScope === "workspace" &&
+            state.newSessionDraftRevisions.get(projectionToken.workspacePath) ===
+              projectionToken.draftRevision &&
+            state.newSessionDrafts.get(projectionToken.workspacePath) === projectionToken.draftText
+          ) {
+            newSessionDrafts = new Map(state.newSessionDrafts);
+            newSessionDrafts.delete(projectionToken.workspacePath);
+            newSessionDraftRevisions = new Map(state.newSessionDraftRevisions);
+            newSessionDraftRevisions.set(
+              projectionToken.workspacePath,
+              projectionToken.draftRevision + 1,
+            );
+          } else if (
+            projectionToken.draftScope === "session" &&
+            state.sessionDraftRevisions.get(sessionId) === projectionToken.draftRevision &&
+            state.sessionDrafts.get(sessionId) === projectionToken.draftText
+          ) {
+            sessionDrafts = new Map(state.sessionDrafts);
+            sessionDrafts.delete(sessionId);
+            sessionDraftRevisions = new Map(state.sessionDraftRevisions);
+            sessionDraftRevisions.set(sessionId, projectionToken.draftRevision + 1);
+          }
+        }
+
+        const sessions = new Map(state.sessions);
+        sessions.set(sessionId, {
+          ...current,
+          unifiedPanelHidden: true,
+          unifiedPanelRevealPending: undefined,
+          // Returning to Input settles the entire owner-bound handoff. If the
+          // source was untouched, native consume-and-submit remains valid. If
+          // it changed or cleared in TUI, the fresh authority projection owns
+          // what Composer mounts and the stale renderer draft was retired
+          // above. A later Extension choice captures one new causal token.
+          unifiedComposerProjectionTokens: tokens.filter(
+            (token) =>
+              token.owner.hostInstanceId !== owner.hostInstanceId ||
+              token.owner.sessionEpoch !== owner.sessionEpoch,
+          ),
+        });
+        revealed = true;
+        return {
+          sessions,
+          newSessionDrafts,
+          newSessionDraftRevisions,
+          sessionDrafts,
+          sessionDraftRevisions,
+        };
+      });
+      return revealed;
+    })();
+    unifiedNativeRevealFlights.set(sessionId, { requestId, promise });
+    try {
+      return await promise;
+    } finally {
+      const current = unifiedNativeRevealFlights.get(sessionId);
+      if (current?.requestId === requestId) unifiedNativeRevealFlights.delete(sessionId);
+      if (unifiedNativeRevealRequestIds.get(sessionId) === requestId) {
+        unifiedNativeRevealRequestIds.delete(sessionId);
+      }
+    }
   },
 
   setStats: (sessionId, stats) => {
@@ -4869,7 +5808,11 @@ const buildSessionsStore = (
       const s = state.sessions.get(sessionId);
       if (!s) return {};
       const sessions = new Map(state.sessions);
-      sessions.set(sessionId, { ...s, editorAttachments: structuredClone(attachments) });
+      sessions.set(sessionId, {
+        ...s,
+        editorAttachments: structuredClone(attachments),
+        editorAttachmentGeneration: s.editorAttachmentGeneration + 1,
+      });
       return { sessions };
     });
   },
@@ -4888,13 +5831,33 @@ const buildSessionsStore = (
     set((state) => {
       const s = state.sessions.get(sessionId);
       if (!s || s.editorPatchPending === 0) return {};
+      const pending = Math.max(0, s.editorPatchPending - 1);
+      const snapshot = authoritySnapshotFor(s);
+      const canReconcile =
+        pending === 0 &&
+        s.editorProjectionDeferred === true &&
+        s.authorityProjection?.semantic.state === "following" &&
+        snapshot?.editor.conflictText === undefined;
       const sessions = new Map(state.sessions);
       sessions.set(sessionId, {
         ...s,
-        editorPatchPending: Math.max(0, s.editorPatchPending - 1),
+        editorPatchPending: pending,
+        ...(canReconcile && snapshot
+          ? {
+              editorProjectionDeferred: false,
+              editorInjection: {
+                text: snapshot.editor.text,
+                nonce: ++editorInjectionNonce,
+                revision: snapshot.editor.revision,
+              },
+            }
+          : {}),
       });
       return { sessions };
     });
+    if (get().sessions.get(sessionId)?.unifiedPanelRevealPending) {
+      get().setUnifiedPanelHidden(sessionId, false);
+    }
   },
 
   clearEditorConflict: (sessionId) => {
@@ -4961,29 +5924,11 @@ const buildSessionsStore = (
       const next: SessionViewState = {
         ...s,
         transcript: addCustomMessageBlock(s.transcript, content),
-        isNewPending: false,
-        editorInjection: undefined,
       };
       sessions.set(sessionId, next);
-      // Clear the per-workspace draft when the pending session becomes real
-      // (see addUserMessage for rationale).
-      const drafts = clearNewSessionDraftFor(
-        state.newSessionDrafts,
-        s.workspacePath,
-        !!s.isNewPending,
-      );
-      const setupDrafts = clearNewSessionSetupFor(
-        state.newSessionSetupDrafts,
-        s.workspacePath,
-        !!s.isNewPending,
-      );
-      const sessionDrafts = clearSessionDraftFor(state.sessionDrafts, sessionId);
-      return {
-        sessions,
-        newSessionDrafts: drafts,
-        newSessionSetupDrafts: setupDrafts,
-        sessionDrafts,
-      };
+      // Query/local command output is transcript-only. It is not causal proof
+      // that any current editor source or draft revision was consumed.
+      return { sessions };
     });
   },
 
@@ -5385,7 +6330,9 @@ const buildSessionsStore = (
     set((state) => {
       const drafts = new Map(state.newSessionDrafts);
       drafts.set(workspacePath, text);
-      return { newSessionDrafts: drafts };
+      const revisions = new Map(state.newSessionDraftRevisions);
+      revisions.set(workspacePath, (revisions.get(workspacePath) ?? 0) + 1);
+      return { newSessionDrafts: drafts, newSessionDraftRevisions: revisions };
     });
   },
 
@@ -5394,21 +6341,24 @@ const buildSessionsStore = (
       if (!state.newSessionDrafts.has(workspacePath)) return {};
       const drafts = new Map(state.newSessionDrafts);
       drafts.delete(workspacePath);
-      return { newSessionDrafts: drafts };
+      const revisions = new Map(state.newSessionDraftRevisions);
+      revisions.set(workspacePath, (revisions.get(workspacePath) ?? 0) + 1);
+      return { newSessionDrafts: drafts, newSessionDraftRevisions: revisions };
     });
   },
 
   setSessionDraft: (sessionId, text) => {
     set((state) => {
+      const revisions = new Map(state.sessionDraftRevisions);
+      revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
       if (text === "") {
-        if (!state.sessionDrafts.has(sessionId)) return {};
         const drafts = new Map(state.sessionDrafts);
         drafts.delete(sessionId);
-        return { sessionDrafts: drafts };
+        return { sessionDrafts: drafts, sessionDraftRevisions: revisions };
       }
       const drafts = new Map(state.sessionDrafts);
       drafts.set(sessionId, text);
-      return { sessionDrafts: drafts };
+      return { sessionDrafts: drafts, sessionDraftRevisions: revisions };
     });
   },
 
@@ -5421,6 +6371,11 @@ const buildSessionsStore = (
         ...current,
         pendingComposerSubmission: {
           ...submission,
+          draftRevision:
+            submission.draftScope === "workspace"
+              ? (state.newSessionDraftRevisions.get(current.workspacePath) ?? 0)
+              : (state.sessionDraftRevisions.get(sessionId) ?? 0),
+          attachmentGeneration: current.editorAttachmentGeneration,
           owner: { ...submission.owner },
           ...(submission.composerAttachments !== undefined
             ? { composerAttachments: structuredClone(submission.composerAttachments) }

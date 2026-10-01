@@ -30,6 +30,7 @@ import type {
   ReloadRequest,
   ReloadSettlement,
   RendererPublication,
+  RuntimeEditorState,
   RuntimeIdentity,
   RuntimeRecord,
   RuntimeStateUpdate,
@@ -353,6 +354,12 @@ export interface IpcInvokeContract {
       revision: number;
       text: string;
       attachments: unknown[];
+      /** Automatic source retirement must not resolve independent conflicts. */
+      preserveConflicts?: boolean;
+      /** Owner-bound source lineage when this is a consume-time successor. */
+      sourceConsumeRevision?: number;
+      sourceConsumeText?: string;
+      inheritsSourceTextOnConsumeFailure?: boolean;
     };
     res: {
       accepted: boolean;
@@ -364,6 +371,28 @@ export interface IpcInvokeContract {
       /** Expected lifecycle boundary; not an Electron IPC exception. */
       rejection?: "runtime_unavailable" | "runtime_replaced";
     };
+  };
+  /**
+   * Atomically retire one exact primary editor source while retaining staged
+   * attachments and independent conflict candidates. The returned residual
+   * editor is installed in main before the renderer may clear presentation.
+   */
+  "session.consumeEditorSource": {
+    req: {
+      sessionId: SessionId;
+      expectedHostInstanceId: string;
+      expectedSessionEpoch: number;
+      editorRevision: number;
+      editorText: string;
+      consumeAttachments?: boolean;
+    };
+    res:
+      | { accepted: true; sourceRevision: number; editor: RuntimeEditorState }
+      | {
+          accepted: false;
+          editor: RuntimeEditorState;
+          rejection?: "runtime_unavailable" | "runtime_replaced";
+        };
   };
   "session.respondToUiRequest": {
     req: {
@@ -389,6 +418,8 @@ export interface IpcInvokeContract {
     };
     res: {
       acknowledgedThrough: number;
+      /** Exact owner is no longer a legal input target; bytes were not sent. */
+      rejection?: "runtime_unavailable" | "runtime_replaced";
       gap?: { expected: number; received: number };
       repaintRequired?: { revision: number; repaintRequired: boolean };
     };
@@ -488,10 +519,10 @@ export interface IpcInvokeContract {
   /** Silently dispose the live host and remove this renderer tab's session. */
   "session.close": { req: { sessionId: SessionId }; res: { closed: true } };
   /** Respond to a unified-TUI editor submit (host→renderer round-trip).
-   *  The host's `editor.onSubmit` sends the text to the renderer, which runs
-   *  the shared submit pipeline (`submitFromText`). `ok:false` + `bailed:true`
-   *  means a pre-send guard rejected the submit (e.g. no model) — the host
-   *  restores the editor text. */
+   *  The host's `editor.onSubmit` has already committed the visible clear and
+   *  sends an immutable source to the renderer's shared submit pipeline.
+   *  `ok`/`bailed` report execution only; neither response returns editor
+   *  presentation custody or restores submitted input. */
   "session.claimUnifiedSubmit": {
     req: {
       sessionId: SessionId;
@@ -622,7 +653,9 @@ export interface IpcEventContract {
     state: RuntimeStateUpdate;
   };
   "session.submissionDisposition": { sessionId: SessionId; result: SubmissionResult };
-  /** Main-resolved, one-way draft recovery instruction. */
+  /** Main-resolved, one-way submission settlement instruction. `restore` is
+   *  reserved for input that never crossed a visible clear; `dropped` records
+   *  an irreversible clear. The renderer never merges either into newer input. */
   "session.restoreDraft": {
     sessionId: SessionId;
     restorationId: string;
@@ -686,14 +719,17 @@ export interface IpcEventContract {
 
   // ── Panels (custom() rendering) ────────────────────────────────────
   "session.panelEvent": { sessionId: SessionId; event: PanelEvent };
-  /** The unified-TUI editor submitted a prompt (host→renderer). The renderer
-   *  runs the shared submit pipeline and replies via
-   *  `session.unifiedSubmitResponse` (correlated by `id`). */
+  /** The unified-TUI editor committed a visible clear and submitted an
+   *  immutable source payload (host→renderer). The renderer runs the shared
+   *  submit pipeline and replies via `session.unifiedSubmitResponse`
+   *  (correlated by `id`); replies never restore editor presentation. */
   "session.unifiedSubmitRequest": {
     sessionId: SessionId;
     id: string;
     text: string;
     editorRevision: number;
+    editorAttachments?: unknown[];
+    postClearEditor: RuntimeEditorState;
     submissionIntentId: string;
     hostInstanceId: string;
     sessionEpoch: number;

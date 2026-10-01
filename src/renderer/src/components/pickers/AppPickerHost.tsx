@@ -3,6 +3,7 @@ import type { SessionSummary } from "@shared/ipc-contract.js";
 import type { ProjectTrustOption } from "@shared/pi-protocol/commands.js";
 import type { LoginProvider, ModelInfo } from "@shared/pi-protocol/responses.js";
 import type { IntentOutcome, RuntimeIdentity } from "@shared/pi-protocol/runtime-state.js";
+import type { ThinkingLevel } from "@shared/pi-protocol/thinking.js";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
@@ -17,14 +18,82 @@ import {
 } from "../../stores/sessions-store.js";
 import { FadeText } from "../common/FadeText.js";
 import { ScrollFadeFrame } from "../common/ScrollFadeFrame.js";
+import { IconCheck } from "../common/icons.js";
 import "./AppPickerHost.css";
 
 interface PickerHostProps {
   sessionId: SessionId;
 }
 
+interface PickerActivation {
+  pending: boolean;
+}
+
+// This is keyed by the store-owned request object, not by a React mount. A
+// session switch may unmount and remount the same picker after delivery became
+// uncertain; that must not create a second activation opportunity.
+const pickerActivations = new WeakMap<PickerRequest, PickerActivation>();
+
+function activationForPicker(picker: PickerRequest): PickerActivation {
+  const existing = pickerActivations.get(picker);
+  if (existing) return existing;
+  const created = { pending: false };
+  pickerActivations.set(picker, created);
+  return created;
+}
+
+function findPickerIntentOutcome(
+  sessionId: SessionId,
+  intentId: string,
+  owner: RuntimeIdentity,
+): IntentOutcome | undefined {
+  return useSessionsStore
+    .getState()
+    .sessions.get(sessionId)
+    ?.authorityProjection?.authoritativeSnapshot?.recentIntentOutcomes.find(
+      (outcome) =>
+        outcome.intentId === intentId &&
+        outcome.owner.hostInstanceId === owner.hostInstanceId &&
+        outcome.owner.sessionEpoch === owner.sessionEpoch,
+    );
+}
+
+function waitForPickerIntentOutcome(
+  sessionId: SessionId,
+  intentId: string,
+  owner: RuntimeIdentity,
+): Promise<IntentOutcome> {
+  const immediate = findPickerIntentOutcome(sessionId, intentId, owner);
+  if (immediate) return Promise.resolve(immediate);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let unsubscribe = () => {};
+    const finish = (operation: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      unsubscribe();
+      operation();
+    };
+    const timeout = setTimeout(
+      () => finish(() => reject(new Error("Timed out waiting for the selection to finish."))),
+      10_000,
+    );
+    unsubscribe = useSessionsStore.subscribe(() => {
+      const outcome = findPickerIntentOutcome(sessionId, intentId, owner);
+      if (outcome) {
+        finish(() => resolve(outcome));
+        return;
+      }
+      if (!sessionMatchesRuntime(useSessionsStore.getState().sessions.get(sessionId), owner)) {
+        finish(() => reject(new Error("Session changed before the selection completed.")));
+      }
+    });
+  });
+}
+
 /**
- * AppPickerHost — built-in pickers for /model, /fork, /resume.
+ * AppPickerHost — built-in pickers for /model, /thinking, /fork, /resume.
  *
  * Why a separate host from ExtensionDialogHost?
  *   - Extension dialogs come from the wire and use the request/response
@@ -55,7 +124,8 @@ interface PickerHostProps {
  * from the composer).
  */
 export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElement | null {
-  const picker = useSessionsStore((s) => s.sessions.get(sessionId)?.pendingPicker);
+  const session = useSessionsStore((s) => s.sessions.get(sessionId));
+  const picker = session?.pendingPicker;
   const closePicker = useSessionsStore((s) => s.closePicker);
   const addToast = useSessionsStore((s) => s.addToast);
   const openSessionTab = useSessionsStore((s) => s.openSessionTab);
@@ -67,6 +137,7 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
   useEscapeClaim(!!picker);
 
   if (!picker) return null;
+  const pickerActivation = activationForPicker(picker);
   const pickerRuntime =
     picker.expectedHostInstanceId && picker.expectedSessionEpoch !== undefined
       ? {
@@ -89,6 +160,14 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
   };
   const pickerSlotIsCurrent = () =>
     useSessionsStore.getState().sessions.get(sessionId)?.pendingPicker === picker;
+  const beginPickerAction = (): boolean => {
+    if (!pickerSlotIsCurrent() || pickerActivation.pending) return false;
+    pickerActivation.pending = true;
+    return true;
+  };
+  const allowPickerRetry = (): void => {
+    if (pickerSlotIsCurrent()) pickerActivation.pending = false;
+  };
   const pickerRuntimeIsCurrent = () => {
     const current = useSessionsStore.getState().sessions.get(sessionId);
     return (
@@ -107,19 +186,110 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           sessionId={sessionId}
           {...(picker.search !== undefined ? { search: picker.search } : {})}
           onClose={() => closePicker(sessionId)}
-          onPick={async (model) => {
-            const observation = requirePickerObservation();
-            const receipt = await dispatchSessionIntent(
-              sessionId,
-              { kind: "setModel", provider: model.provider ?? "", modelId: model.id },
-              observation,
-            );
-            if (!pickerRuntimeIsCurrent()) return;
-            if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+          onPick={async (model, persist = false) => {
+            if (!beginPickerAction()) return;
+            try {
+              const observation = requirePickerObservation();
+              const receipt = await dispatchSessionIntent(
+                sessionId,
+                {
+                  kind: "setModel",
+                  provider: model.provider ?? "",
+                  modelId: model.id,
+                  ...(persist ? { persist: true } : {}),
+                },
+                observation,
+              );
+              if (!pickerRuntimeIsCurrent()) return;
+              if (receipt.status === "not_admitted") {
+                allowPickerRetry();
+                addToast(sessionId, "Failed to request model change", "error");
+                return;
+              }
+              if (receipt.status === "delivery_unknown") {
+                addToast(
+                  sessionId,
+                  "Model-change delivery is unknown; verify before retrying",
+                  "error",
+                );
+                return;
+              }
+              const outcome = await waitForPickerIntentOutcome(
+                sessionId,
+                receipt.intentId,
+                observation.owner,
+              );
+              if (!pickerRuntimeIsCurrent()) return;
+              if (outcome.kind !== "setModel" || outcome.state !== "completed") {
+                if (outcome.state === "rejected") allowPickerRetry();
+                addToast(sessionId, outcome.error ?? "The model could not be changed.", "error");
+                return;
+              }
+              closePicker(sessionId);
+            } catch {
+              if (!pickerRuntimeIsCurrent()) return;
               addToast(sessionId, "Failed to request model change", "error");
-              return;
             }
+          }}
+        />
+      )}
+      {picker.kind === "thinking" && (
+        <ThinkingPicker
+          levels={authoritySnapshotFor(session)?.availableThinkingLevels ?? []}
+          currentLevel={authoritySnapshotFor(session)?.thinkingLevel ?? "off"}
+          {...(picker.search !== undefined ? { search: picker.search } : {})}
+          onClose={() => closePicker(sessionId)}
+          onInvalidSearch={(search, levels) => {
+            addToast(
+              sessionId,
+              `Unknown thinking level "${search}". Available levels: ${levels.join(", ")}.`,
+              "error",
+            );
             closePicker(sessionId);
+          }}
+          onPick={async (level, persist = false) => {
+            if (!beginPickerAction()) return;
+            try {
+              const observation = requirePickerObservation();
+              const receipt = await dispatchSessionIntent(
+                sessionId,
+                { kind: "setThinking", level, ...(persist ? { persist: true } : {}) },
+                observation,
+              );
+              if (!pickerRuntimeIsCurrent()) return;
+              if (receipt.status === "not_admitted") {
+                allowPickerRetry();
+                addToast(sessionId, "Failed to request thinking-level change", "error");
+                return;
+              }
+              if (receipt.status === "delivery_unknown") {
+                addToast(
+                  sessionId,
+                  "Thinking-level delivery is unknown; verify before retrying",
+                  "error",
+                );
+                return;
+              }
+              const outcome = await waitForPickerIntentOutcome(
+                sessionId,
+                receipt.intentId,
+                observation.owner,
+              );
+              if (!pickerRuntimeIsCurrent()) return;
+              if (outcome.kind !== "setThinking" || outcome.state !== "completed") {
+                if (outcome.state === "rejected") allowPickerRetry();
+                addToast(
+                  sessionId,
+                  outcome.error ?? "The thinking level could not be changed.",
+                  "error",
+                );
+                return;
+              }
+              closePicker(sessionId);
+            } catch {
+              if (!pickerRuntimeIsCurrent()) return;
+              addToast(sessionId, "Failed to request thinking-level change", "error");
+            }
           }}
         />
       )}
@@ -128,24 +298,32 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           messages={picker.messages}
           onClose={() => closePicker(sessionId)}
           onPick={async (entryId) => {
-            const observation = requirePickerObservation();
-            const receipt = await dispatchSessionIntent(
-              sessionId,
-              {
-                kind: "invokeCommand",
-                text: `/fork ${entryId}`,
-                editorRevision:
-                  useSessionsStore.getState().sessions.get(sessionId)?.editorRevision ?? 0,
-              },
-              observation,
-            );
-            if (!pickerRuntimeIsCurrent()) return;
-            if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
-              addToast(sessionId, "Failed to request fork", "error");
-              return;
+            if (!beginPickerAction()) return;
+            try {
+              const receipt = await dispatchSessionIntent(
+                sessionId,
+                {
+                  kind: "pickerAction",
+                  selection: { action: "fork", entryId },
+                  surface: picker.sourceSurface ?? "composer",
+                },
+                requirePickerObservation(),
+              );
+              if (!pickerRuntimeIsCurrent()) return;
+              if (receipt.status === "not_admitted") {
+                allowPickerRetry();
+                addToast(sessionId, "Failed to request fork", "error");
+                return;
+              }
+              if (receipt.status === "delivery_unknown") {
+                addToast(sessionId, "Fork delivery is unknown; verify before retrying", "error");
+                return;
+              }
+              // Authority frames own the successor, transcript, and editor.
+              closePicker(sessionId);
+            } catch {
+              if (pickerRuntimeIsCurrent()) addToast(sessionId, "Failed to request fork", "error");
             }
-            // Authority frames own the successor, transcript, and editor.
-            closePicker(sessionId);
           }}
         />
       )}
@@ -154,6 +332,7 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           sessions={picker.sessions}
           onClose={() => closePicker(sessionId)}
           onPick={async (target) => {
+            if (!beginPickerAction()) return;
             if (!pickerRuntimeIsCurrent()) return;
             // Focus an existing tab if the file is already open, else
             // open a new tab. `openSessionTab` returns the id either way.
@@ -162,16 +341,21 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
             );
             if (liveTab) {
               requestComposerFocus(liveTab.sessionId);
-              void setActiveSession(liveTab.sessionId);
-              closePicker(sessionId);
+              const activated = await setActiveSession(liveTab.sessionId);
+              if (!pickerSlotIsCurrent()) return;
+              if (activated) closePicker(sessionId);
+              else {
+                allowPickerRetry();
+                addToast(sessionId, "Couldn't activate that session", "error");
+              }
               return;
             }
             const workspacePath = useSessionsStore
               .getState()
               .sessions.get(sessionId)?.workspacePath;
             if (!workspacePath) {
+              allowPickerRetry();
               addToast(sessionId, "No active workspace", "error");
-              closePicker(sessionId);
               return;
             }
             const id = await openSessionTab(workspacePath, target.filePath, {
@@ -179,8 +363,13 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
               requestComposerFocus: true,
             });
             if (!pickerRuntimeIsCurrent()) return;
-            if (id) void setActiveSession(id);
-            closePicker(sessionId);
+            if (id) {
+              void setActiveSession(id);
+              closePicker(sessionId);
+            } else {
+              allowPickerRetry();
+              addToast(sessionId, "Couldn't open that session", "error");
+            }
           }}
         />
       )}
@@ -190,25 +379,37 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           enabledIds={picker.enabledIds}
           onClose={() => closePicker(sessionId)}
           onApply={async (enabledIds, persist) => {
-            const observation = requirePickerObservation();
-            const command = persist ? "/models save" : "/models apply";
-            const encodedIds = enabledIds === null ? "" : ` --json ${JSON.stringify(enabledIds)}`;
-            const receipt = await dispatchSessionIntent(
-              sessionId,
-              {
-                kind: "invokeCommand",
-                text: `${command}${encodedIds}`,
-                editorRevision:
-                  useSessionsStore.getState().sessions.get(sessionId)?.editorRevision ?? 0,
-              },
-              observation,
-            );
-            if (!pickerRuntimeIsCurrent()) return;
-            if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
-              addToast(sessionId, "Failed to request model scope update", "error");
-              return;
+            if (!beginPickerAction()) return;
+            try {
+              const receipt = await dispatchSessionIntent(
+                sessionId,
+                {
+                  kind: "pickerAction",
+                  selection: { action: "setScopedModels", enabledIds, persist },
+                  surface: picker.sourceSurface ?? "composer",
+                },
+                requirePickerObservation(),
+              );
+              if (!pickerRuntimeIsCurrent()) return;
+              if (receipt.status === "not_admitted") {
+                allowPickerRetry();
+                addToast(sessionId, "Failed to request model scope update", "error");
+                return;
+              }
+              if (receipt.status === "delivery_unknown") {
+                addToast(
+                  sessionId,
+                  "Model-scope delivery is unknown; verify before retrying",
+                  "error",
+                );
+                return;
+              }
+              closePicker(sessionId);
+            } catch {
+              if (pickerRuntimeIsCurrent()) {
+                addToast(sessionId, "Failed to request model scope update", "error");
+              }
             }
-            closePicker(sessionId);
           }}
         />
       )}
@@ -217,18 +418,27 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           providers={picker.providers}
           onClose={() => closePicker(sessionId)}
           onPick={async (provider, authType) => {
-            const observation = requirePickerObservation();
-            const receipt = await dispatchSessionIntent(
-              sessionId,
-              { kind: "loginProvider", providerId: provider.id, authType },
-              observation,
-            );
-            if (!pickerRuntimeIsCurrent()) return;
-            if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
-              addToast(sessionId, "Couldn't start sign-in", "error");
-              return;
+            if (!beginPickerAction()) return;
+            try {
+              const receipt = await dispatchSessionIntent(
+                sessionId,
+                { kind: "loginProvider", providerId: provider.id, authType },
+                requirePickerObservation(),
+              );
+              if (!pickerRuntimeIsCurrent()) return;
+              if (receipt.status === "not_admitted") {
+                allowPickerRetry();
+                addToast(sessionId, "Couldn't start sign-in", "error");
+                return;
+              }
+              if (receipt.status === "delivery_unknown") {
+                addToast(sessionId, "Sign-in delivery is unknown; verify before retrying", "error");
+                return;
+              }
+              closePicker(sessionId);
+            } catch {
+              if (pickerRuntimeIsCurrent()) addToast(sessionId, "Couldn't start sign-in", "error");
             }
-            closePicker(sessionId);
           }}
         />
       )}
@@ -237,23 +447,33 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           providers={picker.providers}
           onClose={() => closePicker(sessionId)}
           onPick={async (provider) => {
-            const observation = requirePickerObservation();
-            const receipt = await dispatchSessionIntent(
-              sessionId,
-              {
-                kind: "invokeCommand",
-                text: `/logout ${provider.id}`,
-                editorRevision:
-                  useSessionsStore.getState().sessions.get(sessionId)?.editorRevision ?? 0,
-              },
-              observation,
-            );
-            if (!pickerRuntimeIsCurrent()) return;
-            if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
-              addToast(sessionId, "Failed to request logout", "error");
-              return;
+            if (!beginPickerAction()) return;
+            try {
+              const receipt = await dispatchSessionIntent(
+                sessionId,
+                {
+                  kind: "pickerAction",
+                  selection: { action: "logoutProvider", providerId: provider.id },
+                  surface: picker.sourceSurface ?? "composer",
+                },
+                requirePickerObservation(),
+              );
+              if (!pickerRuntimeIsCurrent()) return;
+              if (receipt.status === "not_admitted") {
+                allowPickerRetry();
+                addToast(sessionId, "Failed to request logout", "error");
+                return;
+              }
+              if (receipt.status === "delivery_unknown") {
+                addToast(sessionId, "Logout delivery is unknown; verify before retrying", "error");
+                return;
+              }
+              closePicker(sessionId);
+            } catch {
+              if (pickerRuntimeIsCurrent()) {
+                addToast(sessionId, "Failed to request logout", "error");
+              }
             }
-            closePicker(sessionId);
           }}
         />
       )}
@@ -265,6 +485,9 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           savedDecision={picker.savedDecision}
           projectTrusted={picker.projectTrusted}
           options={picker.options}
+          beginAction={beginPickerAction}
+          allowRetry={allowPickerRetry}
+          isPickerCurrent={pickerRuntimeIsCurrent}
           onClose={() => {
             if (pickerSlotIsCurrent()) closePicker(sessionId);
           }}
@@ -291,7 +514,7 @@ function ModelPicker({
   sessionId: SessionId;
   search?: string;
   onClose: () => void;
-  onPick: (model: ModelInfo) => void;
+  onPick: (model: ModelInfo, persist?: boolean) => void;
 }): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
   const refreshModelsSilently = useSessionsStore((s) => s.refreshModelsSilently);
@@ -375,10 +598,22 @@ function ModelPicker({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
+            if (
+              e.ctrlKey &&
+              !e.metaKey &&
+              !e.altKey &&
+              !e.shiftKey &&
+              e.key.toLowerCase() === "s"
+            ) {
+              e.preventDefault();
+              const model = filtered[highlightedIndex];
+              if (model) onPick(model, true);
+            } else if (e.key === "ArrowDown") {
               e.preventDefault();
               highlightSourceRef.current = "keyboard";
-              setHighlightedIndex((i) => Math.min(i + 1, filtered.length - 1));
+              setHighlightedIndex((i) =>
+                filtered.length === 0 ? 0 : Math.min(i + 1, filtered.length - 1),
+              );
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
               highlightSourceRef.current = "keyboard";
@@ -428,7 +663,7 @@ function ModelPicker({
                     aria-selected={selected}
                   >
                     <span className="picker__selected-mark" aria-hidden>
-                      {selected ? "✓" : ""}
+                      {selected ? <IconCheck /> : null}
                     </span>
                     <span className="picker__item-name" title={label}>
                       {label}
@@ -442,6 +677,7 @@ function ModelPicker({
         )}
       </ScrollFadeFrame>
       <div className="picker__footer">
+        <span className="picker__key-hint">Enter selects · Ctrl+S sets default</span>
         {refreshFailed && (
           <button
             type="button"
@@ -451,6 +687,153 @@ function ModelPicker({
             {availableModels.length === 0 ? "Try again" : "Refresh models"}
           </button>
         )}
+        <button type="button" className="picker__btn picker__btn--cancel" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── /thinking picker ───────────────────────────────────────────────────
+
+const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
+  off: "No reasoning",
+  minimal: "Very brief reasoning (~1k tokens)",
+  low: "Light reasoning (~2k tokens)",
+  medium: "Moderate reasoning (~8k tokens)",
+  high: "Deep reasoning (~16k tokens)",
+  xhigh: "Extra-high reasoning (~32k tokens)",
+  max: "Maximum reasoning",
+};
+
+function ThinkingPicker({
+  levels,
+  currentLevel,
+  search,
+  onClose,
+  onInvalidSearch,
+  onPick,
+}: {
+  levels: readonly ThinkingLevel[];
+  currentLevel: ThinkingLevel;
+  search?: string;
+  onClose: () => void;
+  onInvalidSearch: (search: string, levels: readonly ThinkingLevel[]) => void;
+  onPick: (level: ThinkingLevel, persist?: boolean) => void;
+}): React.ReactElement {
+  const [query, setQuery] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(() => {
+    const currentIndex = levels.indexOf(currentLevel);
+    return currentIndex < 0 ? 0 : currentIndex;
+  });
+  const searchRef = useRef<HTMLInputElement>(null);
+  const exactSearchHandled = useRef(false);
+  const filtered = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return [...levels];
+    return levels.filter((level) =>
+      `${level} ${THINKING_LEVEL_DESCRIPTIONS[level]}`.toLowerCase().includes(normalized),
+    );
+  }, [levels, query]);
+
+  useEffect(() => {
+    if (search === undefined || exactSearchHandled.current) return;
+    exactSearchHandled.current = true;
+    const normalized = search.trim().toLowerCase();
+    const exact = levels.find((level) => level.toLowerCase() === normalized);
+    if (exact) onPick(exact, false);
+    else onInvalidSearch(search, levels);
+  }, [levels, onInvalidSearch, onPick, search]);
+
+  useEffect(() => {
+    if (search === undefined) setTimeout(() => searchRef.current?.focus(), 10);
+  }, [search]);
+
+  useEffect(() => {
+    setHighlightedIndex((index) =>
+      filtered.length === 0 ? 0 : Math.min(index, filtered.length - 1),
+    );
+  }, [filtered.length]);
+
+  if (search !== undefined) return <div className="picker picker--thinking" />;
+
+  const activate = (persist: boolean): void => {
+    const level = filtered[highlightedIndex];
+    if (level) onPick(level, persist);
+  };
+
+  return (
+    <div className="picker picker--thinking">
+      <div className="picker__title">Thinking level</div>
+      <div className="picker__search">
+        <input
+          ref={searchRef}
+          className="picker__search-input"
+          placeholder="Search thinking levels…"
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setHighlightedIndex(0);
+          }}
+          onKeyDown={(event) => {
+            if (
+              event.ctrlKey &&
+              !event.metaKey &&
+              !event.altKey &&
+              !event.shiftKey &&
+              event.key.toLowerCase() === "s"
+            ) {
+              event.preventDefault();
+              activate(true);
+            } else if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setHighlightedIndex((index) =>
+                filtered.length === 0 ? 0 : Math.min(index + 1, filtered.length - 1),
+              );
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setHighlightedIndex((index) => Math.max(index - 1, 0));
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              activate(false);
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              onClose();
+            }
+          }}
+        />
+      </div>
+      <ScrollFadeFrame
+        frameClassName="picker__list-frame"
+        className="picker__list"
+        role="listbox"
+        fill
+      >
+        {filtered.length === 0 && <div className="picker__empty">No thinking levels found</div>}
+        {filtered.map((level, index) => {
+          const selected = level === currentLevel;
+          return (
+            <button
+              type="button"
+              key={level}
+              className={`picker__item ${index === highlightedIndex ? "picker__item--highlighted" : ""} ${selected ? "picker__item--selected" : ""}`}
+              onClick={() => onPick(level, false)}
+              onMouseEnter={() => setHighlightedIndex(index)}
+              role="option"
+              aria-selected={selected}
+            >
+              <span className="picker__selected-mark" aria-hidden>
+                {selected ? <IconCheck /> : null}
+              </span>
+              <span className="picker__item-name">{level}</span>
+              <span className="picker__item-meta">{THINKING_LEVEL_DESCRIPTIONS[level]}</span>
+            </button>
+          );
+        })}
+      </ScrollFadeFrame>
+      <div className="picker__footer">
+        <span className="picker__key-hint">Enter selects · Ctrl+S sets default</span>
         <button type="button" className="picker__btn picker__btn--cancel" onClick={onClose}>
           Cancel
         </button>
@@ -1189,6 +1572,9 @@ function TrustPicker({
   savedDecision,
   projectTrusted,
   options,
+  beginAction,
+  allowRetry,
+  isPickerCurrent,
   onClose,
 }: {
   sessionId: SessionId;
@@ -1197,6 +1583,9 @@ function TrustPicker({
   savedDecision: boolean | null;
   projectTrusted: boolean;
   options: ProjectTrustOption[];
+  beginAction: () => boolean;
+  allowRetry: () => void;
+  isPickerCurrent: () => boolean;
   onClose: () => void;
 }): React.ReactElement {
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -1236,6 +1625,7 @@ function TrustPicker({
         );
         return;
       }
+      if (!beginAction()) return;
       setSaving(true);
       const semantic = useSessionsStore.getState().sessions.get(sessionId)
         ?.authorityProjection?.semantic;
@@ -1246,31 +1636,35 @@ function TrustPicker({
           ? semantic.cursor
           : undefined;
       const observation = { owner: runtime, ...(cursor ? { cursor } : {}) };
-      const isCurrent = () => {
-        const session = useSessionsStore.getState().sessions.get(sessionId);
-        return sessionMatchesRuntime(session, runtime);
-      };
       try {
         const receipt = await dispatchSessionIntent(
           sessionId,
           { kind: "setTrust", optionLabel: option.label },
           observation,
         );
-        if (!isCurrent()) return;
-        if (receipt.status === "not_admitted" || receipt.status === "delivery_unknown") {
+        if (!isPickerCurrent()) return;
+        if (receipt.status === "not_admitted") {
           addToast(sessionId, "Failed to request trust update", "error");
+          allowRetry();
           setSaving(false);
           return;
         }
+        if (receipt.status === "delivery_unknown") {
+          addToast(sessionId, "Trust-update delivery is unknown; verify before retrying", "error");
+          return;
+        }
         const outcome = await waitForTrustOutcome(sessionId, receipt.intentId, runtime);
-        if (!isCurrent()) return;
+        if (!isPickerCurrent()) return;
         if (
           outcome.state !== "completed" ||
           outcome.result?.persisted !== true ||
           outcome.result.trusted !== option.trusted
         ) {
           addToast(sessionId, outcome.error ?? "The trust choice could not be saved.", "error");
-          setSaving(false);
+          if (outcome.state === "rejected") {
+            allowRetry();
+            setSaving(false);
+          }
           return;
         }
         // Trust changes take effect through the same owner-bound replacement
@@ -1279,6 +1673,7 @@ function TrustPicker({
         // rather than treating that expected advance as a stale selection.
         const currentSemantic = useSessionsStore.getState().sessions.get(sessionId)
           ?.authorityProjection?.semantic;
+        if (!isPickerCurrent()) return;
         const reloadObservation = {
           owner: runtime,
           ...(currentSemantic?.state === "following" &&
@@ -1301,17 +1696,26 @@ function TrustPicker({
             "Trust was requested; it applies on the next session start.",
             "warning",
           );
-          setSaving(false);
+          onClose();
           return;
         }
         onClose();
       } catch (err) {
-        if (!isCurrent()) return;
+        if (!isPickerCurrent()) return;
         addToast(sessionId, err instanceof Error ? err.message : String(err), "error");
-        setSaving(false);
       }
     },
-    [options, saving, sessionId, addToast, onClose, runtime],
+    [
+      options,
+      saving,
+      beginAction,
+      sessionId,
+      addToast,
+      allowRetry,
+      isPickerCurrent,
+      onClose,
+      runtime,
+    ],
   );
 
   return (
@@ -1376,12 +1780,7 @@ function TrustPicker({
         ))}
       </ScrollFadeFrame>
       <div className="picker__footer">
-        <button
-          type="button"
-          className="picker__btn picker__btn--cancel"
-          onClick={onClose}
-          disabled={saving}
-        >
+        <button type="button" className="picker__btn picker__btn--cancel" onClick={onClose}>
           Cancel
         </button>
       </div>

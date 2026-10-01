@@ -53,7 +53,7 @@ import {
   canonicalizeConfinedSessionStartEvent,
 } from "./session-lineage.mjs";
 import { createShellPtyController } from "./shell-pty.mjs";
-import { createDialogResolver, createUIContext } from "./ui-context.mjs";
+import { applyTuiRuntimeSettings, createDialogResolver, createUIContext } from "./ui-context.mjs";
 
 // Pi's CLI sets this marker for every command and tool subprocess. The SDK
 // host is an equivalent entry point, so establish the same public contract
@@ -76,6 +76,8 @@ let publishSnapshot = null;
 let requestAuthorityAttach = null;
 let requestLifecyclePermit = null;
 let applyEditorPatch = null;
+let consumeEditorSource = null;
+let readEditorCheckpoint = null;
 let runtimeAuthority = null;
 let interruptActiveOperation = null;
 let sendShellInput = null;
@@ -93,7 +95,7 @@ let dialogResolver = null;
 // would be an untyped, collision-prone bus).
 let unifiedTuiController = null;
 let panelCounter = 0;
-const panels = new Map(); // panelId -> { inputHandler, resizeHandler }
+const panels = new Map(); // panelId -> { inputHandler, inputFence, resizeHandler }
 const panelReconstruction = createPanelReconstruction();
 const hostInstanceId = crypto.randomUUID();
 let transportSequence = 0;
@@ -187,6 +189,12 @@ function sendControl(payload) {
 
 let extensionUiRequestSequence = 0;
 function sendUiRequest(req) {
+  if (req?.type === "editor_source_cleared") {
+    // This is a lifecycle fence, not extension presentation. Keep it on the
+    // ordinary owner-sequenced host channel without fabricating a UI request
+    // id or retaining it in the extension-UI plane.
+    return send(req);
+  }
   // Extension UI has one canonical presentation route once authority exists.
   // The compatibility message remains available to older renderers but is not
   // used to restore a following authority projection.
@@ -227,6 +235,7 @@ const panelBridge = {
     const panelId = ++panelCounter;
     panels.set(panelId, {
       inputHandler: null,
+      inputFence: null,
       inputSequence: 0,
       overlay,
       unified: unified === true,
@@ -310,6 +319,16 @@ const panelBridge = {
   clearInputHandler(panelId) {
     const p = panels.get(panelId);
     if (p) p.inputHandler = null;
+  },
+
+  setInputFence(panelId, fence) {
+    const p = panels.get(panelId);
+    if (p) p.inputFence = fence;
+  },
+
+  clearInputFence(panelId) {
+    const p = panels.get(panelId);
+    if (p) p.inputFence = null;
   },
 
   feedInput(panelId, revision, sequence, data) {
@@ -402,8 +421,13 @@ const panelBridge = {
       renderRevision: baseline.revision,
     });
     send({ type: "panel_data", panelId, data: "\u001bc" });
-    p.resizeHandler?.(cols, rows, true);
-    const keyframe = panelReconstruction.seal(panelId);
+    try {
+      p.resizeHandler?.(cols, rows, true);
+    } catch {
+      // Publish the bounded reset baseline below. A rendering exception must
+      // not leave this panel's input authority permanently fenced.
+    }
+    const keyframe = panelReconstruction.seal(panelId) ?? panelReconstruction.sealFallback(panelId);
     if (keyframe) {
       runtimeAuthority?.publishPanel?.((cursor, owner) => ({
         kind: "keyframe",
@@ -430,10 +454,19 @@ const panelBridge = {
   },
 
   fenceAll() {
+    let fenceError;
     for (const [panelId, panel] of panels) {
+      try {
+        panel.inputFence?.();
+      } catch (error) {
+        // Fence every panel before refusing the detach acknowledgement. Main
+        // can then retry or retire the host without leaving sibling panels live.
+        fenceError ??= error;
+      }
       panel.inputSequence = 0;
       panelReconstruction.requireRepaint(panelId);
     }
+    if (fenceError) throw fenceError;
   },
 };
 
@@ -559,6 +592,14 @@ async function handleInit(msg) {
       }
     }
     const agentDir = pi.getAgentDir();
+    // pi-tui 0.85 no longer reads cursor/shrink environment defaults inside
+    // TuiBase. Resolve the public Pi settings once per runtime factory and keep
+    // this object stable so the shared UI context sees rebind updates.
+    const tuiConfig = {
+      showHardwareCursor: false,
+      clearOnShrink: false,
+      logDirectory: agentDir,
+    };
 
     // Step 3: Dialog resolver — created BEFORE the runtime because the
     // project-trust prompt fires DURING runtime creation (inside
@@ -642,6 +683,11 @@ async function handleInit(msg) {
           : {}),
         resourceLoaderReloadOptions: { resolveProjectTrust: resolveTrust },
       });
+      // Terminal image capability overrides are settings-scoped in Pi 0.84.4+
+      // and pi-tui exposes a public process-global setter. Apply them on every
+      // factory invocation so session replacement/rebind cannot retain stale
+      // capability policy from the prior runtime.
+      applyTuiRuntimeSettings(piTui, services.settingsManager, ad, tuiConfig);
       // Preserve explicit model/thinking metadata even when the active branch
       // has no messages. Pi's ordinary SDK resume path gates those values on
       // message count, which would let another session's global defaults leak
@@ -709,6 +755,7 @@ async function handleInit(msg) {
       sendToMain: sendUiRequest,
       trackBlockingUi: (promise) => lifecycleUiTracker.track(promise),
       tuiModules,
+      tuiConfig,
     });
     unifiedTuiController = unifiedCtrl;
     for (const diagnostic of capabilityDiagnostics) uiState.addCapabilityDiagnostic(diagnostic);
@@ -730,6 +777,7 @@ async function handleInit(msg) {
       requestAuthorityAttach: attachAuthority,
       requestLifecyclePermit: lifecyclePermit,
       applyEditorPatch: patchEditor,
+      consumeEditorSource: consumeSource,
       authority,
       bindExtensions: bindExt,
       interruptActiveOperation: interrupt,
@@ -801,6 +849,8 @@ async function handleInit(msg) {
     requestAuthorityAttach = attachAuthority;
     requestLifecyclePermit = lifecyclePermit;
     applyEditorPatch = patchEditor;
+    consumeEditorSource = consumeSource;
+    readEditorCheckpoint = uiState.panelInputEditorCheckpoint;
     interruptActiveOperation = interrupt;
     sendShellInput = inputShell;
     resizeShell = resizeShellPty;
@@ -987,6 +1037,13 @@ process.on("message", async (msg) => {
         break;
       }
 
+      case "consume_editor_source": {
+        const result = consumeEditorSource?.(msg.request);
+        publishSnapshot?.();
+        send({ type: "response", id: msg.id, success: true, data: result });
+        break;
+      }
+
       case "prepare_close": {
         const checkpoint = runtimeAuthority?.prepareClose(msg.force === true);
         send({ type: "response", id: msg.id, success: true, data: checkpoint });
@@ -1029,8 +1086,25 @@ process.on("message", async (msg) => {
 
       case "panel_input": {
         const result = panelBridge.feedInput(msg.panelId, msg.revision, msg.sequence, msg.data);
-        if (result.acknowledgedThrough === msg.sequence) runtimeAuthority?.noteMutation();
-        send({ type: "response", id: msg.id, success: true, data: result });
+        if (result.acknowledgedThrough === msg.sequence) {
+          runtimeAuthority?.noteMutation();
+          // ui-context's pre-editor listener mirrors the public Editor in a
+          // microtask after focused input handling. Do not acknowledge bytes
+          // with a pre-key recovery checkpoint: a host crash immediately after
+          // that acknowledgement must recover the exact visible draft/clear.
+          await Promise.resolve();
+        }
+        send({
+          type: "response",
+          id: msg.id,
+          success: true,
+          data: {
+            ...result,
+            ...(result.acknowledgedThrough === msg.sequence && readEditorCheckpoint
+              ? { editorCheckpoint: readEditorCheckpoint() }
+              : {}),
+          },
+        });
         break;
       }
 
@@ -1044,7 +1118,14 @@ process.on("message", async (msg) => {
         // following sequenced keyframe is the only authority transition that
         // enables renderer input.
         const keyframe = panelReconstruction.pendingKeyframe(msg.panelId);
-        const result = { acknowledged: panelReconstruction.acknowledge(msg.panelId, msg.revision) };
+        const result = {
+          acknowledged: panelReconstruction.acknowledge(msg.panelId, msg.revision),
+          inputAcknowledgedThrough: panel?.inputSequence ?? 0,
+        };
+        // Main must reconcile its cumulative input gate before the following
+        // keyframe can reopen renderer input. Sending this correlated response
+        // first preserves that order across the two process boundaries.
+        send({ type: "response", id: msg.id, success: true, data: result });
         if (result.acknowledged) {
           if (panel && keyframe) {
             runtimeAuthority?.publishPanel?.((cursor, owner) => ({
@@ -1068,7 +1149,6 @@ process.on("message", async (msg) => {
             }));
           }
         }
-        send({ type: "response", id: msg.id, success: true, data: result });
         if (
           !result.acknowledged &&
           panel &&
@@ -1129,8 +1209,9 @@ process.on("message", async (msg) => {
       }
 
       // Unified-TUI editor submit: the renderer ran the submit pipeline and
-      // reports the outcome so the host can restore the editor text on a bail
-      // (e.g. no-model guard). Resolved by ui-context's resolveUnifiedSubmit.
+      // reports the outcome so the host can retire correlated dispatch
+      // custody. ui-context committed the visible clear before the request;
+      // this response never restores editor presentation.
       case "unified_submit_response":
         unifiedTuiController?.resolveSubmit(msg.id, {
           ok: msg.ok,
@@ -1145,10 +1226,15 @@ process.on("message", async (msg) => {
       // ui-context's resolveClipboardImage, which writes a temp file and
       // inserts the path at the cursor (pi parity).
       case "clipboard_read_image_response":
-        unifiedTuiController?.resolveClipboardImage(msg.id, {
-          bytes: msg.bytes,
-          mimeType: msg.mimeType,
-        });
+        if (
+          unifiedTuiController?.resolveClipboardImage(msg.id, {
+            bytes: msg.bytes,
+            mimeType: msg.mimeType,
+          }) === true
+        ) {
+          runtimeAuthority?.noteMutation();
+          publishSnapshot?.();
+        }
         break;
 
       default:

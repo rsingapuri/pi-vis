@@ -69,6 +69,22 @@ export function createPanelReconstruction({ maxRepaintBytes = DEFAULT_MAX_REPAIN
     return pendingKeyframe(panelId);
   }
 
+  /**
+   * Fail-open presentation baseline for an overflowing/throwing forced render.
+   * A terminal reset is complete and bounded, so it can be acknowledged even
+   * when the intended framebuffer could not be captured. Later deltas rebuild
+   * presentation without leaving keyboard input fenced forever.
+   */
+  function sealFallback(panelId, ansi = "\u001bc") {
+    const panel = panels.get(panelId);
+    if (!panel) return undefined;
+    panel.repaintAnsi = ansi;
+    panel.repaintBytes = Buffer.byteLength(ansi, "utf8");
+    panel.overflowed = false;
+    panel.sealed = true;
+    return pendingKeyframe(panelId);
+  }
+
   /** Current bounded image, including deltas emitted while ack is in flight. */
   function keyframe(panelId) {
     return pendingKeyframe(panelId);
@@ -110,6 +126,7 @@ export function createPanelReconstruction({ maxRepaintBytes = DEFAULT_MAX_REPAIN
     requireRepaint,
     write,
     seal,
+    sealFallback,
     keyframe,
     pendingKeyframe,
     acknowledge,

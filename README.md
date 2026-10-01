@@ -16,7 +16,8 @@ extensions.
 - **Worktree per session.** Spin up an isolated git worktree on a fresh branch
   before sending your first prompt, so parallel agents never step on each other or
   your working tree. No manual `git worktree` setup.
-- **Full extension compatibility.** Every session runs the real `pi` binary, so
+- **Full extension compatibility.** Every session runs the bundled, unmodified
+  Pi runtime, so
   your extensions, skills, prompts, slash commands, and compaction behave exactly
   as they do in the terminal — including their dialogs, toasts, status bar, and
   widgets.
@@ -41,11 +42,9 @@ Builds are **Apple Silicon (arm64) only** — Intel Macs need a [source build](#
 
 ## Requirements
 
-- Node.js 20+
-- pi coding agent CLI installed globally:
-  ```
-  npm i -g --ignore-scripts @earendil-works/pi-coding-agent
-  ```
+- The packaged app has no Node.js or global Pi CLI prerequisite; it ships and
+  exclusively uses its pinned Pi runtime.
+- Building from source requires Node.js 22.19 or newer.
 
 ## Setup
 

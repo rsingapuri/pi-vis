@@ -1,3 +1,4 @@
+import { normalizeSafeExternalWebUrl } from "@shared/external-links.js";
 import type React from "react";
 import {
   Children,
@@ -123,6 +124,46 @@ function markdownUrlTransform(url: string): string {
   return defaultUrlTransform(url);
 }
 
+function MarkdownExternalLink({
+  href,
+  children,
+  ...props
+}: React.AnchorHTMLAttributes<HTMLAnchorElement>): React.ReactElement {
+  const safeHref = normalizeSafeExternalWebUrl(href);
+  if (!safeHref) {
+    // ReactMarkdown strips dangerous schemes to an empty href. Rendering an
+    // empty anchor would turn a click into a same-document reload, while
+    // preserving file:/data:/custom schemes could hand an untrusted protocol
+    // to the OS. Keep the authored label visible but non-interactive.
+    return <span className={props.className}>{children}</span>;
+  }
+
+  const openExternal = (event: React.MouseEvent<HTMLAnchorElement>): void => {
+    // Primary clicks (including keyboard activation and modified clicks) and
+    // middle clicks all have one safe destination: the user's system browser.
+    // Right click remains available for the native link context menu.
+    if (event.button !== 0 && event.button !== 1) return;
+    event.preventDefault();
+    void window.pivis.invoke("app.openExternal", { url: safeHref }).catch(() => {
+      // Main revalidates the URL. A rejection is intentionally inert: never
+      // fall back to navigating the privileged Electron renderer.
+    });
+  };
+
+  return (
+    <a
+      {...props}
+      href={safeHref}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={openExternal}
+      onAuxClick={openExternal}
+    >
+      {children}
+    </a>
+  );
+}
+
 type MarkdownImageProps = React.ImgHTMLAttributes<HTMLImageElement> & {
   previewSrc?: string | undefined;
 };
@@ -166,9 +207,9 @@ function LinkedMarkdownImage({
   const { previewSrc: _previewSrc, className, ...imgProps } = image;
   const mergedClassName = className ? `markdown-image ${className}` : "markdown-image";
   return (
-    <a {...linkProps} className={mergedClassName}>
+    <MarkdownExternalLink {...linkProps} className={mergedClassName}>
       <img {...imgProps} alt={image.alt ?? ""} className="markdown-image__img" />
-    </a>
+    </MarkdownExternalLink>
   );
 }
 
@@ -223,9 +264,9 @@ const components: Components = {
       }
     }
     return (
-      <a {...props} href={href}>
+      <MarkdownExternalLink {...props} href={href}>
         {children}
-      </a>
+      </MarkdownExternalLink>
     );
   },
   img: ({ node: _node, ...props }) => <MarkdownImagePreview {...props} />,

@@ -306,7 +306,14 @@ export function setupCommandBridge({
     catalogSnapshot: () => ({}),
     editorSnapshot: () => ({ revision: 0, text: "" }),
     acceptEditorSubmission: () => false,
+    inspectShellEditorSubmission: () => ({ accepted: false }),
     acceptShellEditorSubmission: () => false,
+    publishShellEditorSubmission: () => false,
+    rollbackShellEditorSubmission: () => false,
+    consumeEditorSource: () => ({
+      accepted: false,
+      editor: { revision: 0, text: "", attachments: [] },
+    }),
     applyEditorPatch: () => ({ accepted: false }),
   },
 }) {
@@ -388,9 +395,32 @@ export function setupCommandBridge({
       pendingDialogs: uiState.pendingDialogCount?.() ?? 0,
     }),
     getEditor: () => uiState.editorSnapshot(),
+    inspectEditorSubmission: (request) => {
+      if (typeof uiState.inspectEditorSubmission === "function") {
+        return uiState.inspectEditorSubmission(request);
+      }
+      if (request.surface === "unified") return { accepted: false };
+      const editor = uiState.editorSnapshot();
+      return request.editorRevision === editor.revision
+        ? { accepted: true, text: editor.text }
+        : { accepted: false };
+    },
     acceptEditorSubmission: (request) => uiState.acceptEditorSubmission?.(request) ?? false,
+    inspectShellEditorSubmission: (request) => {
+      if (typeof uiState.inspectShellEditorSubmission === "function") {
+        return uiState.inspectShellEditorSubmission(request);
+      }
+      const editor = uiState.editorSnapshot();
+      return {
+        accepted: request.editorRevision === editor.revision && request.editorText === editor.text,
+      };
+    },
     acceptShellEditorSubmission: (request) =>
       uiState.acceptShellEditorSubmission?.(request) ?? false,
+    publishShellEditorSubmission: (request) =>
+      uiState.publishShellEditorSubmission?.(request) ?? false,
+    rollbackShellEditorSubmission: (request) =>
+      uiState.rollbackShellEditorSubmission?.(request) ?? false,
     onAdmissionStuck: ({ intentId }) => {
       send({
         type: "fatal_transition_error",
@@ -1610,6 +1640,7 @@ export function setupCommandBridge({
     }
     const oldSession = _session;
     const transitionId = authority.transitionId;
+    let editorSourceConsumed = reloadEditorCommand?.surface === "unified";
     try {
       await requestReplacementPermit(
         transitionId,
@@ -1617,25 +1648,6 @@ export function setupCommandBridge({
         "reload",
         authority.presentedSessionFile,
       );
-      // Reload retains the AgentSession and therefore its host-owned editor.
-      // Consume only the exact Composer command that its intent identified.
-      // This child-owned acknowledgement closes the renderer-patch/reload race
-      // while preserving attachments, extension/picker drafts, newer typing,
-      // and conflict custody. It follows the main permit so a denied
-      // replacement leaves a never-dispatched command in editor custody.
-      const editor = uiState.editorSnapshot();
-      if (
-        reloadEditorCommand &&
-        editor.revision === reloadEditorCommand.editorRevision &&
-        editor.text === reloadEditorCommand.editorText &&
-        editor.conflictText === undefined
-      ) {
-        uiState.acceptEditorSubmission({
-          intentId: reloadEditorCommand.intentId,
-          editorRevision: reloadEditorCommand.editorRevision,
-          text: reloadEditorCommand.editorText,
-        });
-      }
       await runLifecycle(
         () =>
           _session.reload({
@@ -1657,8 +1669,30 @@ export function setupCommandBridge({
         "reload",
         authority.presentedSessionFile,
       );
+      // Reload retains the AgentSession and therefore its host-owned editor.
+      // Consume the exact native command only after both replacement permits
+      // and the reload itself succeeded. A refusal/failure before this point
+      // leaves the still-visible Composer source in custody. Unified dispatch
+      // was already cleared and preclaimed at its onSubmit boundary.
+      const editor = uiState.editorSnapshot();
+      if (
+        reloadEditorCommand &&
+        reloadEditorCommand.surface !== "unified" &&
+        editor.revision === reloadEditorCommand.editorRevision &&
+        editor.text === reloadEditorCommand.editorText
+      ) {
+        editorSourceConsumed =
+          uiState.acceptEditorSubmission({
+            intentId: reloadEditorCommand.intentId,
+            editorRevision: reloadEditorCommand.editorRevision,
+            text: reloadEditorCommand.editorText,
+            inputKind: "slash_command",
+          }) === true;
+      }
       authority.commitTransition();
+      return { editorSourceConsumed };
     } catch (err) {
+      if (err && typeof err === "object") err.editorSourceConsumed = editorSourceConsumed;
       if (!err?.lifecycleTimeout && !authority.transitionBoundaryCrossed) {
         authority.cancelTransition(oldSession);
       } else {
@@ -1682,14 +1716,6 @@ export function setupCommandBridge({
     if (!match) return { handled: false };
     const [, name, rawArgs = ""] = match;
     const args = rawArgs.trim();
-    // Match renderer parsing: every discovered command shadows an app
-    // built-in. Prompt templates/skills and unknown names intentionally
-    // continue to prompt(), where Pi owns their parsing/expansion.
-    const isDiscovered =
-      _session.extensionRunner.getCommand(name) ||
-      _session.promptTemplates.some((template) => template.name === name) ||
-      _session.resourceLoader.getSkills().skills.some((skill) => `skill:${skill.name}` === name);
-    if (isDiscovered) return { handled: false };
     const words = args ? args.split(/\s+/) : [];
     const modelResponse = async () => {
       const models = await modelAccess(_session).getAvailable();
@@ -1709,7 +1735,8 @@ export function setupCommandBridge({
     };
     const replace = async (operation, details) => {
       const result = await runReplacement(operation, { ...details, initiatingIntentId: intentId });
-      return { response: { cancelled: result?.cancelled === true } };
+      const cancelled = result?.cancelled === true;
+      return { cancelled, response: { cancelled } };
     };
 
     switch (name) {
@@ -1899,6 +1926,21 @@ export function setupCommandBridge({
     }
   }
 
+  function commandForPickerAction(selection) {
+    switch (selection.action) {
+      case "fork":
+        return `/fork ${selection.entryId}`;
+      case "setScopedModels":
+        return `/models ${selection.persist ? "save" : "apply"}${
+          selection.enabledIds === null ? "" : ` --json ${JSON.stringify(selection.enabledIds)}`
+        }`;
+      case "logoutProvider":
+        return `/logout ${selection.providerId}`;
+      default:
+        throw new Error("Unknown picker action");
+    }
+  }
+
   async function dispatchIntent(envelope) {
     return authority.dispatchIntent(envelope, async (intent, owner) => {
       const submission = (text, overrides = {}) =>
@@ -2009,15 +2051,39 @@ export function setupCommandBridge({
           return submission(intent.text);
         case "manageQueue":
           return authority.manageQueue(intent);
+        case "pickerAction": {
+          // The source slash command was already durably cleared before the
+          // picker became visible. The typed selection can resolve only one
+          // bounded app-owned operation; discovered slash bindings never
+          // intercept it or claim the successor empty editor as their source.
+          const operation = async () => {
+            const resolved = await invokeBuiltinCommand(
+              commandForPickerAction(intent.selection),
+              envelope.intentId,
+            );
+            if (!resolved.handled) {
+              throw new Error("The selected picker action is no longer available");
+            }
+            return resolved.result;
+          };
+          return typeof runWithInvocationSurface === "function"
+            ? runWithInvocationSurface(intent.surface, operation)
+            : operation();
+        }
         case "invokeCommand": {
           if (typeof intent.text !== "string" || !intent.text.startsWith("/")) {
             throw new Error("invokeCommand requires slash command text");
           }
-          const resolved = await invokeBuiltinCommand(intent.text, envelope.intentId);
-          if (resolved.handled) return resolved.result;
-          // Only extension/template/skill commands (and intentional unknown
-          // slash prompt text) reach Pi's public prompt parser.
-          return submission(intent.text, { inputKind: "slash_command", images: [] });
+          const operation = async () => {
+            const resolved = await invokeBuiltinCommand(intent.text, envelope.intentId);
+            if (resolved.handled) return resolved.result;
+            // Only extension/template/skill commands (and intentional unknown
+            // slash prompt text) reach Pi's public prompt parser.
+            return submission(intent.text, { inputKind: "slash_command", images: [] });
+          };
+          return typeof runWithInvocationSurface === "function"
+            ? runWithInvocationSurface(intent.surface ?? "composer", operation)
+            : operation();
         }
         case "compact": {
           // beginCompactionInvocation opens the admission barrier inside this
@@ -2052,7 +2118,7 @@ export function setupCommandBridge({
             // calls startShell in a fresh serialized slot after revalidating
             // owner, editor, lifecycle, and foreground-work fences.
             shellPreparation: emitUserBashForSurface(
-              "composer",
+              intent.surface ?? "composer",
               intent.command,
               intent.excludeFromContext,
             ),
@@ -2191,11 +2257,11 @@ export function setupCommandBridge({
               candidate.provider === intent.provider && candidate.id === intent.modelId,
           );
           if (!model) throw new Error(`Model not found: ${intent.provider}/${intent.modelId}`);
-          await _session.setModel(model);
+          await _session.setModel(model, { persist: intent.persist === true });
           return { provider: model.provider ?? intent.provider, modelId: model.id };
         }
         case "setThinking":
-          _session.setThinkingLevel(intent.level);
+          _session.setThinkingLevel(intent.level, { persist: intent.persist === true });
           return { level: intent.level };
         case "rename":
           _session.setSessionName(intent.name);
@@ -2205,6 +2271,7 @@ export function setupCommandBridge({
             intentId: envelope.intentId,
             editorRevision: intent.editorRevision,
             editorText: intent.editorText,
+            surface: intent.surface,
           });
           return {
             successorIdentity: { hostInstanceId, sessionEpoch: authority.sessionEpoch },
@@ -2956,6 +3023,7 @@ export function setupCommandBridge({
       });
     },
     applyEditorPatch: (patch) => uiState.applyEditorPatch(patch),
+    consumeEditorSource: (request) => uiState.consumeEditorSource(request),
     bindExtensions: bindInitialExtensions,
     interruptActiveOperation,
     sendShellInput,

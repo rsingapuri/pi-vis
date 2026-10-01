@@ -96,7 +96,7 @@ describe("ImageLightbox", () => {
   it("renders ordinary markdown links without requiring an element child", () => {
     const { container, unmount } = mount(<Markdown>{"See [docs](https://example.com)."}</Markdown>);
 
-    const link = container.querySelector<HTMLAnchorElement>('a[href="https://example.com"]');
+    const link = container.querySelector<HTMLAnchorElement>('a[href="https://example.com/"]');
     expect(link?.textContent).toBe("docs");
     unmount();
   });

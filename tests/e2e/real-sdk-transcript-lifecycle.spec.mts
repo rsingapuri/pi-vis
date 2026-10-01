@@ -452,7 +452,7 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
     }
   });
 
-  test("streaming queue ownership restores directly to the composer on Escape and never dispatches twice", async () => {
+  test("streaming queue interruption drops submitted editor text and never dispatches twice", async () => {
     test.setTimeout(180_000);
     const provider = await createScriptedOpenAIProvider(
       [
@@ -471,7 +471,7 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
       providerBaseUrl: provider.baseUrl,
       // This extension has a passive input handler for ordinary unmarked text.
       // Pi's public `continue` result must retain exact queue ownership so the
-      // queued steer remains removable and restorable.
+      // queued steer remains exactly attributable when Escape clears it.
       extensionFiles: [LIFECYCLE_EXTENSION],
     });
     let launch: RealSdkLaunch | undefined;
@@ -521,33 +521,55 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
       expect(provider.requests).toHaveLength(1);
 
       await window.keyboard.press("Escape");
-      await expect(textarea).toHaveValue(queuedText, { timeout: 30_000 });
+      // Enter already cleared the submitted revision. Escape publishes outcome
+      // evidence, but must never put that source back into Composer.
+      await expect(textarea).toHaveValue("", { timeout: 30_000 });
       await expect(window.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
-      const restorationEvents = await window.evaluate(() => {
-        const target = window as unknown as { __e2ePublications: unknown[] };
-        const semanticSnapshots = target.__e2ePublications.flatMap((publication) => {
-          if (!publication || typeof publication !== "object") return [];
-          const payload = (publication as { payload?: unknown }).payload;
-          if (!payload || typeof payload !== "object") return [];
-          const snapshot = (payload as { terminalSnapshot?: unknown }).terminalSnapshot;
-          return snapshot ? [snapshot] : [];
+      const readRestorationEvents = () =>
+        window.evaluate(() => {
+          const target = window as unknown as { __e2ePublications: unknown[] };
+          const semanticSnapshots = target.__e2ePublications.flatMap((publication) => {
+            if (!publication || typeof publication !== "object") return [];
+            const payload = (publication as { payload?: unknown }).payload;
+            if (!payload || typeof payload !== "object") return [];
+            const snapshot = (payload as { terminalSnapshot?: unknown }).terminalSnapshot;
+            return snapshot ? [snapshot] : [];
+          });
+          const queueRecords = target.__e2ePublications.flatMap((publication) => {
+            if (!publication || typeof publication !== "object") return [];
+            const payload = (publication as { payload?: unknown }).payload;
+            if (!payload || typeof payload !== "object") return [];
+            const records = (payload as { records?: unknown }).records;
+            return Array.isArray(records)
+              ? records.filter(
+                  (record) =>
+                    !!record &&
+                    typeof record === "object" &&
+                    (record as { type?: unknown }).type === "queue_restoration",
+                )
+              : [];
+          });
+          return { queueRecords, semanticSnapshots };
         });
-        const queueRecords = target.__e2ePublications.flatMap((publication) => {
-          if (!publication || typeof publication !== "object") return [];
-          const payload = (publication as { payload?: unknown }).payload;
-          if (!payload || typeof payload !== "object") return [];
-          const records = (payload as { records?: unknown }).records;
-          return Array.isArray(records)
-            ? records.filter(
-                (record) =>
-                  !!record &&
-                  typeof record === "object" &&
-                  (record as { type?: unknown }).type === "queue_restoration",
-              )
-            : [];
-        });
-        return { queueRecords, semanticSnapshots };
-      });
+      await expect
+        .poll(
+          async () => {
+            const { queueRecords } = await readRestorationEvents();
+            return queueRecords.filter(
+              (record) =>
+                !!record &&
+                typeof record === "object" &&
+                Array.isArray((record as { steering?: unknown }).steering) &&
+                (record as { steering: unknown[] }).steering.length === 1 &&
+                (record as { steering: unknown[] }).steering[0] === queuedText &&
+                Array.isArray((record as { clearedIntentIds?: unknown }).clearedIntentIds) &&
+                (record as { clearedIntentIds: unknown[] }).clearedIntentIds.length > 0,
+            ).length;
+          },
+          { timeout: 30_000 },
+        )
+        .toBe(1);
+      const restorationEvents = await readRestorationEvents();
       if (
         !restorationEvents.queueRecords.some(
           (record) =>
@@ -557,7 +579,9 @@ test.describe("Pinned real Pi transcript lifecycle", () => {
             ((record as { clearedIntentIds: unknown[] }).clearedIntentIds.length ?? 0) > 0,
         )
       ) {
-        throw new Error(`Queue identity was not restored: ${JSON.stringify(restorationEvents)}`);
+        throw new Error(
+          `Cleared queue identity was not published: ${JSON.stringify(restorationEvents)}`,
+        );
       }
       expect(restorationEvents.queueRecords).toEqual([
         expect.objectContaining({

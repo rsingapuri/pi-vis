@@ -115,10 +115,16 @@ function outcomeFor(envelope: Envelope, patch: Partial<IntentOutcome> = {}): Int
       };
     case "invokeCommand":
       return { ...base, kind: "invokeCommand", result: {} };
+    case "pickerAction":
+      return {
+        ...base,
+        kind: "pickerAction",
+        result: { action: envelope.intent.selection.action },
+      };
     case "compact":
       return { ...base, kind: "compact", result: {} };
     case "reload":
-      return { ...base, kind: "reload", result: {} };
+      return { ...base, kind: "reload", result: { editorSourceConsumed: true } };
     case "export":
       return { ...base, kind: "export", result: { path: "/tmp/preview-export.html" } };
     case "runBash":
@@ -188,6 +194,23 @@ function installInvoke(invoke: ReturnType<typeof vi.fn>, autoOutcome = true): vo
       return Promise.resolve({
         accepted: true,
         revision: (payload as { revision: number }).revision,
+      });
+    }
+    if (channel === "session.consumeEditorSource") {
+      const request = payload as {
+        editorRevision: number;
+        consumeAttachments?: boolean;
+      };
+      return Promise.resolve({
+        accepted: true,
+        sourceRevision: request.editorRevision,
+        editor: {
+          revision: request.editorRevision + 1,
+          text: "",
+          attachments: request.consumeAttachments
+            ? []
+            : (useSessionsStore.getState().sessions.get(SID)?.editorAttachments ?? []),
+        },
       });
     }
     if (channel === "session.query") {
@@ -381,6 +404,165 @@ describe("Composer autocomplete and authority intents", () => {
     document.body.innerHTML = "";
   });
 
+  it("does not seed a Unified-submitted draft when Input mounts before receipt effects", async () => {
+    const store = useSessionsStore.getState();
+    setSessionField({ isNewPending: false });
+    store.setSessionDraft(SID, "alpha");
+    store.stageEditorAttachments(SID, [
+      { kind: "file", name: "alpha.txt", path: "/tmp/alpha.txt" },
+    ]);
+    store.handlePanelEvent(SID, {
+      type: "panel_open",
+      panelId: 81,
+      overlay: false,
+      unified: true,
+      hostInstanceId: OWNER.hostInstanceId,
+      sessionEpoch: OWNER.sessionEpoch,
+    });
+    store.setUnifiedPanelHidden(SID, true);
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { ok: true };
+    });
+
+    await act(async () => {
+      await store.handleUnifiedSubmitRequest(
+        SID,
+        "mount-before-effects",
+        "alpha",
+        0,
+        "intent-mount-before-effects",
+        OWNER.hostInstanceId,
+        OWNER.sessionEpoch,
+        [{ kind: "file", name: "alpha.txt", path: "/tmp/alpha.txt" }],
+        { revision: 1, text: "", attachments: [] },
+      );
+    });
+    const composer = mount();
+
+    expect(composer.textarea().value).toBe("");
+    expect(composer.container.querySelectorAll(".composer__attachment-item")).toHaveLength(0);
+    expect(useSessionsStore.getState().sessionDrafts.has(SID)).toBe(false);
+
+    type(composer.textarea(), "alpha");
+    await act(async () => {
+      await store.handleUnifiedSubmitRequest(
+        SID,
+        "mount-before-effects",
+        "alpha",
+        0,
+        "intent-mount-before-effects",
+        OWNER.hostInstanceId,
+        OWNER.sessionEpoch,
+        [],
+        { revision: 1, text: "", attachments: [] },
+      );
+    });
+    expect(composer.textarea().value).toBe("alpha");
+    expect(useSessionsStore.getState().sessionDrafts.get(SID)).toBe("alpha");
+    composer.unmount();
+  });
+
+  it("clears a stale Composer that mounted before the Unified source receipt", async () => {
+    const store = useSessionsStore.getState();
+    setSessionField({ isNewPending: false });
+    store.setSessionDraft(SID, "alpha");
+    store.handlePanelEvent(SID, {
+      type: "panel_open",
+      panelId: 82,
+      overlay: false,
+      unified: true,
+      hostInstanceId: OWNER.hostInstanceId,
+      sessionEpoch: OWNER.sessionEpoch,
+    });
+    store.setUnifiedPanelHidden(SID, true);
+    const composer = mount();
+    expect(composer.textarea().value).toBe("alpha");
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { ok: true };
+    });
+
+    await act(async () => {
+      await store.handleUnifiedSubmitRequest(
+        SID,
+        "receipt-after-mount",
+        "alpha",
+        0,
+        "intent-receipt-after-mount",
+        OWNER.hostInstanceId,
+        OWNER.sessionEpoch,
+        [],
+        { revision: 1, text: "", attachments: [] },
+      );
+    });
+    expect(composer.textarea().value).toBe("");
+
+    type(composer.textarea(), "alpha");
+    expect(composer.textarea().value).toBe("alpha");
+    expect(useSessionsStore.getState().sessionDrafts.get(SID)).toBe("alpha");
+    composer.unmount();
+  });
+
+  it("preserves an identical successor saved before a queued clear receipt mounts", async () => {
+    const store = useSessionsStore.getState();
+    setSessionField({ isNewPending: false });
+    store.setSessionDraft(SID, "alpha");
+    store.handlePanelEvent(SID, {
+      type: "panel_open",
+      panelId: 83,
+      overlay: false,
+      unified: true,
+      hostInstanceId: OWNER.hostInstanceId,
+      sessionEpoch: OWNER.sessionEpoch,
+    });
+    store.setUnifiedPanelHidden(SID, true);
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { ok: true };
+    });
+
+    await store.handleUnifiedSubmitRequest(
+      SID,
+      "receipt-before-identical-remount",
+      "alpha",
+      0,
+      "intent-receipt-before-identical-remount",
+      OWNER.hostInstanceId,
+      OWNER.sessionEpoch,
+      [],
+      { revision: 1, text: "", attachments: [] },
+    );
+    // This is a new renderer lineage even though its bytes are identical.
+    store.setSessionDraft(SID, "alpha");
+    const composer = mount();
+
+    expect(composer.textarea().value).toBe("alpha");
+    expect(useSessionsStore.getState().sessionDrafts.get(SID)).toBe("alpha");
+    composer.unmount();
+  });
+
+  it("allows a no-submit Extension round trip to submit natively through exact consume", async () => {
+    const store = useSessionsStore.getState();
+    setSessionField({ isNewPending: false });
+    store.setSessionDraft(SID, "alpha");
+    store.handlePanelEvent(SID, {
+      type: "panel_open",
+      panelId: 84,
+      overlay: false,
+      unified: true,
+      hostInstanceId: OWNER.hostInstanceId,
+      sessionEpoch: OWNER.sessionEpoch,
+    });
+    store.setUnifiedPanelHidden(SID, true);
+    const composer = mount();
+
+    key(composer.textarea(), "Enter");
+    await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
+    expect(intentCalls(invoke)[0]?.intent).toMatchObject({ kind: "submit", text: "alpha" });
+    composer.unmount();
+  });
+
   it("replaces the attachment affordance with the editable shell prefix", () => {
     const composer = mount();
     const textarea = composer.textarea();
@@ -515,6 +697,7 @@ describe("Composer autocomplete and authority intents", () => {
       excludeFromContext: false,
       editorRevision: expect.any(Number),
       editorText: "!pwd",
+      surface: "composer",
     });
     await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
     expect(invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch")).toHaveLength(
@@ -532,9 +715,9 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
-  it("keeps /tree invokable before initial authority attachment", async () => {
+  it("opens /tree before authority and keeps its source staged until a durable retry", async () => {
     setSessionField({ status: "starting", authorityProjection: undefined });
-    const composer = mount();
+    let composer = mount();
     expect(composer.textarea().disabled).toBe(false);
 
     type(composer.textarea(), "/tree");
@@ -542,12 +725,38 @@ describe("Composer autocomplete and authority intents", () => {
     await vi.waitFor(() =>
       expect(useTreeStore.getState()).toMatchObject({ open: true, sessionId: SID }),
     );
+    expect(composer.textarea().value).toBe("/tree");
+    expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("/tree");
     expect(intentCalls(invoke)).toHaveLength(0);
+    expect(invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch")).toHaveLength(
+      0,
+    );
+
+    composer.unmount();
+    const recovered = followingAuthority();
+    recovered.authoritativeSnapshot.editor = { revision: 1, text: "/tree", attachments: [] };
+    patchSession({
+      status: "ready",
+      editorRevision: 1,
+      editorInjection: { text: "/tree", nonce: 100, revision: 1 },
+      authorityProjection: recovered,
+    });
+    composer = mount();
+
+    expect(composer.textarea().value).toBe("/tree");
+    key(composer.textarea(), "Enter");
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "session.consumeEditorSource",
+        expect.objectContaining({ editorText: "/tree" }),
+      ),
+    );
+    expect(composer.textarea().value).toBe("");
     composer.unmount();
   });
 
   it.each(["compaction repair", "abort repair"])(
-    "keeps /tree invokable during %s while runtime-backed controls stay fenced",
+    "opens /tree during %s without clearing its undurable source",
     async () => {
       const projection = followingAuthority();
       setSessionField({
@@ -573,117 +782,57 @@ describe("Composer autocomplete and authority intents", () => {
       await vi.waitFor(() =>
         expect(useTreeStore.getState()).toMatchObject({ open: true, sessionId: SID }),
       );
-      expect(composer.textarea().value).toBe("");
+      expect(composer.textarea().value).toBe("/tree");
+      expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("/tree");
       expect(intentCalls(invoke)).toHaveLength(0);
       composer.unmount();
     },
   );
 
-  it("serializes an authoritative editor clear after opening /tree", async () => {
+  it("durably consumes the exact /tree source before opening its viewer", async () => {
     const composer = mount();
     type(composer.textarea(), "/tree");
     key(composer.textarea(), "Enter");
 
     await vi.waitFor(() => {
-      const patches = invoke.mock.calls
-        .filter(([channel]) => channel === "session.editorPatch")
-        .map(([, payload]) => (payload as { text: string }).text);
-      expect(patches).toContain("/tree");
-      expect(patches.at(-1)).toBe("");
-    });
-    expect(composer.textarea().value).toBe("");
-    composer.unmount();
-  });
-
-  it("rebases an unavailable /tree clear when authority recovers", async () => {
-    const prior = followingAuthority();
-    setSessionField({
-      authorityProjection: {
-        ...prior,
-        semantic: { state: "synchronizing", lastCursor: prior.semantic.cursor, reason: "gap" },
-        staleDiagnosticSnapshot: prior.authoritativeSnapshot,
-        authoritativeSnapshot: undefined,
-      },
-    });
-    const composer = mount();
-    type(composer.textarea(), "/tree");
-    key(composer.textarea(), "Enter");
-    expect(composer.textarea().value).toBe("");
-    expect(invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch")).toHaveLength(
-      0,
-    );
-
-    const recovered = followingAuthority();
-    recovered.authoritativeSnapshot.editor = { revision: 1, text: "/tree", attachments: [] };
-    patchSession({
-      editorRevision: 1,
-      editorInjection: { text: "/tree", nonce: 100, revision: 1 },
-      authorityProjection: recovered,
-    });
-
-    await vi.waitFor(() =>
       expect(invoke).toHaveBeenCalledWith(
-        "session.editorPatch",
-        expect.objectContaining({ text: "" }),
-      ),
-    );
+        "session.consumeEditorSource",
+        expect.objectContaining({ editorText: "/tree" }),
+      );
+      expect(useTreeStore.getState()).toMatchObject({ open: true, sessionId: SID });
+    });
     expect(composer.textarea().value).toBe("");
     composer.unmount();
   });
 
-  it("retains the /tree editor clear across runtime loss and recovery", async () => {
-    let patchCount = 0;
+  it("keeps /tree visible when exact host consumption is refused", async () => {
     invoke.mockImplementation((channel: string, payload: unknown) => {
       if (channel === "session.editorPatch") {
-        patchCount++;
-        if (patchCount === 2) {
-          return Promise.resolve({
-            accepted: false,
-            rejection: "runtime_unavailable",
-            revision: (payload as { baseRevision: number }).baseRevision,
-            text: "/tree",
-            attachments: [],
-          });
-        }
         return Promise.resolve({
           accepted: true,
           revision: (payload as { revision: number }).revision,
         });
       }
-      if (channel === "session.query") {
-        return Promise.resolve({ status: "unavailable", reason: "repairing" });
+      if (channel === "session.consumeEditorSource") {
+        return Promise.resolve({
+          accepted: false,
+          rejection: "runtime_unavailable",
+          editor: { revision: 1, text: "/tree", attachments: [] },
+        });
       }
       return Promise.resolve({ success: true });
     });
     const composer = mount();
     type(composer.textarea(), "/tree");
     key(composer.textarea(), "Enter");
-    await vi.waitFor(() => expect(patchCount).toBe(2));
-    expect(composer.textarea().value).toBe("");
-
-    const prior = followingAuthority();
-    patchSession({
-      authorityProjection: {
-        ...prior,
-        semantic: { state: "synchronizing", lastCursor: prior.semantic.cursor, reason: "gap" },
-        staleDiagnosticSnapshot: prior.authoritativeSnapshot,
-        authoritativeSnapshot: undefined,
-      },
-    });
-    const recovered = followingAuthority();
-    recovered.authoritativeSnapshot.editor = { revision: 1, text: "/tree", attachments: [] };
-    patchSession({
-      editorRevision: 1,
-      editorInjection: { text: "/tree", nonce: 101, revision: 1 },
-      authorityProjection: recovered,
-    });
-
-    await vi.waitFor(() => expect(patchCount).toBeGreaterThanOrEqual(3));
-    const finalPatch = invoke.mock.calls
-      .filter(([channel]) => channel === "session.editorPatch")
-      .at(-1)?.[1] as { text: string };
-    expect(finalPatch.text).toBe("");
-    expect(composer.textarea().value).toBe("");
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "session.consumeEditorSource",
+        expect.objectContaining({ editorText: "/tree" }),
+      ),
+    );
+    expect(composer.textarea().value).toBe("/tree");
+    expect(useTreeStore.getState().open).toBe(false);
     composer.unmount();
   });
 
@@ -1204,15 +1353,14 @@ describe("Composer autocomplete and authority intents", () => {
       editorRevision: 1,
       editorText: "/reload ",
     });
-    expect(composer.textarea().value).toBe("");
-    expect(useSessionsStore.getState().newSessionDrafts.has(WORKSPACE)).toBe(false);
-    await vi.waitFor(() => {
-      const patches = invoke.mock.calls
-        .filter(([channel]) => channel === "session.editorPatch")
-        .map(([, payload]) => (payload as { text: string }).text);
-      expect(patches.at(-1)).toBe("");
-    });
     publishOutcome(intentCalls(invoke)[0]!);
+    await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
+    expect(useSessionsStore.getState().newSessionDrafts.has(WORKSPACE)).toBe(false);
+    expect(
+      invoke.mock.calls
+        .filter(([channel]) => channel === "session.editorPatch")
+        .map(([, payload]) => (payload as { text: string }).text),
+    ).toEqual(["/reload "]);
     await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
     composer.unmount();
   });
@@ -1774,7 +1922,7 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
-  it("keeps a restored image with its draft when initial authority attaches late", async () => {
+  it("treats restoreDraft as one-way settlement even when authority attaches late", async () => {
     setSessionField({
       status: "starting",
       hostInstanceId: undefined,
@@ -1786,15 +1934,19 @@ describe("Composer autocomplete and authority intents", () => {
     act(() =>
       useSessionsStore.getState().applyRestoreDraft(SID, {
         restorationId: "late-authority-restore",
-        text: "restored before authority",
+        text: "submitted before authority",
         attachments: [{ mimeType: "image/png", data: "base64" }],
         disposition: "restore",
       }),
     );
-    await vi.waitFor(() => {
-      expect(composer.textarea().value).toBe("restored before authority");
-      expect(composer.container.querySelectorAll(".composer__attachment-thumb")).toHaveLength(1);
-    });
+    expect(composer.textarea().value).toBe("");
+    expect(composer.container.querySelectorAll(".composer__attachment-thumb")).toHaveLength(0);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("session.acknowledgeRestoration", {
+        sessionId: SID,
+        restorationId: "late-authority-restore",
+      }),
+    );
     expect(invoke.mock.calls.filter(([channel]) => channel === "session.editorPatch")).toHaveLength(
       0,
     );
@@ -1814,23 +1966,16 @@ describe("Composer autocomplete and authority intents", () => {
       authorityProjection: followingAuthority(),
     });
 
-    await vi.waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith(
-        "session.editorPatch",
-        expect.objectContaining({
-          text: "restored before authority",
-          attachments: [
-            expect.objectContaining({
-              kind: "image",
-              name: "restored-image-1.png",
-              dataUrl: "data:image/png;base64,base64",
-            }),
-          ],
-        }),
+    await Promise.resolve();
+    expect(composer.textarea().value).toBe("");
+    expect(composer.container.querySelectorAll(".composer__attachment-thumb")).toHaveLength(0);
+    expect(
+      invoke.mock.calls.some(
+        ([channel, payload]) =>
+          channel === "session.editorPatch" &&
+          (payload as { text?: string }).text === "submitted before authority",
       ),
-    );
-    expect(composer.textarea().value).toBe("restored before authority");
-    expect(composer.container.querySelectorAll(".composer__attachment-thumb")).toHaveLength(1);
+    ).toBe(false);
     composer.unmount();
   });
 

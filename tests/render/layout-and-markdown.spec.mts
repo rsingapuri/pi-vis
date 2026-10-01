@@ -86,6 +86,8 @@ async function seedHierarchicalMarkdownMessage(page: Page): Promise<void> {
             "##### H5",
             "###### H6",
             "",
+            "Body paragraph for typography.",
+            "",
             "> # Quoted H1",
             "> ## Quoted H2",
             "> Paragraph with `inline code`.",
@@ -96,6 +98,28 @@ async function seedHierarchicalMarkdownMessage(page: Page): Promise<void> {
         },
       },
     ]);
+  });
+}
+
+async function seedMarkdownLinks(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const store = (window as unknown as { __pivisStore: { getState: () => PreviewStoreState } })
+      .__pivisStore;
+    const state = store.getState();
+    state.seedHistory(state.activeSessionId, [
+      {
+        id: "markdown-links-assistant",
+        type: "assistant",
+        data: {
+          content: [
+            "Read [the **nested docs**](https://example.com/guide?q=pi#start).",
+            "[![linked diagram](data:image/png;base64,dGh1bWI=)](https://example.com/diagram)",
+            "[unsafe target](javascript:alert(1))",
+          ].join("\n\n"),
+        },
+      },
+    ]);
+    Reflect.set(window, "__previewExternalLinks", []);
   });
 }
 
@@ -765,6 +789,150 @@ test.describe("layout overflow and markdown separators", () => {
           backgroundImage: expect.stringContaining("linear-gradient"),
         }),
       );
+  });
+
+  test("transcript links open externally without navigating the renderer", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForLoadState("domcontentloaded");
+    await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });
+    await seedMarkdownLinks(page);
+
+    const originalUrl = page.url();
+    const docsLink = page.getByRole("link", { name: "the nested docs" });
+    await expect(docsLink).toHaveAttribute("target", "_blank");
+    await docsLink.locator("strong").click({ modifiers: ["Meta", "Shift"] });
+    await expect.poll(() => page.url()).toBe(originalUrl);
+    await docsLink.press("Enter");
+    await expect.poll(() => page.url()).toBe(originalUrl);
+
+    const linkedImage = page.getByRole("link", { name: "linked diagram" });
+    await linkedImage.click({ button: "middle" });
+    await expect.poll(() => page.url()).toBe(originalUrl);
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (Reflect.get(window, "__previewExternalLinks") as Array<{ url: string }> | undefined) ??
+            [],
+        ),
+      )
+      .toEqual([
+        { url: "https://example.com/guide?q=pi#start" },
+        { url: "https://example.com/guide?q=pi#start" },
+        { url: "https://example.com/diagram" },
+      ]);
+    await expect(page.getByText("unsafe target", { exact: true })).not.toHaveAttribute("href");
+    await expect(page.getByRole("link", { name: "unsafe target" })).toHaveCount(0);
+  });
+
+  test("reading font settings stay isolated from interface and Composer typography", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.waitForLoadState("domcontentloaded");
+    await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });
+    await seedHierarchicalMarkdownMessage(page);
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    const chooseFont = async (label: string, family: string): Promise<void> => {
+      const trigger = page.getByRole("button", { name: label });
+      await trigger.click();
+      await page.getByRole("option", { name: family, exact: true }).click();
+      await expect(trigger).toContainText(family);
+    };
+    await chooseFont("Title font family", "IBM Plex Mono");
+    await chooseFont("Transcript header and thinking font family", "Fraunces");
+    await chooseFont("Transcript body font family", "IBM Plex Serif");
+    await page.getByRole("button", { name: "Close settings" }).click();
+    const composer = page.locator(".composer__textarea");
+    await composer.fill("/changelog");
+    await composer.press("Enter");
+    await expect(page.locator(".changelog-modal__body h1")).toHaveText("Preview changelog heading");
+
+    const families = await page.evaluate(() => {
+      const family = (selector: string) =>
+        getComputedStyle(document.querySelector(selector) as HTMLElement).fontFamily;
+      const root = document.documentElement.style;
+      return {
+        title: family(".session-header__name-btn"),
+        heading: family(".transcript-block__content.markdown-body > h1"),
+        thinking: family(".thinking-block.markdown-body"),
+        body: family(".transcript-block__content.markdown-body > p"),
+        composer: family(".composer__textarea"),
+        control: family(".sidebar__settings-btn"),
+        changelogHeading: family(".changelog-modal__body h1"),
+        changelogBody: family(".changelog-modal__body p"),
+        titleToken: root.getPropertyValue("--font-title"),
+        headerToken: root.getPropertyValue("--font-transcript-heading"),
+        bodyToken: root.getPropertyValue("--font-transcript-body"),
+        interfaceToken: root.getPropertyValue("--font-display"),
+      };
+    });
+
+    expect(families.title).toContain("IBM Plex Mono");
+    expect(families.heading).toContain("Fraunces");
+    expect(families.thinking).toContain("Fraunces");
+    expect(families.body).toContain("IBM Plex Serif");
+    expect(families.composer).toContain("Inter");
+    expect(families.control).toContain("Inter");
+    expect(families.changelogHeading).toContain("IBM Plex Serif");
+    expect(families.changelogHeading).not.toContain("Fraunces");
+    expect(families.changelogBody).toContain("Inter");
+    expect(families.titleToken).toContain("var(--font-accent)");
+    expect(families.headerToken).toContain("IBM Plex Serif");
+    expect(families.headerToken).toContain("var(--font-display)");
+    expect(families.bodyToken).toContain("var(--font-display)");
+    expect(families.interfaceToken).not.toContain("IBM Plex Serif");
+    expect(families.interfaceToken).not.toContain("IBM Plex Mono");
+  });
+
+  test("failed reading-font saves restore the persisted choice without an unhandled rejection", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.waitForLoadState("domcontentloaded");
+    await expect(page.locator(".composer")).toBeVisible({ timeout: 20_000 });
+
+    await page.evaluate(() => {
+      const originalInvoke = Reflect.get(window.pivis, "invoke") as (
+        ...args: unknown[]
+      ) => Promise<unknown>;
+      const unhandledReasons: string[] = [];
+      window.addEventListener("unhandledrejection", (event) => {
+        unhandledReasons.push(String(event.reason));
+        event.preventDefault();
+      });
+      Reflect.set(window, "__fontSaveUnhandledReasons", unhandledReasons);
+      Reflect.set(window.pivis, "invoke", (...args: unknown[]) => {
+        if (args[0] === "settings.set") {
+          return Promise.reject(new Error("settings file is read-only"));
+        }
+        return originalInvoke.apply(window.pivis, args);
+      });
+    });
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    const titleFont = page.getByRole("button", { name: "Title font family" });
+    await expect(titleFont).toContainText("Fraunces");
+    await titleFont.click();
+    await page.getByRole("option", { name: "IBM Plex Mono", exact: true }).click();
+
+    await expect(page.getByRole("alert")).toHaveText(
+      "Couldn’t save reading typography. The last saved fonts were restored.",
+    );
+    await expect(titleFont).toContainText("Fraunces");
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }),
+    );
+    expect(
+      await page.evaluate(
+        () => (Reflect.get(window, "__fontSaveUnhandledReasons") as string[] | undefined) ?? [],
+      ),
+    ).toEqual([]);
   });
 
   test("transcript markdown headings compose with quote and thinking voice", async ({ page }) => {

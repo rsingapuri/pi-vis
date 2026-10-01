@@ -80,9 +80,10 @@ describe("PiEventSchema", () => {
     });
   });
 
-  it("preserves Pi 0.84.2 assistant endTurn and tool-call namespace metadata", () => {
+  it("preserves Pi 0.85.1 provider thinking, endTurn, and tool-call namespace metadata", () => {
     const message = {
       role: "assistant",
+      providerThinkingLevel: "high",
       endTurn: true,
       content: [
         {

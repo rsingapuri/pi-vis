@@ -20,6 +20,9 @@ describe("AppSettingsSchema", () => {
     expect(parsed.sessionSearchEnabled).toBe(true);
     expect(parsed.fonts.display).toEqual({ sizePx: 14 });
     expect(parsed.fonts.code).toEqual({ family: "IBM Plex Mono", sizePx: 14 });
+    expect(parsed.fonts.title).toEqual({ family: "Fraunces" });
+    expect(parsed.fonts.transcriptHeader).toEqual({ family: "IBM Plex Serif" });
+    expect(parsed.fonts.transcriptBody).toEqual({ family: "Inter" });
   });
 
   it("strips the legacy display font family on parse", () => {
@@ -34,6 +37,33 @@ describe("AppSettingsSchema", () => {
     expect("family" in result.data.fonts.display).toBe(false);
     expect(result.data.fonts.display.sizePx).toBe(16);
     expect(result.data.fonts.code).toEqual({ family: "JetBrains Mono", sizePx: 13 });
+    // An existing nested `fonts` object predates the three reading-family
+    // keys. Child defaults migrate it without discarding the old choices.
+    expect(result.data.fonts.title).toEqual({ family: "Fraunces" });
+    expect(result.data.fonts.transcriptHeader).toEqual({ family: "IBM Plex Serif" });
+    expect(result.data.fonts.transcriptBody).toEqual({ family: "Inter" });
+  });
+
+  it("round-trips independently selected title and transcript font families", () => {
+    const result = AppSettingsSchema.safeParse({
+      fonts: {
+        display: { sizePx: 15 },
+        code: { family: "IBM Plex Mono", sizePx: 13 },
+        title: { family: "Avenir Next" },
+        transcriptHeader: { family: "Charter" },
+        transcriptBody: { family: "Atkinson Hyperlegible" },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.fonts).toEqual({
+      display: { sizePx: 15 },
+      code: { family: "IBM Plex Mono", sizePx: 13 },
+      title: { family: "Avenir Next" },
+      transcriptHeader: { family: "Charter" },
+      transcriptBody: { family: "Atkinson Hyperlegible" },
+    });
   });
 
   it("strips the legacy openTabs / activeSessionFile / openSessions keys on parse (plain z.object)", () => {

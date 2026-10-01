@@ -76,6 +76,8 @@ let customPanelFramebuffer = "";
 const AUTO_CLOSE_MS = Number(process.env.PIVIS_TEST_UNIFIED_AUTO_CLOSE_MS || 0);
 const AUTO_CLOSE_AFTER_DRAFT = process.env.PIVIS_TEST_UNIFIED_AUTO_CLOSE_AFTER_DRAFT || "";
 const HANG_UNIFIED_SUBMIT = process.env.PIVIS_TEST_HANG_UNIFIED_SUBMIT === "1";
+const REFUSE_UNIFIED_SUBMIT = process.env.PIVIS_TEST_REFUSE_UNIFIED_SUBMIT === "1";
+const DELAY_UNIFIED_DISPATCH_MS = Number(process.env.PIVIS_TEST_DELAY_UNIFIED_DISPATCH_MS || 0);
 let autoClosedAfterDraft = false;
 
 // The kitty keyboard protocol handshake the REAL host writes in
@@ -423,10 +425,23 @@ function submitUnifiedDraft() {
     maybeCloseDeferredUnifiedPanel();
     return;
   }
+  const sourceRevision = editorRevision;
   const id = `fake-submit-${++submitCounter}`;
   pendingSubmits.set(id, text);
   editorDraft = "";
-  send({ type: "unified_submit_request", id, text, editorRevision });
+  // Match the real Unified editor: visual clearing is a new authoritative
+  // revision and happens before renderer/main admission can settle.
+  editorRevision++;
+  editorText = "";
+  send({
+    type: "unified_submit_request",
+    id,
+    text,
+    editorRevision: sourceRevision,
+    editorAttachments: [],
+    postClearEditor: { revision: editorRevision, text: "", attachments: [] },
+    submissionIntentId: `fake-intent-${id}`,
+  });
 }
 
 function updateFakeEditorDraft(data) {
@@ -549,8 +564,9 @@ function renderRoster() {
         "  ○ brave-falcon   queued    —",
         "",
         "  (unified TUI · type a prompt + Enter)",
+        `  draft> ${editorDraft}`,
       ]
-    : ["  (unified editor retained for unsent input)"];
+    : ["  (unified editor retained for unsent input)", `  draft> ${editorDraft}`];
   return `\x1b[2J\x1b[H${lines.join("\n")}\n`;
 }
 
@@ -691,6 +707,10 @@ function executeAuthorityIntent(entry) {
     });
     return;
   }
+  if (intent.kind === "refreshModels") {
+    finishAuthorityIntent(entry, "completed", { refreshed: true });
+    return;
+  }
   finishAuthorityIntent(entry, "completed", {});
 }
 
@@ -815,6 +835,18 @@ process.on("message", (msg) => {
       case "authority_attach":
         reply(msg.id, true, authorityAttach(msg.rendererGeneration));
         break;
+      case "renderer_detached":
+        // Match the real host's renderer-generation handoff: acknowledge the
+        // old document, reset the panel input stream, and require a fresh
+        // repaint before successor input. Without this the main process resets
+        // its cumulative gate while the fixture retains a larger one, creating
+        // an artificial permanent sequence gap in picker/remount tests.
+        panelInputAcknowledgedThrough = 0;
+        panelRepaintAcknowledgedRevision = 0;
+        send({ type: "renderer_cancelled", rendererGeneration: msg.rendererGeneration });
+        if (panelOpen) requestPanelRepaint();
+        emitAuthorityFrame();
+        break;
       case "lifecycle_permit": {
         const active =
           pendingSubmits.size > 0 || [...authorityIntents.values()].some((entry) => !entry.outcome);
@@ -836,7 +868,29 @@ process.on("message", (msg) => {
         break;
       }
       case "dispatch_intent":
-        reply(msg.id, true, dispatchAuthorityIntent(msg.envelope));
+        {
+          const respond = () => {
+            const intent = msg.envelope?.intent;
+            const result =
+              REFUSE_UNIFIED_SUBMIT && intent?.kind === "submit" && intent?.surface === "unified"
+                ? {
+                    status: "not_admitted",
+                    intentId: msg.envelope?.intentId ?? "invalid-intent",
+                    reason: "busy",
+                  }
+                : dispatchAuthorityIntent(msg.envelope);
+            reply(msg.id, true, result);
+          };
+          if (
+            DELAY_UNIFIED_DISPATCH_MS > 0 &&
+            msg.envelope?.intent?.kind === "submit" &&
+            msg.envelope?.intent?.surface === "unified"
+          ) {
+            setTimeout(respond, DELAY_UNIFIED_DISPATCH_MS).unref?.();
+          } else {
+            respond();
+          }
+        }
         break;
       case "prepare_close":
         closeToken = crypto.randomUUID();
@@ -861,6 +915,7 @@ process.on("message", (msg) => {
       case "editor_patch":
         editorRevision = msg.patch?.revision ?? editorRevision;
         editorText = msg.patch?.text ?? editorText;
+        editorDraft = editorText;
         editorAttachments = structuredClone(msg.patch?.attachments ?? []);
         reply(msg.id, true, {
           accepted: true,
@@ -902,7 +957,10 @@ process.on("message", (msg) => {
       case "panel_repaint_ack":
         if (panelOpen && msg?.panelId === PANEL_ID && msg?.revision === panelRenderRevision) {
           panelRepaintAcknowledgedRevision = panelRenderRevision;
-          reply(msg.id, true, { acknowledged: true });
+          reply(msg.id, true, {
+            acknowledged: true,
+            inputAcknowledgedThrough: panelInputAcknowledgedThrough,
+          });
           publishPanelKeyframe(true);
           // Re-send the control handshake through the accepted authority plane
           // after the following keyframe enables terminal replies.
@@ -911,7 +969,10 @@ process.on("message", (msg) => {
               publishPanelData(KITTY_HANDSHAKE);
           }, 50).unref?.();
         } else {
-          reply(msg.id, true, { acknowledged: false });
+          reply(msg.id, true, {
+            acknowledged: false,
+            inputAcknowledgedThrough: panelInputAcknowledgedThrough,
+          });
         }
         break;
       case "panel_resize":
@@ -928,11 +989,12 @@ process.on("message", (msg) => {
         else closeUnifiedPanel();
         break;
       case "unified_submit_response": {
-        const snapshot = pendingSubmits.get(msg.id);
-        if (snapshot !== undefined) {
+        if (pendingSubmits.has(msg.id)) {
           pendingSubmits.delete(msg.id);
-          if (msg.ok === false && msg.bailed === true) editorDraft = snapshot;
         }
+        // A request exists only after the fake editor visibly cleared it.
+        // Even a delayed refusal/guard bail must never put that source back or
+        // overwrite a newer draft typed while renderer admission was pending.
         if (deferredClose) maybeCloseDeferredUnifiedPanel();
         break;
       }

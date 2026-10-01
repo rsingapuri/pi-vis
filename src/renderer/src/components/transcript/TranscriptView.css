@@ -169,7 +169,7 @@
   line-height: var(--leading-body);
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: var(--font-display);
+  font-family: var(--font-transcript-body);
   font-size: 1em;
 }
 
@@ -179,7 +179,7 @@
    re-capped by this rule. */
 .transcript-block__content {
   color: var(--text);
-  font-family: var(--font-display);
+  font-family: var(--font-transcript-body);
   font-size: 1em;
   line-height: var(--leading-body);
   letter-spacing: var(--tracking-body);
@@ -240,8 +240,9 @@
   object-fit: cover;
 }
 
-/* Thinking — always visible — uses IBM Plex Serif for visual
-   contrast. Capped at 80% width to match the assistant content column.
+/* Thinking — always visible — uses the independently configurable transcript
+   header/thinking family for visual contrast. Capped at 80% width to match
+   the assistant content column.
 
    Markdown children (p, ul, ol, h1–h6, blockquote, code, .shiki) are laid out
    here so headings, lists, and code blocks render correctly inside the
@@ -999,93 +1000,6 @@
   }
 }
 
-.restored-attachments {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  color: var(--text);
-  background: var(--surface-raised);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--elevation-1);
-}
-
-.restored-attachments__header,
-.restored-attachments__heading {
-  display: flex;
-  align-items: flex-start;
-}
-
-.restored-attachments__header {
-  justify-content: space-between;
-  gap: var(--space-4);
-}
-
-.restored-attachments__heading {
-  min-width: 0;
-  gap: var(--space-2);
-}
-
-.restored-attachments__heading strong {
-  font-weight: 600;
-}
-
-.restored-attachments__marker {
-  width: 0.5rem;
-  height: 0.5rem;
-  margin-top: 0.36rem;
-  flex: none;
-  background: var(--warning);
-  border-radius: var(--radius-pill);
-}
-
-.restored-attachments__dismiss,
-.restored-attachments__restore {
-  width: fit-content;
-  padding: var(--space-1) var(--space-2);
-  color: var(--text-muted);
-  background: transparent;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-}
-
-.restored-attachments__dismiss {
-  flex: none;
-}
-
-.restored-attachments__dismiss:hover,
-.restored-attachments__restore:hover {
-  color: var(--text);
-  background: var(--surface-2);
-}
-
-.restored-attachments__text {
-  padding: var(--space-2) var(--space-3);
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  background: var(--surface-inset);
-  border-radius: var(--radius-md);
-}
-
-.restored-attachments__text > span {
-  display: block;
-  margin-bottom: var(--space-1);
-  color: var(--text-faint);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-}
-
-.restored-attachments__warning {
-  margin-top: var(--space-1);
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
-  line-height: var(--leading-body);
-}
-
 .compact-transcript-group {
   display: flex;
   flex-direction: column;
@@ -1235,6 +1149,7 @@
 
 /* ── Markdown content (assistant responses) ───────────────────────── */
 .transcript-block__content p {
+  font-family: inherit;
   margin: 0 0 var(--space-2);
 }
 .transcript-block__content p:last-child {
@@ -1281,7 +1196,7 @@
 .transcript-block__content h5,
 .transcript-block__content h6 {
   color: inherit;
-  font-family: var(--font-reading-heading);
+  font-family: var(--font-transcript-heading);
   font-style: inherit;
 }
 

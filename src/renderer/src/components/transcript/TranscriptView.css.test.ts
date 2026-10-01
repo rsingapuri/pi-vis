@@ -97,4 +97,72 @@ describe("TranscriptView CSS", () => {
     expect(workingLabelRule).toContain("font-style: normal;");
     expect(compactSummaryRule).toContain("font-size: 0.929em;");
   });
+
+  it("keeps reading-family tokens scoped away from interface and Composer chrome", () => {
+    const css = readFileSync(new URL("./TranscriptView.css", import.meta.url), "utf8");
+    const headerCss = readFileSync(
+      new URL("../session-header/SessionHeader.css", import.meta.url),
+      "utf8",
+    );
+    const composerCss = readFileSync(new URL("../composer/Composer.css", import.meta.url), "utf8");
+    const changelogCss = readFileSync(
+      new URL("../changelog/ChangelogModal.css", import.meta.url),
+      "utf8",
+    );
+    const bubbleRule =
+      css.match(/(?:^|\n)\.transcript-block__bubble\s*{(?<body>[^}]*)}/s)?.groups?.body ?? "";
+    const contentRule =
+      css.match(/(?:^|\n)\.transcript-block__content\s*{(?<body>[^}]*)}/s)?.groups?.body ?? "";
+    const contentParagraphRule =
+      css.match(/\.transcript-block__content p\s*{(?<body>[^}]*)}/s)?.groups?.body ?? "";
+    const titleButtonRule =
+      headerCss.match(/\.session-header__name-btn\s*{(?<body>[^}]*)}/s)?.groups?.body ?? "";
+    const titleInputRule =
+      headerCss.match(/\.session-header__name-input\s*{(?<body>[^}]*)}/s)?.groups?.body ?? "";
+
+    expect(bubbleRule).toContain("font-family: var(--font-transcript-body);");
+    expect(contentRule).toContain("font-family: var(--font-transcript-body);");
+    expect(contentParagraphRule).toContain("font-family: inherit;");
+    expect(css).toMatch(/\.thinking-block\s*{[^}]*font-family: var\(--font-thinking\);/s);
+    expect(css).toMatch(
+      /\.transcript-block__content h1,[^{]*\.transcript-block__content h6\s*{[^}]*font-family: var\(--font-transcript-heading\);/s,
+    );
+    expect(titleButtonRule).toContain("font-family: var(--font-title);");
+    expect(titleInputRule).toContain("font-family: var(--font-title);");
+    expect(composerCss).not.toContain("--font-title");
+    expect(composerCss).not.toContain("--font-thinking");
+    expect(composerCss).not.toContain("--font-transcript-heading");
+    expect(composerCss).not.toContain("--font-transcript-body");
+    expect(changelogCss).toContain("font-family: var(--font-reading-heading);");
+    expect(changelogCss).not.toContain("--font-transcript-heading");
+    expect(changelogCss).not.toContain("--font-thinking");
+    expect(changelogCss).not.toContain("--font-transcript-body");
+  });
+
+  it("bundles regular and italic faces for every advertised reading family", () => {
+    const settingsView = readFileSync(
+      new URL("../settings/SettingsView.tsx", import.meta.url),
+      "utf8",
+    );
+    const entrypoint = readFileSync(new URL("../../main.tsx", import.meta.url), "utf8");
+    const optionList =
+      settingsView.match(/const BUNDLED_READING_FONTS = \[(?<families>[^\]]*)\]/s)?.groups
+        ?.families ?? "";
+    const advertised = [...optionList.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    const packages: Record<string, string> = {
+      Inter: "inter",
+      Fraunces: "fraunces",
+      "IBM Plex Serif": "ibm-plex-serif",
+      "IBM Plex Mono": "ibm-plex-mono",
+    };
+
+    expect(advertised).toEqual(Object.keys(packages));
+    for (const family of advertised) {
+      const packageName = packages[family!];
+      for (const weight of [400, 600, 700]) {
+        expect(entrypoint).toContain(`@fontsource/${packageName}/${weight}.css`);
+        expect(entrypoint).toContain(`@fontsource/${packageName}/${weight}-italic.css`);
+      }
+    }
+  });
 });

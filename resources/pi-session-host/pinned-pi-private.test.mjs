@@ -31,8 +31,8 @@ describe("pinned private llama.cpp adapter", () => {
   });
 
   it("refuses to reuse the exception for a different Pi version", async () => {
-    await expect(importPinnedLlamaExtension(PINNED_PI_CLI, "0.82.1")).rejects.toThrow(
-      /approved only for Pi 0\.84\.2/,
+    await expect(importPinnedLlamaExtension(PINNED_PI_CLI, "0.84.2")).rejects.toThrow(
+      /approved only for Pi 0\.85\.1/,
     );
   });
 
@@ -43,7 +43,7 @@ describe("pinned private llama.cpp adapter", () => {
     mkdirSync(path.join(distDir, "extensions"), { recursive: true });
     writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ type: "module" }));
     writeFileSync(path.join(distDir, "cli.js"), "// fake pinned Pi CLI\n");
-    writeFileSync(path.join(distDir, "index.js"), "export const VERSION = '0.84.2';\n");
+    writeFileSync(path.join(distDir, "index.js"), "export const VERSION = '0.85.1';\n");
     writeFileSync(
       path.join(distDir, "extensions", "index.js"),
       "export const builtInExtensions = [];\n",

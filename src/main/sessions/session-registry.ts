@@ -25,6 +25,8 @@ import {
   ReloadRequestSchema,
   type ReloadSettlement,
   type RendererPublication,
+  type RuntimeEditorState,
+  RuntimeEditorStateSchema,
   type RuntimeIdentity,
   type RuntimeRecord,
   type RuntimeStateUpdate,
@@ -67,9 +69,9 @@ interface RetainedIntent {
   restorationResolution?: Promise<RestorationDisposition> | undefined;
 }
 
-/** Preserve a child-requested queue label for ambiguity review; this never
- * selects Pi admission behavior. */
-function reviewQueues(submission: SessionSubmission): {
+/** Preserve a child-requested queue label as outcome evidence; this never
+ * selects Pi admission behavior or authorizes editor reinsertion. */
+function restorationEvidenceQueues(submission: SessionSubmission): {
   steering: string[];
   followUp: string[];
 } {
@@ -88,7 +90,7 @@ interface RetainedDispatchIntent {
   envelope: IntentEnvelope;
   possibleDispatch: boolean;
   deliveryUnknown?: boolean | undefined;
-  /** Main emits a review-only unknown escrow once if this owner dies first. */
+  /** Main emits one non-replayable unknown-outcome escrow if this owner dies first. */
   recoveryPublished?: boolean | undefined;
   /** Byte boundary captured immediately before sending to the retained host. */
   sessionFileOffsetAtDispatch?: number | undefined;
@@ -99,12 +101,34 @@ interface PendingUnifiedSubmit {
   id: string;
   text: string;
   editorRevision: number;
+  editorAttachments?: unknown[] | undefined;
+  postClearEditor: RuntimeEditorState;
   submissionIntentId: string;
   hostInstanceId: string;
   sessionEpoch: number;
   claimedGeneration?: number | undefined;
   claimId?: string | undefined;
   claimExpiresAt?: number | undefined;
+  /** Child dispatch crossed main's atomic expiry fence and now owns settlement. */
+  dispatchStarted?: boolean | undefined;
+}
+
+interface PendingEditorSuccessor {
+  owner: RuntimeIdentity;
+  sourceRevision: number;
+  sourceText: string;
+  inheritsSourceTextOnConsumeFailure: boolean;
+  revision: number;
+  text: string;
+  attachments: unknown[];
+}
+
+interface ActiveEditorConsume {
+  tokenId: string;
+  owner: RuntimeIdentity;
+  sourceRevision: number;
+  sourceText: string;
+  state: "pending" | "accepted" | "rejected" | "unknown";
 }
 
 export interface SessionRecord {
@@ -138,6 +162,8 @@ export interface SessionRecord {
       }
     | undefined;
   _editorRecovery?: AgentSessionSnapshot["editor"] | undefined;
+  /** Highest predecessor editor revision proven to have crossed visual clear. */
+  _editorClearedThroughRevision?: number | undefined;
   /**
    * A same-revision submit from the failed owner must finish persistence
    * reconciliation before its captured editor can be restored.
@@ -209,12 +235,18 @@ export interface SessionRecord {
   _resolvedRestorationInstructions: Map<string, unknown>;
   _rendererGeneration: number;
   _mutationSequence: number;
+  /** Main-owned FIFO for exact editor consumption and successor patches. */
+  _editorMutationTail: Promise<void>;
+  /** One bounded latest candidate per owner-bound source-consume chain. */
+  _pendingEditorSuccessors: Map<string, PendingEditorSuccessor>;
+  _activeEditorConsume?: ActiveEditorConsume | undefined;
   _closing?: boolean | undefined;
   _panelInputSequence: Map<number, number>;
   _panelInputChains: Map<
     number,
     Promise<{
       acknowledgedThrough: number;
+      rejection?: "runtime_unavailable" | "runtime_replaced";
       gap?: { expected: number; received: number };
     }>
   >;
@@ -236,8 +268,25 @@ export interface SessionRecord {
   _pendingRendererCancellation?:
     | {
         generation: number;
+        successorGeneration: number;
+        hostInstanceId: string;
+        sessionEpoch: number;
+        promise: Promise<boolean>;
         resolve: (acknowledged: boolean) => void;
         timer: ReturnType<typeof setTimeout>;
+      }
+    | undefined;
+  /**
+   * A detach that may have reached the child but was not acknowledged before
+   * main's deadline. Keep it retryable until this exact host and successor
+   * generation prove the common panel-input sequence reset.
+   */
+  _rendererCancellationObligation?:
+    | {
+        detachedGeneration: number;
+        successorGeneration: number;
+        hostInstanceId: string;
+        sessionEpoch: number;
       }
     | undefined;
 }
@@ -264,6 +313,10 @@ const TRANSPORT_LEASE_MS = 5_000;
 const ACTIVATION_VISIT_RELEASE_WINDOW_MS = 2_000;
 const DEFAULT_UNIFIED_CLAIM_TIMEOUT_MS = 60_000;
 const CLOSE_ESCAPE_DEADLINE_MS = 250;
+
+function runtimeIdentityMatches(left: RuntimeIdentity, right: RuntimeIdentity): boolean {
+  return left.hostInstanceId === right.hostInstanceId && left.sessionEpoch === right.sessionEpoch;
+}
 
 /** The query protocol is deliberately narrower than Pi's general command union. */
 function commandForSessionQuery(query: SessionQuery): PiReadOnlyCommand {
@@ -317,6 +370,8 @@ type UnifiedSubmitRequestCallback = (
     id: string;
     text: string;
     editorRevision: number;
+    editorAttachments?: unknown[] | undefined;
+    postClearEditor: RuntimeEditorState;
     submissionIntentId: string;
     hostInstanceId: string;
     sessionEpoch: number;
@@ -428,7 +483,12 @@ export class SessionRegistry {
       ]),
     ];
     let disposition: "restore" | "dropped";
-    if (
+    if ((restoration.clearedIntentIds?.length ?? 0) > 0) {
+      // A cleared intent crossed the irreversible presentation commit point.
+      // Execution reconciliation remains useful for diagnostics, but cannot
+      // return its submitted payload to editor custody.
+      disposition = "dropped";
+    } else if (
       restoration.commandDescription?.trim() &&
       textParts.length === 0 &&
       attachments.length === 0
@@ -476,9 +536,16 @@ export class SessionRegistry {
     record: SessionRecord,
     payload: unknown,
   ): Promise<RestorationDisposition> {
+    const value =
+      typeof payload === "object" && payload !== null
+        ? (payload as { clearedIntentIds?: unknown })
+        : undefined;
+    const clearAlreadyCommitted =
+      Array.isArray(value?.clearedIntentIds) && value.clearedIntentIds.length > 0;
     return this.resolveRestoration(record, payload).then(
-      (disposition) => (disposition === "dropped" ? "dropped" : "restore"),
-      () => "restore",
+      (disposition) => (clearAlreadyCommitted || disposition === "dropped" ? "dropped" : "restore"),
+      // Callback/transport failures must fail closed once presentation cleared.
+      () => (clearAlreadyCommitted ? "dropped" : "restore"),
     );
   }
 
@@ -494,13 +561,199 @@ export class SessionRegistry {
     editorRevision: number,
     resolution: Promise<RestorationDisposition>,
   ): void {
-    if (record._editorRecovery?.revision !== editorRevision) return;
+    record._editorClearedThroughRevision = Math.max(
+      record._editorClearedThroughRevision ?? -1,
+      editorRevision,
+    );
     const prior = record._editorRecoveryReconciliation;
     record._editorRecoveryReconciliation = prior
       ? Promise.all([prior, resolution]).then((dispositions) =>
-          dispositions.every((disposition) => disposition === "dropped") ? "dropped" : "restore",
+          // Any record proving this primary crossed visual clear is a one-way
+          // fence. A separate pre-clear record cannot weaken that proof.
+          dispositions.some((disposition) => disposition === "dropped") ? "dropped" : "restore",
         )
       : resolution;
+  }
+
+  private installClearedEditorResidual(
+    record: SessionRecord,
+    sourceRevision: number,
+    editor: RuntimeEditorState,
+  ): void {
+    this.fenceEditorRecoveryOnRestoration(record, sourceRevision, Promise.resolve("dropped"));
+    const residual = this.editorWithPendingSuccessors(record, editor);
+    if (record.snapshot && residual.revision >= record.snapshot.editor.revision) {
+      record.snapshot = { ...record.snapshot, editor: structuredClone(residual) };
+    }
+    if (record._editorRecovery && residual.revision >= record._editorRecovery.revision) {
+      record._editorRecovery = structuredClone(residual);
+    }
+  }
+
+  private editorWithCandidate(
+    editor: RuntimeEditorState,
+    candidate: { text: string; attachments: unknown[] },
+  ): RuntimeEditorState {
+    type Candidate = { text: string; attachments: unknown[] };
+    const primary: Candidate = { text: editor.text, attachments: editor.attachments };
+    const candidates: Candidate[] = [];
+    const add = (candidate: Candidate): void => {
+      if (candidate.text === "" && candidate.attachments.length === 0) return;
+      if (
+        [primary, ...candidates].some(
+          (existing) =>
+            existing.text === candidate.text &&
+            isDeepStrictEqual(existing.attachments, candidate.attachments),
+        )
+      )
+        return;
+      candidates.push(structuredClone(candidate));
+    };
+    if (editor.conflictText !== undefined) {
+      add({ text: editor.conflictText, attachments: editor.conflictAttachments ?? [] });
+    }
+    if (editor.alternateConflictText !== undefined) {
+      add({
+        text: editor.alternateConflictText,
+        attachments: editor.alternateConflictAttachments ?? [],
+      });
+    }
+    for (const additionalCandidate of editor.additionalConflictCandidates ?? []) {
+      add(additionalCandidate);
+    }
+    add(candidate);
+    const [conflict, alternate, ...additional] = candidates;
+    return {
+      revision: editor.revision,
+      text: editor.text,
+      attachments: structuredClone(editor.attachments),
+      ...(conflict
+        ? {
+            conflictText: conflict.text,
+            conflictAttachments: structuredClone(conflict.attachments),
+          }
+        : {}),
+      ...(alternate
+        ? {
+            alternateConflictText: alternate.text,
+            alternateConflictAttachments: structuredClone(alternate.attachments),
+          }
+        : {}),
+      ...(additional.length > 0
+        ? { additionalConflictCandidates: structuredClone(additional) }
+        : {}),
+    };
+  }
+
+  private editorWithPrimaryCandidate(
+    editor: RuntimeEditorState,
+    candidate: PendingEditorSuccessor,
+    sourceWasConsumed = false,
+  ): RuntimeEditorState {
+    let promoted: RuntimeEditorState = {
+      revision: Math.max(editor.revision, candidate.revision),
+      text:
+        !sourceWasConsumed && candidate.inheritsSourceTextOnConsumeFailure
+          ? candidate.sourceText
+          : candidate.text,
+      attachments: structuredClone(candidate.attachments),
+    };
+    if (editor.conflictText !== undefined) {
+      promoted = this.editorWithCandidate(promoted, {
+        text: editor.conflictText,
+        attachments: editor.conflictAttachments ?? [],
+      });
+    }
+    if (editor.alternateConflictText !== undefined) {
+      promoted = this.editorWithCandidate(promoted, {
+        text: editor.alternateConflictText,
+        attachments: editor.alternateConflictAttachments ?? [],
+      });
+    }
+    for (const additional of editor.additionalConflictCandidates ?? []) {
+      promoted = this.editorWithCandidate(promoted, additional);
+    }
+    return promoted;
+  }
+
+  private pendingEditorSuccessorKey(candidate: PendingEditorSuccessor): string {
+    return `${candidate.owner.hostInstanceId}\0${candidate.owner.sessionEpoch}\0${candidate.sourceRevision}`;
+  }
+
+  private stagePendingEditorSuccessor(
+    record: SessionRecord,
+    candidate: PendingEditorSuccessor,
+  ): string {
+    const key = this.pendingEditorSuccessorKey(candidate);
+    const prior = record._pendingEditorSuccessors.get(key);
+    if (!prior || candidate.revision >= prior.revision) {
+      record._pendingEditorSuccessors.set(key, structuredClone(candidate));
+    }
+    return key;
+  }
+
+  private editorWithPendingSuccessors(
+    record: SessionRecord,
+    editor: RuntimeEditorState,
+  ): RuntimeEditorState {
+    let merged = structuredClone(editor);
+    for (const candidate of record._pendingEditorSuccessors.values()) {
+      merged = this.editorWithPendingSuccessor(record, merged, candidate);
+    }
+    return merged;
+  }
+
+  private editorWithPendingSuccessor(
+    record: SessionRecord,
+    editor: RuntimeEditorState,
+    candidate: PendingEditorSuccessor,
+  ): RuntimeEditorState {
+    const consume = record._activeEditorConsume;
+    const sameChain =
+      !!consume &&
+      runtimeIdentityMatches(consume.owner, candidate.owner) &&
+      consume.sourceRevision === candidate.sourceRevision &&
+      consume.sourceText === candidate.sourceText;
+    if (sameChain && consume.state === "accepted" && editor.revision < candidate.revision) {
+      // Once the exact source consume is proven, this bounded candidate is the
+      // latest value in one linear editor chain, not a competing edit.
+      return this.editorWithPrimaryCandidate(editor, candidate, true);
+    }
+    if (
+      sameChain &&
+      consume.state !== "accepted" &&
+      editor.revision <= candidate.sourceRevision &&
+      editor.text === candidate.sourceText
+    ) {
+      // Before clear proof, attachment-only successors inherit the source; a
+      // deliberate text edit/deletion carries its own replacement text.
+      return this.editorWithPrimaryCandidate(editor, candidate);
+    }
+    return this.editorWithCandidate(editor, {
+      text:
+        sameChain && consume.state !== "accepted" && candidate.inheritsSourceTextOnConsumeFailure
+          ? candidate.sourceText
+          : candidate.text,
+      attachments: candidate.attachments,
+    });
+  }
+
+  private retirePendingEditorSuccessor(
+    record: SessionRecord,
+    key: string | undefined,
+    revision: number,
+  ): void {
+    if (!key) return;
+    if (record._pendingEditorSuccessors.get(key)?.revision === revision) {
+      record._pendingEditorSuccessors.delete(key);
+    }
+  }
+
+  private installRetainedEditorCandidate(record: SessionRecord, editor: RuntimeEditorState): void {
+    if (record.snapshot && editor.revision >= record.snapshot.editor.revision) {
+      record.snapshot = { ...record.snapshot, editor: structuredClone(editor) };
+    }
+    record._editorRecovery = structuredClone(editor);
   }
 
   openSession(
@@ -552,6 +805,8 @@ export class SessionRegistry {
       _resolvedRestorationInstructions: new Map(),
       _rendererGeneration: 0,
       _mutationSequence: 0,
+      _editorMutationTail: Promise.resolve(),
+      _pendingEditorSuccessors: new Map(),
       _panelInputSequence: new Map(),
       _panelInputChains: new Map(),
       _pendingUiRequests: new Map(),
@@ -872,43 +1127,75 @@ export class SessionRegistry {
       record._panelCheckpoints.clear();
       this.onPanelEvent(record.sessionId, { type: "panel_clear_all" });
     });
-    proc.on("unifiedSubmitRequest", (id, text, editorRevision, childSubmissionIntentId) => {
-      if (!current() || !proc.hostInstanceId) return;
-      record._mutationSequence++;
-      const retiredKey = `${proc.hostInstanceId}\0${proc.sessionEpoch}\0${id}`;
-      if (record._retiredUnifiedRequests.has(retiredKey)) {
-        proc.sendUnifiedSubmitResponse(
-          id,
-          false,
-          false,
-          "Unified request was already retired and cannot execute again",
-        );
-        return;
-      }
-      const existing = record._pendingUnifiedSubmits.get(id);
-      if (
-        existing?.hostInstanceId === proc.hostInstanceId &&
-        existing.sessionEpoch === proc.sessionEpoch
-      ) {
-        if (existing.claimedGeneration === undefined) {
-          this.onUnifiedSubmitRequest(record.sessionId, structuredClone(existing));
+    proc.on(
+      "unifiedSubmitRequest",
+      (id, text, editorRevision, childSubmissionIntentId, editorAttachments, postClearEditor) => {
+        if (!current() || !proc.hostInstanceId) return;
+        // Editor.submitValue() clears the exact revision before the child can
+        // emit this request. Record that causal boundary immediately: local
+        // commands and renderer guard bails may never call back into child
+        // acceptance, and a crash before the next polled snapshot must still
+        // be unable to resurrect this source (or any stale prefix beneath it).
+        if (!postClearEditor) return;
+        this.installClearedEditorResidual(record, editorRevision, postClearEditor);
+        record._mutationSequence++;
+        const retiredKey = `${proc.hostInstanceId}\0${proc.sessionEpoch}\0${id}`;
+        if (record._retiredUnifiedRequests.has(retiredKey)) {
+          proc.sendUnifiedSubmitResponse(
+            id,
+            false,
+            false,
+            "Unified request was already retired and cannot execute again",
+          );
+          return;
         }
-        return;
+        const existing = record._pendingUnifiedSubmits.get(id);
+        if (
+          existing?.hostInstanceId === proc.hostInstanceId &&
+          existing.sessionEpoch === proc.sessionEpoch
+        ) {
+          if (existing.claimedGeneration === undefined) {
+            this.onUnifiedSubmitRequest(record.sessionId, structuredClone(existing));
+          }
+          return;
+        }
+        if (existing) this.clearUnifiedClaimTimer(record, id);
+        const request: PendingUnifiedSubmit = {
+          id,
+          text,
+          editorRevision,
+          ...(Array.isArray(editorAttachments)
+            ? { editorAttachments: structuredClone(editorAttachments) }
+            : {}),
+          postClearEditor: structuredClone(postClearEditor),
+          submissionIntentId:
+            typeof childSubmissionIntentId === "string" && childSubmissionIntentId.length > 0
+              ? childSubmissionIntentId
+              : crypto.randomUUID(),
+          hostInstanceId: proc.hostInstanceId,
+          sessionEpoch: proc.sessionEpoch,
+        };
+        record._pendingUnifiedSubmits.set(id, structuredClone(request));
+        this.onUnifiedSubmitRequest(record.sessionId, request);
+      },
+    );
+    proc.on("editorSourceCleared", (intentId, editorRevision, editor) => {
+      if (!current()) return;
+      // This child event is the causal clear boundary, emitted in the same
+      // run-to-completion turn as editor consumption. It closes the poll gap:
+      // a crash before the next snapshot cannot resurrect an older cached
+      // prefix for prompts, slash commands, Shell Turns, or reload.
+      const consume = record._activeEditorConsume;
+      if (
+        consume?.tokenId === intentId &&
+        consume.sourceRevision === editorRevision &&
+        consume.owner.hostInstanceId === proc.hostInstanceId &&
+        consume.owner.sessionEpoch === proc.sessionEpoch
+      ) {
+        consume.state = "accepted";
       }
-      if (existing) this.clearUnifiedClaimTimer(record, id);
-      const request: PendingUnifiedSubmit = {
-        id,
-        text,
-        editorRevision,
-        submissionIntentId:
-          typeof childSubmissionIntentId === "string" && childSubmissionIntentId.length > 0
-            ? childSubmissionIntentId
-            : crypto.randomUUID(),
-        hostInstanceId: proc.hostInstanceId,
-        sessionEpoch: proc.sessionEpoch,
-      };
-      record._pendingUnifiedSubmits.set(id, structuredClone(request));
-      this.onUnifiedSubmitRequest(record.sessionId, request);
+      this.installClearedEditorResidual(record, editorRevision, editor);
+      record._mutationSequence++;
     });
     proc.on("transitionStarted", (transitionId, provisionalEpoch) => {
       if (!current()) return;
@@ -1046,7 +1333,13 @@ export class SessionRegistry {
     proc.on("rendererCancelled", (generation) => {
       if (!current()) return;
       const pending = record._pendingRendererCancellation;
-      if (!pending || pending.generation !== generation) return;
+      if (
+        !pending ||
+        pending.generation !== generation ||
+        pending.hostInstanceId !== proc.hostInstanceId ||
+        pending.sessionEpoch !== proc.sessionEpoch
+      )
+        return;
       clearTimeout(pending.timer);
       record._pendingRendererCancellation = undefined;
       pending.resolve(true);
@@ -1351,6 +1644,55 @@ export class SessionRegistry {
     return this.publishRuntime(record, "unavailable", reason);
   }
 
+  private cancelPendingRendererCancellation(record: SessionRecord): void {
+    const pending = record._pendingRendererCancellation;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    record._pendingRendererCancellation = undefined;
+    pending.resolve(false);
+  }
+
+  private requestRendererCancellation(
+    record: SessionRecord,
+    proc: SessionHost,
+    obligation: NonNullable<SessionRecord["_rendererCancellationObligation"]>,
+  ): Promise<boolean> {
+    const existing = record._pendingRendererCancellation;
+    if (
+      existing &&
+      existing.generation === obligation.detachedGeneration &&
+      existing.successorGeneration === obligation.successorGeneration &&
+      existing.hostInstanceId === obligation.hostInstanceId &&
+      existing.sessionEpoch === obligation.sessionEpoch
+    ) {
+      return existing.promise;
+    }
+    this.cancelPendingRendererCancellation(record);
+
+    let resolvePending!: (acknowledged: boolean) => void;
+    const promise = new Promise<boolean>((resolve) => {
+      resolvePending = resolve;
+    });
+    const timer = setTimeout(() => {
+      if (record._pendingRendererCancellation?.promise !== promise) return;
+      record._pendingRendererCancellation = undefined;
+      resolvePending(false);
+    }, 2_000);
+    timer.unref?.();
+    const pending: NonNullable<SessionRecord["_pendingRendererCancellation"]> = {
+      generation: obligation.detachedGeneration,
+      successorGeneration: obligation.successorGeneration,
+      hostInstanceId: obligation.hostInstanceId,
+      sessionEpoch: obligation.sessionEpoch,
+      promise,
+      resolve: resolvePending,
+      timer,
+    };
+    record._pendingRendererCancellation = pending;
+    proc.sendRendererDetached(obligation.detachedGeneration);
+    return promise;
+  }
+
   private retireHostUi(record: SessionRecord): void {
     record._lifecycleUiLease = false;
     if (record._leaseTimer) clearTimeout(record._leaseTimer);
@@ -1360,11 +1702,8 @@ export class SessionRegistry {
       pending.resolve(false);
     }
     record._pendingUiAcks.clear();
-    if (record._pendingRendererCancellation) {
-      clearTimeout(record._pendingRendererCancellation.timer);
-      record._pendingRendererCancellation.resolve(false);
-      record._pendingRendererCancellation = undefined;
-    }
+    this.cancelPendingRendererCancellation(record);
+    record._rendererCancellationObligation = undefined;
     for (const operationId of record._pendingUiRequests.keys()) {
       this.onUiAcknowledged(record.sessionId, operationId);
     }
@@ -1376,14 +1715,41 @@ export class SessionRegistry {
   }
 
   private captureEditorRecovery(record: SessionRecord): void {
-    record._editorRecoveryReconciliation = undefined;
-    const editor = record.snapshot?.editor;
+    if (record._editorClearedThroughRevision === undefined) {
+      record._editorRecoveryReconciliation = undefined;
+    }
+    const editor = record.snapshot?.editor ?? record._editorRecovery;
+    if (editor && record._pendingEditorSuccessors.size > 0) {
+      let recovery = structuredClone(editor);
+      const owner = record.proc?.hostInstanceId
+        ? { hostInstanceId: record.proc.hostInstanceId, sessionEpoch: record.proc.sessionEpoch }
+        : undefined;
+      const pending = [...record._pendingEditorSuccessors.values()]
+        .filter((candidate) => !owner || runtimeIdentityMatches(candidate.owner, owner))
+        .sort((left, right) => left.revision - right.revision);
+      for (const candidate of pending) {
+        recovery = this.editorWithPendingSuccessor(record, recovery, candidate);
+      }
+      record._editorRecovery =
+        recovery.text !== "" ||
+        recovery.attachments.length > 0 ||
+        recovery.conflictText !== undefined
+          ? recovery
+          : undefined;
+      // Recovery now owns the single bounded successor projection. Retire the
+      // in-flight map so late rejected promises cannot materialize it again in
+      // a replacement owner or a later unrelated source-consume chain.
+      record._pendingEditorSuccessors.clear();
+      record._activeEditorConsume = undefined;
+      return;
+    }
     if (
       editor &&
       (editor.text !== "" || editor.conflictText !== undefined || editor.attachments.length > 0)
     ) {
       record._editorRecovery = structuredClone(editor);
     }
+    record._activeEditorConsume = undefined;
   }
 
   private editorRecoveryWithoutDeliveredPrimary(
@@ -1460,7 +1826,12 @@ export class SessionRegistry {
         record._editorRecoveryReconciliation !== reconciliation
       )
         return;
-      if (disposition === "dropped" && record._editorRecovery) {
+      if (
+        disposition === "dropped" &&
+        record._editorRecovery &&
+        (record._editorRecovery.revision <= (record._editorClearedThroughRevision ?? -1) ||
+          (record._editorRecovery.text === "" && record._editorRecovery.attachments.length === 0))
+      ) {
         record._editorRecovery = this.editorRecoveryWithoutDeliveredPrimary(record._editorRecovery);
       }
     }
@@ -1651,6 +2022,7 @@ export class SessionRegistry {
     // A later activation failure can then recapture this exact canonical state.
     record._editorRecovery = undefined;
     record._editorRecoveryReconciliation = undefined;
+    record._editorClearedThroughRevision = undefined;
     record._deferredInitialBatch = undefined;
   }
 
@@ -1692,11 +2064,21 @@ export class SessionRegistry {
         continue;
       retained.deliveryUnknown = true;
       retained.recoveryPublished = true;
-      // This is review/failure escrow, never a replay queue and never a
-      // synthesized success/end outcome. Its payload remains opaque to main.
+      // This is unknown-outcome escrow, never a replay queue, editor source,
+      // or synthesized success/end outcome. Its payload remains opaque to main.
       const restorationId = `ambiguous-intent:${owner.hostInstanceId}:${owner.sessionEpoch}:${retained.envelope.intentId}`;
       if (record._restorations.has(restorationId)) continue;
       const intent = retained.envelope.intent;
+      const editorRevision =
+        intent.kind === "submit" ||
+        intent.kind === "invokeCommand" ||
+        intent.kind === "runBash" ||
+        intent.kind === "reload"
+          ? intent.editorRevision
+          : undefined;
+      const sourceClearKnown =
+        editorRevision !== undefined &&
+        editorRevision <= (record._editorClearedThroughRevision ?? -1);
       // An admitted submit may have crossed Pi before the child dies. Its
       // original envelope is the only lossless custody source: never replace
       // it with a generic command marker or attempt a successor replay.
@@ -1705,7 +2087,7 @@ export class SessionRegistry {
           ? {
               type: "queue_restoration",
               restorationId,
-              ...reviewQueues({
+              ...restorationEvidenceQueues({
                 intentId: retained.envelope.intentId,
                 expectedHostId: owner.hostInstanceId,
                 expectedEpoch: owner.sessionEpoch,
@@ -1722,6 +2104,7 @@ export class SessionRegistry {
                   images: structuredClone(intent.images),
                 },
               ],
+              ...(sourceClearKnown ? { clearedIntentIds: [retained.envelope.intentId] } : {}),
               certainty: "unknown",
             }
           : {
@@ -1730,14 +2113,16 @@ export class SessionRegistry {
               steering: [],
               followUp: [],
               originalAttachments: [],
+              ...(sourceClearKnown ? { clearedIntentIds: [retained.envelope.intentId] } : {}),
               commandDescription: `Intent ${retained.envelope.intentId} has outcome_unknown because its owning host failed: ${reason}`,
               certainty: "unknown",
             };
       record._restorations.set(restorationId, structuredClone(restoration));
       const resolution = this.restorationResolution(record, restoration);
       retained.restorationResolution = resolution;
-      if (intent.kind === "submit")
-        this.fenceEditorRecoveryOnRestoration(record, intent.editorRevision, resolution);
+      if (sourceClearKnown && editorRevision !== undefined) {
+        this.fenceEditorRecoveryOnRestoration(record, editorRevision, resolution);
+      }
       // Keep the entry as a tombstone. A successor is never allowed to replay
       // it and an old delayed frame cannot clear a new owner's escrow.
       record._retainedDispatchIntents.set(escrowKey, retained);
@@ -1838,8 +2223,9 @@ export class SessionRegistry {
       const restoration: RuntimeRecord & { type: "queue_restoration" } = {
         type: "queue_restoration",
         restorationId: `ambiguous-submission:${payload.intentId}`,
-        ...reviewQueues(payload),
+        ...restorationEvidenceQueues(payload),
         originalAttachments: [{ intentId: payload.intentId, images: payload.images }],
+        clearedIntentIds: [payload.intentId],
         certainty: "unknown",
       };
       if (!record._restorations.has(restoration.restorationId)) {
@@ -1856,19 +2242,20 @@ export class SessionRegistry {
         sessionEpoch: payload.expectedEpoch,
         editorRevision: payload.editorRevision,
         disposition: "outcome_unknown",
-        message: "Host failed after custody; review the retained submission before retrying",
+        message:
+          "Host failed after custody; execution outcome is unknown. Submitted input was not restored.",
       });
     }
     // A unified request belongs to the host identity that emitted it. If that
     // host dies before the renderer response, never execute it against a
-    // replacement host. Convert its text into an explicit review-required
-    // restoration instead.
+    // replacement host. Retain only a non-replayable outcome marker; the
+    // submitted source must not return to editor presentation.
     for (const pending of [...record._pendingUnifiedSubmits.values()]) {
       if (pending.claimedGeneration !== undefined) {
         this.retireUnifiedAsAmbiguous(
           record,
           pending,
-          "Unified submission may have executed before host acknowledgement was lost",
+          "Unified execution outcome is unknown because host acknowledgement was lost",
           false,
         );
         continue;
@@ -1877,12 +2264,16 @@ export class SessionRegistry {
         type: "queue_restoration",
         restorationId: `interrupted-unified:${pending.id}`,
         steering: [],
-        followUp: [pending.text],
+        followUp: [],
         originalAttachments: [],
+        clearedIntentIds: [pending.submissionIntentId],
+        commandDescription:
+          "Unified submission was interrupted before execution; submitted input was not restored.",
         certainty: "not_processed",
       };
       record._restorations.set(restoration.restorationId, structuredClone(restoration));
-      this.queueRestoration(record, restoration);
+      const resolution = this.restorationResolution(record, restoration);
+      this.fenceEditorRecoveryOnRestoration(record, pending.editorRevision, resolution);
       record._pendingUnifiedSubmits.delete(pending.id);
     }
     this.publishUnavailable(record, reason);
@@ -1903,6 +2294,100 @@ export class SessionRegistry {
    * fences renderer/session transport ownership; it never interprets intent
    * kinds, Pi liveness, or terminal outcomes.
    */
+  private unifiedPendingForIntent(
+    record: SessionRecord,
+    intentId: string,
+  ): PendingUnifiedSubmit | undefined {
+    return [...record._pendingUnifiedSubmits.values()].find(
+      (pending) => pending.submissionIntentId === intentId,
+    );
+  }
+
+  private unifiedDispatchMatchesSource(
+    pending: PendingUnifiedSubmit,
+    envelope: IntentEnvelope,
+  ): boolean {
+    const intent = envelope.intent;
+    if (intent.kind === "submit") {
+      const sourceKind = pending.text.startsWith("/") ? "slash_command" : "ordinary";
+      return (
+        intent.surface === "unified" &&
+        intent.editorRevision === pending.editorRevision &&
+        (intent.inputKind ?? sourceKind) === sourceKind &&
+        (sourceKind !== "slash_command" || intent.text === pending.text)
+      );
+    }
+    if (intent.kind === "invokeCommand") {
+      return (
+        intent.surface === "unified" &&
+        intent.editorRevision === pending.editorRevision &&
+        intent.text === pending.text &&
+        pending.text.startsWith("/")
+      );
+    }
+    if (intent.kind === "runBash") {
+      return (
+        intent.surface === "unified" &&
+        intent.editorRevision === pending.editorRevision &&
+        intent.editorText === pending.text
+      );
+    }
+    if (intent.kind === "reload") {
+      return (
+        intent.surface === "unified" &&
+        intent.editorRevision === pending.editorRevision &&
+        intent.editorText === pending.text &&
+        pending.text === "/reload"
+      );
+    }
+    return false;
+  }
+
+  private settleUnifiedDispatchReceipt(
+    record: SessionRecord,
+    pending: PendingUnifiedSubmit,
+    proc: SessionHost,
+    receipt: IntentReceipt,
+  ): void {
+    if (
+      this.sessions.get(record.sessionId) !== record ||
+      record._pendingUnifiedSubmits.get(pending.id) !== pending ||
+      record.proc !== proc
+    ) {
+      return;
+    }
+    if (receipt.status === "delivery_unknown") {
+      this.retireUnifiedAsAmbiguous(
+        record,
+        pending,
+        "Unified intent delivery acknowledgement was lost",
+        true,
+      );
+      return;
+    }
+    // The host editor cleared before this source reached main. Retiring its
+    // request is itself durable proof that any cached editor at or below that
+    // revision is predecessor state, regardless of intent kind or outcome.
+    this.fenceEditorRecoveryOnRestoration(
+      record,
+      pending.editorRevision,
+      Promise.resolve("dropped"),
+    );
+    const accepted = receipt.status === "admitted" || receipt.status === "duplicate";
+    proc.sendUnifiedSubmitResponse(
+      pending.id,
+      accepted,
+      !accepted,
+      accepted ? undefined : `Unified intent was not admitted: ${receipt.reason}`,
+    );
+    record._retiredUnifiedRequests.add(
+      `${pending.hostInstanceId}\0${pending.sessionEpoch}\0${pending.id}`,
+    );
+    this.clearUnifiedClaimTimer(record, pending.id);
+    record._pendingUnifiedSubmits.delete(pending.id);
+    record._mutationSequence++;
+  }
+
   async dispatchIntent(envelope: IntentEnvelope): Promise<IntentReceipt> {
     if (
       !envelope ||
@@ -1933,6 +2418,7 @@ export class SessionRegistry {
       reason,
     });
     if (!record) return notAdmitted("stale_owner");
+    if (record._expiredUnifiedIntents.has(envelope.intentId)) return notAdmitted("invalid");
     if (envelope.rendererGeneration !== record._rendererGeneration) return notAdmitted("invalid");
     if (record._closing) return notAdmitted("closing");
     if (record._hostTransition || record.availability === "transitioning") {
@@ -1952,6 +2438,47 @@ export class SessionRegistry {
       record.proc.sessionEpoch !== envelope.expectedOwner.sessionEpoch
     ) {
       return notAdmitted("stale_owner");
+    }
+
+    const sourceBoundUnifiedIntent =
+      "surface" in envelope.intent &&
+      envelope.intent.surface === "unified" &&
+      ["submit", "invokeCommand", "runBash", "reload"].includes(envelope.intent.kind);
+    const pendingUnified = this.unifiedPendingForIntent(record, envelope.intentId);
+    if (sourceBoundUnifiedIntent) {
+      if (
+        !pendingUnified ||
+        pendingUnified.claimedGeneration !== envelope.rendererGeneration ||
+        !pendingUnified.claimId ||
+        (pendingUnified.claimExpiresAt ?? 0) <= Date.now() ||
+        pendingUnified.dispatchStarted === true ||
+        pendingUnified.hostInstanceId !== envelope.expectedOwner.hostInstanceId ||
+        pendingUnified.sessionEpoch !== envelope.expectedOwner.sessionEpoch ||
+        !this.unifiedDispatchMatchesSource(pendingUnified, envelope)
+      ) {
+        if (
+          pendingUnified &&
+          pendingUnified.dispatchStarted !== true &&
+          (pendingUnified.claimExpiresAt ?? 0) <= Date.now()
+        ) {
+          this.expireUnifiedClaim(
+            sessionId,
+            pendingUnified.id,
+            pendingUnified.claimId ?? "",
+            pendingUnified.claimedGeneration ?? -1,
+          );
+        }
+        const receipt = notAdmitted("invalid");
+        if (pendingUnified && record.proc) {
+          this.settleUnifiedDispatchReceipt(record, pendingUnified, record.proc, receipt);
+        }
+        return receipt;
+      }
+      // JS run-to-completion makes this the atomic claim→dispatch boundary:
+      // clear the deadline before the first child await. Expiry can no longer
+      // classify an in-flight dispatch as ambiguous.
+      pendingUnified.dispatchStarted = true;
+      this.clearUnifiedClaimTimer(record, pendingUnified.id);
     }
 
     this.markActivationVisitInteracted(record);
@@ -1976,6 +2503,7 @@ export class SessionRegistry {
       // shared cast preserves the renderer IPC contract without inspecting the
       // child-owned semantic payload.
       const receipt = (await proc.dispatchIntent(childEnvelope)) as IntentReceipt;
+      if (pendingUnified) this.settleUnifiedDispatchReceipt(record, pendingUnified, proc, receipt);
       if (receipt.status === "delivery_unknown") {
         retained.deliveryUnknown = true;
         return receipt;
@@ -1989,11 +2517,13 @@ export class SessionRegistry {
       // Never retry or reinterpret a possible dispatch. Keep owner-scoped
       // evidence so it cannot silently migrate to a replacement host.
       retained.deliveryUnknown = true;
-      return {
+      const receipt: IntentReceipt = {
         status: "delivery_unknown",
         intentId: envelope.intentId,
         owner: envelope.expectedOwner,
       };
+      if (pendingUnified) this.settleUnifiedDispatchReceipt(record, pendingUnified, proc, receipt);
+      return receipt;
     }
   }
 
@@ -2233,8 +2763,9 @@ export class SessionRegistry {
         const restoration: RuntimeRecord & { type: "queue_restoration" } = {
           type: "queue_restoration",
           restorationId,
-          ...reviewQueues(submission),
+          ...restorationEvidenceQueues(submission),
           originalAttachments: [{ intentId: submission.intentId, images: submission.images }],
+          clearedIntentIds: [submission.intentId],
           certainty: "unknown",
         };
         record._restorations.set(restorationId, structuredClone(restoration));
@@ -2316,13 +2847,14 @@ export class SessionRegistry {
     const restoration: RuntimeRecord & { type: "queue_restoration" } = {
       type: "queue_restoration",
       restorationId,
-      ...reviewQueues(retained.payload),
+      ...restorationEvidenceQueues(retained.payload),
       originalAttachments: [
         {
           intentId: retained.payload.intentId,
           images: retained.payload.images,
         },
       ],
+      clearedIntentIds: [retained.payload.intentId],
       certainty: "unknown",
     };
     record._restorations.set(restorationId, structuredClone(restoration));
@@ -2457,6 +2989,7 @@ export class SessionRegistry {
   ): void {
     this.clearUnifiedClaimTimer(record, pending.id);
     const restorationId = `ambiguous-unified:${pending.id}`;
+    const outcomeMessage = `${message}. Submitted input was not restored.`;
     if (!record._restorations.has(restorationId)) {
       const restoration: RuntimeRecord & { type: "queue_restoration" } = {
         type: "queue_restoration",
@@ -2464,11 +2997,13 @@ export class SessionRegistry {
         steering: [],
         followUp: [],
         originalAttachments: [],
-        commandDescription: `${message}: ${pending.text}`,
+        clearedIntentIds: [pending.submissionIntentId],
+        commandDescription: outcomeMessage,
         certainty: "unknown",
       };
       record._restorations.set(restorationId, structuredClone(restoration));
-      this.queueRestoration(record, restoration);
+      const resolution = this.restorationResolution(record, restoration);
+      this.fenceEditorRecoveryOnRestoration(record, pending.editorRevision, resolution);
     }
     record._unifiedRestorationIntents.set(restorationId, pending.submissionIntentId);
     record._expiredUnifiedIntents.add(pending.submissionIntentId);
@@ -2481,7 +3016,7 @@ export class SessionRegistry {
       sessionEpoch: pending.sessionEpoch,
       editorRevision: pending.editorRevision,
       disposition: "outcome_unknown",
-      message,
+      message: outcomeMessage,
     };
     const retained = record._retainedIntents.get(pending.submissionIntentId);
     if (retained) {
@@ -2530,7 +3065,8 @@ export class SessionRegistry {
       !record ||
       !pending ||
       pending.claimId !== claimId ||
-      pending.claimedGeneration !== claimedGeneration
+      pending.claimedGeneration !== claimedGeneration ||
+      pending.dispatchStarted === true
     )
       return;
     this.retireUnifiedAsAmbiguous(
@@ -2539,6 +3075,27 @@ export class SessionRegistry {
       "Unified action claim expired before renderer acknowledgement",
       true,
     );
+  }
+
+  private advancePanelInputWatermark(
+    record: SessionRecord,
+    panelId: number,
+    owner: RuntimeIdentity,
+    acknowledgedThrough: number,
+  ): boolean {
+    const openPanel = record._openPanels.get(panelId);
+    if (
+      openPanel?.type !== "panel_open" ||
+      openPanel.hostInstanceId !== owner.hostInstanceId ||
+      openPanel.sessionEpoch !== owner.sessionEpoch
+    ) {
+      return false;
+    }
+    const mainWatermark = record._panelInputSequence.get(panelId) ?? 0;
+    if (acknowledgedThrough <= mainWatermark) return false;
+    record._panelInputSequence.set(panelId, acknowledgedThrough);
+    record._mutationSequence++;
+    return true;
   }
 
   /**
@@ -2558,6 +3115,29 @@ export class SessionRegistry {
       publication.owner.sessionEpoch !== owner.sessionEpoch
     ) {
       return false;
+    }
+    // A successor renderer must not observe a following panel projection until
+    // its detach obligation proves the child parser and both sequence mirrors
+    // share the same reset boundary. The later authority attach reconstructs
+    // any panel publications intentionally dropped here.
+    if (publication.plane === "panel" && record._rendererCancellationObligation) return false;
+    if (publication.plane === "panel" && publication.payload.kind === "keyframe") {
+      const panel = publication.payload.panel;
+      if (
+        panel.owner.hostInstanceId === owner.hostInstanceId &&
+        panel.owner.sessionEpoch === owner.sessionEpoch
+      ) {
+        // The correlated repaint RPC can itself time out after the child
+        // committed it. A validated current-owner keyframe is independent
+        // proof of the serialized host gate, so reconcile main before this
+        // publication can let renderer input resume.
+        this.advancePanelInputWatermark(
+          record,
+          panel.panelId,
+          owner,
+          panel.inputAcknowledgedThrough,
+        );
+      }
     }
     const router = this.authorityRouter(record);
     router.setExpectedOwner(owner);
@@ -2590,6 +3170,9 @@ export class SessionRegistry {
     const record = this.sessions.get(sessionId);
     if (!record || record._closing) {
       return { status: "unavailable", reason: "session_missing" };
+    }
+    if (record._rendererCancellationObligation) {
+      return { status: "unavailable", reason: "renderer_detach_pending" };
     }
     const proc = record.proc as
       | (SessionHost & {
@@ -2637,6 +3220,14 @@ export class SessionRegistry {
     // not a delivery acknowledgement; the child retains every item until the
     // renderer later calls acknowledgeRestoration.
     if (response.status === "ready") {
+      for (const panel of response.baseline.panels) {
+        this.advancePanelInputWatermark(
+          record,
+          panel.panelId,
+          panel.owner,
+          panel.inputAcknowledgedThrough,
+        );
+      }
       for (const restoration of response.baseline.restorations) {
         if (!record._restorations.has(restoration.restorationId)) {
           record._restorations.set(restoration.restorationId, structuredClone(restoration));
@@ -2685,6 +3276,12 @@ export class SessionRegistry {
       // exact response to finish startup.
       record._rendererGeneration = generation;
     }
+    const pendingCancellation = record._rendererCancellationObligation;
+    const canRetryRendererCancellation =
+      pendingCancellation !== undefined &&
+      generation >= record._rendererGeneration &&
+      attachProc?.hostInstanceId === pendingCancellation.hostInstanceId &&
+      attachProc.sessionEpoch === pendingCancellation.sessionEpoch;
     // A child can answer snapshot/authority requests just before activation's
     // main-owned lifecycle commit finishes. Attaching in that gap lets the
     // renderer install an owner that bound-history correctly still rejects as
@@ -2695,7 +3292,7 @@ export class SessionRegistry {
       record.status !== "ready" ||
       record._activating ||
       !record._procReady ||
-      record.availability !== "available" ||
+      (record.availability !== "available" && !canRetryRendererCancellation) ||
       record._hostTransition !== undefined
     ) {
       return { status: "unavailable", reason: "host_cold" };
@@ -2711,50 +3308,59 @@ export class SessionRegistry {
       record.proc === runtimeIdentity.proc &&
       record.proc.hostInstanceId === runtimeIdentity.hostInstanceId &&
       record.proc.sessionEpoch === runtimeIdentity.sessionEpoch;
+    const existingObligation = record._rendererCancellationObligation;
+    if (
+      existingObligation &&
+      (existingObligation.hostInstanceId !== runtimeIdentity.hostInstanceId ||
+        existingObligation.sessionEpoch !== runtimeIdentity.sessionEpoch)
+    ) {
+      this.cancelPendingRendererCancellation(record);
+      record._rendererCancellationObligation = undefined;
+    }
     if (generation > record._rendererGeneration) {
       const priorGeneration = record._rendererGeneration;
       record._rendererGeneration = generation;
       if (priorGeneration > 0) {
-        const cancellationProc = attachProc;
-        const supersededCancellation = record._pendingRendererCancellation;
-        if (supersededCancellation) {
-          clearTimeout(supersededCancellation.timer);
-          record._pendingRendererCancellation = undefined;
-          supersededCancellation.resolve(false);
-        }
-        const acknowledged = await new Promise<boolean>((resolve) => {
-          const timer = setTimeout(() => {
-            if (record._pendingRendererCancellation?.generation === priorGeneration) {
-              record._pendingRendererCancellation = undefined;
-            }
-            resolve(false);
-          }, 2_000);
-          timer.unref?.();
-          record._pendingRendererCancellation = {
-            generation: priorGeneration,
-            resolve,
-            timer,
-          };
-          cancellationProc.sendRendererDetached(priorGeneration);
-        });
-        if (!runtimeStillCurrent()) {
-          return { status: "unavailable", reason: "runtime_replaced" };
-        }
-        if (record._rendererGeneration !== generation) {
-          return { status: "unavailable", reason: "attach_superseded" };
-        }
-        if (!acknowledged) {
-          return {
-            status: "attached",
-            runtime: this.publishUnavailable(
-              record,
-              "Renderer cancellation acknowledgement timed out",
-            ),
-          };
-        }
-        // The successor renderer has a fresh local input sequencer. The host
-        // fenced the old revision before acknowledging detachment, so reset
-        // main's cumulative gate at the same boundary.
+        this.cancelPendingRendererCancellation(record);
+        record._rendererCancellationObligation = {
+          detachedGeneration: priorGeneration,
+          successorGeneration: generation,
+          hostInstanceId: runtimeIdentity.hostInstanceId,
+          sessionEpoch: runtimeIdentity.sessionEpoch,
+        };
+      }
+    }
+    const cancellationObligation = record._rendererCancellationObligation;
+    if (
+      cancellationObligation &&
+      cancellationObligation.successorGeneration === generation &&
+      cancellationObligation.hostInstanceId === runtimeIdentity.hostInstanceId &&
+      cancellationObligation.sessionEpoch === runtimeIdentity.sessionEpoch
+    ) {
+      const acknowledged = await this.requestRendererCancellation(
+        record,
+        attachProc,
+        cancellationObligation,
+      );
+      if (!runtimeStillCurrent()) {
+        return { status: "unavailable", reason: "runtime_replaced" };
+      }
+      if (record._rendererGeneration !== generation) {
+        return { status: "unavailable", reason: "attach_superseded" };
+      }
+      if (!acknowledged) {
+        this.publishUnavailable(record, "Renderer cancellation acknowledgement timed out");
+        // Typed unavailability keeps AuthorityAttachRetry in the rendererAttach
+        // phase. Reporting an attached-but-unavailable runtime would let it
+        // advance to authorityAttach and strand this durable obligation.
+        return { status: "unavailable", reason: "host_unresponsive" };
+      }
+      // The successor renderer has a fresh local input sequencer. The host
+      // fenced the old revision before acknowledging detachment, so retire the
+      // durable obligation and reset main's cumulative gate at the same proven
+      // boundary. A timeout deliberately leaves all three intact for retry.
+      if (record._rendererCancellationObligation === cancellationObligation) {
+        record._rendererCancellationObligation = undefined;
         record._panelInputSequence.clear();
         record._panelInputChains.clear();
       }
@@ -2772,7 +3378,7 @@ export class SessionRegistry {
         this.retireUnifiedAsAmbiguous(
           record,
           request,
-          "Unified submission may have executed before renderer acknowledgement was lost",
+          "Unified execution outcome is unknown because renderer acknowledgement was lost",
           true,
         );
         continue;
@@ -2959,6 +3565,9 @@ export class SessionRegistry {
     if (record?._closing) throw new Error("Session close preparation is in progress");
     const pending = record?._pendingUnifiedSubmits.get(id);
     if (!record || !pending) return { accepted: false };
+    // Exact child dispatch moves source acknowledgement to main's receipt
+    // boundary. A delayed renderer completion cannot race that settlement.
+    if (pending.dispatchStarted === true) return { accepted: false };
     const claimMatches =
       pending.claimedGeneration === claim.rendererGeneration &&
       pending.claimId === claim.claimId &&
@@ -2975,7 +3584,7 @@ export class SessionRegistry {
       this.retireUnifiedAsAmbiguous(
         record,
         pending,
-        "Unified submission may have executed before acknowledgement was lost",
+        "Unified execution outcome is unknown because acknowledgement was lost",
         false,
       );
       return { accepted: false };
@@ -3128,6 +3737,151 @@ export class SessionRegistry {
     return acknowledged && ownerIsCurrent;
   }
 
+  async consumeEditorSource(
+    sessionId: SessionId,
+    expectedHostInstanceId: string,
+    expectedSessionEpoch: number,
+    request: {
+      editorRevision: number;
+      editorText: string;
+      consumeAttachments?: boolean;
+    },
+  ): Promise<
+    | { accepted: true; sourceRevision: number; editor: RuntimeEditorState }
+    | {
+        accepted: false;
+        editor: RuntimeEditorState;
+        rejection?: "runtime_unavailable" | "runtime_replaced";
+      }
+  > {
+    const fallbackEditor = (): RuntimeEditorState =>
+      structuredClone(
+        this.sessions.get(sessionId)?.snapshot?.editor ?? {
+          revision: request.editorRevision,
+          text: request.editorText,
+          attachments: [],
+        },
+      );
+    const rejected = (rejection: "runtime_unavailable" | "runtime_replaced") => ({
+      accepted: false as const,
+      editor: fallbackEditor(),
+      rejection,
+    });
+    const record = this.sessions.get(sessionId);
+    if (record?._closing) return rejected("runtime_unavailable");
+    this.markActivationVisitInteracted(record);
+    if (!this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch)) {
+      return rejected("runtime_replaced");
+    }
+    if (
+      !record._procReady ||
+      record.availability !== "available" ||
+      record._hostTransition !== undefined
+    ) {
+      return rejected("runtime_unavailable");
+    }
+    if (
+      record._activeEditorConsume?.state === "pending" ||
+      record._pendingEditorSuccessors.size > 0
+    ) {
+      // One optimistic R+1 reservation may exist per editor owner at a time.
+      // Reject an overlapping consume rather than replacing the lineage token
+      // that fences already-issued successor patches.
+      return rejected("runtime_unavailable");
+    }
+    const consumeToken: ActiveEditorConsume = {
+      tokenId: `editor-consume-${crypto.randomUUID()}`,
+      owner: { hostInstanceId: expectedHostInstanceId, sessionEpoch: expectedSessionEpoch },
+      sourceRevision: request.editorRevision,
+      sourceText: request.editorText,
+      state: "pending",
+    };
+    record._activeEditorConsume = consumeToken;
+    return this.enqueueEditorMutation(record, async () => {
+      try {
+        if (
+          this.sessions.get(sessionId) !== record ||
+          record._closing ||
+          record._dead ||
+          !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
+          !record._procReady ||
+          record.availability !== "available" ||
+          record._hostTransition !== undefined
+        ) {
+          consumeToken.state = "rejected";
+          return rejected("runtime_replaced");
+        }
+        const admittedProc = record.proc;
+        record._mutationSequence++;
+        const response = await admittedProc.consumeEditorSource({
+          ...request,
+          intentId: consumeToken.tokenId,
+        });
+        if (
+          this.sessions.get(sessionId) !== record ||
+          record._closing ||
+          record._dead ||
+          record.proc !== admittedProc ||
+          !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
+          record.availability !== "available" ||
+          record._hostTransition !== undefined
+        ) {
+          consumeToken.state = "unknown";
+          return rejected("runtime_replaced");
+        }
+        if (!response.success || !response.data) {
+          consumeToken.state = "unknown";
+          throw new Error(response.error ?? "Editor source consumption failed");
+        }
+        const data = response.data as {
+          accepted?: unknown;
+          sourceRevision?: unknown;
+          editor?: unknown;
+        };
+        const editor = RuntimeEditorStateSchema.safeParse(data.editor);
+        if (!editor.success) {
+          consumeToken.state = "unknown";
+          throw new Error("Host returned a malformed editor source result");
+        }
+        if (data.accepted !== true) {
+          consumeToken.state = "rejected";
+          if (record.snapshot && editor.data.revision >= record.snapshot.editor.revision) {
+            record.snapshot = { ...record.snapshot, editor: structuredClone(editor.data) };
+          }
+          return { accepted: false, editor: editor.data };
+        }
+        if (
+          data.sourceRevision !== request.editorRevision ||
+          editor.data.revision <= request.editorRevision ||
+          editor.data.text !== ""
+        ) {
+          consumeToken.state = "unknown";
+          throw new Error("Host returned an incoherent editor source result");
+        }
+        consumeToken.state = "accepted";
+        this.installClearedEditorResidual(record, request.editorRevision, editor.data);
+        record._mutationSequence++;
+        return {
+          accepted: true,
+          sourceRevision: request.editorRevision,
+          editor: editor.data,
+        };
+      } catch (error) {
+        if (consumeToken.state === "pending") consumeToken.state = "unknown";
+        throw error;
+      }
+    });
+  }
+
+  private enqueueEditorMutation<T>(record: SessionRecord, operation: () => Promise<T>): Promise<T> {
+    const flight = record._editorMutationTail.then(operation, operation);
+    record._editorMutationTail = flight.then(
+      () => undefined,
+      () => undefined,
+    );
+    return flight;
+  }
+
   async applyEditorPatch(
     sessionId: SessionId,
     expectedHostInstanceId: string,
@@ -3137,30 +3891,108 @@ export class SessionRegistry {
       revision: number;
       text: string;
       attachments: unknown[];
+      preserveConflicts?: boolean;
+      sourceConsumeRevision?: number;
+      sourceConsumeText?: string;
+      inheritsSourceTextOnConsumeFailure?: boolean;
     },
-  ): Promise<{
-    accepted: boolean;
-    revision: number;
-    text: string;
-    attachments: unknown[];
-    conflictText?: string;
-    conflictAttachments?: unknown[];
-    rejection?: "runtime_unavailable" | "runtime_replaced";
-  }> {
+  ): Promise<
+    RuntimeEditorState & {
+      accepted: boolean;
+      rejection?: "runtime_unavailable" | "runtime_replaced";
+    }
+  > {
+    const record = this.sessions.get(sessionId);
+    const consumeToken = record?._activeEditorConsume;
+    const hasSourceLineage =
+      patch.sourceConsumeRevision !== undefined ||
+      patch.sourceConsumeText !== undefined ||
+      patch.inheritsSourceTextOnConsumeFailure !== undefined;
+    const matchesConsumeToken =
+      !!record &&
+      !!consumeToken &&
+      consumeToken.owner.hostInstanceId === expectedHostInstanceId &&
+      consumeToken.owner.sessionEpoch === expectedSessionEpoch &&
+      consumeToken.sourceRevision === patch.sourceConsumeRevision &&
+      consumeToken.sourceText === patch.sourceConsumeText;
+    const candidate: PendingEditorSuccessor | undefined =
+      matchesConsumeToken &&
+      patch.preserveConflicts === true &&
+      Number.isInteger(patch.sourceConsumeRevision) &&
+      (patch.sourceConsumeRevision ?? -1) >= 0 &&
+      typeof patch.sourceConsumeText === "string"
+        ? {
+            owner: {
+              hostInstanceId: expectedHostInstanceId,
+              sessionEpoch: expectedSessionEpoch,
+            },
+            sourceRevision: patch.sourceConsumeRevision as number,
+            sourceText: patch.sourceConsumeText,
+            inheritsSourceTextOnConsumeFailure: patch.inheritsSourceTextOnConsumeFailure === true,
+            revision: patch.revision,
+            text: patch.text,
+            attachments: structuredClone(patch.attachments),
+          }
+        : undefined;
+    const candidateKey =
+      record && candidate ? this.stagePendingEditorSuccessor(record, candidate) : undefined;
     const rejected = (rejection: "runtime_unavailable" | "runtime_replaced") => {
-      const editor = this.sessions.get(sessionId)?.snapshot?.editor;
+      const currentRecord = this.sessions.get(sessionId);
+      const editor = currentRecord?.snapshot?.editor ?? currentRecord?._editorRecovery;
+      let retained = editor ? structuredClone(editor) : undefined;
+      const candidateIsLatest =
+        !!record &&
+        !!candidate &&
+        !!candidateKey &&
+        record._pendingEditorSuccessors.get(candidateKey)?.revision === patch.revision;
+      const ownerStillMatches =
+        currentRecord === record &&
+        !!record &&
+        this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch);
+      if (ownerStillMatches && currentRecord && retained && candidate && candidateIsLatest) {
+        retained =
+          retained.revision < candidate.sourceRevision ||
+          (retained.revision === candidate.sourceRevision && retained.text === candidate.sourceText)
+            ? this.editorWithPrimaryCandidate(retained, candidate)
+            : this.editorWithCandidate(retained, {
+                text: candidate.inheritsSourceTextOnConsumeFailure
+                  ? candidate.sourceText
+                  : candidate.text,
+                attachments: candidate.attachments,
+              });
+      }
+      if (record) this.retirePendingEditorSuccessor(record, candidateKey, patch.revision);
+      if (ownerStillMatches && currentRecord && retained) {
+        retained = this.editorWithPendingSuccessors(currentRecord, retained);
+        this.installRetainedEditorCandidate(currentRecord, retained);
+      }
       return {
         accepted: false,
-        revision: editor?.revision ?? patch.baseRevision,
-        text: editor?.text ?? "",
-        attachments: editor?.attachments ?? [],
+        revision: retained?.revision ?? patch.baseRevision,
+        text: retained?.text ?? "",
+        attachments: retained?.attachments ?? [],
+        ...(retained?.conflictText !== undefined
+          ? {
+              conflictText: retained.conflictText,
+              conflictAttachments: retained.conflictAttachments ?? [],
+            }
+          : {}),
+        ...(retained?.alternateConflictText !== undefined
+          ? {
+              alternateConflictText: retained.alternateConflictText,
+              alternateConflictAttachments: retained.alternateConflictAttachments ?? [],
+            }
+          : {}),
+        ...((retained?.additionalConflictCandidates?.length ?? 0) > 0
+          ? { additionalConflictCandidates: retained?.additionalConflictCandidates ?? [] }
+          : {}),
         rejection,
       };
     };
-    const record = this.sessions.get(sessionId);
     // Editor synchronization is deliberately optimistic and can overlap /new,
     // reload, or a respawn. Those owner transitions are an expected rejection,
     // never an Electron handler exception.
+    if (hasSourceLineage && !candidate) return rejected("runtime_replaced");
     if (record?._closing) return rejected("runtime_unavailable");
     this.markActivationVisitInteracted(record);
     if (!this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch))
@@ -3171,30 +4003,55 @@ export class SessionRegistry {
       record._hostTransition !== undefined
     )
       return rejected("runtime_unavailable");
-    const admittedProc = record.proc;
-    record._mutationSequence++;
-    const response = await admittedProc.sendEditorPatch(patch);
-    if (
-      this.sessions.get(sessionId) !== record ||
-      record._closing ||
-      record._dead ||
-      record.proc !== admittedProc ||
-      !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
-      record.availability !== "available" ||
-      record._hostTransition !== undefined
-    )
-      return rejected("runtime_replaced");
-    if (!response.success || !response.data)
-      throw new Error(response.error ?? "Editor patch failed");
-    if ((response.data as { accepted?: boolean }).accepted) record._mutationSequence++;
-    return response.data as {
-      accepted: boolean;
-      revision: number;
-      text: string;
-      attachments: unknown[];
-      conflictText?: string;
-      conflictAttachments?: unknown[];
-    };
+    return this.enqueueEditorMutation(record, async () => {
+      try {
+        if (candidate && consumeToken?.state !== "accepted") {
+          return rejected("runtime_unavailable");
+        }
+        if (
+          this.sessions.get(sessionId) !== record ||
+          record._closing ||
+          record._dead ||
+          !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
+          !record._procReady ||
+          record.availability !== "available" ||
+          record._hostTransition !== undefined
+        ) {
+          return rejected("runtime_replaced");
+        }
+        const admittedProc = record.proc;
+        record._mutationSequence++;
+        const response = await admittedProc.sendEditorPatch(patch);
+        if (
+          this.sessions.get(sessionId) !== record ||
+          record._closing ||
+          record._dead ||
+          record.proc !== admittedProc ||
+          !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
+          record.availability !== "available" ||
+          record._hostTransition !== undefined
+        )
+          return rejected("runtime_replaced");
+        if (!response.success || !response.data)
+          throw new Error(response.error ?? "Editor patch failed");
+        const data = response.data as { accepted?: unknown } & Record<string, unknown>;
+        const editor = RuntimeEditorStateSchema.safeParse(data);
+        if (!editor.success) throw new Error("Host returned a malformed editor patch result");
+        this.retirePendingEditorSuccessor(record, candidateKey, patch.revision);
+        const installed = this.editorWithPendingSuccessors(record, editor.data);
+        if (record.snapshot && installed.revision >= record.snapshot.editor.revision) {
+          record.snapshot = { ...record.snapshot, editor: structuredClone(installed) };
+        }
+        if (record._editorRecovery && installed.revision >= record._editorRecovery.revision) {
+          record._editorRecovery = structuredClone(installed);
+        }
+        if (data.accepted === true) record._mutationSequence++;
+        return { accepted: data.accepted === true, ...installed };
+      } catch (error) {
+        rejected("runtime_unavailable");
+        throw error;
+      }
+    });
   }
 
   async sendPanelInput(
@@ -3207,14 +4064,25 @@ export class SessionRegistry {
     data: string,
   ): Promise<{
     acknowledgedThrough: number;
+    rejection?: "runtime_unavailable" | "runtime_replaced";
     gap?: { expected: number; received: number };
     repaintRequired?: { revision: number; repaintRequired: boolean };
   }> {
     const record = this.sessions.get(sessionId);
     if (record?._closing) throw new Error("Session close preparation is in progress");
     this.markActivationVisitInteracted(record);
-    if (!this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch))
-      return { acknowledgedThrough: 0 };
+    if (
+      !record ||
+      record._dead ||
+      record.availability !== "available" ||
+      record._rendererCancellationObligation ||
+      !record.proc
+    ) {
+      return { acknowledgedThrough: 0, rejection: "runtime_unavailable" };
+    }
+    if (!this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch)) {
+      return { acknowledgedThrough: 0, rejection: "runtime_replaced" };
+    }
     const prior =
       record._panelInputChains.get(panelId) ?? Promise.resolve({ acknowledgedThrough: 0 });
     const current = prior
@@ -3252,6 +4120,7 @@ export class SessionRegistry {
     data: string,
   ): Promise<{
     acknowledgedThrough: number;
+    rejection?: "runtime_unavailable" | "runtime_replaced";
     gap?: { expected: number; received: number };
     repaintRequired?: { revision: number; repaintRequired: boolean };
   }> {
@@ -3263,11 +4132,10 @@ export class SessionRegistry {
         gap: { expected, received: sequence },
       };
     }
-    if (
-      !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch) ||
-      sequence <= acknowledged
-    )
-      return { acknowledgedThrough: acknowledged };
+    if (!this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch)) {
+      return { acknowledgedThrough: acknowledged, rejection: "runtime_replaced" };
+    }
+    if (sequence <= acknowledged) return { acknowledgedThrough: acknowledged };
     const proc = record.proc;
     const result = await proc.sendPanelInput(panelId, revision, sequence, data);
     if (
@@ -3276,13 +4144,62 @@ export class SessionRegistry {
       record._dead ||
       record.proc !== proc ||
       !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch)
-    )
-      return { acknowledgedThrough: 0 };
+    ) {
+      const unavailable =
+        this.sessions.get(record.sessionId) !== record ||
+        record._closing ||
+        record._dead ||
+        !record.proc ||
+        record.availability !== "available";
+      return {
+        acknowledgedThrough: 0,
+        rejection: unavailable ? "runtime_unavailable" : "runtime_replaced",
+      };
+    }
     if (result.acknowledgedThrough > acknowledged) {
       record._panelInputSequence.set(panelId, result.acknowledgedThrough);
       record._mutationSequence++;
+      const checkpoint = result.editorCheckpoint;
+      if (
+        checkpoint &&
+        Number.isInteger(checkpoint.revision) &&
+        checkpoint.revision >= 0 &&
+        typeof checkpoint.text === "string" &&
+        typeof checkpoint.clearedConflicts === "boolean"
+      ) {
+        const base = record.snapshot?.editor ?? record._editorRecovery;
+        if (base && checkpoint.revision >= base.revision) {
+          let editor: RuntimeEditorState;
+          if (checkpoint.clearedConflicts) {
+            const {
+              conflictText: _conflictText,
+              conflictAttachments: _conflictAttachments,
+              alternateConflictText: _alternateConflictText,
+              alternateConflictAttachments: _alternateConflictAttachments,
+              additionalConflictCandidates: _additionalConflictCandidates,
+              ...unconflicted
+            } = base;
+            editor = {
+              ...unconflicted,
+              revision: checkpoint.revision,
+              text: checkpoint.text,
+            };
+          } else {
+            editor = {
+              ...base,
+              revision: checkpoint.revision,
+              text: checkpoint.text,
+            };
+          }
+          record.snapshot = record.snapshot
+            ? { ...record.snapshot, editor: structuredClone(editor) }
+            : record.snapshot;
+          record._editorRecovery = structuredClone(editor);
+        }
+      }
     }
-    return result;
+    const { editorCheckpoint: _editorCheckpoint, ...rendererResult } = result;
+    return rendererResult;
   }
 
   async acknowledgePanelRepaint(
@@ -3300,15 +4217,27 @@ export class SessionRegistry {
     )
       return { acknowledged: false };
     const proc = record.proc;
-    const acknowledged = await proc.acknowledgePanelRepaint(panelId, revision);
+    const repaintAck = await proc.acknowledgePanelRepaint(panelId, revision);
     if (
       this.sessions.get(sessionId) !== record ||
       record.proc !== proc ||
       !this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch)
     )
       return { acknowledged: false };
-    if (acknowledged) record._mutationSequence++;
-    return { acknowledged };
+    if (repaintAck.acknowledged) {
+      // A timed-out request may already have mutated the host. Its keyframe
+      // watermark is serialized at the repaint-ack boundary, so advance main
+      // before that following frame can reopen renderer input. Never lower
+      // main here: detach owns sequence resets explicitly.
+      const advanced = this.advancePanelInputWatermark(
+        record,
+        panelId,
+        { hostInstanceId: expectedHostInstanceId, sessionEpoch: expectedSessionEpoch },
+        repaintAck.inputAcknowledgedThrough,
+      );
+      if (!advanced) record._mutationSequence++;
+    }
+    return { acknowledged: repaintAck.acknowledged };
   }
 
   resizePanel(
@@ -3516,8 +4445,9 @@ export class SessionRegistry {
           steering: [],
           followUp: request.sourceText?.trim() ? [request.sourceText] : [],
           originalAttachments: [],
+          clearedIntentIds: [request.intentId],
           commandDescription:
-            "reload may have completed before its acknowledgement was lost. Review before retrying.",
+            "Reload may have completed before its acknowledgement was lost. Verify the outcome before retrying; submitted input was not restored.",
           certainty: "unknown",
         };
         record._restorations.set(restorationId, structuredClone(restoration));
@@ -3909,11 +4839,8 @@ export class SessionRegistry {
       pending.resolve(false);
     }
     record._pendingUiAcks.clear();
-    if (record._pendingRendererCancellation) {
-      clearTimeout(record._pendingRendererCancellation.timer);
-      record._pendingRendererCancellation.resolve(false);
-      record._pendingRendererCancellation = undefined;
-    }
+    this.cancelPendingRendererCancellation(record);
+    record._rendererCancellationObligation = undefined;
     const proc = record.proc;
     record.proc = undefined;
     proc?.stop();
@@ -4025,6 +4952,7 @@ export class SessionRegistry {
       !record._restartChain &&
       !record._lifecycleUiLease &&
       !record._pendingRendererCancellation &&
+      !record._rendererCancellationObligation &&
       record._retainedIntents.size === 0 &&
       record._pendingSubmissionPromises.size === 0 &&
       record._restorations.size === 0 &&
@@ -4077,7 +5005,7 @@ export class SessionRegistry {
         this.retireUnifiedAsAmbiguous(
           record,
           pending,
-          "Unified submission may have executed before session deactivation",
+          "Unified execution outcome is unknown because the session was deactivated",
           true,
         );
       } else {
@@ -4085,12 +5013,16 @@ export class SessionRegistry {
           type: "queue_restoration",
           restorationId: `interrupted-unified:${pending.id}`,
           steering: [],
-          followUp: [pending.text],
+          followUp: [],
           originalAttachments: [],
+          clearedIntentIds: [pending.submissionIntentId],
+          commandDescription:
+            "Session deactivated before unified execution; submitted input was not restored.",
           certainty: "not_processed",
         };
         record._restorations.set(restoration.restorationId, structuredClone(restoration));
-        this.queueRestoration(record, restoration);
+        const resolution = this.restorationResolution(record, restoration);
+        this.fenceEditorRecoveryOnRestoration(record, pending.editorRevision, resolution);
         record.proc?.sendUnifiedSubmitResponse(
           pending.id,
           false,

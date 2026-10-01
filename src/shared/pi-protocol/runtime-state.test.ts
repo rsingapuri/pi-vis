@@ -306,12 +306,19 @@ describe("authority protocol schemas", () => {
       intent: { kind: "reload", editorRevision: 3, editorText: "/reload " },
     };
     expect(IntentEnvelopeSchema.safeParse(reload).success).toBe(true);
-    expect(
-      IntentEnvelopeSchema.safeParse({
-        ...reload,
-        intent: { kind: "reload", editorRevision: 3 },
-      }).success,
-    ).toBe(false);
+    for (const invalidReload of [
+      { kind: "reload", editorRevision: 3 },
+      { kind: "reload", editorText: "/reload" },
+      { kind: "reload", surface: "unified" },
+      { kind: "reload", surface: "composer" },
+    ]) {
+      // Pairing belongs to SessionIntentSchema itself so callers that validate
+      // an intent before constructing its envelope get the same strict fence.
+      expect(SessionIntentSchema.safeParse(invalidReload).success).toBe(false);
+      expect(IntentEnvelopeSchema.safeParse({ ...reload, intent: invalidReload }).success).toBe(
+        false,
+      );
+    }
 
     expect(
       IntentPayloadConflictSchema.safeParse({
@@ -461,6 +468,69 @@ describe("authority protocol schemas", () => {
         kind: "setTrust",
         state: "completed",
         result: { trusted: true, persisted: true },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("models picker continuations as bounded selections without editor or slash-text authority", () => {
+    const base = {
+      sessionId: "session-a",
+      rendererGeneration: 1,
+      expectedOwner: owner,
+    };
+    for (const [intentId, selection] of [
+      ["fork-pick", { action: "fork", entryId: "entry-a" }],
+      [
+        "scope-pick",
+        {
+          action: "setScopedModels",
+          enabledIds: ["anthropic/claude", "Saved pattern, with spaces"],
+          persist: true,
+        },
+      ],
+      ["logout-pick", { action: "logoutProvider", providerId: "anthropic" }],
+    ] as const) {
+      expect(
+        IntentEnvelopeSchema.safeParse({
+          ...base,
+          intentId,
+          intent: { kind: "pickerAction", selection, surface: "composer" },
+        }).success,
+      ).toBe(true);
+    }
+    for (const selection of [
+      { action: "fork", entryId: "" },
+      { action: "fork", entryId: "entry-a", text: "/fork entry-b" },
+      { action: "setScopedModels", enabledIds: [""], persist: false },
+      { action: "setScopedModels", enabledIds: null },
+      { action: "logoutProvider", providerId: "anthropic", editorRevision: 9 },
+      { action: "arbitraryCommand", text: "/new" },
+    ]) {
+      expect(
+        SessionIntentSchema.safeParse({ kind: "pickerAction", selection, surface: "composer" })
+          .success,
+      ).toBe(false);
+    }
+    expect(
+      SessionIntentSchema.safeParse({
+        kind: "pickerAction",
+        selection: { action: "fork", entryId: "entry-a" },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionIntentSchema.safeParse({
+        kind: "pickerAction",
+        selection: { action: "fork", entryId: "entry-a" },
+        surface: "detached",
+      }).success,
+    ).toBe(false);
+    expect(
+      IntentOutcomeSchema.safeParse({
+        intentId: "fork-pick",
+        owner,
+        kind: "pickerAction",
+        state: "completed",
+        result: { action: "fork" },
       }).success,
     ).toBe(true);
   });
@@ -942,6 +1012,23 @@ describe("authority protocol schemas", () => {
         reason: "busy",
       }),
     ).toMatchObject({ status: "not_admitted", reason: "busy" });
+  });
+
+  it("types optional persistence for model and thinking defaults", () => {
+    expect(
+      SessionIntentSchema.parse({
+        kind: "setModel",
+        provider: "openai",
+        modelId: "gpt-6-astra",
+        persist: true,
+      }),
+    ).toMatchObject({ persist: true });
+    expect(
+      SessionIntentSchema.parse({ kind: "setThinking", level: "max", persist: true }),
+    ).toMatchObject({ persist: true });
+    expect(
+      SessionIntentSchema.safeParse({ kind: "setThinking", level: "high", persist: "yes" }).success,
+    ).toBe(false);
   });
 
   it("binds a Shell Turn command and context mode to its exact raw editor source", () => {

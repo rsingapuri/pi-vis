@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 import { buildPiThemeColorIndices } from "../../src/shared/theme/pi-theme.ts";
 import { applyPiVisTheme, importPi, initHostTheme } from "./bootstrap.mjs";
 
-const PINNED_PI_VERSION = "0.84.2";
+const PINNED_PI_VERSION = "0.85.1";
 const REPOSITORY_PINNED_PI_CLI = fileURLToPath(
   new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/cli.js", import.meta.url),
 );
@@ -87,7 +87,7 @@ describe("applyPiVisTheme (repository-pinned Pi)", () => {
     expect(theme.fg("text", "X")).toContain("\x1b[38;5;42m");
     expect(theme.fg("error", "Y")).toContain("\x1b[38;5;43m");
     expect(theme.fg("thinkingMax", "Z")).toContain("\x1b[38;5;45m");
-    expect(theme.bg("scrollbarThumb", "S")).toContain(`\x1b[48;5;${TEST_BG_COLORS.selectedBg}m`);
+    expect(theme.fg("scrollbarThumb", "S")).toContain(`\x1b[38;5;${TEST_FG_COLORS.text}m`);
     expect(theme.fg("searchMatchText", "F")).toContain("\x1b[38;5;42m");
     expect(theme.bg("searchMatchBg", "B")).toContain(`\x1b[48;5;${TEST_BG_COLORS.selectedBg}m`);
     // And it must NOT bake truecolor for numeric inputs.

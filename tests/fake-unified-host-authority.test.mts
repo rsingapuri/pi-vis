@@ -118,7 +118,9 @@ describe("fake unified host authority protocol", () => {
       panelId: panel.panelId,
       revision: panel.keyframe.renderRevision,
     });
-    await expect(response("repaint-ack")).resolves.toMatchObject({ data: { acknowledged: true } });
+    await expect(response("repaint-ack")).resolves.toMatchObject({
+      data: { acknowledged: true, inputAcknowledgedThrough: 0 },
+    });
     send({
       type: "panel_input",
       id: "accepted-input",

@@ -121,6 +121,11 @@ function matchBuiltin(def: { name: string; takesArgs: boolean }, rest: string): 
         trimmedRest.length > 0 ? { kind: "model", search: trimmedRest } : { kind: "model" };
       return action;
     }
+    case "thinking": {
+      const action: ComposerAction =
+        trimmedRest.length > 0 ? { kind: "thinking", search: trimmedRest } : { kind: "thinking" };
+      return action;
+    }
     case "name": {
       const action: ComposerAction =
         trimmedRest.length > 0 ? { kind: "name", name: trimmedRest } : { kind: "name" };

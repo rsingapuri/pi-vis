@@ -13,8 +13,10 @@ import type {
 } from "@shared/pi-protocol/runtime-state.js";
 import type { SessionSearchOpenResult } from "@shared/session-search.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { UNIFIED_COMMENT_CUSTODY_STORAGE_KEY } from "../lib/diff-comments.js";
 import { buildDiffModel } from "../lib/diff/diff-model.js";
 import { nextPanelInputSequence } from "../lib/panel-input-sequence.js";
+import { RENDERER_GENERATION } from "../lib/renderer-generation.js";
 import { dispatchSessionIntent } from "../lib/session-intent.js";
 import {
   isNewSessionPending,
@@ -183,6 +185,10 @@ describe("sessions store - diff comments", () => {
       workspaces: new Map(),
       activeWorkspacePath: null,
       diffComments: new Map(),
+      newSessionDrafts: new Map(),
+      newSessionDraftRevisions: new Map(),
+      sessionDrafts: new Map(),
+      sessionDraftRevisions: new Map(),
     });
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
   });
@@ -298,6 +304,80 @@ describe("sessions store - diff comments", () => {
     const state = useSessionsStore.getState();
     expect(state.sessionDrafts.get(SESSION_A)).toBe("newer draft");
     expect(state.getDiffCommentsForPrompt(SESSION_A)).toMatchObject([{ text: "newer comment" }]);
+  });
+
+  it("preserves an identical retype and reattachment after an older disposition", () => {
+    const store = useSessionsStore.getState();
+    const attachment = { kind: "file", name: "same.txt", path: "/tmp/same.txt" };
+    store.setSessionDraft(SESSION_A, "same prompt");
+    store.stageEditorAttachments(SESSION_A, [attachment]);
+    store.registerPendingComposerSubmission(SESSION_A, {
+      intentId: "submit-identical-disposition",
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+      editorRevision: 9,
+      draftScope: "session",
+      composerText: "same prompt",
+      composerAttachments: [attachment],
+      consumeComposerAttachments: true,
+      submittedText: "same prompt",
+      submittedComments: [],
+    });
+
+    // These are deliberately byte-identical, but belong to a newer local
+    // lineage (for example after switching away and remounting Composer).
+    store.setSessionDraft(SESSION_A, "same prompt");
+    store.stageEditorAttachments(SESSION_A, [attachment]);
+    store.applySubmissionDisposition(SESSION_A, {
+      intentId: "submit-identical-disposition",
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+      editorRevision: 9,
+      disposition: "consumed",
+    });
+
+    const state = useSessionsStore.getState();
+    expect(state.sessionDrafts.get(SESSION_A)).toBe("same prompt");
+    expect(state.sessions.get(SESSION_A)?.editorAttachments).toEqual([attachment]);
+    expect(state.sessions.get(SESSION_A)?.pendingComposerSubmission).toBeUndefined();
+  });
+
+  it("preserves identical newer workspace text, attachments, and injection on first echo", () => {
+    const store = useSessionsStore.getState();
+    const attachment = { kind: "file", name: "same.txt", path: "/tmp/same.txt" };
+    store.setNewSessionDraft(WORKSPACE, "same first prompt");
+    store.stageEditorAttachments(SESSION_A, [attachment]);
+    store.injectEditorText(SESSION_A, "same first prompt");
+    const submittedNonce = useSessionsStore.getState().sessions.get(SESSION_A)
+      ?.editorInjection?.nonce;
+    store.registerPendingComposerSubmission(SESSION_A, {
+      intentId: "submit-identical-echo",
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+      editorRevision: 10,
+      draftScope: "workspace",
+      composerText: "same first prompt",
+      composerAttachments: [attachment],
+      consumeComposerAttachments: true,
+      editorInjectionNonce: submittedNonce,
+      submittedText: "same first prompt",
+      submittedComments: [],
+    });
+
+    store.setNewSessionDraft(WORKSPACE, "same first prompt");
+    store.stageEditorAttachments(SESSION_A, [attachment]);
+    store.injectEditorText(SESSION_A, "same first prompt");
+    const newerInjection = useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection;
+    store.applyEvent(SESSION_A, {
+      type: "message_start",
+      message: { role: "user", content: "same first prompt" },
+      queueIntentId: "submit-identical-echo",
+    });
+
+    const state = useSessionsStore.getState();
+    expect(state.newSessionDrafts.has(WORKSPACE)).toBe(false);
+    expect(state.sessionDrafts.get(SESSION_A)).toBe("same first prompt");
+    expect(state.sessions.get(SESSION_A)?.editorAttachments).toEqual([attachment]);
+    expect(state.sessions.get(SESSION_A)?.editorInjection).toEqual(newerInjection);
+    expect(state.sessions.get(SESSION_A)?.pendingComposerSubmission).toBeUndefined();
   });
 
   it("uses an authoritative prompt echo to clear durable submission custody", () => {
@@ -2432,32 +2512,6 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     expect(blocks?.filter((block) => block.type === "user")).toHaveLength(2);
   });
 
-  it("clearPendingUserEcho removes a failed optimistic first prompt and restores the workspace draft", () => {
-    const store = useSessionsStore.getState();
-    store.createSession(SESSION_A, WORKSPACE);
-    store.addUserMessage(SESSION_A, "retry me");
-
-    store.clearPendingUserEcho(SESSION_A, "retry me");
-
-    const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.isNewPending).toBe(true);
-    expect(session?.transcript.blocks).toHaveLength(0);
-    expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("retry me");
-  });
-
-  it("clearPendingUserEcho removes a failed optimistic prompt in existing sessions and restores its draft", () => {
-    const store = useSessionsStore.getState();
-    store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
-    store.addUserMessage(SESSION_A, "retry me");
-
-    store.clearPendingUserEcho(SESSION_A, "retry me");
-
-    const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.isNewPending).toBe(false);
-    expect(session?.transcript.blocks).toHaveLength(0);
-    expect(useSessionsStore.getState().sessionDrafts.get(SESSION_A)).toBe("retry me");
-  });
-
   it("addBashCommand clears isNewPending and the workspace draft", () => {
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE);
@@ -2467,13 +2521,13 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     expect(useSessionsStore.getState().newSessionDrafts.has(WORKSPACE)).toBe(false);
   });
 
-  it("addCustomMessage clears isNewPending and the workspace draft", () => {
+  it("addCustomMessage is transcript-only and preserves a newer pending workspace draft", () => {
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE);
     store.setNewSessionDraft(WORKSPACE, "/skill");
     store.addCustomMessage(SESSION_A, "custom content");
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.isNewPending).toBe(false);
-    expect(useSessionsStore.getState().newSessionDrafts.has(WORKSPACE)).toBe(false);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.isNewPending).toBe(true);
+    expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("/skill");
   });
 
   it("applyEvent promotes a pending session without losing a newer skill/template draft", () => {
@@ -2619,6 +2673,39 @@ describe("sessions store - pending new session + per-workspace drafts", () => {
     expect(invoke).not.toHaveBeenCalledWith("session.close", { sessionId: SESSION_A });
     expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(true);
   });
+
+  it.each(["submission", "editor patch"] as const)(
+    "does not reap a pending session while %s custody can still settle",
+    async (custody) => {
+      const invoke = vi.fn(async () => ({ success: true }));
+      vi.stubGlobal("window", { pivis: { invoke } });
+      const store = useSessionsStore.getState();
+      store.createSession(SESSION_A, WORKSPACE);
+      store.createSession(SESSION_B, WORKSPACE, "/f/b.jsonl", undefined, undefined, "ready");
+      store.setNewSessionDraft(WORKSPACE, "submitted once");
+      if (custody === "submission") {
+        store.registerPendingComposerSubmission(SESSION_A, {
+          intentId: "pending-first-submit",
+          owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+          editorRevision: 1,
+          draftScope: "workspace",
+          composerText: "submitted once",
+          submittedText: "submitted once",
+          submittedComments: [],
+        });
+      } else {
+        store.beginEditorPatch(SESSION_A);
+      }
+      useSessionsStore.setState({ activeSessionId: SESSION_A, activeWorkspacePath: WORKSPACE });
+
+      store.setActiveSession(SESSION_B);
+      await Promise.resolve();
+
+      expect(invoke).not.toHaveBeenCalledWith("session.close", { sessionId: SESSION_A });
+      expect(useSessionsStore.getState().sessions.has(SESSION_A)).toBe(true);
+      expect(useSessionsStore.getState().newSessionDrafts.get(WORKSPACE)).toBe("submitted once");
+    },
+  );
 
   it("openSessionTab no-ops for a repeated + New session click in the active workspace", async () => {
     const invoke = vi.fn(async () => ({ outcome: "opened", sessionId: SESSION_B }));
@@ -2928,10 +3015,15 @@ describe("sessions store - per-session drafts (non-pending)", () => {
     // Empty text deletes the entry (no lingering empty values).
     store.setSessionDraft(SESSION_A, "");
     expect(useSessionsStore.getState().sessionDrafts.has(SESSION_A)).toBe(false);
-    // Clearing a non-existent entry is a no-op (same ref).
+    // Even an identical/empty write advances lineage so an older settlement
+    // cannot clear a deliberately recreated candidate after remount.
     const before = useSessionsStore.getState().sessionDrafts;
+    const beforeRevision = useSessionsStore.getState().sessionDraftRevisions.get(SESSION_B) ?? 0;
     store.setSessionDraft(SESSION_B, "");
-    expect(useSessionsStore.getState().sessionDrafts).toBe(before);
+    expect(useSessionsStore.getState().sessionDrafts).not.toBe(before);
+    expect(useSessionsStore.getState().sessionDraftRevisions.get(SESSION_B)).toBe(
+      beforeRevision + 1,
+    );
   });
 
   it("drafts are isolated per session", () => {
@@ -2959,12 +3051,12 @@ describe("sessions store - per-session drafts (non-pending)", () => {
     expect(useSessionsStore.getState().sessionDrafts.has(SESSION_A)).toBe(false);
   });
 
-  it("addCustomMessage clears the per-session draft", () => {
+  it("addCustomMessage is transcript-only and preserves the per-session draft", () => {
     const store = useSessionsStore.getState();
     store.createSession(SESSION_A, WORKSPACE, "/f/a.jsonl");
     store.setSessionDraft(SESSION_A, "/skill");
     store.addCustomMessage(SESSION_A, "custom content");
-    expect(useSessionsStore.getState().sessionDrafts.has(SESSION_A)).toBe(false);
+    expect(useSessionsStore.getState().sessionDrafts.get(SESSION_A)).toBe("/skill");
   });
 
   it("removeSession clears that session's draft (no leak to other sessions)", () => {
@@ -3569,7 +3661,7 @@ describe("sessions store - queue restoration", () => {
     expect(invoke).not.toHaveBeenCalledWith("session.acknowledgeRestoration", expect.anything());
   });
 
-  it("injects resolved restoration text and attachments directly into the composer", () => {
+  it("never injects resolved restoration text or attachments into the composer", () => {
     vi.stubGlobal("window", { pivis: { invoke: vi.fn(async () => ({ acknowledged: true })) } });
     useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
@@ -3582,17 +3674,8 @@ describe("sessions store - queue restoration", () => {
     });
 
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
-    expect(session?.editorInjection).toMatchObject({
-      text: "queued text",
-      attachments: [
-        {
-          kind: "image",
-          name: "restored-image-1.png",
-          path: "",
-          dataUrl: "data:image/png;base64,base64",
-        },
-      ],
-    });
+    expect(session?.editorInjection).toBeUndefined();
+    expect(session?.appliedRestoreDraftIds).toEqual(["restore-1"]);
     expect(session?.queueRestorations).toBeUndefined();
   });
 
@@ -3634,7 +3717,7 @@ describe("sessions store - queue restoration", () => {
     store.setSessionDraft(SESSION_A, "");
   });
 
-  it("merges a restored first-session submit after a newer workspace draft", () => {
+  it("does not merge an older submitted prompt into a newer workspace draft", () => {
     vi.stubGlobal("window", {
       pivis: { invoke: vi.fn(async () => ({ acknowledged: true })) },
     });
@@ -3668,14 +3751,12 @@ describe("sessions store - queue restoration", () => {
 
     const state = useSessionsStore.getState();
     expect(state.newSessionDrafts.get(WORKSPACE)).toBe("newer local text");
-    expect(state.sessions.get(SESSION_A)?.editorInjection?.text).toBe(
-      "newer local text\n\nolder first prompt",
-    );
+    expect(state.sessions.get(SESSION_A)?.editorInjection).toBeUndefined();
     expect(state.sessions.get(SESSION_A)?.pendingComposerSubmission).toBeUndefined();
     store.clearNewSessionDraft(WORKSPACE);
   });
 
-  it("retains an unconsumed restored candidate across the initial authority baseline", () => {
+  it("does not turn a delayed restoration into a candidate across authority attach", () => {
     vi.stubGlobal("window", { pivis: { invoke: vi.fn(async () => ({ acknowledged: true })) } });
     useSessionsStore.setState({ sessions: new Map(), activeSessionId: null });
     const store = useSessionsStore.getState();
@@ -3689,16 +3770,9 @@ describe("sessions store - queue restoration", () => {
 
     store.applyAuthorityAttach(SESSION_A, authorityAttach());
 
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection).toMatchObject({
-      text: "restored before attach",
-      attachments: [
-        expect.objectContaining({
-          kind: "image",
-          name: "restored-image-1.png",
-          dataUrl: "data:image/png;base64,base64",
-        }),
-      ],
-    });
+    const injection = useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection;
+    expect(injection?.text).toBe("");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toEqual([]);
   });
 
   it("deduplicates replay and never overwrites newer draft text", () => {
@@ -3772,9 +3846,7 @@ describe("sessions store - queue restoration", () => {
       sessionId: SESSION_A,
       restorationId: "restore-redelivered",
     });
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection?.text).toBe(
-      "restore exactly once",
-    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection).toBeUndefined();
     expect(
       useSessionsStore
         .getState()
@@ -3810,10 +3882,10 @@ describe("sessions store - queue restoration", () => {
     expect(session?.appliedRestoreDraftIds).toEqual(["drop-redelivered"]);
     expect(
       session?.toasts.filter((toast) => toast.message === "Interrupted command was not restored."),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 
-  it("retires the exact renderer draft custody when crash reconciliation proves it persisted", () => {
+  it("preserves an exact still-visible pre-clear draft while retiring its correlation", () => {
     const invoke = vi.fn(async () => ({ acknowledged: true }));
     vi.stubGlobal("window", { pivis: { invoke } });
     useSessionsStore.setState({
@@ -3855,10 +3927,11 @@ describe("sessions store - queue restoration", () => {
 
     const state = useSessionsStore.getState();
     const session = state.sessions.get(SESSION_A);
-    expect(state.sessionDrafts.has(SESSION_A)).toBe(false);
-    expect(state.getDiffCommentsForPrompt(SESSION_A)).toEqual([]);
+    expect(state.sessionDrafts.get(SESSION_A)).toBe("already persisted");
+    expect(state.getDiffCommentsForPrompt(SESSION_A)).toEqual(submittedComments);
     expect(session?.pendingComposerSubmission).toBeUndefined();
-    expect(session?.editorInjection).toMatchObject({ text: "", attachments: [] });
+    expect(session?.editorAttachments).toEqual(composerAttachments);
+    expect(session?.editorInjection).toBeUndefined();
   });
 
   it("does not clear newer renderer edits when an older persisted submit is dropped", () => {
@@ -4003,7 +4076,7 @@ describe("sessions store - queue restoration", () => {
     store.setSessionDraft(SESSION_A, "");
   });
 
-  it("does not let an older dropped submit erase a newer resolved restoration injection", () => {
+  it("does not let any delayed submit record overwrite a newer draft or attachments", () => {
     vi.stubGlobal("window", {
       pivis: { invoke: vi.fn(async () => ({ acknowledged: true })) },
     });
@@ -4037,16 +4110,7 @@ describe("sessions store - queue restoration", () => {
       disposition: "restore",
     });
     const beforeDrop = useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection;
-    expect(beforeDrop).toMatchObject({
-      text: "already persisted",
-      attachments: [
-        expect.objectContaining({ name: "submitted.txt" }),
-        expect.objectContaining({
-          name: "restored-image-1.png",
-          dataUrl: "data:image/png;base64,newer-image",
-        }),
-      ],
-    });
+    expect(beforeDrop).toBeUndefined();
 
     store.applyRestoreDraft(SESSION_A, {
       restorationId: "ambiguous-submission:persisted-before-new-restoration",
@@ -4061,6 +4125,7 @@ describe("sessions store - queue restoration", () => {
     expect(state.newSessionDrafts.get(WORKSPACE)).toBe("already persisted");
     expect(session?.pendingComposerSubmission).toBeUndefined();
     expect(session?.editorInjection).toEqual(beforeDrop);
+    expect(session?.editorAttachments).toEqual(submittedAttachments);
     store.clearNewSessionDraft(WORKSPACE);
   });
 
@@ -4088,13 +4153,15 @@ describe("sessions store - queue restoration", () => {
 
 // ── Unified-TUI submit pipeline (handleUnifiedSubmitRequest) ────────────────
 // Pins parity with the React Composer's submit: the same parse → no-model
-// guard → executeAction path, plus the host round-trip reply (ok / bailed) so
-// the TUI editor can restore on a guard bail. Runs under a node env, so we
-// stand up a minimal window.pivis.
+// guard → executeAction path. Non-dispatched guards are answered by renderer;
+// dispatched source custody is acknowledged by main at the child receipt
+// boundary, independently of terminal completion. Runs under a node env, so
+// we stand up a minimal window.pivis.
 
 describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () => {
   const invokeMock = vi.fn();
   const originalWindow = (globalThis as { window?: unknown }).window;
+  const custodyStorage = new Map<string, string>();
 
   beforeEach(() => {
     useSessionsStore.setState({
@@ -4103,11 +4170,16 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
       workspaces: new Map(),
       activeWorkspacePath: null,
       diffComments: new Map(),
+      newSessionDrafts: new Map(),
+      newSessionDraftRevisions: new Map(),
+      sessionDrafts: new Map(),
+      sessionDraftRevisions: new Map(),
     });
     useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
     // Unified submission requires both available transport and an authority baseline.
     installAuthority();
     invokeMock.mockReset();
+    custodyStorage.clear();
     invokeMock.mockImplementation(async (channel: string, payload?: unknown) => {
       if (channel === "session.claimUnifiedSubmit") return claimedUnified();
       if (channel === "session.dispatchIntent") {
@@ -4122,6 +4194,12 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
       return { success: true };
     });
     (globalThis as { window: unknown }).window = {
+      document: {},
+      localStorage: {
+        getItem: (key: string) => custodyStorage.get(key) ?? null,
+        setItem: (key: string, value: string) => custodyStorage.set(key, value),
+        removeItem: (key: string) => custodyStorage.delete(key),
+      },
       pivis: { invoke: invokeMock, on: vi.fn(() => () => {}) },
       dispatchEvent: vi.fn(),
       addEventListener: vi.fn(),
@@ -4198,6 +4276,696 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     expect(lastUnifiedResponse()).toBeUndefined();
   });
 
+  it("drains an owner-bound Unified replay that arrives before its authority baseline", async () => {
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, {
+        ...sessions.get(SESSION_A)!,
+        status: "starting",
+        authorityProjection: undefined,
+      });
+      return { sessions };
+    });
+    const request = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "pre-authority-replay",
+        "replayed prompt",
+        0,
+        "intent-pre-authority-replay",
+        "host-1",
+        1,
+        [],
+        { revision: 1, text: "", attachments: [] },
+      );
+    await request;
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "session.claimUnifiedSubmit"),
+    ).toHaveLength(0);
+
+    installAuthority();
+    await vi.waitFor(() => {
+      expect(
+        invokeMock.mock.calls.filter((call) => call[0] === "session.claimUnifiedSubmit"),
+      ).toHaveLength(1);
+    });
+    await vi.waitFor(() => expect(sentSubmission()?.submission.text).toBe("replayed prompt"));
+
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, {
+        ...sessions.get(SESSION_A)!,
+        status: "starting",
+        authorityProjection: undefined,
+      });
+      return { sessions };
+    });
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "stale-pre-authority-replay",
+        "must not dispatch",
+        0,
+        "intent-stale-pre-authority-replay",
+        "stale-host",
+        1,
+        [],
+        { revision: 1, text: "", attachments: [] },
+      );
+    installAuthority();
+    await Promise.resolve();
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "session.claimUnifiedSubmit"),
+    ).toHaveLength(1);
+  });
+
+  it("retains a successor-owner replay while following its predecessor and drains only the winner", async () => {
+    const store = useSessionsStore.getState();
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { success: true };
+    });
+
+    // rendererAttach may replay B's pending request before its Promise installs
+    // B's baseline, while the renderer still follows A.
+    await store.handleUnifiedSubmitRequest(
+      SESSION_A,
+      "successor-before-baseline",
+      "run on B",
+      0,
+      "intent-successor-before-baseline",
+      "host-2",
+      2,
+      [],
+      { revision: 1, text: "", attachments: [] },
+    );
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "session.claimUnifiedSubmit"),
+    ).toHaveLength(0);
+
+    // Once A is fenced, a delayed A replay is also held. B's baseline must
+    // select B exactly once and discard A without touching A's comment/draft
+    // custody in this successor renderer.
+    store.markAuthorityUnavailable(SESSION_A, "renderer reattaching");
+    await store.handleUnifiedSubmitRequest(
+      SESSION_A,
+      "stale-predecessor",
+      "do not run on B",
+      0,
+      "intent-stale-predecessor",
+      "host-1",
+      1,
+      [],
+      { revision: 1, text: "", attachments: [] },
+    );
+
+    const successorSnapshot = semanticSnapshot(1, {
+      owner: { hostInstanceId: "host-2", sessionEpoch: 2 },
+    });
+    const successorRuntime = runtimeState(false);
+    successorRuntime.hostInstanceId = "host-2";
+    successorRuntime.sessionEpoch = 2;
+    if (successorRuntime.snapshot) {
+      successorRuntime.snapshot.hostInstanceId = "host-2";
+      successorRuntime.snapshot.sessionEpoch = 2;
+    }
+    store.applyRuntimeState(SESSION_A, successorRuntime);
+    store.applyAuthorityAttach(SESSION_A, authorityAttach(successorSnapshot));
+
+    await vi.waitFor(() => {
+      const claims = invokeMock.mock.calls
+        .filter((call) => call[0] === "session.claimUnifiedSubmit")
+        .map((call) => (call[1] as { id: string }).id);
+      expect(claims).toEqual(["successor-before-baseline"]);
+    });
+  });
+
+  it("keeps every pre-authority source and binds comments to event-time revisions", async () => {
+    const store = useSessionsStore.getState();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, {
+        ...sessions.get(SESSION_A)!,
+        status: "starting",
+        authorityProjection: undefined,
+      });
+      return { sessions };
+    });
+    store.setDiffComment(SESSION_A, {
+      filePath: "src/a.ts",
+      lineNumber: 1,
+      lineText: "old line",
+      text: "event-time comment",
+    });
+    await store.handleUnifiedSubmitRequest(
+      SESSION_A,
+      "comment-before-authority",
+      "review this",
+      0,
+      "intent-comment-before-authority",
+      "host-1",
+      1,
+      [],
+      { revision: 1, text: "", attachments: [] },
+    );
+    store.setDiffComment(SESSION_A, {
+      filePath: "src/a.ts",
+      lineNumber: 1,
+      lineText: "new line",
+      text: "successor comment",
+    });
+
+    installAuthority();
+    await vi.waitFor(() =>
+      expect(sentSubmission()?.submission.text).toContain("event-time comment"),
+    );
+    expect(sentSubmission()?.submission.text).not.toContain("successor comment");
+    expect(store.getDiffCommentsForPrompt(SESSION_A)).toEqual([
+      expect.objectContaining({ text: "successor comment" }),
+    ]);
+
+    // Renderer replay custody is lossless: main has no smaller bound, so a
+    // seventeenth cleared source may not evict the first sixteen.
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, {
+        ...sessions.get(SESSION_A)!,
+        status: "starting",
+        authorityProjection: undefined,
+      });
+      return { sessions };
+    });
+    invokeMock.mockClear();
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { success: true };
+    });
+    for (let index = 0; index < 17; index++) {
+      await store.handleUnifiedSubmitRequest(
+        SESSION_A,
+        `pre-authority-${index}`,
+        `/help ${index}`,
+        index + 1,
+        `intent-pre-authority-${index}`,
+        "host-1",
+        1,
+        [],
+        { revision: index + 2, text: "", attachments: [] },
+      );
+    }
+    installAuthority();
+    await vi.waitFor(() => {
+      expect(
+        invokeMock.mock.calls.filter((call) => call[0] === "session.claimUnifiedSubmit"),
+      ).toHaveLength(17);
+    });
+  });
+
+  it("retires the exact renderer projection synchronously before a native Input remount", async () => {
+    const attachment = { kind: "file", name: "alpha.txt", path: "/tmp/alpha.txt" };
+    const store = useSessionsStore.getState();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, { ...sessions.get(SESSION_A)!, isNewPending: false });
+      return { sessions };
+    });
+    store.setSessionDraft(SESSION_A, "alpha");
+    store.stageEditorAttachments(SESSION_A, [attachment]);
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      const current = sessions.get(SESSION_A)!;
+      sessions.set(SESSION_A, {
+        ...current,
+        editorInjection: { text: "alpha", nonce: 77, revision: 0 },
+      });
+      return { sessions };
+    });
+    store.handlePanelEvent(SESSION_A, {
+      type: "panel_open",
+      panelId: 71,
+      overlay: false,
+      unified: true,
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+    });
+
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { ok: true };
+    });
+    const request = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "clear-before-toggle",
+        "alpha",
+        0,
+        "intent-clear-before-toggle",
+        "host-1",
+        1,
+        [attachment],
+        { revision: 1, text: "", attachments: [] },
+      );
+
+    const cleared = useSessionsStore.getState();
+    await request;
+    expect(cleared.sessionDrafts.has(SESSION_A)).toBe(false);
+    expect(cleared.sessions.get(SESSION_A)?.editorInjection).toBeUndefined();
+    expect(cleared.sessions.get(SESSION_A)?.editorAttachments).toEqual([]);
+  });
+
+  it("refreshes authority before Input reveal and distinguishes no-submit from a cleared source", async () => {
+    const store = useSessionsStore.getState();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, { ...sessions.get(SESSION_A)!, isNewPending: false });
+      return { sessions };
+    });
+    store.setSessionDraft(SESSION_A, "alpha");
+    const source = semanticSnapshot(2, {
+      editor: { revision: 4, text: "alpha", attachments: [] },
+    });
+    store.applyAuthorityAttach(SESSION_A, authorityAttach(source));
+    store.handlePanelEvent(SESSION_A, {
+      type: "panel_open",
+      panelId: 78,
+      overlay: false,
+      unified: true,
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+    });
+
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.authorityAttach") {
+        return authorityAttachWithUnifiedPanel(source, 78);
+      }
+      return { success: true };
+    });
+    await expect(store.revealNativeComposerFromUnified(SESSION_A)).resolves.toBe(true);
+    expect(useSessionsStore.getState().sessionDrafts.get(SESSION_A)).toBe("alpha");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      unifiedPanelHidden: true,
+      unifiedComposerProjectionTokens: [],
+    });
+
+    // A new handoff of the same renderer lineage is cleared only after the
+    // refreshed owner baseline proves that the TUI consumed it.
+    store.setUnifiedPanelHidden(SESSION_A, false);
+    const cleared = semanticSnapshot(3, {
+      editor: { revision: 5, text: "", attachments: [] },
+    });
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.authorityAttach") {
+        return authorityAttachWithUnifiedPanel(cleared, 78);
+      }
+      return { success: true };
+    });
+    await expect(store.revealNativeComposerFromUnified(SESSION_A)).resolves.toBe(true);
+    expect(useSessionsStore.getState().sessionDrafts.has(SESSION_A)).toBe(false);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedPanelHidden).toBe(true);
+  });
+
+  it("keeps Extension visible when the owner-bound Input refresh fails or is cancelled", async () => {
+    const store = useSessionsStore.getState();
+    const panelId = 79;
+    store.handlePanelEvent(SESSION_A, {
+      type: "panel_open",
+      panelId,
+      overlay: false,
+      unified: true,
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+    });
+    invokeMock.mockRejectedValueOnce(new Error("attach failed"));
+    await expect(store.revealNativeComposerFromUnified(SESSION_A)).resolves.toBe(false);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedPanelHidden).toBe(false);
+
+    let resolveAttach!: (value: AuthorityAttachResponse) => void;
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<AuthorityAttachResponse>((resolve) => {
+          resolveAttach = resolve;
+        }),
+    );
+    const reveal = store.revealNativeComposerFromUnified(SESSION_A);
+    store.setUnifiedPanelHidden(SESSION_A, false);
+    resolveAttach(
+      authorityAttachWithUnifiedPanel(
+        semanticSnapshot(2, { editor: { revision: 0, text: "", attachments: [] } }),
+        panelId,
+      ),
+    );
+    await expect(reveal).resolves.toBe(false);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedPanelHidden).toBe(false);
+  });
+
+  it("waits for a native editor patch before creating the next handoff token", async () => {
+    const store = useSessionsStore.getState();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, { ...sessions.get(SESSION_A)!, isNewPending: false });
+      return { sessions };
+    });
+    store.setSessionDraft(SESSION_A, "alpha");
+    const alphaSnapshot = semanticSnapshot(2, {
+      editor: { revision: 0, text: "alpha", attachments: [] },
+    });
+    store.applyAuthorityAttach(SESSION_A, authorityAttach(alphaSnapshot));
+    store.handlePanelEvent(SESSION_A, {
+      type: "panel_open",
+      panelId: 80,
+      overlay: false,
+      unified: true,
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+    });
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.authorityAttach") {
+        return authorityAttachWithUnifiedPanel(alphaSnapshot, 80);
+      }
+      return { success: true };
+    });
+    await store.revealNativeComposerFromUnified(SESSION_A);
+    store.setSessionDraft(SESSION_A, "beta");
+    store.beginEditorPatch(SESSION_A);
+    store.setUnifiedPanelHidden(SESSION_A, false);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      unifiedPanelHidden: true,
+      unifiedPanelRevealPending: true,
+      unifiedComposerProjectionTokens: expect.any(Array),
+    });
+
+    store.applyAuthorityAttach(
+      SESSION_A,
+      authorityAttachWithUnifiedPanel(
+        semanticSnapshot(3, { editor: { revision: 1, text: "beta", attachments: [] } }),
+        80,
+      ),
+    );
+    store.endEditorPatch(SESSION_A);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      unifiedPanelHidden: false,
+      unifiedPanelRevealPending: undefined,
+      unifiedComposerProjectionTokens: [
+        expect.objectContaining({ editorRevision: 1, draftText: "beta" }),
+      ],
+    });
+
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { success: true };
+    });
+    await store.handleUnifiedSubmitRequest(
+      SESSION_A,
+      "second-handoff-gamma",
+      "gamma",
+      2,
+      "intent-second-handoff-gamma",
+      "host-1",
+      1,
+      [],
+      { revision: 3, text: "", attachments: [] },
+    );
+    expect(useSessionsStore.getState().sessionDrafts.has(SESSION_A)).toBe(false);
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedComposerProjectionTokens,
+    ).toEqual([]);
+  });
+
+  it("uses the handoff lineage for a mounted Composer receipt and never retires an identical successor", async () => {
+    const attachment = { kind: "file", name: "alpha.txt", path: "/tmp/alpha.txt" };
+    const store = useSessionsStore.getState();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, { ...sessions.get(SESSION_A)!, isNewPending: false });
+      return { sessions };
+    });
+    store.setSessionDraft(SESSION_A, "alpha");
+    store.stageEditorAttachments(SESSION_A, [attachment]);
+    store.applyAuthorityAttach(
+      SESSION_A,
+      authorityAttach(
+        semanticSnapshot(2, {
+          editor: { revision: 0, text: "alpha", attachments: [attachment] },
+        }),
+      ),
+    );
+    store.handlePanelEvent(SESSION_A, {
+      type: "panel_open",
+      panelId: 72,
+      overlay: false,
+      unified: true,
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+    });
+    store.setUnifiedPanelHidden(SESSION_A, true);
+
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { ok: true };
+    });
+    const request = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "mounted-clear",
+        "alpha changed in TUI",
+        0,
+        "intent-mounted-clear",
+        "host-1",
+        1,
+        [],
+        { revision: 1, text: "", attachments: [] },
+      );
+
+    const receipt = useSessionsStore.getState().sessions.get(SESSION_A)
+      ?.unifiedSourceClearReceipts?.[0];
+    await request;
+    expect(receipt).toMatchObject({
+      draftText: "alpha",
+      draftRevision: expect.any(Number),
+      projectedAttachments: [attachment],
+      consumeAttachments: true,
+    });
+    expect(useSessionsStore.getState().sessionDrafts.has(SESSION_A)).toBe(false);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toEqual([]);
+
+    // An identical retype/reattachment is a distinct lineage. Consuming the
+    // older receipt must preserve it even though its bytes match exactly.
+    store.setSessionDraft(SESSION_A, "alpha");
+    store.stageEditorAttachments(SESSION_A, [attachment]);
+    store.consumeUnifiedSourceClearReceipt(SESSION_A, receipt!.key, {
+      draft: true,
+      attachments: true,
+    });
+    expect(useSessionsStore.getState().sessionDrafts.get(SESSION_A)).toBe("alpha");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toEqual([
+      attachment,
+    ]);
+
+    // Duplicate delivery is tombstoned and cannot publish a second receipt
+    // that would target the successor.
+    const duplicate = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "mounted-clear",
+        "alpha changed in TUI",
+        0,
+        "intent-mounted-clear",
+        "host-1",
+        1,
+        [],
+        { revision: 1, text: "", attachments: [] },
+      );
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedSourceClearReceipts,
+    ).toBeUndefined();
+    await duplicate;
+  });
+
+  it("correlates a delayed first source receipt to its original handoff instead of a newer draft", async () => {
+    const firstAttachment = { kind: "file", name: "alpha.txt", path: "/tmp/alpha.txt" };
+    const secondAttachment = { kind: "file", name: "beta.txt", path: "/tmp/beta.txt" };
+    const store = useSessionsStore.getState();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, { ...sessions.get(SESSION_A)!, isNewPending: false });
+      return { sessions };
+    });
+    store.setSessionDraft(SESSION_A, "alpha");
+    store.stageEditorAttachments(SESSION_A, [firstAttachment]);
+    const alphaSnapshot = semanticSnapshot(2, {
+      editor: { revision: 0, text: "alpha", attachments: [firstAttachment] },
+    });
+    store.applyAuthorityAttach(SESSION_A, authorityAttach(alphaSnapshot));
+    store.handlePanelEvent(SESSION_A, {
+      type: "panel_open",
+      panelId: 73,
+      overlay: false,
+      unified: true,
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+    });
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.authorityAttach") {
+        return authorityAttachWithUnifiedPanel(alphaSnapshot, 73);
+      }
+      return { ok: true };
+    });
+    await store.revealNativeComposerFromUnified(SESSION_A);
+    store.setSessionDraft(SESSION_A, "beta");
+    store.stageEditorAttachments(SESSION_A, [secondAttachment]);
+    store.applyAuthorityAttach(
+      SESSION_A,
+      authorityAttachWithUnifiedPanel(
+        semanticSnapshot(3, {
+          editor: { revision: 1, text: "beta", attachments: [secondAttachment] },
+        }),
+        73,
+      ),
+    );
+    store.setUnifiedPanelHidden(SESSION_A, false);
+
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { ok: true };
+    });
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "delayed-alpha",
+        "alpha",
+        0,
+        "intent-delayed-alpha",
+        "host-1",
+        1,
+        [firstAttachment],
+        { revision: 1, text: "", attachments: [] },
+      );
+
+    const state = useSessionsStore.getState();
+    expect(state.sessionDrafts.get(SESSION_A)).toBe("beta");
+    expect(state.sessions.get(SESSION_A)?.editorAttachments).toEqual([secondAttachment]);
+    expect(state.sessions.get(SESSION_A)?.unifiedComposerProjectionTokens).toHaveLength(1);
+    expect(state.sessions.get(SESSION_A)?.unifiedComposerProjectionTokens?.[0]).toMatchObject({
+      editorRevision: 1,
+      draftText: "beta",
+    });
+  });
+
+  it("retains attachment lineage across a Unified slash before an ordinary submit", async () => {
+    const attachment = { kind: "file", name: "alpha.txt", path: "/tmp/alpha.txt" };
+    const store = useSessionsStore.getState();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, { ...sessions.get(SESSION_A)!, isNewPending: false });
+      return { sessions };
+    });
+    store.stageEditorAttachments(SESSION_A, [attachment]);
+    store.applyAuthorityAttach(
+      SESSION_A,
+      authorityAttach(
+        semanticSnapshot(2, {
+          editor: { revision: 5, text: "", attachments: [attachment] },
+        }),
+      ),
+    );
+    store.handlePanelEvent(SESSION_A, {
+      type: "panel_open",
+      panelId: 77,
+      overlay: false,
+      unified: true,
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+    });
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedComposerProjectionTokens,
+    ).toEqual([expect.objectContaining({ editorRevision: 5, attachments: [attachment] })]);
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { ok: true };
+    });
+
+    await store.handleUnifiedSubmitRequest(
+      SESSION_A,
+      "slash-preserves-attachment",
+      "/help",
+      5,
+      "intent-slash-preserves-attachment",
+      "host-1",
+      1,
+      [attachment],
+      { revision: 6, text: "", attachments: [attachment] },
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toEqual([
+      attachment,
+    ]);
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedComposerProjectionTokens,
+    ).toHaveLength(1);
+
+    await store.handleUnifiedSubmitRequest(
+      SESSION_A,
+      "ordinary-consumes-attachment",
+      "send it",
+      12,
+      "intent-ordinary-consumes-attachment",
+      "host-1",
+      1,
+      [attachment],
+      { revision: 13, text: "", attachments: [] },
+    );
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toEqual([]);
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedComposerProjectionTokens,
+    ).toEqual([]);
+  });
+
+  it("keeps a mounted clear receipt across the source panel closing before React effects", async () => {
+    const store = useSessionsStore.getState();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, { ...sessions.get(SESSION_A)!, isNewPending: false });
+      return { sessions };
+    });
+    store.setSessionDraft(SESSION_A, "alpha");
+    store.handlePanelEvent(SESSION_A, {
+      type: "panel_open",
+      panelId: 74,
+      overlay: false,
+      unified: true,
+      hostInstanceId: "host-1",
+      sessionEpoch: 1,
+    });
+    store.setUnifiedPanelHidden(SESSION_A, true);
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { ok: true };
+    });
+    const request = store.handleUnifiedSubmitRequest(
+      SESSION_A,
+      "close-before-effect",
+      "alpha",
+      0,
+      "intent-close-before-effect",
+      "host-1",
+      1,
+      [],
+      { revision: 1, text: "", attachments: [] },
+    );
+    store.handlePanelEvent(SESSION_A, { type: "panel_close", panelId: 74 });
+    await request;
+
+    expect(useSessionsStore.getState().sessionDrafts.has(SESSION_A)).toBe(false);
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedSourceClearReceipts,
+    ).toHaveLength(1);
+  });
+
   it("an empty submit bails without dispatching a prompt", async () => {
     await useSessionsStore
       .getState()
@@ -4234,7 +5002,7 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     });
     expect(sentSubmission()?.submission.text).toContain("File: src/a.ts");
     expect(sentSubmission()?.submission.text).toContain("Line: 42");
-    expect(lastUnifiedResponse()).toMatchObject({ id: "id-comments", ok: true });
+    expect(lastUnifiedResponse()).toBeUndefined();
     expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toEqual([]);
   });
 
@@ -4280,27 +5048,31 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
       kind: "invokeCommand",
       text: "/widget-on",
     });
-    expect(lastUnifiedResponse()).toMatchObject({ id: "id-slash-comments", ok: true });
+    expect(lastUnifiedResponse()).toBeUndefined();
     expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toHaveLength(1);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toHaveLength(2);
   });
 
   it("sends staged attachments and comments with a leading-whitespace ordinary prompt", async () => {
+    const submittedAttachments = [
+      { kind: "file", name: "notes.txt", path: "/tmp/notes.txt" },
+      {
+        kind: "image",
+        name: "diagram.png",
+        path: "/tmp/diagram.png",
+        dataUrl: "data:image/png;base64,eA==",
+      },
+    ];
+    const newerAttachments = [{ kind: "file", name: "new.txt", path: "/tmp/new.txt" }];
     useSessionsStore.setState((state) => {
       const sessions = new Map(state.sessions);
       sessions.set(SESSION_A, {
         ...sessions.get(SESSION_A)!,
         currentModel: "vision",
         availableModels: [{ id: "vision", name: "Vision", input: ["text", "image"] }],
-        editorAttachments: [
-          { kind: "file", name: "notes.txt", path: "/tmp/notes.txt" },
-          {
-            kind: "image",
-            name: "diagram.png",
-            path: "/tmp/diagram.png",
-            dataUrl: "data:image/png;base64,eA==",
-          },
-        ],
+        // The host has already cleared the submitted source and a newer draft
+        // now owns renderer attachment state.
+        editorAttachments: newerAttachments,
       });
       return { sessions };
     });
@@ -4321,6 +5093,7 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
         "intent-leading-space",
         "host-1",
         1,
+        submittedAttachments,
       );
 
     const submission = sentSubmission()?.submission;
@@ -4329,8 +5102,407 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     expect(submission?.text).toContain("### User comments on the code");
     expect(submission?.inputKind).toBe("ordinary");
     expect(submission?.images).toEqual([{ type: "image", data: "eA==", mimeType: "image/png" }]);
-    expect(lastUnifiedResponse()).toMatchObject({ id: "id-leading-space", ok: true });
+    expect(lastUnifiedResponse()).toBeUndefined();
     expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toEqual([]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toEqual(
+      newerAttachments,
+    );
+  });
+
+  it("never borrows mutable successor attachments when a legacy unified request omits its snapshot", async () => {
+    const successorAttachments = [
+      { kind: "file", name: "successor.txt", path: "/tmp/successor.txt" },
+    ];
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(SESSION_A, {
+        ...sessions.get(SESSION_A)!,
+        currentModel: "text-model",
+        availableModels: [{ id: "text-model", name: "Text", input: ["text"] }],
+        editorAttachments: successorAttachments,
+      });
+      return { sessions };
+    });
+
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "legacy-no-attachments",
+        "older prompt",
+        4,
+        "intent-legacy-no-attachments",
+        "host-1",
+        1,
+      );
+
+    expect(sentSubmission()?.submission).toMatchObject({
+      text: "older prompt",
+      images: [],
+    });
+    expect(sentSubmission()?.submission.text).not.toContain("/tmp/successor.txt");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorAttachments).toEqual(
+      successorAttachments,
+    );
+  });
+
+  it("fails closed and retains active comments when durable unified custody cannot be written", async () => {
+    useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/storage.ts",
+      lineNumber: 5,
+      lineText: "persist();",
+      text: "submitted while storage is unavailable",
+    });
+    const storage = (
+      globalThis as unknown as {
+        window: { localStorage: { setItem: (key: string, value: string) => void } };
+      }
+    ).window.localStorage;
+    storage.setItem = () => {
+      throw new Error("quota unavailable");
+    };
+
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "storage-failure",
+        "prompt A",
+        7,
+        "intent-storage-failure",
+        "host-1",
+        1,
+        [],
+      );
+    expect(sentSubmission()).toBeUndefined();
+    expect(lastUnifiedResponse()).toMatchObject({
+      id: "storage-failure",
+      ok: false,
+      bailed: true,
+      error: expect.stringContaining("custody"),
+    });
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toMatchObject([
+      { text: "submitted while storage is unavailable" },
+    ]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.toasts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "warning",
+          message: expect.stringContaining("remain staged"),
+        }),
+      ]),
+    );
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/storage.ts",
+      lineNumber: 5,
+      lineText: "persist();",
+      text: "newer unsent comment",
+    });
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { success: true };
+    });
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "storage-failure",
+        "prompt A",
+        7,
+        "intent-storage-failure",
+        "host-1",
+        1,
+        [],
+      );
+
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toMatchObject([
+      { text: "newer unsent comment" },
+    ]);
+  });
+
+  it("fails closed on an empty-comment tombstone write so reload cannot capture later comments", async () => {
+    const storage = (
+      globalThis as unknown as {
+        window: { localStorage: { setItem: (key: string, value: string) => void } };
+      }
+    ).window.localStorage;
+    storage.setItem = () => {
+      throw new Error("quota unavailable");
+    };
+
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "empty-storage-failure",
+        "prompt without comments",
+        8,
+        "intent-empty-storage-failure",
+        "host-1",
+        1,
+        [],
+      );
+
+    expect(sentSubmission()).toBeUndefined();
+    expect(lastUnifiedResponse()).toMatchObject({
+      id: "empty-storage-failure",
+      ok: false,
+      bailed: true,
+    });
+  });
+
+  it("does not evict durable comment custody when a capacity write fails", async () => {
+    const defaultInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return { claimed: false as const };
+      return { ok: true };
+    });
+    for (let index = 0; index < 520; index++) {
+      await useSessionsStore
+        .getState()
+        .handleUnifiedSubmitRequest(
+          SESSION_A,
+          `capacity-${index}`,
+          "prompt",
+          0,
+          `intent-capacity-${index}`,
+          "host-1",
+          1,
+          [],
+        );
+    }
+    const before = JSON.parse(
+      custodyStorage.get(UNIFIED_COMMENT_CUSTODY_STORAGE_KEY) ?? "{}",
+    ) as Record<string, unknown>;
+    const oldestDurableKey = Object.keys(before)[0]!;
+    const duplicateId = oldestDurableKey.split("\0").at(-1)!;
+    expect(Object.keys(before)).toHaveLength(512);
+
+    const storage = (
+      globalThis as unknown as {
+        window: { localStorage: { setItem: (key: string, value: string) => void } };
+      }
+    ).window.localStorage;
+    const persist = storage.setItem;
+    storage.setItem = () => {
+      throw new Error("quota unavailable");
+    };
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/capacity.ts",
+      lineNumber: 1,
+      lineText: "persist();",
+      text: "must remain active",
+    });
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "capacity-overflow",
+        "prompt",
+        0,
+        "intent-capacity-overflow",
+        "host-1",
+        1,
+        [],
+      );
+    storage.setItem = persist;
+
+    // A later successful settlement persists the canonical map. The failed
+    // candidate must not have already evicted its oldest durable entry.
+    invokeMock.mockImplementation(defaultInvoke);
+    await useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        duplicateId,
+        "prompt",
+        0,
+        `intent-${duplicateId}`,
+        "host-1",
+        1,
+        [],
+      );
+    const after = JSON.parse(
+      custodyStorage.get(UNIFIED_COMMENT_CUSTODY_STORAGE_KEY) ?? "{}",
+    ) as Record<string, unknown>;
+    expect(after).toHaveProperty(oldestDurableKey);
+  });
+
+  it("clears only submitted comment revisions when a newer comment arrives before custody", async () => {
+    useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/race.ts",
+      lineNumber: 7,
+      lineText: "run();",
+      text: "submitted comment",
+    });
+    let resolveSubmission!: (result: {
+      status: "admitted";
+      intentId: string;
+      owner: { hostInstanceId: string; sessionEpoch: number };
+    }) => void;
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === "session.claimUnifiedSubmit") return Promise.resolve(claimedUnified());
+      if (channel === "session.dispatchIntent") {
+        return new Promise((resolve) => {
+          resolveSubmission = resolve;
+        });
+      }
+      return Promise.resolve({ success: true });
+    });
+
+    const pending = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "comment-race",
+        "review this",
+        12,
+        "intent-comment-race",
+        "host-1",
+        1,
+        [],
+      );
+    await vi.waitFor(() => expect(sentSubmission()).toBeDefined());
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/race.ts",
+      lineNumber: 7,
+      lineText: "run();",
+      text: "newer unsent comment",
+    });
+    const envelope = sentIntent()!;
+    resolveSubmission({
+      status: "admitted",
+      intentId: envelope.intentId,
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+    });
+    publishIntentOutcome(envelope);
+    await pending;
+
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toMatchObject([
+      { text: "newer unsent comment" },
+    ]);
+    expect(lastUnifiedResponse()).toBeUndefined();
+  });
+
+  it("serializes rapid claims and gives staged comments to only the first source and its duplicates", async () => {
+    useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/once.ts",
+      lineNumber: 3,
+      lineText: "run();",
+      text: "include exactly once",
+    });
+
+    let resolveFirstClaim!: (claim: ReturnType<typeof claimedUnified>) => void;
+    const claimIds: string[] = [];
+    const dispatches: IntentEnvelope[] = [];
+    invokeMock.mockImplementation((channel: string, payload?: unknown) => {
+      if (channel === "session.claimUnifiedSubmit") {
+        const requestId = (payload as { id: string }).id;
+        claimIds.push(requestId);
+        if (claimIds.length === 1) {
+          return new Promise((resolve) => {
+            resolveFirstClaim = resolve;
+          });
+        }
+        if (requestId === "rapid-a") return Promise.resolve({ claimed: false as const });
+        return Promise.resolve(claimedUnified());
+      }
+      if (channel === "session.dispatchIntent") {
+        const envelope = payload as IntentEnvelope;
+        dispatches.push(envelope);
+        queueMicrotask(() => publishIntentOutcome(envelope));
+        return Promise.resolve({
+          status: "admitted" as const,
+          intentId: envelope.intentId,
+          owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        });
+      }
+      return Promise.resolve({ success: true });
+    });
+
+    const first = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(SESSION_A, "rapid-a", "prompt A", 7, "intent-a", "host-1", 1);
+    const second = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(SESSION_A, "rapid-b", "prompt B", 8, "intent-b", "host-1", 1);
+    await vi.waitFor(() => expect(claimIds).toEqual(["rapid-a"]));
+    // A later comment belongs to the next draft. Re-delivering A while its
+    // claim is pending must reuse A's immutable custody and leave this alone.
+    useSessionsStore.getState().setDiffComment(SESSION_A, {
+      filePath: "src/later.ts",
+      lineNumber: 4,
+      lineText: "later();",
+      text: "newer unsent comment",
+    });
+    const duplicate = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(SESSION_A, "rapid-a", "prompt A", 7, "intent-a", "host-1", 1);
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toMatchObject([
+      { text: "newer unsent comment" },
+    ]);
+    // The second source cannot claim or dispatch around A's delayed claim.
+    expect(claimIds).toEqual(["rapid-a"]);
+    resolveFirstClaim(claimedUnified());
+    await Promise.all([first, second, duplicate]);
+
+    expect(claimIds).toEqual(["rapid-a", "rapid-b", "rapid-a"]);
+    const submissions = dispatches
+      .map((envelope) => envelope.intent)
+      .filter((intent) => intent.kind === "submit");
+    expect(submissions).toHaveLength(2);
+    expect((submissions[0] as { text: string }).text).toContain("include exactly once");
+    expect((submissions[1] as { text: string }).text).toBe("prompt B");
+    expect(useSessionsStore.getState().getDiffCommentsForPrompt(SESSION_A)).toMatchObject([
+      { text: "newer unsent comment" },
+    ]);
+  });
+
+  it("does not let a later source overtake a delayed local guard settlement", async () => {
+    let resolveFirstResponse!: (value: { accepted: true }) => void;
+    const claimIds: string[] = [];
+    invokeMock.mockImplementation((channel: string, payload?: unknown) => {
+      if (channel === "session.claimUnifiedSubmit") {
+        claimIds.push((payload as { id: string }).id);
+        return Promise.resolve(claimedUnified());
+      }
+      if (
+        channel === "session.unifiedSubmitResponse" &&
+        (payload as { id: string }).id === "guard-a"
+      ) {
+        return new Promise((resolve) => {
+          resolveFirstResponse = resolve;
+        });
+      }
+      if (channel === "session.dispatchIntent") {
+        const envelope = payload as IntentEnvelope;
+        queueMicrotask(() => publishIntentOutcome(envelope));
+        return Promise.resolve({
+          status: "admitted" as const,
+          intentId: envelope.intentId,
+          owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        });
+      }
+      return Promise.resolve({ success: true });
+    });
+
+    const first = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(SESSION_A, "guard-a", "   ", 4, "intent-a", "host-1", 1);
+    const second = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(SESSION_A, "prompt-b", "prompt B", 5, "intent-b", "host-1", 1);
+    await vi.waitFor(() => expect(resolveFirstResponse).toEqual(expect.any(Function)));
+    expect(claimIds).toEqual(["guard-a"]);
+    expect(sentCommandType("prompt")).toBe(false);
+    resolveFirstResponse({ accepted: true });
+    await Promise.all([first, second]);
+
+    expect(claimIds).toEqual(["guard-a", "prompt-b"]);
+    expect(sentCommandType("prompt")).toBe(true);
   });
 
   it("a send-prompt with no model bails + toasts (no-model guard parity)", async () => {
@@ -4349,7 +5521,57 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     expect(toasts.at(-1)).toMatchObject({ type: "error", message: "No model selected" });
   });
 
-  it("a valid prompt waits for host consumption before adding an echo and replying ok:true", async () => {
+  it("refreshes session metadata after a delayed claim before applying the no-model guard", async () => {
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { model: null }));
+    let resolveClaim!: (claim: ReturnType<typeof claimedUnified>) => void;
+    invokeMock.mockImplementation((channel: string, payload?: unknown) => {
+      if (channel === "session.claimUnifiedSubmit") {
+        return new Promise((resolve) => {
+          resolveClaim = resolve;
+        });
+      }
+      if (channel === "session.dispatchIntent") {
+        const envelope = payload as IntentEnvelope;
+        queueMicrotask(() => publishIntentOutcome(envelope));
+        return Promise.resolve({
+          status: "admitted" as const,
+          intentId: envelope.intentId,
+          owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+        });
+      }
+      return Promise.resolve({ success: true });
+    });
+
+    const pending = useSessionsStore
+      .getState()
+      .handleUnifiedSubmitRequest(
+        SESSION_A,
+        "model-race",
+        "now valid",
+        3,
+        "intent-model-race",
+        "host-1",
+        1,
+      );
+    publishSemantic(
+      SESSION_A,
+      3,
+      semanticSnapshot(3, { model: { id: "claude", provider: "anthropic" } }),
+    );
+    await vi.waitFor(() => expect(resolveClaim).toEqual(expect.any(Function)));
+    resolveClaim(claimedUnified());
+    await pending;
+
+    expect(sentCommandType("prompt")).toBe(true);
+    expect(
+      useSessionsStore
+        .getState()
+        .sessions.get(SESSION_A)
+        ?.toasts.some((toast) => toast.message === "No model selected"),
+    ).toBe(false);
+  });
+
+  it("a valid prompt waits for host consumption without duplicating main's source acknowledgement", async () => {
     useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
     let resolveSubmission!: (result: {
       status: "admitted";
@@ -4386,10 +5608,10 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     publishIntentOutcome(envelope);
     await request;
 
-    expect(lastUnifiedResponse()).toMatchObject({ id: "id3", ok: true });
+    expect(lastUnifiedResponse()).toBeUndefined();
   });
 
-  it("suppresses late unified continuation and acknowledgement after claim expiry", async () => {
+  it("keeps admitted terminal tracking alive beyond the source claim deadline", async () => {
     useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
     let now = 1_000;
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -4428,6 +5650,7 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
       intentId: "intent-expiring",
       owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
     });
+    publishIntentOutcome(sentIntent()!);
     await pending;
 
     expect(lastUnifiedResponse()).toBeUndefined();
@@ -4485,7 +5708,7 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
     nowSpy.mockRestore();
   });
 
-  it("a prompt send failure replies bailed so the host restores unified editor text", async () => {
+  it("a prompt send failure reports bail without returning editor presentation custody", async () => {
     useSessionsStore.getState().setCurrentModel(SESSION_A, "anthropic/claude");
     invokeMock.mockImplementation(async (channel: string, payload?: unknown) => {
       if (channel === "session.claimUnifiedSubmit") return claimedUnified();
@@ -4507,12 +5730,7 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
 
     expect(sentCommandType("prompt")).toBe(true);
     expect(sentSubmission()?.submission.text).toBe("hello");
-    expect(lastUnifiedResponse()).toMatchObject({
-      id: "id-fail",
-      ok: false,
-      bailed: true,
-      error: "Intent was not admitted: invalid",
-    });
+    expect(lastUnifiedResponse()).toBeUndefined();
     const toasts = useSessionsStore.getState().sessions.get(SESSION_A)?.toasts ?? [];
     expect(toasts.at(-1)).toMatchObject({
       type: "warning",
@@ -4537,8 +5755,9 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
       kind: "reload",
       editorRevision: 41,
       editorText: "/reload ",
+      surface: "unified",
     });
-    expect(lastUnifiedResponse()).toMatchObject({ id: "reload-id", ok: true });
+    expect(lastUnifiedResponse()).toBeUndefined();
   });
 
   it("a bash command (!prefix) bypasses the no-model guard and dispatches", async () => {
@@ -4547,7 +5766,7 @@ describe("sessions store - unified TUI submit (handleUnifiedSubmitRequest)", () 
       .getState()
       .handleUnifiedSubmitRequest(SESSION_A, "id4", "!ls -la", 0, "intent-id4", "host-1", 1);
     expect(sentCommandType("bash")).toBe(true);
-    expect(lastUnifiedResponse()).toMatchObject({ id: "id4", ok: true });
+    expect(lastUnifiedResponse()).toBeUndefined();
   });
 });
 
@@ -4943,60 +6162,6 @@ describe("sessions store - host-authoritative escape", () => {
   });
 });
 
-describe("sessions store - clearPendingUserEcho (failed optimistic send)", () => {
-  beforeEach(() => {
-    useSessionsStore.setState({
-      sessions: new Map(),
-      activeSessionId: null,
-      workspaces: new Map(),
-      activeWorkspacePath: null,
-      newSessionDrafts: new Map(),
-      sessionDrafts: new Map(),
-    });
-    useSessionsStore.getState().createSession(SESSION_A, WORKSPACE);
-  });
-
-  it("brand-new session: removes the bubble, restores the workspace draft, and re-marks pending", () => {
-    const store = useSessionsStore.getState();
-    // The very first prompt of a brand-new (non-resumed) session is sent
-    // optimistically, then the send fails before pi echoes it.
-    store.addUserMessage(SESSION_A, "first prompt");
-    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.transcript.blocks).toHaveLength(1);
-
-    store.clearPendingUserEcho(SESSION_A, "first prompt");
-
-    const after = useSessionsStore.getState();
-    // Optimistic bubble is gone...
-    expect(after.sessions.get(SESSION_A)?.transcript.blocks).toHaveLength(0);
-    // ...the text is handed back as the workspace's new-session draft...
-    expect(after.newSessionDrafts.get(WORKSPACE)).toBe("first prompt");
-    // ...and the session is re-marked pending so the composer shows new-session UI.
-    expect(after.sessions.get(SESSION_A)?.isNewPending).toBe(true);
-  });
-
-  it("established session: overwrites the per-session draft with the failed prompt (known clobber tradeoff)", () => {
-    const store = useSessionsStore.getState();
-    // Established session (has prior history), so the restore-to-new-session
-    // path does not apply.
-    store.addUserMessage(SESSION_A, "earlier message");
-    store.addUserMessage(SESSION_A, "message A");
-    // The user starts typing a NEW draft while "message A" is still in flight.
-    store.setSessionDraft(SESSION_A, "draft typed after send");
-
-    store.clearPendingUserEcho(SESSION_A, "message A");
-
-    const after = useSessionsStore.getState();
-    // The tail-most optimistic "message A" bubble is removed; history stands.
-    const blocks = after.sessions.get(SESSION_A)?.transcript.blocks ?? [];
-    expect(blocks).toHaveLength(1);
-    if (blocks[0]?.type === "user") expect(blocks[0].data.content).toBe("earlier message");
-    // KNOWN TRADEOFF: the failed content is written back as the session draft,
-    // overwriting the newer text the user had begun typing. Low-frequency and
-    // recoverable; pinned here so any change to this behavior is deliberate.
-    expect(after.sessionDrafts.get(SESSION_A)).toBe("message A");
-  });
-});
-
 function semanticSnapshot(
   sequence: number,
   overrides: Partial<SemanticSnapshot> = {},
@@ -5068,6 +6233,33 @@ function authorityAttach(
   };
 }
 
+function authorityAttachWithUnifiedPanel(
+  snapshot: SemanticSnapshot,
+  panelId: number,
+): Extract<AuthorityAttachResponse, { status: "ready" }> {
+  const attach = authorityAttach(snapshot);
+  const cursor = {
+    ...snapshot.owner,
+    transportSequence: 1,
+    snapshotSequence: snapshot.snapshotSequence,
+  };
+  attach.baseline.rendererGeneration = RENDERER_GENERATION;
+  attach.baseline.panels = [
+    {
+      panelKey: `panel:${panelId}`,
+      panelId,
+      owner: snapshot.owner,
+      sync: { state: "following", cursor },
+      overlay: false,
+      unified: true,
+      mode: "content",
+      inputAcknowledgedThrough: 0,
+      keyframe: { kind: "keyframe", ansi: "Fleet", renderRevision: 1 },
+    },
+  ];
+  return attach;
+}
+
 function semanticPublication(
   transportSequence: number,
   snapshot: SemanticSnapshot,
@@ -5103,6 +6295,89 @@ describe("sessions store - authority intent projection", () => {
   });
 
   afterEach(() => vi.unstubAllGlobals());
+
+  it("drains panel publications that beat the attach Promise without unmounting the legacy panel", () => {
+    const store = useSessionsStore.getState();
+    const owner = { hostInstanceId: "host-1", sessionEpoch: 1 };
+    store.handlePanelEvent(SESSION_A, {
+      type: "panel_open",
+      panelId: 17,
+      overlay: false,
+      unified: true,
+      ...owner,
+    });
+    const cursor = (transportSequence: number) => ({
+      ...owner,
+      transportSequence,
+      snapshotSequence: 1,
+    });
+    store.applyAuthorityPublication({
+      sessionId: SESSION_A,
+      rendererGeneration: RENDERER_GENERATION,
+      publicationSequence: 1,
+      plane: "panel",
+      owner,
+      payload: {
+        kind: "reset",
+        cursor: cursor(1),
+        panelKey: "panel:17",
+        renderRevision: 3,
+        panelId: 17,
+        overlay: false,
+        unified: true,
+        mode: "content",
+      },
+    });
+    store.applyAuthorityPublication({
+      sessionId: SESSION_A,
+      rendererGeneration: RENDERER_GENERATION,
+      publicationSequence: 2,
+      plane: "panel",
+      owner,
+      payload: {
+        kind: "keyframe",
+        cursor: cursor(2),
+        panel: {
+          panelKey: "panel:17",
+          panelId: 17,
+          owner,
+          sync: { state: "following", cursor: cursor(2) },
+          overlay: false,
+          unified: true,
+          mode: "content",
+          inputAcknowledgedThrough: 0,
+          keyframe: { kind: "keyframe", ansi: "Fleet", renderRevision: 3 },
+        },
+      },
+    });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedPanel).toMatchObject({
+      id: 17,
+    });
+
+    const observedPanelPresence: boolean[] = [];
+    const unsubscribe = useSessionsStore.subscribe((state, previous) => {
+      const currentPanel = state.sessions.get(SESSION_A)?.unifiedPanel;
+      if (currentPanel !== previous.sessions.get(SESSION_A)?.unifiedPanel) {
+        observedPanelPresence.push(currentPanel !== undefined);
+      }
+    });
+    const attach = authorityAttach();
+    attach.baseline.rendererGeneration = RENDERER_GENERATION;
+    store.applyAuthorityAttach(SESSION_A, attach);
+    unsubscribe();
+
+    expect(observedPanelPresence).not.toContain(false);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unifiedPanel).toMatchObject({
+      id: 17,
+      authority: true,
+      inputEnabled: true,
+      renderRevision: 3,
+      buffer: ["Fleet"],
+    });
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.preAttachAuthorityPublications,
+    ).toEqual([]);
+  });
 
   it("materializes an in-flight assistant checkpoint before transcript attach replay", () => {
     const attach = authorityAttach(
@@ -5789,7 +7064,7 @@ describe("sessions store - authority intent projection", () => {
         runningSince: undefined,
         pendingQueueMessages: undefined,
         queuedMessages: undefined,
-        editorInjection: undefined,
+        editorInjection: expect.objectContaining({ text: "injected", revision: 1 }),
       });
     };
 
@@ -5799,6 +7074,15 @@ describe("sessions store - authority intent projection", () => {
     assertFence();
     useSessionsStore.getState().markAuthorityUnavailable(SESSION_A, "transport_lost");
     assertFence();
+
+    const sameOwnerAttach = authorityAttach(snapshot);
+    sameOwnerAttach.baseline.publicationHighWatermark = 3;
+    useSessionsStore.getState().applyAuthorityAttach(SESSION_A, sameOwnerAttach);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.editorInjection).toMatchObject({
+      text: "injected",
+      revision: 1,
+    });
+    useSessionsStore.getState().markAuthorityUnavailable(SESSION_A, "transport_lost_again");
 
     const successor = semanticSnapshot(1, {
       owner: { hostInstanceId: "host-2", sessionEpoch: 2 },
@@ -5814,7 +7098,7 @@ describe("sessions store - authority intent projection", () => {
       },
     });
     const successorAttach = authorityAttach(successor);
-    successorAttach.baseline.publicationHighWatermark = 2;
+    successorAttach.baseline.publicationHighWatermark = 4;
     useSessionsStore.getState().applyAuthorityAttach(SESSION_A, successorAttach);
     expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
       currentModel: "new-model",
@@ -6262,6 +7546,11 @@ describe("sessions store - recovered authority-frame regressions", () => {
     expect(duringPatch?.editorRevision).toBe(1);
     expect(duringPatch?.editorInjection).toBeUndefined();
     useSessionsStore.getState().endEditorPatch(SESSION_A);
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)).toMatchObject({
+      editorPatchPending: 0,
+      editorProjectionDeferred: false,
+      editorInjection: { text: "host", revision: 1 },
+    });
   });
 
   it("does not re-inject an unchanged editor revision on unrelated semantic frames", () => {

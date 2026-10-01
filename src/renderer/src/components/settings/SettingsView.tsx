@@ -2,9 +2,9 @@ import type { AppUpdateStatus } from "@shared/app-updates.js";
 import type { ProviderAuthStatus } from "@shared/auth.js";
 import { PROVIDERS } from "@shared/auth.js";
 import type { ExtensionUpdateStatus, ExtensionUpdateTarget } from "@shared/extension-updates.js";
-import type { ThemeMode, TranscriptStyle } from "@shared/settings.js";
+import type { AppSettings, ThemeMode, TranscriptStyle } from "@shared/settings.js";
 import type React from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { formatMiB, parseSizeToMiB } from "../../lib/file-size.js";
 import { useAppUpdatesStore } from "../../stores/app-updates-store.js";
 import {
@@ -24,23 +24,35 @@ interface FontFamily {
   fullName?: string;
 }
 
+type ReadingFontUpdates = Partial<
+  Pick<AppSettings["fonts"], "title" | "transcriptHeader" | "transcriptBody">
+>;
+
+const READING_FONT_SAVE_ERROR =
+  "Couldn’t save reading typography. The last saved fonts were restored.";
+
 /**
  * Fonts shipped with the app (bundled via @fontsource in main.tsx). These are
  * NOT installed system fonts, so `queryLocalFonts()` never lists them. The code
- * font picker still needs bundled monospace options to appear even when they
- * are not system-installed.
+ * font pickers still need bundled options to appear even when they are not
+ * system-installed.
  */
-const BUNDLED_FONTS = ["IBM Plex Mono"];
+const BUNDLED_CODE_FONTS = ["IBM Plex Mono"];
+const BUNDLED_READING_FONTS = ["Inter", "Fraunces", "IBM Plex Serif", "IBM Plex Mono"];
 
 /**
  * Build the family-dropdown options: bundled fonts first, then the currently
  * selected family (so a custom value the user typed always has a matching
  * option), then the system fonts — all de-duplicated.
  */
-function buildFontOptions(localFonts: FontFamily[], current: string): string[] {
+function buildFontOptions(
+  localFonts: FontFamily[],
+  current: string,
+  bundledFonts = BUNDLED_CODE_FONTS,
+): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const family of [...BUNDLED_FONTS, current, ...localFonts.map((f) => f.family)]) {
+  for (const family of [...bundledFonts, current, ...localFonts.map((f) => f.family)]) {
     if (family && !seen.has(family)) {
       seen.add(family);
       out.push(family);
@@ -54,45 +66,160 @@ interface SettingsSelectOption {
   label: string;
 }
 
-function SettingsSelect({
+const SETTINGS_SELECT_TYPEAHEAD_RESET_MS = 700;
+
+function wrapSettingsSelectIndex(index: number, optionCount: number): number {
+  if (optionCount === 0) return -1;
+  return ((index % optionCount) + optionCount) % optionCount;
+}
+
+export function SettingsSelect({
   value,
   options,
   onChange,
   compact = false,
+  ariaLabel,
 }: {
   value: string;
   options: readonly SettingsSelectOption[];
   onChange: (value: string) => void;
   compact?: boolean;
+  ariaLabel: string;
 }): React.ReactElement {
   const [open, setOpen] = useState(false);
+  const [activeValue, setActiveValue] = useState<string | null>(null);
+  const listboxId = useId();
   const ref = useRef<HTMLDivElement>(null);
-  const selected = options.find((option) => option.value === value);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const typeaheadRef = useRef({ value: "", updatedAt: 0 });
+  const selectedIndex = options.findIndex((option) => option.value === value);
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
   const selectedLabel =
     selected?.label ?? (value ? `Missing: ${value}` : (options[0]?.label ?? ""));
+  const activeValueIndex =
+    activeValue === null ? -1 : options.findIndex((option) => option.value === activeValue);
+  const resolvedActiveIndex =
+    activeValueIndex >= 0
+      ? activeValueIndex
+      : selectedIndex >= 0
+        ? selectedIndex
+        : options.length > 0
+          ? 0
+          : -1;
+  const resolvedActiveValue = options[resolvedActiveIndex]?.value ?? null;
+
+  const resetTypeahead = useCallback((): void => {
+    typeaheadRef.current = { value: "", updatedAt: 0 };
+  }, []);
+
+  const closeAndRestoreFocus = (): void => {
+    setOpen(false);
+    resetTypeahead();
+    triggerRef.current?.focus();
+  };
+
+  const openAtSelection = (): void => {
+    resetTypeahead();
+    setActiveValue(options[selectedIndex >= 0 ? selectedIndex : 0]?.value ?? null);
+    setOpen(true);
+  };
+
+  const moveActiveOption = (index: number): void => {
+    setActiveValue(options[wrapSettingsSelectIndex(index, options.length)]?.value ?? null);
+  };
+
+  const moveTypeahead = (key: string, startIndex: number): void => {
+    if (options.length === 0) return;
+    const now = Date.now();
+    const normalizedKey = key.toLocaleLowerCase();
+    let query =
+      now - typeaheadRef.current.updatedAt > SETTINGS_SELECT_TYPEAHEAD_RESET_MS
+        ? normalizedKey
+        : `${typeaheadRef.current.value}${normalizedKey}`;
+
+    const findMatch = (candidate: string): number => {
+      for (let offset = 1; offset <= options.length; offset += 1) {
+        const index = wrapSettingsSelectIndex(startIndex + offset, options.length);
+        if (options[index]?.label.trim().toLocaleLowerCase().startsWith(candidate)) return index;
+      }
+      return -1;
+    };
+
+    let match = findMatch(query);
+    // Repeating the same initial cycles through matching options instead of
+    // building an impossible query such as "iii".
+    if (match < 0 && query.length > 1) {
+      query = normalizedKey;
+      match = findMatch(query);
+    }
+    typeaheadRef.current = { value: query, updatedAt: now };
+    if (match >= 0) setActiveValue(options[match]?.value ?? null);
+  };
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    if (resolvedActiveValue !== activeValue) setActiveValue(resolvedActiveValue);
+    if (resolvedActiveIndex >= 0) optionRefs.current[resolvedActiveIndex]?.focus();
+    else triggerRef.current?.focus();
+  }, [activeValue, open, resolvedActiveIndex, resolvedActiveValue]);
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+      if (!ref.current?.contains(event.target as Node)) {
+        setOpen(false);
+        resetTypeahead();
+      }
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
+  }, [open, resetTypeahead]);
 
   return (
     <div className={`settings-select${compact ? " settings-select--compact" : ""}`} ref={ref}>
       <button
+        ref={triggerRef}
         type="button"
-        className="settings-select__trigger"
+        className="settings-select__trigger fade-scope"
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
+        aria-controls={open ? listboxId : undefined}
+        aria-label={`${ariaLabel}: ${selectedLabel}`}
+        onClick={() => {
+          if (open) {
+            setOpen(false);
+            resetTypeahead();
+          } else {
+            openAtSelection();
+          }
+        }}
         onKeyDown={(event) => {
-          if (event.key === "Escape") setOpen(false);
+          if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey)
+            return;
+          if (event.key === "Escape" && open) {
+            event.preventDefault();
+            event.stopPropagation();
+            closeAndRestoreFocus();
+          } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            event.stopPropagation();
+            if (open) {
+              moveActiveOption(resolvedActiveIndex + (event.key === "ArrowDown" ? 1 : -1));
+            } else {
+              openAtSelection();
+            }
+          } else if (event.key.length === 1 && event.key !== " ") {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!open) setOpen(true);
+            moveTypeahead(event.key, selectedIndex);
+          }
         }}
       >
-        <span className="settings-select__label">{selectedLabel}</span>
+        <FadeText className="settings-select__label" title={selectedLabel}>
+          {selectedLabel}
+        </FadeText>
         <IconChevronDown className="settings-select__caret" />
       </button>
       {open && (
@@ -101,30 +228,124 @@ function SettingsSelect({
             frameClassName="settings-select__list-frame"
             className="settings-select__list"
             role="listbox"
+            id={listboxId}
+            aria-label={ariaLabel}
             fill
           >
-            {options.map((option) => {
+            {options.map((option, index) => {
               const active = option.value === value;
               return (
                 <button
+                  ref={(element) => {
+                    optionRefs.current[index] = element;
+                  }}
                   key={option.value}
                   type="button"
-                  className={`settings-select__option${active ? " settings-select__option--active" : ""}`}
+                  className={`settings-select__option fade-scope${active ? " settings-select__option--active" : ""}`}
                   role="option"
                   aria-selected={active}
+                  tabIndex={resolvedActiveIndex === index ? 0 : -1}
+                  onFocus={() => setActiveValue(option.value)}
                   onClick={() => {
                     onChange(option.value);
-                    setOpen(false);
+                    closeAndRestoreFocus();
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      event.nativeEvent.isComposing ||
+                      event.altKey ||
+                      event.ctrlKey ||
+                      event.metaKey
+                    )
+                      return;
+                    switch (event.key) {
+                      case "ArrowDown":
+                        event.preventDefault();
+                        event.stopPropagation();
+                        moveActiveOption(index + 1);
+                        break;
+                      case "ArrowUp":
+                        event.preventDefault();
+                        event.stopPropagation();
+                        moveActiveOption(index - 1);
+                        break;
+                      case "Home":
+                        event.preventDefault();
+                        event.stopPropagation();
+                        moveActiveOption(0);
+                        break;
+                      case "End":
+                        event.preventDefault();
+                        event.stopPropagation();
+                        moveActiveOption(options.length - 1);
+                        break;
+                      case "Enter":
+                      case " ":
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onChange(option.value);
+                        closeAndRestoreFocus();
+                        break;
+                      case "Escape":
+                        event.preventDefault();
+                        event.stopPropagation();
+                        closeAndRestoreFocus();
+                        break;
+                      case "Tab":
+                        // Put focus back on the trigger before the browser's
+                        // default Tab action so it resumes after this widget.
+                        setOpen(false);
+                        resetTypeahead();
+                        triggerRef.current?.focus();
+                        break;
+                      default:
+                        if (event.key.length === 1) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          moveTypeahead(event.key, index);
+                        }
+                    }
                   }}
                 >
                   <span className="settings-select__check">{active && <IconCheck />}</span>
-                  <span className="settings-select__option-label">{option.label}</span>
+                  <FadeText className="settings-select__option-label" title={option.label}>
+                    {option.label}
+                  </FadeText>
                 </button>
               );
             })}
           </ScrollFadeFrame>
         </div>
       )}
+    </div>
+  );
+}
+
+function FontFamilyRow({
+  label,
+  ariaLabel,
+  value,
+  localFonts,
+  onChange,
+}: {
+  label: string;
+  ariaLabel: string;
+  value: string;
+  localFonts: FontFamily[];
+  onChange: (family: string) => void;
+}): React.ReactElement {
+  return (
+    <div className="settings-row">
+      <span className="settings-label">{label}</span>
+      <SettingsSelect
+        value={value}
+        ariaLabel={ariaLabel}
+        onChange={onChange}
+        options={buildFontOptions(localFonts, value, BUNDLED_READING_FONTS).map((family) => ({
+          value: family,
+          label: family,
+        }))}
+      />
     </div>
   );
 }
@@ -375,8 +596,10 @@ function extensionUpdateMessage(status: ExtensionUpdateStatus): string {
 }
 
 export function SettingsView({ onClose, initialSection }: SettingsViewProps): React.ReactElement {
-  const { settings, update } = useSettingsStore();
+  const { settings, update, updateReadingFonts } = useSettingsStore();
   const [localFonts, setLocalFonts] = useState<FontFamily[]>([]);
+  const [readingFontSaveError, setReadingFontSaveError] = useState("");
+  const readingFontSaveRevisionRef = useRef(0);
   const [piInfo, setPiInfo] = useState<{ version: string } | null>(null);
   const [userThemesDir, setUserThemesDir] = useState("");
   const accountRef = useRef<HTMLElement>(null);
@@ -400,6 +623,37 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
   const [extensionUpdating, setExtensionUpdating] = useState<string | null>(null);
   const [extensionUpdateMsg, setExtensionUpdateMsg] = useState("");
   const extensionAutoCheckStartedRef = useRef(false);
+
+  const saveReadingFonts = useCallback(
+    (updates: ReadingFontUpdates): void => {
+      const revision = ++readingFontSaveRevisionRef.current;
+      setReadingFontSaveError("");
+
+      // The store deliberately rejects failed persistence after restoring the
+      // last acknowledged settings. Handle that terminal result here so the
+      // dropdown never leaks an unhandled rejection or claims a failed choice
+      // was saved. A newer selection owns the visible outcome.
+      void (async () => {
+        try {
+          await updateReadingFonts(updates);
+        } catch {
+          if (revision === readingFontSaveRevisionRef.current) {
+            setReadingFontSaveError(READING_FONT_SAVE_ERROR);
+          }
+        }
+      })();
+    },
+    [updateReadingFonts],
+  );
+
+  useEffect(
+    () => () => {
+      // Prevent a late persistence result from updating an unmounted Settings
+      // view. The rejection remains handled by the async operation above.
+      readingFontSaveRevisionRef.current += 1;
+    },
+    [],
+  );
 
   // ── Load on mount ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -650,6 +904,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
               <div className="settings-row">
                 <span className="settings-label">Light theme</span>
                 <SettingsSelect
+                  ariaLabel="Light theme"
                   value={settings.lightColorScheme}
                   onChange={(lightColorScheme) => update({ lightColorScheme })}
                   options={lightThemeOptions}
@@ -658,6 +913,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
               <div className="settings-row">
                 <span className="settings-label">Dark theme</span>
                 <SettingsSelect
+                  ariaLabel="Dark theme"
                   value={settings.darkColorScheme}
                   onChange={(darkColorScheme) => update({ darkColorScheme })}
                   options={darkThemeOptions}
@@ -782,6 +1038,41 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
               )}
             </section>
 
+            {/* Reading typography */}
+            <section className="settings-section">
+              <h3 className="settings-section__title">Reading typography</h3>
+              <FontFamilyRow
+                label="Title"
+                ariaLabel="Title font family"
+                value={settings.fonts.title.family}
+                localFonts={localFonts}
+                onChange={(family) => saveReadingFonts({ title: { family } })}
+              />
+              <FontFamilyRow
+                label="Transcript header / thinking"
+                ariaLabel="Transcript header and thinking font family"
+                value={settings.fonts.transcriptHeader.family}
+                localFonts={localFonts}
+                onChange={(family) => saveReadingFonts({ transcriptHeader: { family } })}
+              />
+              <FontFamilyRow
+                label="Transcript body"
+                ariaLabel="Transcript body font family"
+                value={settings.fonts.transcriptBody.family}
+                localFonts={localFonts}
+                onChange={(family) => saveReadingFonts({ transcriptBody: { family } })}
+              />
+              <span className="settings-hint">
+                These choices apply only to the session title and transcript. Interface controls and
+                the Composer keep the Pi-Vis interface font.
+              </span>
+              {readingFontSaveError && (
+                <span className="settings-hint settings-hint--error" role="alert">
+                  {readingFontSaveError}
+                </span>
+              )}
+            </section>
+
             {/* Code */}
             <section className="settings-section">
               <h3 className="settings-section__title">Code</h3>
@@ -789,6 +1080,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                 <span className="settings-label">Font Family</span>
                 {localFonts.length > 0 ? (
                   <SettingsSelect
+                    ariaLabel="Code font family"
                     value={settings.fonts.code.family}
                     onChange={(family) =>
                       update({
@@ -909,6 +1201,7 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                 <span className="settings-label settings-label--inline">Add API key</span>
                 <SettingsSelect
                   compact
+                  ariaLabel="API key provider"
                   value={newProviderKey}
                   onChange={setNewProviderKey}
                   options={[

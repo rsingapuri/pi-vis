@@ -179,12 +179,20 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
       await window.keyboard.type("hang exactly once");
       await window.keyboard.press("Enter");
 
-      await expect(
-        window.getByText("Interrupted command was not restored.", { exact: true }),
-      ).toBeVisible({
-        timeout: 10_000,
-      });
       await expect(window.getByText(/Review interrupted (message|command)/)).toHaveCount(0);
+
+      await expect
+        .poll(() => {
+          if (!fs.existsSync(folders.hostLog)) return 0;
+          return fs
+            .readFileSync(folders.hostLog, "utf8")
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as { type?: string })
+            .filter((entry) => entry.type === "unified_submit_response").length;
+        })
+        .toBeGreaterThanOrEqual(1);
 
       await expect
         .poll(() => {
@@ -210,6 +218,303 @@ test.describe("Unified-TUI panel (factory setWidget)", () => {
           (entry) => entry.type === "dispatch_intent" && entry.intent?.kind === "submit",
         ).length;
       expect(submitCount).toBe(1);
+    } finally {
+      await app.close();
+      rmrf(folders.settingsDir);
+      rmrf(folders.workspaceDir);
+      rmrf(folders.piSessionsDir);
+    }
+  });
+
+  test("a delayed unified refusal cannot resurrect the cleared prompt or block a rapid second submit", async () => {
+    test.setTimeout(90_000);
+    const folders = await makeFolders();
+    const { app, window } = await launchApp(folders, {
+      PIVIS_TEST_REFUSE_UNIFIED_SUBMIT: "1",
+      PIVIS_TEST_DELAY_UNIFIED_DISPATCH_MS: "700",
+    });
+
+    try {
+      await window.getByRole("button", { name: "New session" }).click();
+      const panel = window.locator(".unified-panel");
+      await expect(panel).toBeVisible({ timeout: 20_000 });
+      await expect(panel).toHaveAttribute("data-input-enabled", "true", { timeout: 15_000 });
+      await panel.locator(".xterm").click();
+
+      await window.keyboard.insertText("first cleared prompt");
+      await window.keyboard.press("Enter");
+      // Type again before the first renderer dispatch is allowed to settle.
+      // The terminal must stay enabled throughout this in-flight interval.
+      await window.keyboard.insertText("newer draft survives");
+      await expect(panel).toHaveAttribute("data-input-enabled", "true");
+
+      await expect
+        .poll(() => {
+          if (!fs.existsSync(folders.hostLog)) return [] as string[];
+          return fs
+            .readFileSync(folders.hostLog, "utf8")
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map(
+              (line) =>
+                JSON.parse(line) as {
+                  type?: string;
+                  intent?: { kind?: string; text?: string };
+                },
+            )
+            .filter((entry) => entry.type === "dispatch_intent" && entry.intent?.kind === "submit")
+            .map((entry) => entry.intent?.text ?? "");
+        })
+        .toEqual(["first cleared prompt"]);
+
+      // Wait for the delayed bailed response, then for the fixture's next
+      // authoritative repaint. The submitted source must not replace the
+      // newer text, even though the first dispatch was refused.
+      await expect
+        .poll(() => {
+          if (!fs.existsSync(folders.hostLog)) return 0;
+          return fs
+            .readFileSync(folders.hostLog, "utf8")
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as { type?: string })
+            .filter((entry) => entry.type === "unified_submit_response").length;
+        })
+        .toBeGreaterThanOrEqual(1);
+      await expect(panel.locator(".xterm-rows")).toContainText("draft> newer draft survives", {
+        timeout: 10_000,
+      });
+      await expect(panel.locator(".xterm-rows")).not.toContainText("first cleared prompt");
+
+      await panel.locator(".xterm").click();
+      await window.keyboard.press("Enter");
+      await expect
+        .poll(() => {
+          if (!fs.existsSync(folders.hostLog)) return [] as string[];
+          return fs
+            .readFileSync(folders.hostLog, "utf8")
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map(
+              (line) =>
+                JSON.parse(line) as {
+                  type?: string;
+                  intent?: { kind?: string; text?: string };
+                },
+            )
+            .filter((entry) => entry.type === "dispatch_intent" && entry.intent?.kind === "submit")
+            .map((entry) => entry.intent?.text ?? "");
+        })
+        .toEqual(["first cleared prompt", "newer draft survives"]);
+      await expect(panel).toHaveAttribute("data-input-enabled", "true");
+    } finally {
+      await app.close();
+      rmrf(folders.settingsDir);
+      rmrf(folders.workspaceDir);
+      rmrf(folders.piSessionsDir);
+    }
+  });
+
+  test("a built-in picker reveals and refocuses the same unified xterm for one exact successor submit", async () => {
+    test.setTimeout(120_000);
+    const folders = await makeFolders();
+    const ipcLog = join(folders.settingsDir, "picker-panel-input-ipc.log");
+    const { app, window } = await launchApp(folders, {
+      PIVIS_TEST_IPC_INVOCATION_LOG: ipcLog,
+    });
+
+    try {
+      await window.getByRole("button", { name: "New session" }).click();
+      const panel = window.locator(".unified-panel");
+      const xterm = panel.locator(".xterm");
+      await expect(panel).toBeVisible({ timeout: 20_000 });
+      await expect(panel).toHaveAttribute("data-input-enabled", "true", { timeout: 15_000 });
+      await expect(xterm).toBeVisible({ timeout: 10_000 });
+
+      // Mark the concrete panel and xterm nodes. The picker must hide this
+      // terminal, not unmount/recreate it and lose authority or queued input.
+      await panel.evaluate((element) => {
+        element.setAttribute("data-e2e-picker-panel", "preserved");
+      });
+      await xterm.evaluate((element) => {
+        element.setAttribute("data-e2e-picker-terminal", "preserved");
+      });
+      await xterm.click();
+      await window.keyboard.insertText("/model");
+      await window.keyboard.press("Enter");
+
+      const picker = window.locator(".picker--model");
+      await expect(picker).toBeVisible({ timeout: 10_000 });
+      await expect(panel).toBeHidden();
+      await expect(xterm).toHaveAttribute("data-e2e-picker-terminal", "preserved");
+
+      // Close through the picker's own keyboard path. This also exercises the
+      // Escape-claim cleanup that must finish before reveal can return focus.
+      await picker.locator(".picker__search-input").press("Escape");
+
+      await expect(picker).toHaveCount(0, { timeout: 10_000 });
+      await expect(panel).toBeVisible({ timeout: 10_000 });
+      await expect(panel).toHaveAttribute("data-sync-state", "following", { timeout: 10_000 });
+      await expect(panel).toHaveAttribute("data-input-enabled", "true", { timeout: 10_000 });
+      await expect(panel).toHaveAttribute("data-e2e-picker-panel", "preserved");
+      await expect(xterm).toHaveAttribute("data-e2e-picker-terminal", "preserved");
+      await expect(panel.locator(".xterm-rows")).toContainText("Fleet", { timeout: 10_000 });
+
+      // Picker cleanup must hand focus back only after the terminal's authority
+      // frame is usable. Do not click the xterm again: the first successor key
+      // exercises the automatic reveal-focus path.
+      const terminalTextarea = panel.locator(".xterm-helper-textarea");
+      await expect(terminalTextarea).toBeFocused({ timeout: 10_000 });
+      const successorInputOffset = readInput(folders).length;
+      const panelInputLogOffset = fs.existsSync(folders.hostLog)
+        ? fs.readFileSync(folders.hostLog, "utf8").length
+        : 0;
+      const ipcLogOffset = fs.existsSync(ipcLog) ? fs.readFileSync(ipcLog, "utf8").length : 0;
+      await window.keyboard.type("z");
+      await window.keyboard.press("Enter");
+
+      // The accepted repaint may settle after focus was first observed. Its
+      // completion must not swap out the focused terminal under the first key.
+      await expect(panel).toHaveAttribute("data-e2e-picker-panel", "preserved");
+      await expect(xterm).toHaveAttribute("data-e2e-picker-terminal", "preserved");
+      await expect(panel).toHaveAttribute("data-input-enabled", "true");
+
+      const intendedMainPanelInput = () => {
+        if (!fs.existsSync(ipcLog)) return "";
+        return stripKittyReleases(
+          fs
+            .readFileSync(ipcLog, "utf8")
+            .slice(ipcLogOffset)
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map(
+              (line) =>
+                JSON.parse(line) as {
+                  channel?: string;
+                  payload?: { args?: { data?: string } };
+                },
+            )
+            .filter((entry) => entry.channel === "session.panelInput")
+            .map((entry) => entry.payload?.args?.data ?? "")
+            .join(""),
+        ).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+      };
+      await expect.poll(intendedMainPanelInput, { timeout: 10_000 }).toContain("z\r");
+      expect(intendedMainPanelInput().match(/z/g) ?? []).toHaveLength(1);
+      expect(intendedMainPanelInput().match(/\r/g) ?? []).toHaveLength(1);
+
+      const intendedPanelInput = () => {
+        if (!fs.existsSync(folders.hostLog)) return "";
+        return stripKittyReleases(
+          fs
+            .readFileSync(folders.hostLog, "utf8")
+            .slice(panelInputLogOffset)
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as { type?: string; data?: string })
+            .filter((entry) => entry.type === "panel_input")
+            .map((entry) => entry.data ?? "")
+            .join(""),
+        ).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+      };
+      await expect.poll(intendedPanelInput, { timeout: 10_000 }).toContain("z\r");
+      expect(intendedPanelInput().match(/z/g) ?? []).toHaveLength(1);
+      expect(intendedPanelInput().match(/\r/g) ?? []).toHaveLength(1);
+
+      const intendedSuccessorInput = () =>
+        stripKittyReleases(readInput(folders).slice(successorInputOffset)).replace(
+          /\x1b\[[0-?]*[ -/]*[@-~]/g,
+          "",
+        );
+      await expect.poll(intendedSuccessorInput, { timeout: 10_000 }).toContain("z\r");
+      const successorInput = intendedSuccessorInput();
+      expect(successorInput.match(/z/g) ?? []).toHaveLength(1);
+      expect(successorInput.match(/\r/g) ?? []).toHaveLength(1);
+
+      const submittedPromptTexts = () => {
+        if (!fs.existsSync(folders.hostLog)) return [] as string[];
+        return fs
+          .readFileSync(folders.hostLog, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                type?: string;
+                intent?: { kind?: string; text?: string };
+              },
+          )
+          .filter((entry) => entry.type === "dispatch_intent" && entry.intent?.kind === "submit")
+          .map((entry) => entry.intent?.text ?? "");
+      };
+      await expect.poll(submittedPromptTexts, { timeout: 10_000 }).toEqual(["z"]);
+      await window.waitForTimeout(300);
+      expect(submittedPromptTexts()).toEqual(["z"]);
+      await expect(panel).toHaveAttribute("data-e2e-picker-panel", "preserved");
+      await expect(xterm).toHaveAttribute("data-e2e-picker-terminal", "preserved");
+    } finally {
+      await app.close();
+      rmrf(folders.settingsDir);
+      rmrf(folders.workspaceDir);
+      rmrf(folders.piSessionsDir);
+    }
+  });
+
+  test("a Unified-cleared prompt cannot reappear when Input is toggled immediately", async () => {
+    test.setTimeout(120_000);
+    const folders = await makeFolders();
+    const { app, window } = await launchApp(folders);
+
+    try {
+      await window.getByRole("button", { name: "New session" }).click();
+      const panel = window.locator(".unified-panel");
+      await expect(panel).toBeVisible({ timeout: 20_000 });
+      await expect(panel).toHaveAttribute("data-input-enabled", "true", { timeout: 15_000 });
+
+      await window.getByRole("tab", { name: "Input" }).click();
+      const composer = window.locator(".composer__textarea");
+      await expect(composer).toBeVisible({ timeout: 10_000 });
+      await composer.fill("alpha");
+      await window.getByRole("tab", { name: "Extension" }).click();
+      await expect(panel).toBeVisible({ timeout: 10_000 });
+      await expect(panel.locator(".xterm-rows")).toContainText("draft> alpha", {
+        timeout: 10_000,
+      });
+
+      // A handoff is not submit evidence. Returning to Input before Enter must
+      // refresh the owner baseline and preserve the untouched native draft.
+      await window.getByRole("tab", { name: "Input" }).click();
+      await expect(composer).toBeVisible({ timeout: 10_000 });
+      await expect(composer).toHaveValue("alpha");
+      await window.getByRole("tab", { name: "Extension" }).click();
+      await expect(panel).toBeVisible({ timeout: 10_000 });
+
+      // Clicking the already-selected Extension segment is an explicit focus
+      // transfer too; typing must not require a second click inside xterm.
+      const extensionTab = window.getByRole("tab", { name: "Extension" });
+      await extensionTab.focus();
+      await extensionTab.click();
+      await expect(panel.locator(".xterm-helper-textarea")).toBeFocused({ timeout: 10_000 });
+
+      await window.keyboard.press("Enter");
+      // Race the renderer receipt deliberately. The child clear is already
+      // visible/committed, so Input must never seed the submitted native copy.
+      await window.getByRole("tab", { name: "Input" }).click();
+      await expect(composer).toBeVisible({ timeout: 10_000 });
+      await expect(composer).toHaveValue("");
+
+      // Byte-identical input after that clear is a new lineage and survives a
+      // second Extension/Input remount.
+      await composer.fill("alpha");
+      await window.getByRole("tab", { name: "Extension" }).click();
+      await window.getByRole("tab", { name: "Input" }).click();
+      await expect(composer).toHaveValue("alpha");
     } finally {
       await app.close();
       rmrf(folders.settingsDir);
