@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PI_PACKAGE_SEGMENTS = ["node_modules", "@earendil-works", "pi-coding-agent"] as const;
-export const PINNED_PI_VERSION = "0.99.2";
+export const PINNED_PI_VERSION = "1.0.0";
 export const TEST_PI_BINARY_OVERRIDE_ENV = "PIVIS_TEST_ALLOW_PI_BINARY_OVERRIDE";
 
 // The bundled package must live on the real filesystem — the SDK host is

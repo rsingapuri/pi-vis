@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeHostProcess } from "../../../tests/fixtures/fake-host-process.mjs";
 import {
   HostRequestTimeoutError,
+  HostRequestUnavailableError,
   __forkOverride,
   confinedSessionRuntimeStrategyForPlatform,
 } from "../pi/session-host.js";
@@ -5371,6 +5372,37 @@ describe("SessionRegistry direct AgentSession authority", () => {
     });
     expect(record._panelInputSequence.get(7)).toBe(0);
     h.registry.stopAll();
+  });
+
+  it("maps an in-flight panel rejection from owner retirement to runtime unavailable", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const owner = runtimeIdentity(record);
+    const predecessor = record.proc!;
+    record._panelInputSequence.set(7, 0);
+    let rejectInput!: (error: Error) => void;
+    predecessor.sendPanelInput = vi.fn(
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          rejectInput = reject;
+        }),
+    );
+
+    const pending = h.registry.sendPanelInput(id, ...owner, 7, 1, 1, "first-key");
+    await vi.waitFor(() => expect(predecessor.sendPanelInput).toHaveBeenCalledOnce());
+    record.proc = undefined;
+    record.availability = "unavailable";
+    rejectInput(new HostRequestUnavailableError("Host process stopped after requested shutdown"));
+
+    await expect(pending).resolves.toEqual({
+      acknowledgedThrough: 0,
+      rejection: "runtime_unavailable",
+    });
+    expect(record._panelInputSequence.get(7)).toBe(0);
+    await predecessor.stop();
+    await h.registry.stopAll();
   });
 
   it("reports unavailable without dispatch when a panel owner has died", async () => {

@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import installedPiPackage from "../node_modules/@earendil-works/pi-coding-agent/package.json";
 import projectPackage from "../package.json";
 
-const PINNED_PI_VERSION = "0.99.2";
+const PINNED_PI_VERSION = "1.0.0";
 const piPackageRoot = join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent");
 const piDependenciesRoot = join(piPackageRoot, "node_modules", "@earendil-works");
 const PINNED_PI_PACKAGES = [
@@ -46,18 +46,19 @@ describe("pinned Pi runtime", () => {
   it("keeps the manifest, installed package, and executable layout pinned exactly", () => {
     // Production dependency: the app ships this exact pi and runs nothing else.
     expect(projectPackage.dependencies["@earendil-works/pi-coding-agent"]).toBe(PINNED_PI_VERSION);
+    expect(projectPackage.dependencies).not.toHaveProperty("@earendil-works/pi-durable");
     expect(installedPiPackage.version).toBe(PINNED_PI_VERSION);
     expect(installedPiPackage.engines).toEqual({ node: ">=22.19.0" });
     expect(fs.existsSync(join(piPackageRoot, "dist", "cli.js"))).toBe(true);
     expect(fs.existsSync(join(piPackageRoot, "dist", "bundle", "cli.js"))).toBe(true);
     expect(installedPiPackage.bin).toEqual({ pi: "dist/bundle/cli.js" });
     expect(installedPiPackage.dependencies).toMatchObject({
-      "@earendil-works/chord": "^0.99.2",
-      "@earendil-works/pi-agent-core": "^0.99.2",
-      "@earendil-works/pi-ai": "^0.99.2",
-      "@earendil-works/pi-codemode": "^0.99.2",
-      "@earendil-works/pi-mcp": "^0.99.2",
-      "@earendil-works/pi-tui": "^0.99.2",
+      "@earendil-works/chord": "^1.0.0",
+      "@earendil-works/pi-agent-core": "^1.0.0",
+      "@earendil-works/pi-ai": "^1.0.0",
+      "@earendil-works/pi-codemode": "^1.0.0",
+      "@earendil-works/pi-mcp": "^1.0.0",
+      "@earendil-works/pi-tui": "^1.0.0",
     });
     expect(installedPiPackage.dependencies).not.toHaveProperty("@earendil-works/pi-client");
     expect(installedPiPackage.dependencies).not.toHaveProperty("@earendil-works/pi-protocol");
@@ -72,6 +73,30 @@ describe("pinned Pi runtime", () => {
         fs.readFileSync(join(piDependenciesRoot, packageName, "package.json"), "utf8"),
       ) as { version: string };
       expect(dependencyPackage.version).toBe(PINNED_PI_VERSION);
+    }
+    const piAgentCorePackage = JSON.parse(
+      fs.readFileSync(join(piDependenciesRoot, "pi-agent-core", "package.json"), "utf8"),
+    ) as {
+      dependencies?: Record<string, string>;
+      exports?: Record<string, unknown>;
+    };
+    expect(piAgentCorePackage.dependencies).toEqual({
+      "@earendil-works/pi-ai": "^1.0.0",
+      typebox: "1.3.27",
+    });
+    expect(piAgentCorePackage.exports).toEqual({
+      ".": { types: "./dist/index.d.ts", import: "./dist/index.js" },
+      "./package.json": "./package.json",
+    });
+    for (const removedSubpath of [
+      "node.js",
+      "node.d.ts",
+      "harness",
+      join("experimental", "pico3"),
+    ]) {
+      expect(fs.existsSync(join(piDependenciesRoot, "pi-agent-core", "dist", removedSubpath))).toBe(
+        false,
+      );
     }
     for (const removedPackage of ["pi-client", "pi-protocol"]) {
       expect(fs.existsSync(join(piDependenciesRoot, removedPackage, "package.json"))).toBe(false);
@@ -99,7 +124,7 @@ describe("pinned Pi runtime", () => {
     expect(piAiPackage.dependencies).not.toHaveProperty("zod");
   });
 
-  it("ships the audited 0.86–0.99 public SDK surfaces used by Pi-Vis", async () => {
+  it("ships the audited 0.86–1.0 public SDK surfaces used by Pi-Vis", async () => {
     const agentSessionTypes = fs.readFileSync(
       join(piPackageRoot, "dist", "core", "agent-session.d.ts"),
       "utf8",
@@ -125,8 +150,16 @@ describe("pinned Pi runtime", () => {
       join(piPackageRoot, "node_modules", "@earendil-works", "pi-agent-core", "dist", "types.d.ts"),
       "utf8",
     );
+    const piAgentCoreIndexTypes = fs.readFileSync(
+      join(piDependenciesRoot, "pi-agent-core", "dist", "index.d.ts"),
+      "utf8",
+    );
     const modelRuntimeTypes = fs.readFileSync(
       join(piPackageRoot, "dist", "core", "model-runtime.d.ts"),
+      "utf8",
+    );
+    const modelRegistryTypes = fs.readFileSync(
+      join(piPackageRoot, "dist", "core", "model-registry.d.ts"),
       "utf8",
     );
     const modelConfigTypes = fs.readFileSync(
@@ -198,6 +231,10 @@ describe("pinned Pi runtime", () => {
       join(piDependenciesRoot, "pi-codemode", "dist", "index.d.ts"),
       "utf8",
     );
+    const codingAgentCodemodeTypes = fs.readFileSync(
+      join(piPackageRoot, "dist", "extensions", "codemode", "tool.d.ts"),
+      "utf8",
+    );
     const mcpIndexTypes = fs.readFileSync(
       join(piDependenciesRoot, "pi-mcp", "dist", "index.d.ts"),
       "utf8",
@@ -206,12 +243,24 @@ describe("pinned Pi runtime", () => {
       join(piDependenciesRoot, "pi-mcp", "dist", "client.d.ts"),
       "utf8",
     );
+    const mcpOAuthFlowTypes = fs.readFileSync(
+      join(piDependenciesRoot, "pi-mcp", "dist", "oauth", "flow.d.ts"),
+      "utf8",
+    );
+    const codingAgentMcpOAuthTypes = fs.readFileSync(
+      join(piPackageRoot, "dist", "extensions", "mcp", "oauth.d.ts"),
+      "utf8",
+    );
     const tuiTypes = fs.readFileSync(
       join(piDependenciesRoot, "pi-tui", "dist", "tui.d.ts"),
       "utf8",
     );
     const tuiIndexTypes = fs.readFileSync(
       join(piDependenciesRoot, "pi-tui", "dist", "index.d.ts"),
+      "utf8",
+    );
+    const tuiAltScreenTypes = fs.readFileSync(
+      join(piDependenciesRoot, "pi-tui", "dist", "tui-alt-screen.d.ts"),
       "utf8",
     );
     const themeTypes = fs.readFileSync(
@@ -277,6 +326,9 @@ describe("pinned Pi runtime", () => {
     const piTui = await import(
       "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist/index.js"
     );
+    const piAgentCore = await import(
+      "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/index.js"
+    );
     const piProviders = await import(
       "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/all.js"
     );
@@ -316,6 +368,31 @@ describe("pinned Pi runtime", () => {
     expect(piAgentCoreTypes).toContain("context: TranscriptContext");
     expect(piAgentCoreTypes).not.toContain("shouldStopAfterTurn");
     expect(piAgentCoreTypes).not.toContain("addedToolNames");
+    expect(piAgentCoreIndexTypes).toContain('export * from "./agent.ts"');
+    expect(piAgentCoreIndexTypes).toContain('export * from "./agent-loop.ts"');
+    expect(piAgentCoreIndexTypes).toContain('export * from "./proxy.ts"');
+    expect(piAgentCoreIndexTypes).toContain('export { setDefaultStreamFn } from "./stream-fn.ts"');
+    for (const removedExport of [
+      "AgentHarness",
+      "DurableRuntime",
+      "PromptTemplate",
+      "SearchService",
+      "SessionStorage",
+      "uuidv7",
+    ]) {
+      expect(piAgentCoreIndexTypes).not.toContain(removedExport);
+      expect(piAgentCore).not.toHaveProperty(removedExport);
+    }
+    expect(Object.keys(piAgentCore).sort()).toEqual([
+      "Agent",
+      "agentLoop",
+      "agentLoopContinue",
+      "runAgentLoop",
+      "runAgentLoopContinue",
+      "runToolCall",
+      "setDefaultStreamFn",
+      "streamProxy",
+    ]);
     expect(agentSessionTypes).toContain("getAvailableThinkingLevels(): ThinkingLevel[]");
     expect(agentSessionTypes).toContain("id?: string");
     expect(agentSessionTypes).toContain("expandPromptTemplates?: boolean");
@@ -422,6 +499,12 @@ describe("pinned Pi runtime", () => {
     expect(modelRuntimeTypes).toContain("Promise<ModelsRefreshResult>");
     expect(modelRuntimeTypes).toContain("CredentialSynchronizationError");
     expect(modelRuntimeTypes).toContain("refreshOnCreate?: boolean");
+    expect(modelRuntimeTypes).toContain(
+      "generateImages(model: ImageModel<ImageApi>, context: ImagesContext",
+    );
+    expect(modelRegistryTypes).toContain(
+      "generateImages(model: ImageModel<ImageApi>, context: ImagesContext",
+    );
     expect(modelConfigTypes).toContain("supportsFinishReason: Type.TOptional<Type.TBoolean>");
     expect(sessionServicesTypes).toContain("modelRuntimeSignal?: AbortSignal");
     expect(jsonEventTypes).toContain("ToJsonAssistantMessageEvent");
@@ -444,6 +527,9 @@ describe("pinned Pi runtime", () => {
     expect(settingsManagerTypes).toContain("getTerminalCapabilityOverrides()");
     expect(settingsManagerTypes).toContain("getShowHardwareCursor(): boolean");
     expect(settingsManagerTypes).toContain("getClearOnShrink(): boolean");
+    expect(settingsManagerTypes).toContain('export type QuietStartup = boolean | "header"');
+    expect(settingsManagerTypes).toContain("quietStartup?: QuietStartup");
+    expect(settingsManagerTypes).toContain("tuiMode?: TuiMode");
     expect(sessionManagerTypes).toContain(
       "static inMemory(cwd?: string, options?: NewSessionOptions, entries?: FileEntry[])",
     );
@@ -491,6 +577,7 @@ describe("pinned Pi runtime", () => {
     );
     expect(tuiTypes).toContain("setClearOnShrink(enabled: boolean): void");
     expect(tuiTypes).toContain("queryTerminalColors(options:");
+    expect(tuiAltScreenTypes).toContain("getScreenLines(): string[]");
     expect(tuiTypes).not.toContain("queryTerminalColorScheme");
     expect(tuiTypes).not.toContain("queryTerminalBackgroundColor");
     expect(tuiIndexTypes).not.toContain("parseOsc11BackgroundColor");
@@ -573,12 +660,22 @@ describe("pinned Pi runtime", () => {
     expect(codemodeTypes).toContain("outputSchema?: CodemodeJsonSchema");
     expect(codemodeIndexTypes).toContain("CodemodeSandbox");
     expect(codemodeIndexTypes).toContain("loadQuickJSWasm");
+    expect(codemodeIndexTypes).toContain("renderToolOutputType");
+    expect(codingAgentCodemodeTypes).toContain(
+      'Pick<ModelRegistry, "getModelsOfType" | "getAvailableOfType" | "getModelOfType" | "classify" | "generateImages">',
+    );
     expect(mcpIndexTypes).toContain("McpClient");
     expect(mcpIndexTypes).toContain("StdioTransport");
     expect(mcpIndexTypes).toContain("StreamableHttpTransport");
     expect(mcpIndexTypes).toContain("LATEST_PROTOCOL_VERSION");
     expect(mcpClientTypes).toContain("onProgress?: (progress: ProgressNotification) => void");
     expect(mcpClientTypes).toContain("roots?: readonly Root[]");
+    expect(mcpOAuthFlowTypes).toContain("iss?: string");
+    expect(mcpOAuthFlowTypes).toContain("authorizationServerMetadataUrl?: URL");
+    expect(mcpOAuthFlowTypes).toContain(
+      "stepUpScope(granted: string | undefined, challenged: string | undefined)",
+    );
+    expect(codingAgentMcpOAuthTypes).toContain("authServerMetadataUrl?: URL");
 
     // Removed 0.85 surfaces must stay gone so compatibility code cannot drift back to them.
     expect(fs.existsSync(join(piDependenciesRoot, "pi-ai", "dist", "images-models.d.ts"))).toBe(
@@ -849,18 +946,29 @@ describe("pinned Pi runtime", () => {
   });
 
   it("loads and executes the new codemode package and exposes the MCP client surface", async () => {
-    const [codemode, mcp] = await Promise.all([
+    const [codemode, mcp, mcpOauth] = await Promise.all([
       import(
         "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-codemode/dist/index.js"
       ),
       import(
         "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-mcp/dist/index.js"
       ),
+      import(
+        "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-mcp/dist/oauth/index.js"
+      ),
     ]);
 
     expect(typeof codemode.CodemodeSandbox).toBe("function");
     expect(typeof codemode.loadQuickJSWasm).toBe("function");
     expect(typeof codemode.parseCodemodeSource).toBe("function");
+    expect(codemode.renderToolOutputType).toBeTypeOf("function");
+    expect(
+      codemode.renderToolOutputType({
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+        required: ["ok"],
+      }),
+    ).toBe("{ ok: boolean; }");
     const sandbox = new codemode.CodemodeSandbox();
     try {
       await expect(sandbox.execute("return 6 * 7")).resolves.toMatchObject({
@@ -871,6 +979,25 @@ describe("pinned Pi runtime", () => {
       await sandbox.close();
     }
 
+    const recoverySandbox = new codemode.CodemodeSandbox({
+      tools: [{ name: "bash", execute: () => "ok" }],
+    });
+    try {
+      await expect(recoverySandbox.execute("return tools.Bash({})")).resolves.toMatchObject({
+        ok: false,
+        error: {
+          kind: "script",
+          message: expect.stringContaining("Did you mean tools.bash?"),
+        },
+      });
+      await expect(recoverySandbox.execute('return "bash" in tools')).resolves.toMatchObject({
+        ok: true,
+        value: true,
+      });
+    } finally {
+      await recoverySandbox.close();
+    }
+
     expect(typeof mcp.McpClient).toBe("function");
     expect(typeof mcp.StdioTransport).toBe("function");
     expect(typeof mcp.StreamableHttpTransport).toBe("function");
@@ -879,9 +1006,25 @@ describe("pinned Pi runtime", () => {
     expect(client.connectionState).toBe("idle");
     await client.close();
     expect(client.connectionState).toBe("closed");
+    expect(mcpOauth.stepUpScope("read write", "admin write")).toBe("read write admin");
+    expect(mcpOauth.stepUpScope(undefined, "read")).toBe("read");
+    expect(mcpOauth.stepUpScope("read", undefined)).toBeUndefined();
   });
 
-  it("exports configured credentials through the pinned 0.99.2 CLI", () => {
+  it("keeps the app-owned Radius MCP endpoint aligned with Pi's public default gateway", async () => {
+    const [radiusConfig, radiusMcp] = await Promise.all([
+      import(
+        "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/radius-config.js"
+      ),
+      import("../resources/pi-session-host/radius-mcp.mjs"),
+    ]);
+
+    expect(radiusConfig.DEFAULT_RADIUS_GATEWAY).toBe("https://radius.pi.dev");
+    const gateway = radiusConfig.normalizeRadiusGatewayUrl(radiusConfig.DEFAULT_RADIUS_GATEWAY);
+    expect(`${gateway}/mcp`).toBe(radiusMcp.RADIUS_MCP_URL);
+  });
+
+  it("exports configured credentials through the pinned 1.0.0 CLI", () => {
     const agentDir = fs.mkdtempSync(join(os.tmpdir(), "pivis-pi-auth-export-"));
     const cli = join(piPackageRoot, "dist", "bundle", "cli.js");
     const sentinel = "pivis-credential-export-test";

@@ -13,6 +13,8 @@ This table documents the deployed policy/settlement compatibility contract. Unde
 | `prompt`, `steer`, `follow_up` | effectful, submission-only | Composer, unified editor, extensions | `session.submit` dispositions; host admission and queue custody tests |
 | `get_available_models`, `get_scoped_models`, `get_logout_providers` | read-only | model/scope/logout pickers | identity-bound response; picker/store tests |
 | `refreshModels` intent | mutation | silent model-picker/auth SWR | bounded authority-frame outcome, then same-owner `get_available_models`; failure retains cache |
+| `get_login_providers` | read-only | `/login` picker | identity-bound public provider/method metadata plus bounded account/subscription presentation kind; no credential data |
+| `loginProvider` intent | mutation | `/login` picker and app-owned auth dialog | public `ModelRuntime.login()` plus typed terminal outcome; successful Radius OAuth may add bounded MCP setup status and only `configured` permits a distinct same-owner reload |
 | `get_commands` | read-only | ready-time command discovery | identity-bound catalog update; store tests |
 | `get_state`, `get_session_stats` | read-only | bootstrap, `/session`, reconciliation, header/tree stats | identity-bound read and stale-write fencing; executor/store/header tests |
 | `get_messages`, `get_fork_messages`, `get_last_assistant_text` | read-only | SDK integrations, `/fork`, `/copy` | bridge response plus executor outcome tests |
@@ -44,6 +46,6 @@ This table documents the deployed policy/settlement compatibility contract. Unde
 - Renderer tests prove all direct command call sites construct the mandatory request and stale continuations do not write state.
 - Bridge tests prove each command reaches the intended public SDK operation or an explicit structured capability/domain failure.
 - Electron fake-host tests cover first-use, picker, command, delayed-history, unified-claim, and ESC cancellation/queue-restoration behavior without model/network nondeterminism.
-- The Pi 0.99.2 localhost-provider smoke proves a real successful model-backed compaction by asserting the HTTP summarization request, `Context compacted`, a persisted `compaction` JSONL entry, Composer clearing, and continued host liveness.
+- The Pi 1.0.0 localhost-provider smoke proves a real successful model-backed compaction by asserting the HTTP summarization request, `Context compacted`, a persisted `compaction` JSONL entry, Composer clearing, and continued host liveness.
 
 External provider aliases, credentials, and backend availability remain integration dependencies. A dispatch, cleared editor, or surfaced provider failure is never recorded as successful operation evidence.

@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Pi 0.99.2 implements local llama.cpp router discovery, load/unload, download,
+Pi 1.0.0 implements local llama.cpp router discovery, load/unload, download,
 connection recovery, provider registration, and its interactive manager as a
 CLI built-in extension. The package ships that extension, but its public
 SDK entry does not export either the built-in registry or the llama factory.
@@ -14,8 +14,8 @@ Consequently, an SDK-only host cannot provide the feature through public imports
 alone even though Pi's public resource loader supports inline extension
 factories and Pi-Vis already supports Pi-TUI custom panels.
 
-The 0.99.2 audit found four aggregate built-ins: llama.cpp, codemode,
-tool-search, and MCP. All carry `builtin: true`; the latter three are
+The 1.0.0 audit found the same four aggregate built-ins as 0.99.2: llama.cpp,
+codemode, tool-search, and MCP. All carry `builtin: true`; the latter three are
 replaceable and have public root factories, while llama.cpp remains absent from
 every public coding-agent export. The exception therefore renews only for the
 llama entry without expanding its path or runtime authority.
@@ -34,7 +34,7 @@ public `InlineExtension` fields `{ name, factory, builtin }`.
 
 The exception has these boundaries:
 
-- It is approved only for exact Pi version 0.99.2.
+- It is approved only for exact Pi version 1.0.0.
 - It imports the aggregate built-in registry, never a llama implementation
   submodule, and never privately injects any other built-in. Codemode,
   tool-search, and MCP are created from their public root factories.
@@ -55,7 +55,7 @@ The exception has these boundaries:
 
 ## Consequences
 
-Pi-Vis has feature parity with Pi 0.99.2's local llama.cpp manager without
+Pi-Vis has feature parity with Pi 1.0.0's local llama.cpp manager without
 forking its implementation. The cost is a deliberately accepted package-layout
 dependency: a repackaged or changed private registry can disable the feature
 until Pi-Vis is updated. Structural tests catch that in development, and the
@@ -67,7 +67,8 @@ private Pi import remains prohibited.
 
 ## References
 
-- [Pi 0.99.2 compatibility audit](../compatibility/pi-0.99.2.md)
+- [Pi 1.0.0 compatibility audit](../compatibility/pi-1.0.0.md)
+- [Historical Pi 0.99.2 compatibility audit](../compatibility/pi-0.99.2.md)
 - [Runtime services](../architecture/runtime-services.md)
 - [Processes and IPC](../architecture/processes-and-ipc.md)
 - [Testing](../testing.md)

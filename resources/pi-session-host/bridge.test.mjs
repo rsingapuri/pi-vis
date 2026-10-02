@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   CredentialSynchronizationError,
   resolveModelScopeWithDiagnostics,
@@ -1017,7 +1019,7 @@ describe("setupCommandBridge — target intent dispatch", () => {
           id: "project-dynamic",
           name: "Project Dynamic",
           auth: {
-            oauth: { login: vi.fn() },
+            oauth: { login: vi.fn(), isSubscription: true },
             apiKey: { login: vi.fn() },
           },
         },
@@ -1025,6 +1027,11 @@ describe("setupCommandBridge — target intent dispatch", () => {
           id: "ambient-only",
           name: "Ambient Only",
           auth: { apiKey: {} },
+        },
+        {
+          id: "radius",
+          name: "Radius",
+          auth: { oauth: { login: vi.fn() } },
         },
       ]),
       checkAuth: vi.fn(async (providerId) =>
@@ -1047,6 +1054,14 @@ describe("setupCommandBridge — target intent dispatch", () => {
             configured: true,
             source: "OAuth",
             methods: ["oauth", "api_key"],
+            oauthKind: "subscription",
+          },
+          {
+            id: "radius",
+            name: "Radius",
+            configured: false,
+            methods: ["oauth"],
+            oauthKind: "account",
           },
         ],
       },
@@ -1120,6 +1135,340 @@ describe("setupCommandBridge — target intent dispatch", () => {
       },
     });
     expect(JSON.stringify(outcome)).not.toContain("never-publish-this");
+  });
+
+  it("configures Radius MCP only after explicit post-login consent", async () => {
+    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pivis-radius-login-"));
+    try {
+      const modelRuntime = {
+        ...makeSession().modelRuntime,
+        getProviders: vi.fn(() => [
+          { id: "radius", name: "Radius", auth: { oauth: { login: vi.fn() } } },
+        ]),
+        checkAuth: vi.fn(async () => undefined),
+        login: vi.fn(async () => ({ type: "oauth", access: "never-publish-radius-token" })),
+      };
+      const surface = {
+        interaction: { signal: new AbortController().signal, prompt: vi.fn(), notify: vi.fn() },
+        confirmRadiusMcp: vi.fn(async () => true),
+        complete: vi.fn(),
+        fail: vi.fn(),
+      };
+      const { send, dispatchIntent } = setup(
+        { modelRuntime },
+        { agentDir, createProviderAuthSurface: vi.fn(() => surface) },
+      );
+
+      await dispatchIntent({
+        intentId: "radius-login",
+        expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+        intent: { kind: "loginProvider", providerId: "radius", authType: "oauth" },
+      });
+      await vi.waitFor(() => expect(surface.complete).toHaveBeenCalledOnce());
+
+      expect(surface.confirmRadiusMcp).toHaveBeenCalledWith(path.join(agentDir, "mcp.json"));
+      expect(JSON.parse(fs.readFileSync(path.join(agentDir, "mcp.json"), "utf8"))).toEqual({
+        mcpServers: {
+          radius: {
+            url: "https://radius.pi.dev/mcp",
+            auth: { provider: "radius" },
+          },
+        },
+      });
+      let outcome;
+      await vi.waitFor(() => {
+        outcome = send.mock.calls
+          .map(([message]) => message)
+          .find(
+            (message) =>
+              message.type === "intent_outcome" && message.outcome.intentId === "radius-login",
+          );
+        expect(outcome).toBeDefined();
+      });
+      expect(outcome.outcome).toMatchObject({
+        state: "completed",
+        result: { synchronized: true, radiusMcp: "configured" },
+      });
+      expect(JSON.stringify(outcome)).not.toContain("never-publish-radius-token");
+    } finally {
+      fs.rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reloads after accepted Radius setup when a concurrent writer wins the race", async () => {
+    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pivis-radius-race-"));
+    try {
+      const modelRuntime = {
+        ...makeSession().modelRuntime,
+        getProviders: vi.fn(() => [
+          { id: "radius", name: "Radius", auth: { oauth: { login: vi.fn() } } },
+        ]),
+        checkAuth: vi.fn(async () => undefined),
+        login: vi.fn(async () => ({ type: "oauth", access: "secret" })),
+      };
+      const surface = {
+        interaction: { signal: new AbortController().signal, prompt: vi.fn(), notify: vi.fn() },
+        confirmRadiusMcp: vi.fn(async () => {
+          fs.writeFileSync(
+            path.join(agentDir, "mcp.json"),
+            `${JSON.stringify({
+              mcpServers: {
+                radius: {
+                  url: "https://radius.pi.dev/mcp",
+                  auth: { provider: "radius" },
+                },
+              },
+            })}\n`,
+            { mode: 0o600 },
+          );
+          return true;
+        }),
+        complete: vi.fn(),
+        fail: vi.fn(),
+      };
+      const { send, dispatchIntent } = setup(
+        { modelRuntime },
+        { agentDir, createProviderAuthSurface: vi.fn(() => surface) },
+      );
+
+      await dispatchIntent({
+        intentId: "radius-race",
+        expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+        intent: { kind: "loginProvider", providerId: "radius", authType: "oauth" },
+      });
+      await vi.waitFor(() => expect(surface.complete).toHaveBeenCalledOnce());
+
+      const outcome = send.mock.calls
+        .map(([message]) => message)
+        .find(
+          (message) =>
+            message.type === "intent_outcome" && message.outcome.intentId === "radius-race",
+        );
+      expect(outcome.outcome).toMatchObject({
+        state: "completed",
+        result: { synchronized: true, radiusMcp: "configured" },
+      });
+    } finally {
+      fs.rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Radius sign-in successful when MCP setup is declined or malformed", async () => {
+    const cases = [
+      { name: "declined", confirm: false, expected: "declined", malformed: false },
+      { name: "malformed", confirm: true, expected: "failed", malformed: true },
+    ];
+    for (const testCase of cases) {
+      const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), `pivis-radius-${testCase.name}-`));
+      try {
+        if (testCase.malformed) {
+          fs.writeFileSync(path.join(agentDir, "mcp.json"), "{ malformed\n", "utf8");
+        }
+        const modelRuntime = {
+          ...makeSession().modelRuntime,
+          getProviders: vi.fn(() => [
+            { id: "radius", name: "Radius", auth: { oauth: { login: vi.fn() } } },
+          ]),
+          checkAuth: vi.fn(async () => undefined),
+          login: vi.fn(async () => ({ type: "oauth", access: "secret" })),
+        };
+        const surface = {
+          interaction: { signal: new AbortController().signal, prompt: vi.fn(), notify: vi.fn() },
+          confirmRadiusMcp: vi.fn(async () => testCase.confirm),
+          complete: vi.fn(),
+          fail: vi.fn(),
+        };
+        const { send, dispatchIntent } = setup(
+          { modelRuntime },
+          { agentDir, createProviderAuthSurface: vi.fn(() => surface) },
+        );
+        const intentId = `radius-${testCase.name}`;
+
+        await dispatchIntent({
+          intentId,
+          expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+          intent: { kind: "loginProvider", providerId: "radius", authType: "oauth" },
+        });
+        await vi.waitFor(() => expect(surface.complete).toHaveBeenCalledOnce());
+
+        let outcome;
+        await vi.waitFor(() => {
+          outcome = send.mock.calls
+            .map(([message]) => message)
+            .find(
+              (message) =>
+                message.type === "intent_outcome" && message.outcome.intentId === intentId,
+            );
+          expect(outcome).toBeDefined();
+        });
+        expect(outcome.outcome).toMatchObject({
+          state: "completed",
+          result: { synchronized: true, radiusMcp: testCase.expected },
+        });
+        expect(surface.fail).not.toHaveBeenCalled();
+        if (testCase.malformed) {
+          expect(fs.readFileSync(path.join(agentDir, "mcp.json"), "utf8")).toBe("{ malformed\n");
+          expect(surface.confirmRadiusMcp).not.toHaveBeenCalled();
+        } else {
+          expect(fs.existsSync(path.join(agentDir, "mcp.json"))).toBe(false);
+        }
+      } finally {
+        fs.rmSync(agentDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("offers Radius MCP after a committed credential synchronization warning", async () => {
+    const cases = [
+      { name: "configured", confirm: true, radiusMcp: "configured" },
+      { name: "declined", confirm: false, radiusMcp: "declined" },
+    ];
+    for (const testCase of cases) {
+      const agentDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), `pivis-radius-sync-${testCase.name}-`),
+      );
+      try {
+        const credential = { type: "oauth", access: "never-publish-radius-committed-token" };
+        const modelRuntime = {
+          ...makeSession().modelRuntime,
+          getProviders: vi.fn(() => [
+            { id: "radius", name: "Radius", auth: { oauth: { login: vi.fn() } } },
+          ]),
+          checkAuth: vi.fn(async () => undefined),
+          login: vi.fn(async () => {
+            throw new CredentialSynchronizationError("radius", "login", credential, {
+              cause: new Error("never-publish-radius-sync-detail"),
+            });
+          }),
+        };
+        const surface = {
+          interaction: { signal: new AbortController().signal, prompt: vi.fn(), notify: vi.fn() },
+          confirmRadiusMcp: vi.fn(async () => testCase.confirm),
+          complete: vi.fn(),
+          warn: vi.fn(),
+          fail: vi.fn(),
+        };
+        const { send, dispatchIntent } = setup(
+          { modelRuntime },
+          { agentDir, createProviderAuthSurface: vi.fn(() => surface) },
+        );
+        const intentId = `radius-sync-${testCase.name}`;
+
+        await dispatchIntent({
+          intentId,
+          expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+          intent: { kind: "loginProvider", providerId: "radius", authType: "oauth" },
+        });
+        await vi.waitFor(() => expect(surface.warn).toHaveBeenCalledOnce());
+
+        let outcome;
+        await vi.waitFor(() => {
+          outcome = send.mock.calls
+            .map(([message]) => message)
+            .find(
+              (message) =>
+                message.type === "intent_outcome" && message.outcome.intentId === intentId,
+            );
+          expect(outcome).toBeDefined();
+        });
+        expect(outcome?.outcome).toMatchObject({
+          state: "completed",
+          result: {
+            providerId: "radius",
+            authType: "oauth",
+            synchronized: false,
+            radiusMcp: testCase.radiusMcp,
+          },
+        });
+        expect(surface.confirmRadiusMcp).toHaveBeenCalledWith(path.join(agentDir, "mcp.json"));
+        expect(surface.complete).not.toHaveBeenCalled();
+        expect(surface.fail).not.toHaveBeenCalled();
+        expect(fs.existsSync(path.join(agentDir, "mcp.json"))).toBe(testCase.confirm);
+        expect(JSON.stringify(send.mock.calls)).not.toContain(
+          "never-publish-radius-committed-token",
+        );
+        expect(JSON.stringify(send.mock.calls)).not.toContain("never-publish-radius-sync-detail");
+      } finally {
+        fs.rmSync(agentDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("treats cancellation after a committed Radius login as a successful decline", async () => {
+    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pivis-radius-sync-cancel-"));
+    try {
+      const modelRuntime = {
+        ...makeSession().modelRuntime,
+        getProviders: vi.fn(() => [
+          { id: "radius", name: "Radius", auth: { oauth: { login: vi.fn() } } },
+        ]),
+        checkAuth: vi.fn(async () => undefined),
+        login: vi.fn(async () => {
+          throw new CredentialSynchronizationError(
+            "radius",
+            "login",
+            { type: "oauth", access: "never-publish-cancelled-radius-token" },
+            { cause: new Error("never-publish-cancelled-radius-detail") },
+          );
+        }),
+      };
+      const surface = {
+        interaction: undefined,
+        confirmRadiusMcp: undefined,
+        complete: vi.fn(),
+        warn: vi.fn(),
+        fail: vi.fn(),
+      };
+      const createProviderAuthSurface = vi.fn((_name, _type, signal, onCancel) => {
+        surface.interaction = { signal, prompt: vi.fn(), notify: vi.fn() };
+        surface.confirmRadiusMcp = vi.fn(async () => {
+          onCancel();
+          throw new Error("cancelled after commit");
+        });
+        return surface;
+      });
+      const { send, dispatchIntent } = setup(
+        { modelRuntime },
+        { agentDir, createProviderAuthSurface },
+      );
+
+      await dispatchIntent({
+        intentId: "radius-sync-cancel",
+        expectedOwner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+        intent: { kind: "loginProvider", providerId: "radius", authType: "oauth" },
+      });
+      await vi.waitFor(() => expect(surface.complete).toHaveBeenCalledOnce());
+
+      let outcome;
+      await vi.waitFor(() => {
+        outcome = send.mock.calls
+          .map(([message]) => message)
+          .find(
+            (message) =>
+              message.type === "intent_outcome" &&
+              message.outcome.intentId === "radius-sync-cancel",
+          );
+        expect(outcome).toBeDefined();
+      });
+      expect(outcome?.outcome).toMatchObject({
+        state: "completed",
+        result: {
+          providerId: "radius",
+          authType: "oauth",
+          synchronized: false,
+          radiusMcp: "declined",
+        },
+      });
+      expect(surface.warn).not.toHaveBeenCalled();
+      expect(surface.fail).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(agentDir, "mcp.json"))).toBe(false);
+      expect(JSON.stringify(send.mock.calls)).not.toContain("never-publish-cancelled-radius-token");
+      expect(JSON.stringify(send.mock.calls)).not.toContain(
+        "never-publish-cancelled-radius-detail",
+      );
+    } finally {
+      fs.rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 
   it("treats a committed credential with failed local synchronization as a safe warning", async () => {
@@ -3028,10 +3377,17 @@ describe("setupCommandBridge — target intent dispatch", () => {
         listCredentials: vi.fn(async () => [
           { providerId: "z-local", type: "api_key" },
           { providerId: "anthropic", type: "oauth" },
+          { providerId: "openrouter", type: "oauth" },
         ]),
-        getProvider: vi.fn((providerId) =>
-          providerId === "anthropic" ? { name: "Anthropic" } : undefined,
-        ),
+        getProvider: vi.fn((providerId) => {
+          if (providerId === "anthropic") return { name: "Anthropic" };
+          if (providerId === "openrouter") return { name: "OpenRouter" };
+          return undefined;
+        }),
+        getProviders: vi.fn(() => [
+          { id: "anthropic", auth: { oauth: { isSubscription: true } } },
+          { id: "openrouter", auth: { oauth: {} } },
+        ]),
       },
     });
 
@@ -3039,7 +3395,13 @@ describe("setupCommandBridge — target intent dispatch", () => {
       success: true,
       data: {
         providers: [
-          { id: "anthropic", name: "Anthropic", authType: "oauth" },
+          {
+            id: "anthropic",
+            name: "Anthropic",
+            authType: "oauth",
+            oauthKind: "subscription",
+          },
+          { id: "openrouter", name: "OpenRouter", authType: "oauth", oauthKind: "account" },
           { id: "z-local", name: "z-local", authType: "api_key" },
         ],
       },

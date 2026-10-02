@@ -1761,6 +1761,9 @@ export function createStateAuthority({
               ...(typeof value.synchronized === "boolean"
                 ? { synchronized: value.synchronized }
                 : {}),
+              ...(["unchanged", "declined", "configured", "failed"].includes(value.radiusMcp)
+                ? { radiusMcp: value.radiusMcp }
+                : {}),
             }
           : undefined;
       default:

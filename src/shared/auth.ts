@@ -39,7 +39,7 @@ export interface ProviderDef {
 }
 
 /**
- * API-key variables in the exact order Pi 0.99.2 discovers them. Providers
+ * API-key variables in the exact order Pi 1.0.0 discovers them. Providers
  * with ambient-only authentication keep an empty list; their compound rules
  * are mirrored by main's status projection.
  */
@@ -104,7 +104,7 @@ function provider(
 
 /**
  * Exact built-in provider IDs, names, primary API-key variables, and OAuth
- * capabilities from the pinned Pi 0.99.2 runtime. Anthropic's documented
+ * capabilities from the pinned Pi 1.0.0 runtime. Anthropic's documented
  * primary variable remains `ANTHROPIC_API_KEY`; its actual resolution order is
  * captured above and mirrored by main.
  */

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { SessionId } from "@shared/ids.js";
+import type { LogoutProvidersData } from "@shared/pi-protocol/responses.js";
 import type {
   IntentEnvelope,
   IntentOutcome,
@@ -44,6 +45,13 @@ async function settle(): Promise<void> {
     await Promise.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
+}
+
+function oauthBadge(container: HTMLElement, providerName: string): string | undefined {
+  const row = [...container.querySelectorAll<HTMLButtonElement>(".picker__item")].find(
+    (item) => item.querySelector(".picker__item-name")?.textContent === providerName,
+  );
+  return row?.querySelector(".picker__badge--oauth")?.textContent?.trim();
 }
 
 function deferred<T>() {
@@ -195,6 +203,45 @@ function publishPickerOutcome(
       envelope.intent.kind === "setModel"
         ? { ...base, kind: "setModel" }
         : { ...base, kind: "setThinking" };
+    sessions.set(SESSION_ID, {
+      ...session,
+      authorityProjection: {
+        ...projection,
+        authoritativeSnapshot: {
+          ...snapshot,
+          recentIntentOutcomes: [...snapshot.recentIntentOutcomes, outcome],
+        },
+      },
+    });
+    return { sessions };
+  });
+}
+
+function publishRadiusLoginOutcome(
+  envelope: IntentEnvelope,
+  radiusMcp: "configured" | "failed",
+  synchronized = true,
+) {
+  if (envelope.intent.kind !== "loginProvider") {
+    throw new Error(`unexpected Radius intent: ${envelope.intent.kind}`);
+  }
+  useSessionsStore.setState((store) => {
+    const sessions = new Map(store.sessions);
+    const session = sessions.get(SESSION_ID)!;
+    const projection = session.authorityProjection!;
+    const snapshot = projection.authoritativeSnapshot!;
+    const outcome: IntentOutcome = {
+      intentId: envelope.intentId,
+      owner: OWNER,
+      kind: "loginProvider",
+      state: "completed",
+      result: {
+        providerId: "radius",
+        authType: "oauth",
+        synchronized,
+        radiusMcp,
+      },
+    };
     sessions.set(SESSION_ID, {
       ...session,
       authorityProjection: {
@@ -699,6 +746,250 @@ describe("AppPickerHost once-only picker activation", () => {
     ]);
     receipt.resolve({ status: "admitted", intentId: intents[0]!.intentId, owner: OWNER });
     await settle();
+    view.unmount();
+  });
+
+  it("renders only explicit subscription login metadata as Subscription", () => {
+    installRuntime();
+    useSessionsStore.getState().openPicker(SESSION_ID, {
+      kind: "login",
+      providers: [
+        {
+          id: "anthropic",
+          name: "Anthropic",
+          configured: false,
+          methods: ["oauth"],
+          oauthKind: "subscription",
+        },
+        {
+          id: "openrouter",
+          name: "OpenRouter",
+          configured: false,
+          methods: ["oauth"],
+        },
+        {
+          id: "radius",
+          name: "Radius",
+          configured: false,
+          methods: ["oauth"],
+          oauthKind: "account",
+        },
+      ],
+    });
+    installPickerBrowser([]);
+
+    const view = mount(<AppPickerHost sessionId={SESSION_ID} />);
+
+    expect(oauthBadge(view.container, "Anthropic")).toBe("Subscription");
+    expect(oauthBadge(view.container, "OpenRouter")).toBe("Account");
+    expect(oauthBadge(view.container, "Radius")).toBe("Account");
+    view.unmount();
+  });
+
+  it("renders Subscription and Account labels for stored OAuth credentials", () => {
+    installRuntime();
+    const providers: LogoutProvidersData["providers"] = [
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        authType: "oauth",
+        oauthKind: "subscription",
+      },
+      {
+        id: "openrouter",
+        name: "OpenRouter",
+        authType: "oauth",
+        oauthKind: "account",
+      },
+      {
+        id: "legacy-account",
+        name: "Legacy account",
+        authType: "oauth",
+      },
+    ];
+    useSessionsStore.getState().openPicker(SESSION_ID, { kind: "logout", providers });
+    installPickerBrowser([]);
+
+    const view = mount(<AppPickerHost sessionId={SESSION_ID} />);
+
+    expect(oauthBadge(view.container, "Anthropic")).toBe("Subscription");
+    expect(oauthBadge(view.container, "OpenRouter")).toBe("Account");
+    expect(oauthBadge(view.container, "Legacy account")).toBe("Account");
+    view.unmount();
+  });
+
+  it("reloads through a second owner-bound intent after Radius MCP configuration", async () => {
+    installRuntime();
+    useSessionsStore.getState().openPicker(SESSION_ID, {
+      kind: "login",
+      providers: [
+        {
+          id: "radius",
+          name: "Radius",
+          configured: false,
+          methods: ["oauth"],
+        },
+      ],
+    });
+    const intents: IntentEnvelope[] = [];
+    installPickerBrowser(intents, (envelope) => {
+      if (envelope.intent.kind === "loginProvider") {
+        publishRadiusLoginOutcome(envelope, "configured");
+      }
+      return { status: "admitted", intentId: envelope.intentId, owner: OWNER };
+    });
+
+    const view = mount(<AppPickerHost sessionId={SESSION_ID} />);
+    const row = view.container.querySelector<HTMLButtonElement>(".picker__item");
+    await act(async () => row!.click());
+    await settle();
+
+    expect(intents.map((envelope) => envelope.intent)).toEqual([
+      { kind: "loginProvider", providerId: "radius", authType: "oauth" },
+      { kind: "reload" },
+    ]);
+    expect(intents[1]).toMatchObject({ expectedOwner: OWNER });
+    expect(useSessionsStore.getState().sessions.get(SESSION_ID)?.pendingPicker).toBeUndefined();
+    view.unmount();
+  });
+
+  it("retains the catalog synchronization warning while reloading configured Radius MCP", async () => {
+    installRuntime();
+    useSessionsStore.getState().openPicker(SESSION_ID, {
+      kind: "login",
+      providers: [
+        {
+          id: "radius",
+          name: "Radius",
+          configured: false,
+          methods: ["oauth"],
+        },
+      ],
+    });
+    const intents: IntentEnvelope[] = [];
+    installPickerBrowser(intents, (envelope) => {
+      if (envelope.intent.kind === "loginProvider") {
+        publishRadiusLoginOutcome(envelope, "configured", false);
+      }
+      return { status: "admitted", intentId: envelope.intentId, owner: OWNER };
+    });
+
+    const view = mount(<AppPickerHost sessionId={SESSION_ID} />);
+    const row = view.container.querySelector<HTMLButtonElement>(".picker__item");
+    await act(async () => row!.click());
+    await settle();
+
+    expect(intents.map((envelope) => envelope.intent)).toEqual([
+      { kind: "loginProvider", providerId: "radius", authType: "oauth" },
+      { kind: "reload" },
+    ]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_ID)?.toasts.at(-1)).toMatchObject({
+      message: expect.stringContaining("catalog still needs a manual refresh"),
+      type: "warning",
+    });
+    view.unmount();
+  });
+
+  it("does not reload when Radius sign-in succeeds but MCP configuration fails", async () => {
+    installRuntime();
+    useSessionsStore.getState().openPicker(SESSION_ID, {
+      kind: "login",
+      providers: [
+        {
+          id: "radius",
+          name: "Radius",
+          configured: false,
+          methods: ["oauth"],
+        },
+      ],
+    });
+    const intents: IntentEnvelope[] = [];
+    installPickerBrowser(intents, (envelope) => {
+      if (envelope.intent.kind === "loginProvider") {
+        publishRadiusLoginOutcome(envelope, "failed");
+      }
+      return { status: "admitted", intentId: envelope.intentId, owner: OWNER };
+    });
+
+    const view = mount(<AppPickerHost sessionId={SESSION_ID} />);
+    const row = view.container.querySelector<HTMLButtonElement>(".picker__item");
+    await act(async () => row!.click());
+    await settle();
+
+    expect(intents.map((envelope) => envelope.intent)).toEqual([
+      { kind: "loginProvider", providerId: "radius", authType: "oauth" },
+    ]);
+    expect(useSessionsStore.getState().sessions.get(SESSION_ID)?.toasts.at(-1)).toMatchObject({
+      message: expect.stringContaining("could not be configured"),
+      type: "warning",
+    });
+    view.unmount();
+  });
+
+  it("does not reload a successor runtime after Radius MCP configuration", async () => {
+    installRuntime();
+    useSessionsStore.getState().openPicker(SESSION_ID, {
+      kind: "login",
+      providers: [
+        {
+          id: "radius",
+          name: "Radius",
+          configured: false,
+          methods: ["oauth"],
+        },
+      ],
+    });
+    const intents: IntentEnvelope[] = [];
+    const receipt = deferred<unknown>();
+    installPickerBrowser(intents, () => receipt.promise);
+
+    const view = mount(<AppPickerHost sessionId={SESSION_ID} />);
+    const row = view.container.querySelector<HTMLButtonElement>(".picker__item");
+    await act(async () => row!.click());
+    receipt.resolve({ status: "admitted", intentId: intents[0]!.intentId, owner: OWNER });
+    await settle();
+
+    act(() => {
+      // Resolve the old owner's waiter, then install a coherent successor
+      // before the async continuation can dispatch its reload.
+      publishRadiusLoginOutcome(intents[0]!, "configured");
+      useSessionsStore.setState((state) => {
+        const sessions = new Map(state.sessions);
+        const session = sessions.get(SESSION_ID)!;
+        const projection = session.authorityProjection!;
+        const snapshot = projection.authoritativeSnapshot!;
+        const successor = {
+          hostInstanceId: OWNER.hostInstanceId,
+          sessionEpoch: OWNER.sessionEpoch + 1,
+        };
+        const cursor = {
+          ...successor,
+          transportSequence: 2,
+          snapshotSequence: 2,
+        };
+        sessions.set(SESSION_ID, {
+          ...session,
+          hostInstanceId: successor.hostInstanceId,
+          sessionEpoch: successor.sessionEpoch,
+          authorityProjection: {
+            ...projection,
+            owner: successor,
+            semantic: { state: "following", cursor },
+            authoritativeSnapshot: {
+              ...snapshot,
+              owner: successor,
+              snapshotSequence: 2,
+            },
+          },
+        });
+        return { sessions };
+      });
+    });
+    await settle();
+
+    expect(intents.map((envelope) => envelope.intent)).toEqual([
+      { kind: "loginProvider", providerId: "radius", authType: "oauth" },
+    ]);
     view.unmount();
   });
 

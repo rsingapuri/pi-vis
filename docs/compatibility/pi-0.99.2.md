@@ -1,5 +1,9 @@
 # Pi 0.99.2 compatibility audit
 
+> Historical record. The current runtime contract is the
+> [Pi 1.0.0 compatibility audit](pi-1.0.0.md). Preserve this document as the
+> 0.84.4–0.99.2 release chronology; do not use it as the active pin target.
+
 Audited against the upstream coding-agent changelogs, declarations, manifests,
 and shipped runtime for 0.86.0, 0.86.1, 0.87.0, 0.87.1, 0.99.0, 0.99.1,
 and 0.99.2. Pi-Vis bundles exact

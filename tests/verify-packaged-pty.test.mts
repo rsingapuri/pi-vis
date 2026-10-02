@@ -38,7 +38,7 @@ function packagedPiFixture({
   const modules = paths.modulesRoot;
   writePackage(piPackageDirectory, {
     name: "@earendil-works/pi-coding-agent",
-    version: "0.99.2",
+    version: "1.0.0",
     dependencies: { minimatch: "10.2.6" },
   });
   const dependencyModules =
@@ -145,7 +145,7 @@ describe("packaged Pi runtime paths", () => {
       "cli.js",
     );
 
-    expect(verifyPackagedPiBundleCli(bundledCli)).toBe("0.99.2");
+    expect(verifyPackagedPiBundleCli(bundledCli)).toBe("1.0.0");
     expect(() =>
       verifyPackagedPiBundleCli(path.join(projectRoot, "does-not-exist", "bundle", "cli.js")),
     ).toThrow("Packaged Pi bundled CLI failed to start");

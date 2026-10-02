@@ -39,6 +39,7 @@ import {
   configureHttpDispatcher,
   createPiBuiltinExtensions,
   createSessionRuntimeOptionsResolver,
+  createTranscriptToolRestorationExtension,
   createTrustResolver,
   importPi,
   importPiTui,
@@ -56,6 +57,7 @@ import {
 } from "./session-lineage.mjs";
 import { createShellPtyController } from "./shell-pty.mjs";
 import { applyTuiRuntimeSettings, createDialogResolver, createUIContext } from "./ui-context.mjs";
+import { createUiRequestSender } from "./ui-request-router.mjs";
 
 // Pi's CLI sets this marker for every command and tool subprocess. The SDK
 // host is an equivalent entry point, so establish the same public contract
@@ -189,34 +191,15 @@ function sendControl(payload) {
   send({ type: "control", payload });
 }
 
-let extensionUiRequestSequence = 0;
-function sendUiRequest(req) {
-  if (req?.type === "editor_source_cleared") {
-    // This is a lifecycle fence, not extension presentation. Keep it on the
-    // ordinary owner-sequenced host channel without fabricating a UI request
-    // id or retaining it in the extension-UI plane.
-    return send(req);
-  }
-  // Extension UI has one canonical presentation route once authority exists.
-  // The compatibility message remains available to older renderers but is not
-  // used to restore a following authority projection.
-  // Fire-and-forget UI methods do not receive a Pi dialog ID, but the typed
-  // presentation contract still requires stable request identity for replay
-  // and baseline overlap. Dialog requests retain their existing IDs.
-  const request = {
-    ...req,
-    id: req.id ?? `extension-ui-${++extensionUiRequestSequence}`,
-    // Presentation publications carry their owner in the envelope, but a
-    // reconstructed dialog is later returned through the typed UI-response
-    // contract itself. Keep that identity on the request so the renderer can
-    // acknowledge the exact host/epoch instead of rendering an unanswerable
-    // dialog after an authority attach.
-    hostInstanceId,
-    sessionEpoch: runtimeAuthority?.sessionEpoch ?? activeEpoch,
-  };
-  runtimeAuthority?.publishExtensionUi?.(request);
-  send(request);
-}
+// Extension UI has one canonical authority-plane route once authority exists.
+// Unified-submit, clipboard, and editor-custody requests share the callback but
+// are private protocol messages; the router keeps them off that typed plane.
+const sendUiRequest = createUiRequestSender({
+  send,
+  publishExtensionUi: (request) => runtimeAuthority?.publishExtensionUi?.(request),
+  hostInstanceId,
+  getSessionEpoch: () => runtimeAuthority?.sessionEpoch ?? activeEpoch,
+});
 
 // --- Panel bridge (for custom() to ANSI output) ---
 
@@ -673,7 +656,16 @@ async function handleInit(msg) {
         // Match Pi 0.84's CLI startup bound. Each runtime/session swap calls
         // this factory anew and therefore receives a fresh timeout signal.
         modelRuntimeSignal: AbortSignal.timeout(15_000),
-        resourceLoaderOptions: { extensionFactories: builtinExtensionFactories },
+        resourceLoaderOptions: {
+          extensionFactories: [
+            ...builtinExtensionFactories,
+            {
+              name: "pi-vis-transcript-tool-restoration",
+              factory: createTranscriptToolRestorationExtension(sm),
+              hidden: true,
+            },
+          ],
+        },
         resourceLoaderReloadOptions: { resolveProjectTrust: resolveTrust },
       });
       // Terminal image capability overrides are settings-scoped in Pi 0.84.4+

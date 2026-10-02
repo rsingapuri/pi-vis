@@ -10,7 +10,7 @@ import type { ScriptedOpenAILatency } from "./scripted-openai-provider.mjs";
 const supportDir = dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = join(supportDir, "../../..");
 export const APP_ENTRY = join(PROJECT_ROOT, "out/main/index.js");
-export const PINNED_PI_VERSION = "0.99.2";
+export const PINNED_PI_VERSION = "1.0.0";
 /** Real-SDK journeys retain realistic, reproducible streaming cadence. */
 export const REAL_SDK_PROVIDER_LATENCY: ScriptedOpenAILatency = {
   firstByteMs: [10, 40],

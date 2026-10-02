@@ -999,6 +999,14 @@ async function handlePreviewRequest(command: Record<string, unknown>): Promise<u
             source: "preview",
             methods: ["oauth", "api_key"],
           },
+          {
+            id: "preview-subscription",
+            name: "Plan-backed",
+            configured: false,
+            source: "preview",
+            oauthKind: "subscription",
+            methods: ["oauth"],
+          },
         ],
       });
     case "get_available_models":
@@ -1702,7 +1710,7 @@ const stub = {
   invoke: async (channel: string, req?: unknown) => {
     switch (channel) {
       case "pi.info":
-        return { version: "0.99.2-stub" };
+        return { version: "1.0.0-stub" };
       case "pi.changelog":
         return {
           ok: true,

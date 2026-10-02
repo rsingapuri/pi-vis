@@ -1,7 +1,7 @@
 /**
  * The one approved private Pi dependency in the SDK host.
  *
- * Pi 0.99.2's CLI installs its llama.cpp manager from a built-in
+ * Pi 1.0.0's CLI installs its llama.cpp manager from a built-in
  * extension registry that is shipped in the package but omitted from package
  * exports. Pi-Vis loads only that registry entry, then hands the factory back
  * to Pi through DefaultResourceLoader's public `extensionFactories` option.
@@ -14,7 +14,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolvePiEntry } from "./bootstrap.mjs";
 
-export const PINNED_PRIVATE_LLAMA_VERSION = "0.99.2";
+export const PINNED_PRIVATE_LLAMA_VERSION = "1.0.0";
 const LLAMA_EXTENSION_NAME = "llama.cpp";
 
 export async function importPinnedLlamaExtension(piPath, piVersion) {

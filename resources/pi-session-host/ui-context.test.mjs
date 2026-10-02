@@ -166,6 +166,164 @@ describe("createDialogResolver", () => {
     expect(resolver.pendingCount).toBe(0);
   });
 
+  it("supports Anthropic copy-code select → auth-url → manual-code without retaining responses", async () => {
+    const sent = [];
+    const acknowledged = [];
+    const controller = new AbortController();
+    const resolver = createDialogResolver(
+      (message) => sent.push(message),
+      (operationId) => acknowledged.push(operationId),
+    );
+    const surface = resolver.createProviderAuthSurface(
+      "Anthropic",
+      "oauth",
+      controller.signal,
+      () => controller.abort(),
+    );
+
+    const loginMethod = surface.interaction.prompt({
+      type: "select",
+      message: "Choose how to sign in",
+      options: [
+        { id: "browser", label: "Browser login", description: "Open a browser" },
+        { id: "copy_code", label: "Copy code login", description: "Use a headless flow" },
+      ],
+    });
+    const selectRequest = resolver.pendingSnapshot()[0].request;
+    expect(selectRequest).toMatchObject({
+      method: "providerAuth",
+      providerName: "Anthropic",
+      phase: "prompt",
+      promptType: "select",
+      options: [
+        { id: "browser", label: "Browser login", description: "Open a browser" },
+        { id: "copy_code", label: "Copy code login", description: "Use a headless flow" },
+      ],
+    });
+
+    resolver.resolve({
+      type: "extension_ui_response",
+      id: selectRequest.id,
+      operationId: selectRequest.operationId,
+      value: "copy_code",
+    });
+    await expect(loginMethod).resolves.toBe("copy_code");
+    expect(JSON.stringify(resolver.pendingSnapshot())).not.toContain("copy_code");
+
+    const authUrl = "https://claude.ai/oauth/authorize?state=anthropic-state";
+    surface.interaction.notify({
+      type: "auth_url",
+      url: authUrl,
+      instructions: "Open this URL on any device, then paste the code here.",
+    });
+    const oauthRequest = resolver.pendingSnapshot()[0].request;
+    expect(oauthRequest).toMatchObject({
+      id: selectRequest.id,
+      method: "providerAuth",
+      phase: "oauth",
+      authUrl,
+    });
+    expect(oauthRequest.operationId).not.toBe(selectRequest.operationId);
+
+    const manualCode = surface.interaction.prompt({
+      type: "manual_code",
+      message: "Paste the authorization code",
+      placeholder: "code#state",
+    });
+    const codeRequest = resolver.pendingSnapshot()[0].request;
+    expect(codeRequest).toMatchObject({
+      id: selectRequest.id,
+      phase: "prompt",
+      promptType: "manual_code",
+      placeholder: "code#state",
+      authUrl,
+    });
+    expect(codeRequest.operationId).not.toBe(oauthRequest.operationId);
+
+    const credential = "anthropic-code#anthropic-state";
+    resolver.resolve({
+      type: "extension_ui_response",
+      id: codeRequest.id,
+      operationId: codeRequest.operationId,
+      value: credential,
+    });
+    await expect(manualCode).resolves.toBe(credential);
+    expect(JSON.stringify(resolver.pendingSnapshot())).not.toContain(credential);
+    expect(JSON.stringify(sent)).not.toContain(credential);
+    expect(acknowledged).toEqual(
+      expect.arrayContaining([selectRequest.operationId, codeRequest.operationId]),
+    );
+
+    surface.complete();
+    expect(resolver.pendingCount).toBe(0);
+  });
+
+  it("cancels an Anthropic copy-code manual prompt without accepting stale revisions", async () => {
+    const sent = [];
+    const acknowledged = [];
+    const controller = new AbortController();
+    const onCancel = vi.fn(() => controller.abort());
+    const resolver = createDialogResolver(
+      (message) => sent.push(message),
+      (operationId) => acknowledged.push(operationId),
+    );
+    const surface = resolver.createProviderAuthSurface(
+      "Anthropic",
+      "oauth",
+      controller.signal,
+      onCancel,
+    );
+
+    const loginMethod = surface.interaction.prompt({
+      type: "select",
+      message: "Choose how to sign in",
+      options: [
+        { id: "browser", label: "Browser login" },
+        { id: "copy_code", label: "Copy code login" },
+      ],
+    });
+    const selectRequest = resolver.pendingSnapshot()[0].request;
+    resolver.resolve({
+      type: "extension_ui_response",
+      id: selectRequest.id,
+      operationId: selectRequest.operationId,
+      value: "copy_code",
+    });
+    await expect(loginMethod).resolves.toBe("copy_code");
+
+    surface.interaction.notify({
+      type: "auth_url",
+      url: "https://claude.ai/oauth/authorize?state=cancel-state",
+    });
+    const oauthRequest = resolver.pendingSnapshot()[0].request;
+    const manualCode = surface.interaction.prompt({
+      type: "manual_code",
+      message: "Paste the authorization code",
+    });
+    const codeRequest = resolver.pendingSnapshot()[0].request;
+
+    resolver.resolve({
+      type: "extension_ui_response",
+      id: codeRequest.id,
+      operationId: oauthRequest.operationId,
+      value: "stale-secret#cancel-state",
+    });
+    expect(resolver.pendingSnapshot()[0].request.operationId).toBe(codeRequest.operationId);
+    expect(JSON.stringify(resolver.pendingSnapshot())).not.toContain("stale-secret");
+
+    resolver.resolve({
+      type: "extension_ui_response",
+      id: codeRequest.id,
+      operationId: codeRequest.operationId,
+      cancelled: true,
+    });
+    await expect(manualCode).rejects.toThrow("Login cancelled");
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(resolver.pendingCount).toBe(0);
+    expect(JSON.stringify(sent)).not.toContain("stale-secret");
+    expect(acknowledged).toContain(oauthRequest.operationId);
+  });
+
   it("cancels a provider-auth surface and its pending prompt once", async () => {
     const sent = [];
     const controller = new AbortController();
@@ -183,6 +341,44 @@ describe("createDialogResolver", () => {
     resolver.resolve({ type: "extension_ui_response", id: request.id, cancelled: true });
     await expect(prompt).rejects.toThrow("Login cancelled");
     expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(resolver.pendingCount).toBe(0);
+  });
+
+  it("offers Radius MCP setup without turning dismissal into a failed login", async () => {
+    const controller = new AbortController();
+    const onCancel = vi.fn(() => controller.abort());
+    const resolver = createDialogResolver(() => {});
+    const surface = resolver.createProviderAuthSurface(
+      "Radius",
+      "oauth",
+      controller.signal,
+      onCancel,
+    );
+    const confirmation = surface.confirmRadiusMcp("/agent/mcp.json");
+    const request = resolver.pendingSnapshot()[0].request;
+
+    expect(request).toMatchObject({
+      method: "providerAuth",
+      phase: "prompt",
+      promptType: "select",
+      prompt: "Configure Radius MCP in /agent/mcp.json?",
+      options: [
+        { id: "yes", label: "Yes" },
+        { id: "no", label: "No" },
+      ],
+    });
+    resolver.resolve({
+      type: "extension_ui_response",
+      id: request.id,
+      operationId: request.operationId,
+      cancelled: true,
+    });
+
+    await expect(confirmation).resolves.toBe(false);
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(controller.signal.aborted).toBe(false);
+    expect(resolver.pendingSnapshot()[0].request.phase).toBe("waiting");
+    surface.complete();
     expect(resolver.pendingCount).toBe(0);
   });
 });

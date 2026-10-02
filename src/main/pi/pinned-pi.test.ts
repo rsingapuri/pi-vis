@@ -15,7 +15,7 @@ describe("getPinnedPi", () => {
     expect(info!.path).toContain(path.join("@earendil-works", "pi-coding-agent"));
     expect(existsSync(info!.path)).toBe(true);
     expect(info!.version).toBe(PINNED_PI_VERSION);
-    expect(PINNED_PI_VERSION).toBe("0.99.2");
+    expect(PINNED_PI_VERSION).toBe("1.0.0");
   });
 
   it("ignores an existing override path unless the E2E seam is explicitly active", () => {

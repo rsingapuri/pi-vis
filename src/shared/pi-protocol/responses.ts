@@ -210,6 +210,7 @@ export const LogoutProvidersDataSchema = z
         id: z.string(),
         name: z.string(),
         authType: z.enum(["oauth", "api_key"]),
+        oauthKind: z.enum(["account", "subscription"]).optional(),
       }),
     ),
   })
@@ -228,6 +229,7 @@ export const LoginProvidersDataSchema = z
             name: z.string().min(1).max(160),
             configured: z.boolean(),
             source: z.string().max(120).optional(),
+            oauthKind: z.enum(["account", "subscription"]).optional(),
             methods: z
               .array(z.enum(["oauth", "api_key"]))
               .min(1)

@@ -3,17 +3,30 @@ import os from "node:os";
 import path from "node:path";
 import * as pi from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
+import {
+  fauxAssistantMessage,
+  fauxToolCall,
+  registerFauxProvider,
+} from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.js";
+import { InMemoryCredentialStore } from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
 import { CodemodeSandbox } from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-codemode/dist/index.js";
 import { createInMemoryTransportPair } from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-mcp/dist/testing/index.js";
-import { createPiBuiltinExtensions, createTrustResolver } from "./bootstrap.mjs";
+import {
+  createPiBuiltinExtensions,
+  createTranscriptToolRestorationExtension,
+  createTrustResolver,
+} from "./bootstrap.mjs";
 
 const MCP_TOOL_NAME = "mcp__project_loopback__echo";
+const TINY_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 
 const MCP_SERVER_SOURCE = String.raw`
 import { appendFileSync } from "node:fs";
 import readline from "node:readline";
 
 const eventsPath = process.argv[2];
+const toolsListDelayMs = Number(process.argv[3] ?? 0);
 const record = (event) => appendFileSync(eventsPath, event + "\n", "utf8");
 let finished = false;
 const finish = (event) => {
@@ -83,13 +96,19 @@ lines.on("line", (line) => {
       );
       return;
   }
-  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\n");
+  const respond = () =>
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\n");
+  if (message.method === "tools/list" && toolsListDelayMs > 0) setTimeout(respond, toolsListDelayMs);
+  else respond();
 });
 lines.on("close", () => finish("stdin-closed"));
 process.on("SIGTERM", () => finish("sigterm"));
 `;
 
-function makeProductionLoaderFixture(settings = {}) {
+function makeProductionLoaderFixture(
+  settings = {},
+  { exposure = "direct", toolsListDelayMs = 0 } = {},
+) {
   const root = mkdtempSync(path.join(os.tmpdir(), "pivis-pi099-loader-"));
   const cwd = path.join(root, "project");
   const agentDir = path.join(root, "agent");
@@ -106,8 +125,8 @@ function makeProductionLoaderFixture(settings = {}) {
       mcpServers: {
         "project-loopback": {
           command: process.execPath,
-          args: [serverPath, eventsPath],
-          exposure: "direct",
+          args: [serverPath, eventsPath, String(toolsListDelayMs)],
+          exposure,
         },
       },
     })}\n`,
@@ -132,7 +151,12 @@ async function withPiAgentDir(agentDir, action) {
   }
 }
 
-async function startProductionRuntime(fixture, trusted) {
+async function startProductionRuntime(
+  fixture,
+  trusted,
+  existingSessionManager,
+  { modelRuntime, model } = {},
+) {
   const trustPrompts = [];
   const { resolveTrust } = createTrustResolver(
     pi,
@@ -147,18 +171,29 @@ async function startProductionRuntime(fixture, trusted) {
     const services = await pi.createAgentSessionServices({
       cwd,
       agentDir,
+      ...(modelRuntime ? { modelRuntime } : {}),
       modelRuntimeSignal: AbortSignal.timeout(5_000),
-      resourceLoaderOptions: { extensionFactories: createPiBuiltinExtensions(pi) },
+      resourceLoaderOptions: {
+        extensionFactories: [
+          ...createPiBuiltinExtensions(pi),
+          {
+            name: "pi-vis-transcript-tool-restoration",
+            factory: createTranscriptToolRestorationExtension(sessionManager),
+            hidden: true,
+          },
+        ],
+      },
       resourceLoaderReloadOptions: { resolveProjectTrust: resolveTrust },
     });
     const created = await pi.createAgentSessionFromServices({
       services,
       sessionManager,
       sessionStartEvent,
+      ...(model ? { model } : {}),
     });
     return { ...created, services, diagnostics: services.diagnostics };
   };
-  const sessionManager = pi.SessionManager.inMemory(fixture.cwd);
+  const sessionManager = existingSessionManager ?? pi.SessionManager.inMemory(fixture.cwd);
   const runtime = await pi.createAgentSessionRuntime(createRuntime, {
     cwd: fixture.cwd,
     agentDir: fixture.agentDir,
@@ -170,7 +205,7 @@ async function startProductionRuntime(fixture, trusted) {
     shutdownHandler: () => {},
     onError: (error) => extensionErrors.push(error),
   });
-  return { runtime, extensionErrors, trustPrompts };
+  return { runtime, sessionManager, extensionErrors, trustPrompts };
 }
 
 function extensionPaths(runtime) {
@@ -179,7 +214,7 @@ function extensionPaths(runtime) {
     .extensions.map((extension) => extension.path);
 }
 
-describe("Pi 0.99 built-in runtimes", () => {
+describe("Pi 1.0 built-in runtimes", () => {
   it("runs real codemode JavaScript through the packaged QuickJS WASM worker", async () => {
     const sandbox = new CodemodeSandbox({
       timeoutMs: 5_000,
@@ -215,6 +250,119 @@ describe("Pi 0.99 built-in runtimes", () => {
     } finally {
       await sandbox.close();
     }
+  });
+
+  it("runs image generation through the real codemode tool and session model registry", async () => {
+    const fixture = makeProductionLoaderFixture({ defaultTools: ["codemode"] });
+    await withPiAgentDir(fixture.agentDir, async () => {
+      let runtime;
+      try {
+        ({ runtime } = await startProductionRuntime(fixture, false));
+        const requests = [];
+        const imageModel = {
+          type: "image",
+          id: "painter",
+          name: "Fixture Painter",
+          api: "pivis-test-images",
+          provider: "pivis-test",
+          baseUrl: "https://images.fixture.invalid/v1",
+          input: ["text", "image"],
+          output: ["text", "image"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        };
+        runtime.session.modelRuntime.registerProvider("pivis-test", {
+          apiKey: "fixture-secret",
+          models: [imageModel],
+          images: {
+            "pivis-test-images": {
+              generateImages: async (model, context, options) => {
+                requests.push({ model, context, options });
+                return {
+                  api: model.api,
+                  provider: model.provider,
+                  model: model.id,
+                  output: [
+                    { type: "text", text: "painted a fox" },
+                    { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" },
+                  ],
+                  usage: {
+                    input: 3,
+                    output: 1,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                    totalTokens: 4,
+                    cost: { input: 0.04, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.04 },
+                  },
+                  stopReason: "stop",
+                  timestamp: 0,
+                };
+              },
+            },
+          },
+        });
+
+        const signal = new AbortController().signal;
+        const codemode = runtime.session.getToolDefinition("codemode");
+        const result = await codemode.execute(
+          "codemode-image-call",
+          {
+            code: `
+              const [model] = await models.getAvailableOfType("image", "pivis-test");
+              const reference = { type: "image", data: "${TINY_PNG_BASE64}", mimeType: "image/png" };
+              const generated = await models.generateImages(
+                { ...model, baseUrl: "https://attacker.invalid" },
+                { input: [{ type: "text", text: "a fox" }, reference] },
+              );
+              for (const block of generated.output) {
+                if (block.type === "image") image(block);
+                else text(block.text);
+              }
+              return { id: model.id, stopReason: generated.stopReason, cost: generated.usage.cost.total };
+            `,
+          },
+          signal,
+          undefined,
+          runtime.session.extensionRunner.createToolContext("codemode-image-call", signal),
+        );
+
+        expect(result.isError).not.toBe(true);
+        expect(result.content).toEqual([
+          {
+            type: "text",
+            text: expect.stringMatching(/^Script completed\nWall time \d+\.\d seconds\nOutput:\n$/),
+          },
+          { type: "text", text: "painted a fox" },
+          { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" },
+          {
+            type: "text",
+            text: '{"id":"painter","stopReason":"stop","cost":0.04}',
+          },
+        ]);
+        expect(result.usage?.cost.total).toBeCloseTo(0.04, 10);
+        expect(result.details?.calls).toEqual([
+          expect.objectContaining({
+            name: "models.generateImages",
+            args: "pivis-test/painter",
+            status: "ok",
+            cost: 0.04,
+          }),
+        ]);
+        expect(requests).toHaveLength(1);
+        expect(requests[0]).toMatchObject({
+          model: { baseUrl: "https://images.fixture.invalid/v1" },
+          context: {
+            input: [
+              { type: "text", text: "a fox" },
+              { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" },
+            ],
+          },
+          options: { apiKey: "fixture-secret", signal: expect.any(AbortSignal) },
+        });
+      } finally {
+        await runtime?.dispose();
+      }
+    });
+    rmSync(fixture.root, { recursive: true, force: true });
   });
 
   it("connects the public MCP built-in, discovers a namespaced tool, and preserves structured results", async () => {
@@ -449,6 +597,188 @@ describe("Pi 0.99 built-in runtimes", () => {
     });
     rmSync(fixture.root, { recursive: true, force: true });
   });
+
+  it("restores a tool_search-loaded deferred MCP tool on resume and reload after reconnect", async () => {
+    const fixture = makeProductionLoaderFixture(
+      {},
+      { exposure: "deferred", toolsListDelayMs: 250 },
+    );
+    const faux = registerFauxProvider();
+    try {
+      const model = faux.getModel();
+      const modelRuntime = await pi.ModelRuntime.create({
+        credentials: new InMemoryCredentialStore(),
+        modelsPath: null,
+        refreshOnCreate: false,
+      });
+      modelRuntime.registerProvider(model.provider, {
+        api: faux.api,
+        apiKey: "faux-key",
+        baseUrl: model.baseUrl,
+        models: [
+          {
+            id: model.id,
+            name: model.name,
+            api: model.api,
+            reasoning: model.reasoning,
+            input: model.input,
+            cost: model.cost,
+            contextWindow: model.contextWindow,
+            maxTokens: model.maxTokens,
+            baseUrl: model.baseUrl,
+          },
+        ],
+      });
+      const runtimeOptions = { modelRuntime, model };
+      await withPiAgentDir(fixture.agentDir, async () => {
+        let runtime;
+        try {
+          const sessionDir = path.join(fixture.root, "sessions");
+          const initialSessionManager = pi.SessionManager.create(fixture.cwd, sessionDir);
+          const first = await startProductionRuntime(
+            fixture,
+            true,
+            initialSessionManager,
+            runtimeOptions,
+          );
+          runtime = first.runtime;
+          await vi.waitFor(
+            () => {
+              expect(runtime.session.getAllTools().map((tool) => tool.name)).toContain(
+                MCP_TOOL_NAME,
+              );
+            },
+            { timeout: 5_000, interval: 20 },
+          );
+          runtime.session.setActiveToolsByName([
+            ...runtime.session.getActiveToolNames(),
+            "tool_search",
+          ]);
+
+          faux.setResponses([
+            fauxAssistantMessage(
+              [fauxToolCall("tool_search", { query: "Echo one value", limit: 1 })],
+              { stopReason: "toolUse" },
+            ),
+            fauxAssistantMessage("loaded"),
+          ]);
+          await runtime.session.prompt("load the echo tool");
+          expect(runtime.session.getActiveToolNames()).toContain(MCP_TOOL_NAME);
+          expect(
+            runtime.session.messages.some(
+              (message) =>
+                message.role === "system" &&
+                message.toolsAdded?.some((tool) => tool.name === MCP_TOOL_NAME),
+            ),
+          ).toBe(true);
+          expect(
+            runtime.session.messages.find(
+              (message) => message.role === "toolResult" && message.toolName === "tool_search",
+            ),
+          ).toMatchObject({
+            content: [
+              {
+                type: "text",
+                text: expect.stringContaining(`- ${MCP_TOOL_NAME}: Echo one value`),
+              },
+            ],
+            details: { loaded: [MCP_TOOL_NAME] },
+          });
+
+          const sessionFile = first.sessionManager.getSessionFile();
+          expect(sessionFile).toEqual(expect.any(String));
+          await runtime.dispose();
+          runtime = undefined;
+
+          const sessionManager = pi.SessionManager.open(sessionFile, sessionDir);
+
+          const resumed = await startProductionRuntime(
+            fixture,
+            true,
+            sessionManager,
+            runtimeOptions,
+          );
+          runtime = resumed.runtime;
+          // The MCP extension deliberately connects in the background. A slow
+          // tools/list response proves the constructor adapter records this
+          // declaration as pending during session_start, rather than restoring
+          // it only because the definition happened to reconnect immediately.
+          expect(runtime.session.getAllTools().map((tool) => tool.name)).not.toContain(
+            MCP_TOOL_NAME,
+          );
+          await vi.waitFor(
+            () => {
+              expect(runtime.session.getAllTools().map((tool) => tool.name)).toContain(
+                MCP_TOOL_NAME,
+              );
+            },
+            { timeout: 5_000, interval: 20 },
+          );
+          expect(runtime.session.getActiveToolNames()).not.toContain(MCP_TOOL_NAME);
+          faux.setResponses([
+            (context) => {
+              expect(context.tools?.map((tool) => tool.name)).toContain(MCP_TOOL_NAME);
+              return fauxAssistantMessage("resumed");
+            },
+          ]);
+          await runtime.session.prompt("continue after resume");
+          expect(runtime.session.getActiveToolNames()).toContain(MCP_TOOL_NAME);
+
+          const executeEcho = async (callId, value) => {
+            const signal = new AbortController().signal;
+            const definition = runtime.session.getToolDefinition(MCP_TOOL_NAME);
+            return definition.execute(
+              callId,
+              { value },
+              signal,
+              undefined,
+              runtime.session.extensionRunner.createToolContext(callId, signal),
+            );
+          };
+          await expect(executeEcho("resume-call", "resumed")).resolves.toMatchObject({
+            content: [{ type: "text", text: "echo:resumed" }],
+          });
+
+          await runtime.session.reload();
+          await vi.waitFor(
+            () => {
+              expect(
+                readMcpEvents(fixture.eventsPath).filter((event) => event === "spawn"),
+              ).toHaveLength(3);
+              expect(runtime.session.getAllTools().map((tool) => tool.name)).toContain(
+                MCP_TOOL_NAME,
+              );
+            },
+            { timeout: 5_000, interval: 20 },
+          );
+          faux.setResponses([
+            (context) => {
+              expect(context.tools?.map((tool) => tool.name)).toContain(MCP_TOOL_NAME);
+              return fauxAssistantMessage("reloaded");
+            },
+          ]);
+          await runtime.session.prompt("continue after reload");
+          expect(runtime.session.getActiveToolNames()).toContain(MCP_TOOL_NAME);
+          await expect(executeEcho("reload-call", "reloaded")).resolves.toMatchObject({
+            content: [{ type: "text", text: "echo:reloaded" }],
+          });
+          expect(
+            runtime.session.messages.filter(
+              (message) =>
+                message.role === "system" &&
+                message.toolsRemoved?.some((tool) => tool.name === MCP_TOOL_NAME),
+            ),
+          ).toEqual([]);
+          expect(resumed.extensionErrors).toEqual([]);
+        } finally {
+          await runtime?.dispose();
+        }
+      });
+    } finally {
+      faux.unregister();
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   it("honors a disabled MCP built-in and applies newly configured default tools on reload", async () => {
     const initialSettings = { extensions: ["-builtin:mcp"] };

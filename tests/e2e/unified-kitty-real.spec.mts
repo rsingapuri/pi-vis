@@ -36,7 +36,7 @@ const __dirname = dirname(__filename);
 const APP_ENTRY = join(__dirname, "../../out/main/index.js");
 const FIXTURE_EXT = join(__dirname, "../fixtures/unified-widget-extension/unified-widget-e2e.ts");
 
-const PINNED_PI_VERSION = "0.99.2";
+const PINNED_PI_VERSION = "1.0.0";
 const PI_BIN =
   process.env.PIVIS_TEST_PI_BIN ??
   join(__dirname, "../../node_modules/@earendil-works/pi-coding-agent/dist/cli.js");

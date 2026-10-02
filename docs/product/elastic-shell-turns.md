@@ -4,7 +4,7 @@
 
 **Feature area:** Composer, direct shell execution, transcript
 
-**Runtime baseline:** Pi 0.99.2
+**Runtime baseline:** Pi 1.0.0
 
 **Scope:** P0 product behavior and the contracts required to implement it
 
@@ -16,7 +16,7 @@ question.
 
 A direct `!` or `!!` command is a user-authored **Shell Turn**, not a Pi tool
 call. The editable prefix makes the interpretation visible before submission.
-After submission, Pi 0.99.2 extensions may supply a complete result or non-PTY
+After submission, Pi 1.0.0 extensions may supply a complete result or non-PTY
 `BashOperations`; otherwise a single PTY-backed surface appears at the Composer
 boundary and accepts interactive input in a fixed user-resizable viewport. All
 three paths settle into the chronological transcript with their output visible.
@@ -38,7 +38,7 @@ incompatible implementations:
 
 - Prefix recognition is position-zero and character-exact. The ordinary-message
   counterexample is ` !ls` (leading space), not `!ls`.
-- Pi 0.99.2 excludes the entire Bash execution message for `!!`: both command
+- Pi 1.0.0 excludes the entire Bash execution message for `!!`: both command
   and output. `!` makes both eligible for the next model interaction.
 - "Full output" is bounded and must never be promised. P0 has explicit
   presentation, persistence, and model-projection limits.
@@ -66,7 +66,7 @@ extension-handled non-PTY outcomes.
 The draft needed tighter contracts in five places:
 
 - Its position-zero example contained a contradictory duplicate `!ls` row.
-- It described `!!` as excluding output, while Pi 0.99.2 excludes the entire
+- It described `!!` as excluding output, while Pi 1.0.0 excludes the entire
   canonical Bash execution message.
 - "Full retained output" had no defined owner or bound. P0 now distinguishes
   bounded live emulator state, bounded reattach keyframes, Pi's canonical
@@ -369,9 +369,9 @@ user actions. Agent-generated bash retains the existing Pi tool-card treatment.
 Implementing this feature therefore requires corresponding updates to
 `docs/ui-conventions.md` and `docs/architecture/state-and-sessions.md`.
 
-### 8.2 Pi 0.99.2 context contract
+### 8.2 Pi 1.0.0 context contract
 
-Execution first emits Pi 0.99.2's public `user_bash` extension event exactly
+Execution first emits Pi 1.0.0's public `user_bash` extension event exactly
 once. A handler may return a complete result, which is recorded without a
 spawn, or replacement `BashOperations`, which are passed to the public
 `AgentSession.executeBash(command, onChunk, { excludeFromContext, id,
@@ -390,7 +390,7 @@ handler resolution or rejection without starting or recording work.
 
 - `!command` records the original command and normalized result in a Pi Bash
   execution message. Pi may include both on the next model interaction.
-- `!!command` sets `excludeFromContext`; Pi 0.99.2 skips the entire Bash
+- `!!command` sets `excludeFromContext`; Pi 1.0.0 skips the entire Bash
   execution message, including command and output.
 - Classification is frozen at admission and persists. It cannot be toggled
   retroactively.
@@ -400,10 +400,10 @@ promise that normal context-window and compaction rules will retain it forever.
 Context exclusion is not deletion: the human transcript and session persistence
 still contain the command and normalized output.
 
-Pi 0.99.2 tail-truncates its model-facing canonical result to at most 50 KiB or 2,000
+Pi 1.0.0 tail-truncates its model-facing canonical result to at most 50 KiB or 2,000
 logical lines and may expose a full-output path. The UI must describe model
 projection as normalized and possibly truncated; it must not imply that Pi saw
-the entire human-retained value. Pi 0.99's separate structured Bash/PowerShell
+the entire human-retained value. Pi 1.0's separate structured Bash/PowerShell
 results for codemode may retain up to one MiB; that does not enlarge this
 model-facing Shell Turn contract.
 
@@ -456,7 +456,7 @@ The PTY lives in the owning SDK-host process alongside `AgentSession`. The
 existing main-process `src/main/pty.ts` launches the SDK host itself and is not
 a reusable per-command terminal authority.
 
-Only Pi's public 0.99.2 surface may be used after the already-approved pinned
+Only Pi's public 1.0.0 surface may be used after the already-approved pinned
 private-registry lookup. The Shell Turn feature does not add another private Pi
 import. The packaged application keeps the SDK host and native PTY dependency
 unpacked, matching the existing host subprocess layout. Until the PTY dependency
@@ -567,7 +567,7 @@ otherwise:
 | Retained alternate-screen final frames | 1 MiB aggregate | Drop oldest final frames, or omit one oversized frame, and insert a counted plain-text omission marker |
 | PTY parser backlog | Pause at 256 KiB; resume at 64 KiB | Apply node-pty flow control without dropping or reordering bytes |
 | Child IPC backlog | 8,192 messages or 8 MiB | Pause the PTY while queued; fail the host rather than silently lose an authority publication if the bounded queue is exceeded |
-| Canonical Pi result | Pi 0.99.2 model-facing limit: 50 KiB or 2,000 lines | Use Pi's tail truncation, preserve `truncated`, and surface its optional complete-output path |
+| Canonical Pi result | Pi 1.0.0 model-facing limit: 50 KiB or 2,000 lines | Use Pi's tail truncation, preserve `truncated`, and surface its optional complete-output path |
 
 Live rendering continues after reattach retention fills. A reconstructed
 surface exposes an icon-only warning with the accessible name "Earlier live

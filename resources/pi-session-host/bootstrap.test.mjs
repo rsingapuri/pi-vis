@@ -2,17 +2,20 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { getCurrentSystemMessage } from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
 import {
   createPiBuiltinExtensions,
   createSessionRuntimeOptionsResolver,
   createSessionRuntimeOverrideResolver,
+  createTranscriptToolRestorationExtension,
   resolvePiDependency,
   resolveSessionRuntimeOptions,
   resolveSessionRuntimeOverrides,
+  resolveTranscriptToolLoadout,
 } from "./bootstrap.mjs";
 
 describe("createPiBuiltinExtensions", () => {
-  it("injects every Pi 0.99 built-in with CLI-equivalent settings semantics", async () => {
+  it("injects every Pi 1.0 built-in with CLI-equivalent settings semantics", async () => {
     const pi = await import("@earendil-works/pi-coding-agent");
     const llamaFactory = () => {};
     const llama = Object.freeze({ name: "llama.cpp", factory: llamaFactory, builtin: true });
@@ -48,6 +51,187 @@ describe("createPiBuiltinExtensions", () => {
         undefined,
       ),
     ).toThrow(/missing the mcp built-in extension creator/);
+  });
+});
+
+describe("transcript tool restoration", () => {
+  const tool = (name, exposure = "direct") => ({ name, exposure });
+  const managerWithMessages = (messages) => ({
+    buildSessionContext: () => ({ messages }),
+  });
+
+  function makeExtensionApi(initialTools, initialActive, { acceptActive } = {}) {
+    const handlers = new Map();
+    let tools = [...initialTools];
+    let active = [...initialActive];
+    let setActiveCalls = 0;
+    return {
+      api: {
+        getAllTools: () => tools,
+        getActiveTools: () => active,
+        setActiveTools: (names) => {
+          setActiveCalls += 1;
+          active = acceptActive ? names.filter(acceptActive) : [...names];
+        },
+        on: (event, handler) => handlers.set(event, handler),
+      },
+      emit: (event, value = {}) => handlers.get(event)?.(value, {}),
+      getActive: () => active,
+      getSetActiveCalls: () => setActiveCalls,
+      setActive: (names) => {
+        active = [...names];
+      },
+      setTools: (next) => {
+        tools = [...next];
+      },
+    };
+  }
+
+  it("projects the current loadout without resurrecting stale prior-system tools", () => {
+    const sessionManager = managerWithMessages([
+      {
+        role: "system",
+        content: "",
+        toolsAdded: [tool("read"), tool("tool_search")],
+      },
+      {
+        role: "user",
+        content: [],
+        toolsRemoved: [tool("read")],
+      },
+      {
+        role: "system",
+        content: "",
+        toolsRemoved: [tool("read")],
+        toolsAdded: [tool("mcp__server__echo", "deferred")],
+      },
+    ]);
+
+    const messages = sessionManager.buildSessionContext().messages;
+    const publicCurrent = getCurrentSystemMessage(messages);
+    expect(resolveTranscriptToolLoadout(sessionManager)).toEqual([
+      "tool_search",
+      "mcp__server__echo",
+    ]);
+    expect(resolveTranscriptToolLoadout(sessionManager)).toEqual(
+      publicCurrent?.toolsAdded?.map((entry) => entry.name) ?? [],
+    );
+    expect(resolveTranscriptToolLoadout(managerWithMessages([{ role: "user", content: [] }]))).toBe(
+      undefined,
+    );
+    expect(
+      resolveTranscriptToolLoadout(
+        managerWithMessages([{ role: "system", content: "", timestamp: 0 }]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("restores connected tools immediately and adds a deferred tool before the next request", () => {
+    const sessionManager = managerWithMessages([
+      {
+        role: "system",
+        content: "",
+        toolsAdded: [tool("read"), tool("mcp__server__echo", "deferred")],
+      },
+    ]);
+    const fixture = makeExtensionApi(
+      [tool("read"), tool("new-default"), tool("hidden", "hidden")],
+      ["read", "new-default"],
+    );
+    createTranscriptToolRestorationExtension(sessionManager)(fixture.api);
+
+    fixture.emit("session_start");
+    expect(fixture.getActive()).toEqual(["read"]);
+
+    fixture.setActive(["read", "additive-user-tool"]);
+    fixture.setTools([
+      tool("read"),
+      tool("additive-user-tool"),
+      tool("mcp__server__echo", "deferred"),
+    ]);
+    fixture.emit("before_agent_start");
+    expect(fixture.getActive()).toEqual(["read", "additive-user-tool", "mcp__server__echo"]);
+  });
+
+  it("cancels pending restoration when a transcript-restored active tool is removed", () => {
+    const sessionManager = managerWithMessages([
+      {
+        role: "system",
+        content: "",
+        toolsAdded: [tool("read"), tool("mcp__server__echo", "deferred")],
+      },
+    ]);
+    const fixture = makeExtensionApi([tool("read")], ["read"]);
+    createTranscriptToolRestorationExtension(sessionManager)(fixture.api);
+    fixture.emit("session_start");
+
+    fixture.setActive([]);
+    fixture.setTools([tool("read"), tool("mcp__server__echo", "deferred")]);
+    fixture.emit("before_agent_start");
+    expect(fixture.getActive()).toEqual([]);
+  });
+
+  it("does not resurrect a deferred tool that reconnects after the first prompt boundary", () => {
+    const sessionManager = managerWithMessages([
+      {
+        role: "system",
+        content: "",
+        toolsAdded: [tool("read"), tool("mcp__server__late", "deferred")],
+      },
+    ]);
+    const fixture = makeExtensionApi([tool("read")], ["read"]);
+    createTranscriptToolRestorationExtension(sessionManager)(fixture.api);
+    fixture.emit("session_start", { reason: "resume" });
+
+    fixture.emit("before_agent_start");
+    expect(fixture.getActive()).toEqual(["read"]);
+
+    fixture.setTools([tool("read"), tool("mcp__server__late", "deferred")]);
+    fixture.emit("before_agent_start");
+    expect(fixture.getActive()).toEqual(["read"]);
+  });
+
+  it("keeps pending deferred tools when policy rejects another requested tool", () => {
+    const sessionManager = managerWithMessages([
+      {
+        role: "system",
+        content: "",
+        toolsAdded: [tool("allowed"), tool("excluded"), tool("mcp__server__echo", "deferred")],
+      },
+    ]);
+    const fixture = makeExtensionApi([tool("allowed"), tool("excluded")], [], {
+      acceptActive: (name) => name !== "excluded",
+    });
+    createTranscriptToolRestorationExtension(sessionManager)(fixture.api);
+
+    fixture.emit("session_start", { reason: "resume" });
+    expect(fixture.getActive()).toEqual(["allowed"]);
+
+    fixture.setTools([tool("allowed"), tool("excluded"), tool("mcp__server__echo", "deferred")]);
+    fixture.emit("before_agent_start");
+    expect(fixture.getActive()).toEqual(["allowed", "mcp__server__echo"]);
+  });
+
+  it("leaves Pi's native active and pending loadout untouched on reload", () => {
+    const sessionManager = managerWithMessages([
+      {
+        role: "system",
+        content: "",
+        toolsAdded: [tool("transcript-tool")],
+      },
+    ]);
+    const fixture = makeExtensionApi(
+      [tool("transcript-tool"), tool("new-default")],
+      ["new-default"],
+    );
+    createTranscriptToolRestorationExtension(sessionManager)(fixture.api);
+
+    fixture.emit("session_start", { reason: "reload" });
+    expect(fixture.getActive()).toEqual(["new-default"]);
+    expect(fixture.getSetActiveCalls()).toBe(0);
+
+    fixture.emit("before_agent_start");
+    expect(fixture.getActive()).toEqual(["new-default"]);
   });
 });
 

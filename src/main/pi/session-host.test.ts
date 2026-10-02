@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeHostProcess } from "../../../tests/fixtures/fake-host-process.mjs";
 import {
   HostRequestTransportFencedError,
+  HostRequestUnavailableError,
   HostVersionTooLowError,
   SessionHost,
   __forkOverride,
@@ -1100,18 +1101,75 @@ describe("SessionHost", () => {
   });
 
   describe("stop", () => {
-    it("uses the child's graceful IPC-disconnect cleanup without sending a signal", async () => {
+    it("classifies the child's requested code-zero IPC-disconnect exit as clean", async () => {
       const signals: Array<NodeJS.Signals | undefined> = [];
       fake.kill = (signal?: NodeJS.Signals) => {
         signals.push(signal);
         return true;
       };
+      fake.emitReady("1.0.0");
+      await host.waitForReady();
+      const exited = vi.fn();
+      host.on("exit", exited);
+      fake.autoRespondToStateRequests = false;
+      const pendingSnapshot = host.requestSnapshot().catch((error: unknown) => error);
+      const extensionWarning =
+        "[node-llama-cpp] ggml_metal_library_init_from_source: error compiling source\n";
+      fake.emitStderr(extensionWarning);
 
-      host.stop();
+      await host.stop();
       expect(fake.disconnectCalls).toBe(1);
-      await Promise.resolve();
       expect(fake.exitCode).toBe(0);
       expect(signals).toEqual([]);
+      expect(host.stderrLog).toContain(extensionWarning);
+      expect(exited).toHaveBeenCalledWith(0, null, undefined);
+      await expect(pendingSnapshot).resolves.toBeInstanceOf(HostRequestUnavailableError);
+      await expect(pendingSnapshot).resolves.toMatchObject({
+        message: "Host process stopped after requested shutdown",
+      });
+      await expect(pendingSnapshot).resolves.not.toMatchObject({
+        message: expect.stringContaining("ggml_metal_library_init_from_source"),
+      });
+    });
+
+    it("still diagnoses an unsolicited code-zero exit as authority loss", () => {
+      const exited = vi.fn();
+      host.on("exit", exited);
+
+      fake.emitExit(0);
+
+      const diagnostic = exited.mock.calls[0]?.[2];
+      expect(diagnostic).toBeInstanceOf(Error);
+      expect(diagnostic).toMatchObject({ message: "Host process exited with code 0" });
+    });
+
+    it("still diagnoses a nonzero exit after shutdown was requested", async () => {
+      fake.disconnect = () => {
+        fake.disconnectCalls++;
+        fake.connected = false;
+        fake.emit("disconnect");
+      };
+      const exited = vi.fn();
+      host.on("exit", exited);
+
+      const stopped = host.stop();
+      fake.emitExit(1);
+      await stopped;
+
+      const diagnostic = exited.mock.calls[0]?.[2];
+      expect(diagnostic).toBeInstanceOf(Error);
+      expect(diagnostic).toMatchObject({ message: "Host process exited with code 1" });
+    });
+
+    it("settles a pre-ready waiter as unavailable during requested shutdown", async () => {
+      const readiness = host.waitForReady().catch((error: unknown) => error);
+
+      await host.stop();
+
+      await expect(readiness).resolves.toBeInstanceOf(HostRequestUnavailableError);
+      await expect(readiness).resolves.toMatchObject({
+        message: "Host process stopped during requested shutdown before ready",
+      });
     });
 
     it("bounds a host that ignores graceful disconnect and SIGTERM with SIGKILL", () => {

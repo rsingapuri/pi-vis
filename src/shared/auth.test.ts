@@ -29,7 +29,7 @@ describe("Pi provider definitions", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("matches every exact Pi 0.99.2 built-in provider, OAuth capability, and API-key env mapping", async () => {
+  it("matches every exact Pi 1.0.0 built-in provider, OAuth capability, and API-key env mapping", async () => {
     const [{ builtinProviders }, { findEnvKeys }] = await Promise.all([
       import(
         "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/all.js"

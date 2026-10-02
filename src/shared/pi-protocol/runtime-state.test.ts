@@ -481,6 +481,7 @@ describe("authority protocol schemas", () => {
         providerId: "project-provider",
         authType: "api_key",
         synchronized: false,
+        radiusMcp: "configured",
       },
     };
     expect(IntentOutcomeSchema.safeParse(outcome).success).toBe(true);

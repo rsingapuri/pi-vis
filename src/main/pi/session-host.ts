@@ -266,7 +266,7 @@ interface PendingRequest {
 export interface SessionHostEvents {
   event: (event: PiEvent) => void;
   uiRequest: (req: ExtensionUiRequest) => void;
-  exit: (code: number | null, signal: string | null, diagnostic: Error) => void;
+  exit: (code: number | null, signal: string | null, diagnostic?: Error) => void;
   error: (err: Error) => void;
   /** Panel events for custom() rendering */
   panelOpen: (
@@ -561,6 +561,11 @@ export class SessionHost extends EventEmitter {
       this.clearShutdownTimers();
       this.exitCode = code;
       this.versionTooLow = code === 42;
+      // A requested IPC-first shutdown completes through process.exit(0) in
+      // host.mjs. That is lifecycle settlement, not a crash. Exit code zero by
+      // itself is not sufficient: a child that disappears cleanly without a
+      // preceding stop() is still an unexpected authority loss.
+      const cleanRequestedExit = this.shutdownRequested && code === 0 && signal === null;
       if (this.startupTimer) {
         clearTimeout(this.startupTimer);
         this.startupTimer = null;
@@ -579,19 +584,29 @@ export class SessionHost extends EventEmitter {
       // in the captured stderr tail so the real cause is visible instead of
       // the inscrutable "exited with code 1 before ready".
       if (!this.ready && this.startupReject) {
-        this.startupReject(this.startupExitError(code));
+        this.startupReject(
+          cleanRequestedExit
+            ? new HostRequestUnavailableError(
+                "Host process stopped during requested shutdown before ready",
+              )
+            : this.startupExitError(code),
+        );
         this.startupReject = null;
       }
-      const diagnostic = this.diagnosticError(
-        `Host process exited with code ${code}${signal ? ` (signal ${signal})` : ""}`,
-      );
+      const exitMessage = `Host process exited with code ${code}${signal ? ` (signal ${signal})` : ""}`;
+      const diagnostic = cleanRequestedExit ? undefined : this.diagnosticError(exitMessage);
       appendDiagnostic("session-host", "process-exit", diagnostic, {
         pid: this.proc.pid,
         sessionFile: this.sessionFile,
         exitCode: code,
         signal,
+        shutdownRequested: this.shutdownRequested,
+        clean: cleanRequestedExit,
       });
-      this.rejectAllPending(diagnostic);
+      this.rejectAllPending(
+        diagnostic ??
+          new HostRequestUnavailableError("Host process stopped after requested shutdown"),
+      );
       this.emit("exit", code, signal, diagnostic);
     });
 
@@ -2074,7 +2089,7 @@ export interface SessionHost {
   on(event: "uiRequest", listener: (req: ExtensionUiRequest) => void): this;
   on(
     event: "exit",
-    listener: (code: number | null, signal: string | null, diagnostic: Error) => void,
+    listener: (code: number | null, signal: string | null, diagnostic?: Error) => void,
   ): this;
   on(event: "error", listener: (err: Error) => void): this;
   on(event: "ready", listener: () => void): this;
@@ -2142,7 +2157,7 @@ export interface SessionHost {
   on(event: "unresponsive", listener: () => void): this;
   emit(event: "event", data: PiEvent): boolean;
   emit(event: "uiRequest", data: ExtensionUiRequest): boolean;
-  emit(event: "exit", code: number | null, signal: string | null, diagnostic: Error): boolean;
+  emit(event: "exit", code: number | null, signal: string | null, diagnostic?: Error): boolean;
   emit(event: "error", err: Error): boolean;
   emit(event: "ready"): boolean;
   emit(

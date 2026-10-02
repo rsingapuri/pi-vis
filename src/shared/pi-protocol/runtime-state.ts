@@ -1199,6 +1199,8 @@ export const LoginProviderIntentResultSchema = z
     authType: z.enum(["oauth", "api_key"]),
     /** False means Pi committed the credential but its local snapshot refresh failed. */
     synchronized: z.boolean().optional(),
+    /** Bounded post-login status for Pi 1.0's optional global Radius MCP setup. */
+    radiusMcp: z.enum(["unchanged", "declined", "configured", "failed"]).optional(),
   })
   .strict();
 

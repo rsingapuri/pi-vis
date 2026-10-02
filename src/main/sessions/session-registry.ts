@@ -1379,7 +1379,15 @@ export class SessionRegistry {
     });
     proc.on("exit", (_code, _signal, diagnostic) => {
       if (!current() || (record._activating && !record._procReady)) return;
-      this.handleRuntimeFailure(record, proc, diagnostic.message);
+      // Planned callers detach the host before stop(), so a clean requested
+      // exit normally cannot reach this branch. If that ownership invariant is
+      // ever violated, fail the still-current record instead of leaving a dead
+      // authority installed merely because the child exited with code zero.
+      this.handleRuntimeFailure(
+        record,
+        proc,
+        diagnostic?.message ?? "Host completed a requested shutdown while still active",
+      );
     });
     proc.on("error", (error) => {
       if (!current() || (record._activating && !record._procReady)) return;
@@ -4173,7 +4181,38 @@ export class SessionRegistry {
     }
     if (sequence <= acknowledged) return { acknowledgedThrough: acknowledged };
     const proc = record.proc;
-    const result = await proc.sendPanelInput(panelId, revision, sequence, data);
+    let result: {
+      acknowledgedThrough: number;
+      gap?: { expected: number; received: number };
+      repaintRequired?: { revision: number; repaintRequired: boolean };
+      editorCheckpoint?: { revision: number; text: string; clearedConflicts: boolean };
+    };
+    try {
+      result = await proc.sendPanelInput(panelId, revision, sequence, data);
+    } catch (error) {
+      // A request already in child IPC can reject when retirement closes the
+      // channel. Re-evaluate ownership after the await: the renderer needs the
+      // bounded lifecycle result in this race, not an Electron invoke error.
+      // Preserve genuine panel/transport errors while this exact owner is
+      // still authoritative so they remain diagnosable.
+      const stillCurrent =
+        this.sessions.get(record.sessionId) === record &&
+        !record._closing &&
+        !record._dead &&
+        record.proc === proc &&
+        this.matchesExpectedRuntime(record, expectedHostInstanceId, expectedSessionEpoch);
+      if (stillCurrent) throw error;
+      const unavailable =
+        this.sessions.get(record.sessionId) !== record ||
+        record._closing ||
+        record._dead ||
+        !record.proc ||
+        record.availability !== "available";
+      return {
+        acknowledgedThrough: 0,
+        rejection: unavailable ? "runtime_unavailable" : "runtime_replaced",
+      };
+    }
     if (
       this.sessions.get(record.sessionId) !== record ||
       record._closing ||

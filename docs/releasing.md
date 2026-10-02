@@ -30,6 +30,25 @@ candidate, also rehearse `npm ci`, `npm run test:full`, and `npm run dist`, then
 complete the provider-spending Kitty journey and manual GUI/IME checks in the
 root release guide before publishing.
 
+For the current exact Pi 1.0.0 pin, use
+[`docs/compatibility/pi-1.0.0.md`](compatibility/pi-1.0.0.md) as the acceptance
+contract. Release verification must keep the published package pristine while
+proving the safe Pi/minimatch `brace-expansion@5.0.12` resolution in both the
+repository and final app, the absence of removed agent-core harness/durable
+surfaces, and the retained JSONL-tail, fragmented-Mistral, and
+custom-message/tool-result-adjacency behaviors. It must also cover codemode
+image generation, Anthropic copy-code, OAuth Account/Subscription labels,
+Radius explicit consent plus atomic global configuration and owner-fenced
+reload, MCP OAuth hardening, and deferred-tool restoration. Upstream fullscreen
+startup and `quietStartup: "header"` are intentionally inapplicable to the
+embedded app shell and must not alter it. The repository now behaviorally gates
+real codemode image execution and deferred MCP-tool restoration through
+reconnect, resume, and reload. The OAuth loopback gate exercises configured
+authorization-server metadata, issuer rejection before token exchange,
+name-and-URL credential isolation and legacy migration, empty optional fields,
+and scope-preserving step-up through the published CLI and public OAuth API;
+static declarations and pure helper checks do not replace those journeys.
+
 Common forms:
 
 ```bash

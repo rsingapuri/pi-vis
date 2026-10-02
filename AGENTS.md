@@ -29,9 +29,9 @@ This file is intentionally short. It contains rules that must always be loaded. 
 - Keep `src/shared/ipc-contract.ts` and `src/shared/pi-protocol/` as the typed source of truth for main↔renderer and pi RPC contracts.
 - Do not import private Pi internals from the SDK host except the exact-version
   `resources/pi-session-host/pinned-pi-private.mjs` adapter, which may load only
-  Pi 0.99.2's `llama.cpp` built-in registry entry. All injection and
+  Pi 1.0.0's `llama.cpp` built-in registry entry. All injection and
   runtime interaction after that lookup must use Pi's public surface. See ADR
-  0006 and `docs/compatibility/pi-0.99.2.md`.
+  0006 and `docs/compatibility/pi-1.0.0.md`.
 - Consume the pinned Pi package without a local runtime patch. Preserve the
   behavioral regression gates for JSONL-tail repair, fragmented Mistral tool
   calls, and custom-message/tool-result adjacency on future pin upgrades.

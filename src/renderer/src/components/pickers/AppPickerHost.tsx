@@ -62,6 +62,7 @@ function waitForPickerIntentOutcome(
   sessionId: SessionId,
   intentId: string,
   owner: RuntimeIdentity,
+  timeoutMs = 10_000,
 ): Promise<IntentOutcome> {
   const immediate = findPickerIntentOutcome(sessionId, intentId, owner);
   if (immediate) return Promise.resolve(immediate);
@@ -77,7 +78,7 @@ function waitForPickerIntentOutcome(
     };
     const timeout = setTimeout(
       () => finish(() => reject(new Error("Timed out waiting for the selection to finish."))),
-      10_000,
+      timeoutMs,
     );
     unsubscribe = useSessionsStore.subscribe(() => {
       const outcome = findPickerIntentOutcome(sessionId, intentId, owner);
@@ -420,10 +421,11 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           onPick={async (provider, authType) => {
             if (!beginPickerAction()) return;
             try {
+              const observation = requirePickerObservation();
               const receipt = await dispatchSessionIntent(
                 sessionId,
                 { kind: "loginProvider", providerId: provider.id, authType },
-                requirePickerObservation(),
+                observation,
               );
               if (!pickerRuntimeIsCurrent()) return;
               if (receipt.status === "not_admitted") {
@@ -436,8 +438,78 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
                 return;
               }
               closePicker(sessionId);
+              if (provider.id !== "radius" || authType !== "oauth") return;
+
+              // Pi 1.0's Radius MCP offer is app-owned because pi-vis does not
+              // instantiate upstream InteractiveMode. Wait for the bounded
+              // login/config outcome, then request the normal owner-fenced
+              // reload only after the login intent has fully settled.
+              const outcome = await waitForPickerIntentOutcome(
+                sessionId,
+                receipt.intentId,
+                observation.owner,
+                30 * 60_000,
+              );
+              const current = useSessionsStore.getState().sessions.get(sessionId);
+              if (!sessionMatchesRuntime(current, observation.owner)) return;
+              if (outcome.kind !== "loginProvider" || outcome.state !== "completed") return;
+              const catalogSynchronizationFailed = outcome.result?.synchronized === false;
+              if (outcome.result?.radiusMcp === "failed") {
+                addToast(
+                  sessionId,
+                  catalogSynchronizationFailed
+                    ? "Signed in to Radius, but its MCP server could not be configured and the local model catalog could not be refreshed. Check your global mcp.json, refresh models, and try again."
+                    : "Signed in to Radius, but its MCP server could not be configured. Check your global mcp.json and try again.",
+                  "warning",
+                );
+                return;
+              }
+              if (outcome.result?.radiusMcp !== "configured") return;
+
+              const semantic = current?.authorityProjection?.semantic;
+              const reloadReceipt = await dispatchSessionIntent(
+                sessionId,
+                { kind: "reload" },
+                {
+                  owner: observation.owner,
+                  ...(semantic?.state === "following" &&
+                  semantic.cursor.hostInstanceId === observation.owner.hostInstanceId &&
+                  semantic.cursor.sessionEpoch === observation.owner.sessionEpoch
+                    ? { cursor: semantic.cursor }
+                    : {}),
+                },
+              );
+              if (
+                reloadReceipt.status === "not_admitted" ||
+                reloadReceipt.status === "delivery_unknown"
+              ) {
+                addToast(
+                  sessionId,
+                  catalogSynchronizationFailed
+                    ? "Radius MCP was configured, but the local model catalog could not be refreshed. MCP will load on the next session reload; refresh models and try again."
+                    : "Radius MCP was configured; it will load on the next session reload.",
+                  "warning",
+                );
+              } else if (catalogSynchronizationFailed) {
+                addToast(
+                  sessionId,
+                  "Radius MCP configured. Reloading session… Sign-in was saved, but the local model catalog still needs a manual refresh.",
+                  "warning",
+                );
+              } else {
+                addToast(sessionId, "Radius MCP configured. Reloading session…", "success");
+              }
             } catch {
-              if (pickerRuntimeIsCurrent()) addToast(sessionId, "Couldn't start sign-in", "error");
+              const current = useSessionsStore.getState().sessions.get(sessionId);
+              if (pickerRuntime && sessionMatchesRuntime(current, pickerRuntime)) {
+                addToast(
+                  sessionId,
+                  provider.id === "radius"
+                    ? "Couldn't complete Radius MCP setup"
+                    : "Couldn't start sign-in",
+                  "error",
+                );
+              }
             }
           }}
         />
@@ -1294,7 +1366,9 @@ function LoginPicker({
     const normalized = query.trim().toLowerCase();
     if (!normalized) return choices;
     return choices.filter(({ provider, authType }) =>
-      `${provider.name} ${provider.id} ${authType === "oauth" ? "oauth" : "api key"}`
+      `${provider.name} ${provider.id} ${
+        authType === "oauth" ? (provider.oauthKind ?? "account") : "api key"
+      }`
         .toLowerCase()
         .includes(normalized),
     );
@@ -1372,7 +1446,11 @@ function LoginPicker({
             <FadeText className="picker__item-name">{provider.name}</FadeText>
             {provider.configured && <span className="picker__badge">Connected</span>}
             <span className={`picker__badge picker__badge--${authType}`}>
-              {authType === "oauth" ? "OAuth" : "API key"}
+              {authType === "oauth"
+                ? provider.oauthKind === "subscription"
+                  ? "Subscription"
+                  : "Account"
+                : "API key"}
             </span>
           </button>
         ))}
@@ -1395,9 +1473,19 @@ function LogoutPicker({
   onClose,
   onPick,
 }: {
-  providers: Array<{ id: string; name: string; authType: "oauth" | "api_key" }>;
+  providers: Array<{
+    id: string;
+    name: string;
+    authType: "oauth" | "api_key";
+    oauthKind?: "account" | "subscription";
+  }>;
   onClose: () => void;
-  onPick: (provider: { id: string; name: string; authType: "oauth" | "api_key" }) => void;
+  onPick: (provider: {
+    id: string;
+    name: string;
+    authType: "oauth" | "api_key";
+    oauthKind?: "account" | "subscription";
+  }) => void;
 }): React.ReactElement {
   const [query, setQuery] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -1485,7 +1573,11 @@ function LogoutPicker({
           >
             <FadeText className="picker__item-name">{p.name}</FadeText>
             <span className={`picker__badge picker__badge--${p.authType}`}>
-              {p.authType === "oauth" ? "OAuth" : "API Key"}
+              {p.authType === "oauth"
+                ? p.oauthKind === "subscription"
+                  ? "Subscription"
+                  : "Account"
+                : "API Key"}
             </span>
           </button>
         ))}

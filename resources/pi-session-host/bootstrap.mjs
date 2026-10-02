@@ -88,7 +88,7 @@ export async function importPiTui(piPath) {
 /**
  * Reproduce Pi's public CLI built-in extension set for an SDK-created session.
  * createAgentSessionServices() intentionally does not inject these factories
- * for embedders. Pi 0.99 exposes codemode, tool search, and MCP creators on its
+ * for embedders. Pi 1.0 exposes codemode, tool search, and MCP creators on its
  * public root; llama.cpp remains the single exact-version private lookup.
  *
  * `builtin` (rather than the former `hidden` inline shape) preserves Pi's
@@ -131,6 +131,105 @@ export function createPiBuiltinExtensions(pi, pinnedLlamaExtension) {
     },
   ];
   return Object.freeze(extensions.map((extension) => Object.freeze(extension)));
+}
+
+/**
+ * Read the active tool declaration at the tip of a persisted transcript.
+ *
+ * Pi 1.0.0 records tool changes on system messages, but its public
+ * createAgentSessionFromServices() path always supplies an initial default
+ * loadout. That prevents AgentSession's constructor from running its own
+ * transcript restoration hook. Keep this projection deliberately small and
+ * public-surface-only so the host can bridge that SDK integration gap without
+ * reaching into AgentSession internals. Re-audit and remove this adapter when
+ * advancing the exact Pi pin beyond 1.0.0.
+ */
+export function resolveTranscriptToolLoadout(sessionManager) {
+  const messages = sessionManager?.buildSessionContext?.()?.messages;
+  if (!Array.isArray(messages)) return undefined;
+
+  const active = new Map();
+  let timestamp;
+  for (const message of messages) {
+    if (message?.role !== "system") continue;
+    timestamp ??= message.timestamp;
+    const removed = Array.isArray(message.toolsRemoved) ? message.toolsRemoved : [];
+    const added = Array.isArray(message.toolsAdded) ? message.toolsAdded : [];
+    for (const tool of removed) {
+      if (typeof tool?.name === "string") active.delete(tool.name);
+    }
+    for (const tool of added) {
+      if (typeof tool?.name !== "string") continue;
+      active.set(tool.name, true);
+    }
+  }
+  return timestamp !== undefined || active.size > 0 ? [...active.keys()] : undefined;
+}
+
+/**
+ * Restore transcript-declared tools through Pi's public extension surface.
+ *
+ * Deferred MCP definitions may register after session_start. The first pass
+ * restores every definition already present; before the next agent request a
+ * second pass adds definitions that reconnected in the meantime. Additive
+ * loadout changes preserve that pending restore, while removal of a
+ * transcript-restored active tool cancels it like Pi's native pending behavior.
+ */
+export function createTranscriptToolRestorationExtension(sessionManager) {
+  return (pi) => {
+    let initialized = false;
+    let restoredActive = new Set();
+    let pending = new Set();
+
+    const availableNames = () =>
+      new Set(
+        pi
+          .getAllTools()
+          .filter((tool) => tool.exposure !== "hidden")
+          .map((tool) => tool.name),
+      );
+
+    pi.on("session_start", (event) => {
+      initialized = false;
+      restoredActive = new Set();
+      pending = new Set();
+      // Pi's native reload path already carries its current/pending loadout
+      // through the ResourceLoader replacement. Replaying the transcript here
+      // would discard newly configured defaults. This adapter exists only for
+      // the factory-created session constructor gap described above.
+      if (event?.reason === "reload") return;
+
+      const loadout = resolveTranscriptToolLoadout(sessionManager);
+      if (loadout === undefined) return;
+
+      const available = availableNames();
+      const active = loadout.filter((name) => available.has(name));
+      pi.setActiveTools(active);
+      const requested = new Set(loadout);
+      restoredActive = new Set(pi.getActiveTools().filter((name) => requested.has(name)));
+      pending = new Set(loadout.filter((name) => !available.has(name)));
+      initialized = true;
+    });
+
+    pi.on("before_agent_start", () => {
+      if (!initialized || pending.size === 0) return;
+
+      const current = pi.getActiveTools();
+      const currentSet = new Set(current);
+      if ([...restoredActive].some((name) => !currentSet.has(name))) {
+        pending.clear();
+        return;
+      }
+
+      const available = availableNames();
+      const connected = [...pending].filter((name) => available.has(name) && !currentSet.has(name));
+      if (connected.length > 0) pi.setActiveTools([...current, ...connected]);
+      // Match Pi's native prompt boundary: deferred names get one reconnect
+      // opportunity before this provider request, then any unresolved names
+      // are abandoned rather than unexpectedly activating on a later turn.
+      pending.clear();
+    });
+  };
 }
 
 // ─── Session runtime options ─────────────────────────────────────────────────

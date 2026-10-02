@@ -31,6 +31,15 @@ test.describe("runtime-native provider sign-in", () => {
     const picker = page.locator(".picker--login");
     await expect(picker).toBeVisible();
     await expect(picker.getByText("Preview")).toHaveCount(2);
+    await expect(
+      picker
+        .getByRole("option")
+        .filter({ hasText: "Plan-backed" })
+        .filter({ hasText: "Subscription" }),
+    ).toBeVisible();
+    await expect(
+      picker.getByRole("option").filter({ hasText: "Preview" }).filter({ hasText: "Account" }),
+    ).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("provider-picker.png"), fullPage: true });
 
     await picker.getByRole("option").filter({ hasText: "API key" }).click();
@@ -125,7 +134,7 @@ test.describe("runtime-native provider sign-in", () => {
 
     await composer.fill("/login");
     await composer.press("Enter");
-    const oauth = page.locator(".picker--login").getByRole("option").filter({ hasText: "OAuth" });
+    const oauth = page.locator(".picker--login").getByRole("option").filter({ hasText: "Account" });
     await oauth.click();
     const device = page.getByRole("dialog", { name: "Sign in to Preview" });
     await expect(device).toContainText("PI-VIS-80");
@@ -161,7 +170,7 @@ test.describe("runtime-native provider sign-in", () => {
 
     await composer.fill("/login");
     await composer.press("Enter");
-    await page.locator(".picker--login").getByRole("option").filter({ hasText: "OAuth" }).click();
+    await page.locator(".picker--login").getByRole("option").filter({ hasText: "Account" }).click();
     const manualCode = page.getByRole("dialog", { name: "Sign in to Preview" });
     const redirectInput = manualCode.getByRole("textbox", {
       name: "Complete sign-in in your browser, or paste the authorization code / redirect URL here:",

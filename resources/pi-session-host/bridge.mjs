@@ -7,6 +7,7 @@ import {
   markdownTransformJsonBytes,
   markdownTransformUtf8Bytes,
 } from "./markdown-transform-limits.mjs";
+import { RADIUS_PROVIDER_ID, configureRadiusMcp, inspectRadiusMcpConfig } from "./radius-mcp.mjs";
 import { SHELL_ADMISSION_CANCELLED_CODE, createStateAuthority } from "./state-authority.mjs";
 
 function exitSignalName(value) {
@@ -2025,32 +2026,70 @@ export function setupCommandBridge({
               try {
                 // Deliberately discard Credential. The bounded intent result
                 // proves only which public login method completed.
-                await modelAccess(_session).login(
-                  intent.providerId,
-                  intent.authType,
-                  surface.interaction,
-                );
-                surface.complete();
+                let synchronized = true;
+                try {
+                  await modelAccess(_session).login(
+                    intent.providerId,
+                    intent.authType,
+                    surface.interaction,
+                  );
+                } catch (error) {
+                  if (
+                    !isCommittedCredentialSynchronizationError(
+                      pi,
+                      error,
+                      intent.providerId,
+                      "login",
+                    )
+                  ) {
+                    throw error;
+                  }
+                  // The credential is already durable even though Pi could
+                  // not refresh its local catalog snapshot. Continue through
+                  // any post-commit Radius setup before publishing the bounded
+                  // warning outcome; retrying login could mint a second token.
+                  synchronized = false;
+                }
+                let radiusMcp;
+                if (intent.providerId === RADIUS_PROVIDER_ID && intent.authType === "oauth") {
+                  try {
+                    const inspection = inspectRadiusMcpConfig(agentDir);
+                    if (!inspection.needsConfiguration) {
+                      radiusMcp = "unchanged";
+                    } else if (await surface.confirmRadiusMcp(inspection.path)) {
+                      await configureRadiusMcp(agentDir);
+                      // A concurrent process may have written the same entry
+                      // while consent was pending. We still need the renderer
+                      // to reload because this host started before that entry
+                      // was known to be present.
+                      radiusMcp = "configured";
+                    } else {
+                      radiusMcp = "declined";
+                    }
+                  } catch {
+                    // Authentication has already committed. Configuration
+                    // failures are a separate, bounded outcome and must never
+                    // turn a successful sign-in into a retry that could mint a
+                    // second credential or expose filesystem/provider detail.
+                    radiusMcp = controller.signal.aborted ? "declined" : "failed";
+                  }
+                }
+                if (
+                  !synchronized &&
+                  !controller.signal.aborted &&
+                  typeof surface.warn === "function"
+                ) {
+                  surface.warn();
+                } else {
+                  surface.complete();
+                }
                 return {
                   providerId: intent.providerId,
                   authType: intent.authType,
-                  synchronized: true,
+                  synchronized,
+                  ...(radiusMcp ? { radiusMcp } : {}),
                 };
               } catch (error) {
-                if (
-                  isCommittedCredentialSynchronizationError(pi, error, intent.providerId, "login")
-                ) {
-                  // Pi 0.84 deliberately distinguishes a committed credential
-                  // from a failed local model/auth snapshot refresh. Do not
-                  // call the completed write a failed sign-in, and never let
-                  // the Credential carried by the SDK error cross authority.
-                  surface.warn?.();
-                  return {
-                    providerId: intent.providerId,
-                    authType: intent.authType,
-                    synchronized: false,
-                  };
-                }
                 if (controller.signal.aborted) surface.complete();
                 else surface.fail();
                 // Never forward provider-native errors: they can include a URL,
@@ -2469,10 +2508,25 @@ export function setupCommandBridge({
               const methods = [];
               if (typeof provider.auth?.oauth?.login === "function") methods.push("oauth");
               if (typeof provider.auth?.apiKey?.login === "function") methods.push("api_key");
-              return methods.length ? [{ provider, methods }] : [];
+              return methods.length
+                ? [
+                    {
+                      provider,
+                      methods,
+                      ...(methods.includes("oauth")
+                        ? {
+                            oauthKind:
+                              provider.auth?.oauth?.isSubscription === true
+                                ? "subscription"
+                                : "account",
+                          }
+                        : {}),
+                    },
+                  ]
+                : [];
             });
           const providers = await Promise.all(
-            candidates.map(async ({ provider, methods }) => {
+            candidates.map(async ({ provider, methods, oauthKind }) => {
               let auth;
               try {
                 auth = await access.checkAuth(provider.id);
@@ -2484,11 +2538,16 @@ export function setupCommandBridge({
                 name: String(provider.name ?? provider.id).slice(0, 160),
                 configured: auth !== undefined,
                 ...(typeof auth?.source === "string" ? { source: auth.source.slice(0, 120) } : {}),
+                ...(oauthKind ? { oauthKind } : {}),
                 methods,
               };
             }),
           );
-          providers.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+          providers.sort((a, b) => {
+            if (a.id === RADIUS_PROVIDER_ID && b.id !== RADIUS_PROVIDER_ID) return 1;
+            if (b.id === RADIUS_PROVIDER_ID && a.id !== RADIUS_PROVIDER_ID) return -1;
+            return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+          });
           send({ type: "response", id, success: true, data: { native: true, providers } });
           break;
         }
@@ -3461,10 +3520,25 @@ async function collectLogoutProviders(session) {
   // surfaced.
   const models = modelAccess(session);
   const credentials = await models.listCredentials();
+  const providerById = new Map(
+    models
+      .getProviders()
+      .flatMap((provider) =>
+        provider && typeof provider.id === "string" ? [[provider.id, provider]] : [],
+      ),
+  );
   const out = credentials.map(({ providerId, type }) => ({
     id: providerId,
     name: models.getProviderName(providerId),
     authType: type,
+    ...(type === "oauth"
+      ? {
+          oauthKind:
+            providerById.get(providerId)?.auth?.oauth?.isSubscription === true
+              ? "subscription"
+              : "account",
+        }
+      : {}),
   }));
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;

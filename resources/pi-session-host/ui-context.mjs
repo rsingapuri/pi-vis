@@ -209,6 +209,14 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
       }
       if (request?.operationId) onAcknowledged(request.operationId);
       if (response?.cancelled === true) {
+        if (currentPrompt?.cancelAsValue === true) {
+          const prompt = currentPrompt;
+          currentPrompt = undefined;
+          prompt.cleanup?.();
+          prompt.resolve(prompt.cancelValue);
+          publish({ phase: "waiting", message: "Waiting for sign-in…" });
+          return response;
+        }
         cancel();
         return response;
       }
@@ -232,7 +240,7 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
     if (signal?.aborted) cancel();
     else publish({ phase: "waiting", message: "Starting sign-in…" });
 
-    const prompt = (authPrompt) => {
+    const prompt = (authPrompt, options = {}) => {
       if (closed || signal?.aborted || authPrompt?.signal?.aborted) {
         return Promise.reject(new Error("Login cancelled"));
       }
@@ -245,7 +253,14 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
           publish({ phase: "waiting", message: "Waiting for sign-in…" });
         };
         const cleanup = () => authPrompt?.signal?.removeEventListener?.("abort", onPromptAbort);
-        currentPrompt = { resolve: resolveFn, reject: rejectFn, cleanup };
+        currentPrompt = {
+          resolve: resolveFn,
+          reject: rejectFn,
+          cleanup,
+          ...(options.cancelAsValue === true
+            ? { cancelAsValue: true, cancelValue: options.cancelValue }
+            : {}),
+        };
         authPrompt?.signal?.addEventListener?.("abort", onPromptAbort, { once: true });
         const oauthContext = authPrompt?.type === "manual_code" ? latestOAuthContext : undefined;
         publish({
@@ -305,6 +320,18 @@ export function createDialogResolver(sendToMain, onAcknowledged = () => {}) {
 
     return {
       interaction: { signal, prompt, notify },
+      confirmRadiusMcp: (mcpPath) =>
+        prompt(
+          {
+            type: "select",
+            message: `Configure Radius MCP in ${mcpPath}?`,
+            options: [
+              { id: "yes", label: "Yes" },
+              { id: "no", label: "No" },
+            ],
+          },
+          { cancelAsValue: true, cancelValue: "no" },
+        ).then((value) => value === "yes"),
       complete: close,
       warn: () => {
         rejectPrompt();

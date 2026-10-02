@@ -6,7 +6,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 export const PINNED_PI_PACKAGE = "@earendil-works/pi-coding-agent";
-export const PINNED_PI_VERSION = "0.99.2";
+export const PINNED_PI_VERSION = "1.0.0";
 export const PINNED_MINIMATCH_VERSION = "10.2.6";
 export const PUBLISHED_BRACE_EXPANSION_VERSION = "5.0.9";
 export const SAFE_BRACE_EXPANSION_VERSION = "5.0.12";
@@ -14,9 +14,9 @@ export const SAFE_BRACE_EXPANSION_VERSION = "5.0.12";
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PI_LOCK_LOCATION = "node_modules/@earendil-works/pi-coding-agent";
 const PI_TARBALL =
-  "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.99.2.tgz";
+  "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.0.0.tgz";
 const PI_INTEGRITY =
-  "sha512-6R1BZ2N77CrVcGf3eC2KovTz1Q4RYiAeydvVWQT546N2fi1nBc81aURlbOZCgruWoW9VY/UrLzDynF4YTolpoA==";
+  "sha512-/FtbxoSQU/mEv1QnichJjRjqteqaIaMWxmhB4G367+MwZfX7/DI5B9YAg5lqbN7nztFskBEtUSZ+FlmMBECtMw==";
 const MINIMATCH_TARBALL = "https://registry.npmjs.org/minimatch/-/minimatch-10.2.6.tgz";
 const MINIMATCH_INTEGRITY =
   "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==";

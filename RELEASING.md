@@ -98,7 +98,7 @@ is no supported test-skip path: a rerun must pass the same checks again.
 ### Mandatory pre-release checks
 
 The ordered `npm run release` check list begins with `npm ci`; the official
-Pi 0.99.2 tarball and its audited transitive closure must resolve from the exact
+Pi 1.0.0 tarball and its audited transitive closure must resolve from the exact
 root lock graph. Root `postinstall` serially provisions and verifies Electron,
 verifies that the unchanged published Pi shrinkwrap is superseded by the safe
 installed `brace-expansion@5.0.12` closure, and only then applies the
@@ -107,7 +107,7 @@ suppress lifecycle scripts. The automated suite
 (`npm audit --omit=dev`, typecheck, `lint`, `test`, `test:render`, `test:e2e`,
 `npm ls --all`) then runs; its
 Electron lane includes the isolated,
-repository-pinned Pi 0.99.2 SDK-host compatibility journeys described in
+repository-pinned Pi 1.0.0 SDK-host compatibility journeys described in
 `docs/testing.md`. The subsequent `dist` step first runs
 `verify:mac-artifacts`: the custom signer signs only Mach-O/fat binaries and
 bundle containers, so unpacked fonts, images, WASM, ELF/PE binaries, and
@@ -120,12 +120,33 @@ runs `verify:packaged-pty` against the completed app. It checks the exact
 eight-package Pi production closure
 (coding-agent, chord, agent-core, pi-ai, codemode, MCP, telemetry, and pi-tui),
 absence of retired client/protocol packages, the modular CLI anchor, exact
-version execution of the bundled CLI, the exact four-entry built-in registry
-with its isolated private llama adapter, public codemode/tool-search/MCP
-composition, the packaged Pi/minimatch resolution of `brace-expansion@5.0.12`,
-the packaged Electron framework's exact lock match and minimum safe 43.5.0
-version, and native PTY paths before the packaged Electron journey; it must not
-be skipped or replaced by a repository-tree smoke.
+version execution of the bundled CLI, a runnable codemode sandbox plus its
+worker/WASM assets, the exact-version private llama adapter's returned public
+shape, the packaged Pi/minimatch resolution of `brace-expansion@5.0.12`, the
+packaged Electron framework's exact lock match and minimum safe 43.5.0 version,
+and native PTY paths before the packaged Electron journey; it must not be
+skipped or replaced by a repository-tree smoke. It does **not** inspect the
+removed agent-core subpaths/exports, audit the complete four-entry private
+registry, or exercise public tool-search/MCP composition inside the artifact;
+those are repository-tree gates in `tests/pinned-pi-runtime.test.mts`.
+
+The Pi 1.0 compatibility gates must also prove the public image-generation and
+codemode surfaces, Anthropic copy-code interaction, account/subscription
+labels, Radius consent plus locked atomic global configuration and same-owner
+reload, MCP authorization metadata/issuer/credential/scope hardening, and
+deferred-tool restoration after reconnect. The repository gate executes a
+real codemode image request and restores a tool-search-loaded deferred MCP tool
+after resume and reload. Declaration signatures and pure OAuth helper tests do
+not substitute for behavioral coverage: the loopback suite must continue to
+exercise configured authorization-server metadata, issuer rejection before
+token exchange, name-and-URL credential isolation and legacy migration, empty
+optional fields, and scope-preserving step-up through the published CLI and
+public OAuth API. Fullscreen-by-default and
+`quietStartup: "header"` are explicitly standalone-CLI behavior: release
+review must confirm embedded Pi-Vis panels still use content-hugging
+`TuiMainScreen` and app-owned startup chrome. See
+`docs/compatibility/pi-1.0.0.md`; the historical 0.99.2 audit is not the current
+acceptance contract.
 
 For a pinned-Pi release candidate, retain successful output for this clean
 reproduction sequence before the signed release run:
@@ -147,7 +168,7 @@ manually before publishing:
    newline (not a submit) in the unified editor; Enter submits; a multiline
    paste inserts lines without submitting; session-switch keeps Shift+Enter
    working. The gated spec defaults to the repository-local pinned Pi, rejects
-   any version other than 0.99.2 before launch, and requires provider auth
+   any version other than 1.0.0 before launch, and requires provider auth
    (real API spend). `PIVIS_TEST_PI_BIN` is an explicit alternate-path override,
    not a `PATH` search:
 
@@ -161,8 +182,12 @@ manually before publishing:
 2. **Manual smoke** (`npm run dev`): Shift+Enter newline / Enter submit /
    Alt+Enter follow-up in the unified editor; a 3-line paste (no submit); a
    session switch away/back then repeat; ESC with autocomplete open and with an
-   overlay open; custom-panel arrows/Tab/Shift+Tab; the `/login` flow. Include
-   IME composition and macOS Option/dead-key input (not covered by any suite).
+   overlay open; custom-panel arrows/Tab/Shift+Tab; the `/login` flow, including
+   Account versus Subscription labels, Anthropic copy-code URL continuity, and
+   both decline and consent branches of Radius's global MCP offer. A consented
+   Radius setup must preserve unrelated global `mcp.json` data and reload only
+   the originating session; a decline must leave login successful. Include IME
+   composition and macOS Option/dead-key input (not covered by any suite).
 
 ### Architecture
 
