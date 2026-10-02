@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
+import type { ProviderAuthStatus } from "@shared/auth.js";
 import { type ReactElement, act } from "react";
 import { flushSync } from "react-dom";
 import { type Root, createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SettingsSelect } from "./SettingsView.js";
+import { SettingsSelect, providerEnvironmentDescription } from "./SettingsView.js";
 
 vi.mock("../auth/LoginTerminal.js", () => ({ LoginTerminal: () => null }));
 
@@ -258,5 +259,32 @@ describe("SettingsSelect", () => {
     expect(document.activeElement).toBe(trigger);
 
     act(() => flushSync(() => root.unmount()));
+  });
+});
+
+describe("provider environment provenance", () => {
+  it("renders main's redacted exact source label without inventing a credential value", () => {
+    const status: ProviderAuthStatus = {
+      key: "anthropic",
+      displayName: "Anthropic",
+      source: "environment",
+      envVar: "ANTHROPIC_API_KEY",
+      environmentLabel: "ANTHROPIC_AUTH_TOKEN env var",
+    };
+
+    const description = providerEnvironmentDescription(status);
+    expect(description).toBe("Managed via ANTHROPIC_AUTH_TOKEN env var");
+    expect(description).not.toContain("bearer-super-secret");
+  });
+
+  it("retains the primary-variable fallback for older status payloads", () => {
+    expect(
+      providerEnvironmentDescription({
+        key: "meta",
+        displayName: "Meta",
+        source: "environment",
+        envVar: "META_API_KEY",
+      }),
+    ).toBe("Managed via META_API_KEY env var");
   });
 });

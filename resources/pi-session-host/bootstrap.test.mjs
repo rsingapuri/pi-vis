@@ -3,12 +3,53 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  createPiBuiltinExtensions,
   createSessionRuntimeOptionsResolver,
   createSessionRuntimeOverrideResolver,
   resolvePiDependency,
   resolveSessionRuntimeOptions,
   resolveSessionRuntimeOverrides,
 } from "./bootstrap.mjs";
+
+describe("createPiBuiltinExtensions", () => {
+  it("injects every Pi 0.99 built-in with CLI-equivalent settings semantics", async () => {
+    const pi = await import("@earendil-works/pi-coding-agent");
+    const llamaFactory = () => {};
+    const llama = Object.freeze({ name: "llama.cpp", factory: llamaFactory, builtin: true });
+
+    const extensions = createPiBuiltinExtensions(pi, llama);
+
+    expect(extensions.map(({ name }) => name)).toEqual([
+      "llama.cpp",
+      "codemode",
+      "tool-search",
+      "mcp",
+    ]);
+    expect(extensions[0]).toBe(llama);
+    for (const extension of extensions) {
+      expect(extension).toMatchObject({ builtin: true, factory: expect.any(Function) });
+      expect(Object.isFrozen(extension)).toBe(true);
+    }
+    expect(extensions.slice(1)).toEqual([
+      expect.objectContaining({ name: "codemode", replaceable: true }),
+      expect.objectContaining({ name: "tool-search", replaceable: true }),
+      expect.objectContaining({ name: "mcp", replaceable: true }),
+    ]);
+    expect(Object.isFrozen(extensions)).toBe(true);
+  });
+
+  it("fails closed when the pinned public SDK omits a required built-in", () => {
+    expect(() =>
+      createPiBuiltinExtensions(
+        {
+          createCodemodeExtension: () => () => {},
+          createToolSearchExtension: () => () => {},
+        },
+        undefined,
+      ),
+    ).toThrow(/missing the mcp built-in extension creator/);
+  });
+});
 
 /**
  * resolvePiDependency must find pi's deps in BOTH real-world layouts:

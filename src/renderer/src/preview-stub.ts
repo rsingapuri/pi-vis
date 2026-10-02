@@ -1702,7 +1702,7 @@ const stub = {
   invoke: async (channel: string, req?: unknown) => {
     switch (channel) {
       case "pi.info":
-        return { version: "0.85.1-stub" };
+        return { version: "0.99.2-stub" };
       case "pi.changelog":
         return {
           ok: true,

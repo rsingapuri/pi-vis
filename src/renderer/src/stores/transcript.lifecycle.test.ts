@@ -215,7 +215,13 @@ describe("transcript lifecycle invariants", () => {
 
   it("archives finalized active blocks once, clears active lifecycle ids, and preserves echo custody", () => {
     const before = liveStreams();
-    const state = applyPiEvent(before, e({ type: "compaction_end", result: { summary: "done" } }));
+    const state = applyPiEvent(
+      before,
+      e({
+        type: "compaction_end",
+        result: { summary: "done", firstKeptEntryId: "kept-entry", tokensBefore: 500 },
+      }),
+    );
 
     expect(state.activeAssistantId).toBeNull();
     expect(state.activeToolCallIds).toEqual(new Map());

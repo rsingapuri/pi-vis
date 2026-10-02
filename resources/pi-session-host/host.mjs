@@ -37,11 +37,13 @@ import * as crypto from "node:crypto";
 import {
   applyPiVisTheme,
   configureHttpDispatcher,
+  createPiBuiltinExtensions,
   createSessionRuntimeOptionsResolver,
   createTrustResolver,
   importPi,
   importPiTui,
   initHostTheme,
+  promptProjectTrustChoice,
 } from "./bootstrap.mjs";
 import { assertHostCapabilities, setupCommandBridge } from "./bridge.mjs";
 import { buildEditorTheme } from "./editor-theme.mjs";
@@ -575,6 +577,7 @@ async function handleInit(msg) {
       capabilityDiagnostics.push(diagnostic);
       console.error(`[pi-session-host] ${diagnostic} ${detail}`);
     }
+    const builtinExtensionFactories = createPiBuiltinExtensions(pi, pinnedLlamaExtension);
     const paletteJson = process.env.PIVIS_PI_THEME_COLORS;
     if (paletteJson) {
       try {
@@ -612,20 +615,6 @@ async function handleInit(msg) {
     });
     const { createDialog, createProviderAuthSurface } = resolver;
     dialogResolver = resolver;
-
-    // Trust prompt: a blocking select dialog offering pi's full choice set
-    // (trust folder / trust parent / session-only / deny / deny-session-only).
-    // select() resolves with { value } or { cancelled: true }; return the
-    // chosen label (or null on cancel) for createTrustResolver to act on.
-    const promptTrustChoice = async (labels) => {
-      const resp = await createDialog(
-        "select",
-        `This folder has project-local pi extensions/settings that run with full access to your machine. Trust ${cwd}?`,
-        { options: labels },
-      );
-      if (resp?.cancelled) return null;
-      return typeof resp?.value === "string" ? resp.value : null;
-    };
 
     // Step 4: Create runtime
     //
@@ -671,16 +660,20 @@ async function handleInit(msg) {
       // runtime can be recreated for a different cwd on session swap, and the
       // ProjectTrustStore is keyed by cwd. Without resolveProjectTrust, pi
       // loads project-local extensions UNGATED (projectTrusted defaults true).
-      const { resolveTrust } = createTrustResolver(pi, ad, sc, promptTrustChoice);
+      // Bind both the displayed path and the persisted decision to this
+      // factory invocation's effective cwd. AgentSessionRuntime reuses this
+      // factory for cross-cwd switch/resume/import operations, so closing over
+      // the host's initial cwd would ask consent for the wrong project.
+      const { resolveTrust } = createTrustResolver(pi, ad, sc, (labels) =>
+        promptProjectTrustChoice(createDialog, sc, labels),
+      );
       const services = await pi.createAgentSessionServices({
         cwd: sc,
         agentDir: ad,
         // Match Pi 0.84's CLI startup bound. Each runtime/session swap calls
         // this factory anew and therefore receives a fresh timeout signal.
         modelRuntimeSignal: AbortSignal.timeout(15_000),
-        ...(pinnedLlamaExtension
-          ? { resourceLoaderOptions: { extensionFactories: [pinnedLlamaExtension] } }
-          : {}),
+        resourceLoaderOptions: { extensionFactories: builtinExtensionFactories },
         resourceLoaderReloadOptions: { resolveProjectTrust: resolveTrust },
       });
       // Terminal image capability overrides are settings-scoped in Pi 0.84.4+
@@ -1253,26 +1246,51 @@ process.on("message", async (msg) => {
 
 // --- Lifecycle ---
 
-process.on("disconnect", () => {
+let shutdownStarted = false;
+
+function beginShutdown(reason, exitCode) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   // dispose() flushes session state; await it before exiting so pi can write
-  // the session file cleanly. `.finally` guarantees exit even on reject.
-  // P2-c: if dispose() neither resolves nor rejects (a hung pi internals
-  // promise), the `.finally` would never fire and the host would never exit
-  // cleanly — SessionHost.stop() SIGKILLs after 3s (process recovered), but a
-  // clean dispose may not have flushed the session file. Guard with a 2s
-  // fallback exit (unref'd so it doesn't delay a clean exit on the happy path).
-  const forceExit = setTimeout(() => process.exit(0), 2000);
+  // the session file cleanly. A signal handler is required in addition to the
+  // IPC-disconnect path: extensions may install SIGTERM listeners, which
+  // disables Node's default signal exit. Without an app-owned handler such a
+  // host survives until its parent has no choice but to SIGKILL it.
+  //
+  // Pi 0.99's MCP stdio transport may require up to 2.5s to close stdin, TERM
+  // its process group, and hard-kill a resistant server. Keep this outer
+  // fallback beyond that bound so a stuck extension cannot leave either the
+  // host or MCP grandchildren alive indefinitely.
+  const forceExit = setTimeout(() => {
+    console.error(`[pi-session-host] Forced exit after shutdown timed out (${reason})`);
+    process.exit(exitCode);
+  }, 4000);
   forceExit.unref?.();
   ipcSendQueue.close();
-  disposeShell?.();
-  runtime
-    ?.dispose?.()
-    .catch(() => {})
+  try {
+    disposeShell?.();
+  } catch (error) {
+    console.error("[pi-session-host] Shell disposal failed during shutdown:", error);
+  }
+  let disposal;
+  try {
+    disposal = runtime?.dispose?.();
+  } catch (error) {
+    disposal = Promise.reject(error);
+  }
+  Promise.resolve(disposal)
+    .catch((error) => {
+      console.error("[pi-session-host] Runtime disposal failed during shutdown:", error);
+    })
     .finally(() => {
       clearTimeout(forceExit);
-      process.exit(0);
+      process.exit(exitCode);
     });
-});
+}
+
+process.on("disconnect", () => beginShutdown("ipc-disconnect", 0));
+process.on("SIGTERM", () => beginShutdown("SIGTERM", 128 + 15));
+process.on("SIGINT", () => beginShutdown("SIGINT", 128 + 2));
 
 // Observe fatal exceptions without changing Node's default crash behavior.
 // Main persists this stderr stream to diagnostics.log; the explicit monitor

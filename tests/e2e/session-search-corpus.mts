@@ -94,6 +94,8 @@ export function generateSessionSearchCorpus(root: string): SessionSearchCorpus {
       parentId: "old-root",
       timestamp: "2024-01-01T00:00:03.000Z",
       summary: "saved summary after quartz evidence",
+      firstKeptEntryId: "old-root",
+      tokensBefore: 500,
     },
     {
       type: "message",

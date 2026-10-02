@@ -119,6 +119,64 @@ describe("flattenVisible — default filter (regression: settings roots must not
   });
 });
 
+describe("flattenVisible — Pi 0.99 bookkeeping entries", () => {
+  const bookkeepingTree = [
+    n("usage", "usage", { kind: "cache_warm" }, [
+      n("edit", "context_edit", { targetId: "message-1", replacement: null }, [
+        m("user", { role: "user", content: "still visible" }),
+      ]),
+    ]),
+  ];
+
+  it("always hides usage while context edits appear only in the all filter", () => {
+    expect(ids(flattenVisible(bookkeepingTree, opts({ leafId: "user" })))).toEqual(["user"]);
+    expect(
+      ids(flattenVisible(bookkeepingTree, opts({ leafId: "user", filterMode: "no-tools" }))),
+    ).toEqual(["user"]);
+    expect(
+      ids(flattenVisible(bookkeepingTree, opts({ leafId: "user", filterMode: "all" }))),
+    ).toEqual(["edit", "user"]);
+  });
+
+  it("labels context replacement and omission with the target entry", () => {
+    expect(
+      entryDisplayText({
+        id: "omit",
+        type: "context_edit",
+        targetId: "message-1",
+        replacement: null,
+      } as never),
+    ).toBe("[context omit: message-1]");
+    expect(
+      entryDisplayText({
+        id: "replace",
+        type: "context_edit",
+        targetId: "message-2",
+        replacement: { content: "redacted" },
+      } as never),
+    ).toBe("[context replace: message-2]");
+  });
+
+  it("keeps persisted system prompt state as a native tree navigation point", () => {
+    const systemTree = [
+      m("system", { role: "system", content: "private model context" }, [
+        m("user", { role: "user", content: "visible turn" }),
+      ]),
+    ];
+
+    const rows = flattenVisible(systemTree, opts({ leafId: "user" }));
+    expect(ids(rows)).toEqual(["system", "user"]);
+    expect(rows[0]?.text).toBe("[system]");
+    expect(rows[0]?.text).not.toContain("private model context");
+    // The full text is available only through the tree's explicit copy action,
+    // matching Pi's native selector rather than rendering it in the row.
+    expect(entryCopyText(rows[0]!.entry)).toBe("private model context");
+    expect(
+      ids(flattenVisible(systemTree, opts({ leafId: "user", filterMode: "user-only" }))),
+    ).toEqual(["user"]);
+  });
+});
+
 describe("flattenVisible — branch-only indentation (regression: no per-line staircase)", () => {
   it("keeps a linear chain flat and only indents at the branch", () => {
     const rows = flattenVisible(tree(), opts({ filterMode: "all" }));

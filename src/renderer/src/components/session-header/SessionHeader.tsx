@@ -1,7 +1,7 @@
 import type { SessionId } from "@shared/ids.js";
 import type { ModelInfo, SessionStats } from "@shared/pi-protocol/responses.js";
 import { ModelInfoSchema, SessionStatsSchema } from "@shared/pi-protocol/responses.js";
-import type { IntentOutcome } from "@shared/pi-protocol/runtime-state.js";
+import type { IntentOutcome, RoutedModel } from "@shared/pi-protocol/runtime-state.js";
 import { THINKING_LEVELS, type ThinkingLevel } from "@shared/pi-protocol/thinking.js";
 import type React from "react";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -112,6 +112,16 @@ export function thinkingLevelsForModel(model?: ModelInfo): readonly ThinkingLeve
     if (level === "xhigh" || level === "max") return mapped !== undefined;
     return true;
   });
+}
+
+/** Keep a virtual selection visible while also exposing where Pi routed it. */
+export function modelPresentationLabel(selectedLabel: string, routed?: RoutedModel): string {
+  if (!routed) return selectedLabel;
+  const physical = routed.model;
+  const physicalLabel = physical.name ?? physical.id;
+  const provider = physical.provider ? ` [${physical.provider}]` : "";
+  const thinking = routed.thinkingLevel ? ` · ${routed.thinkingLevel}` : "";
+  return `${selectedLabel} → ${physicalLabel}${provider}${thinking}`;
 }
 
 export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactElement {
@@ -662,13 +672,20 @@ export function SessionControls({
   // (mirrors pi's TUI "glm-5.2 [zai]"), so when the same model id is offered
   // by several providers the user can see which subscription/API is in use.
   const canonicalModel = semanticSnapshot?.model ?? session?.runtimeSnapshot?.model;
-  const modelButtonLabel = currentModelInfo
+  const selectedModelLabel = currentModelInfo
     ? modelDisplayName(currentModelInfo)
     : canonicalModel?.name
       ? `${canonicalModel.name}${canonicalModel.provider ? ` [${canonicalModel.provider}]` : ""}`
       : currentModel
         ? `${currentModel}${currentProvider ? ` [${currentProvider}]` : ""}`
         : "model";
+  // An authoritative snapshot is complete: omission of routedModel explicitly
+  // clears a previous virtual-model route. The compatibility snapshot is a
+  // presentation fallback only while no semantic snapshot exists at all.
+  const routedModel = semanticSnapshot
+    ? semanticSnapshot.routedModel
+    : session?.runtimeSnapshot?.routedModel;
+  const modelButtonLabel = modelPresentationLabel(selectedModelLabel, routedModel);
   const thinkingOptions = useMemo(
     () => semanticSnapshot?.availableThinkingLevels ?? thinkingLevelsForModel(currentModelInfo),
     [currentModelInfo, semanticSnapshot?.availableThinkingLevels],

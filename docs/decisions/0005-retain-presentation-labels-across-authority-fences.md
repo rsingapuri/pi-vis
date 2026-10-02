@@ -12,6 +12,8 @@ A semantic-plane fence makes control state unavailable while a baseline is recov
 
 When the semantic plane is not `following`, retain the last known `sessionName`, `sessionTitle`, `currentModel`, `currentProvider`, and `thinkingLevel` as stale presentation. Clear dispatch identity and other authoritative control state, including host identity, running state, queued messages, and editor injection. Only a following successor baseline replaces retained presentation.
 
+Routed physical-model metadata follows complete-snapshot replacement semantics. When a semantic snapshot exists, its missing `routedModel` explicitly clears the previous route; a compatibility runtime snapshot may supply the stale presentation route only while the semantic snapshot itself is absent. A newly selected physical model therefore cannot inherit the prior virtual model's routed destination from compatibility state.
+
 A direct Shell Turn has one narrower presentation exception. During a
 recoverable same-owner semantic `synchronizing` fence, the Composer slot may
 keep the prior xterm mounted and frozen only when stale diagnostic Bash

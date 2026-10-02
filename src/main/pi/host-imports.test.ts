@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
  *   - bundled undici:     `undici/index.js`
  *
  * `pinned-pi-private.mjs` alone may derive `dist/extensions/index.js`, select
- * the hidden `llama.cpp` factory, and return it for injection through Pi's
+ * the private-registry `llama.cpp` factory, and return it for injection through Pi's
  * public resource-loader option. It may not deep-import llama implementation
  * files, and no other host file may reference the registry. This test makes
  * the exception auditable instead of weakening the general boundary.

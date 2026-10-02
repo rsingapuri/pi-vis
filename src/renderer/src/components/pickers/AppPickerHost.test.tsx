@@ -270,7 +270,7 @@ function installPickerBrowser(
   });
 }
 
-describe("AppPickerHost Pi 0.85.1 model/thinking defaults", () => {
+describe("AppPickerHost pinned-Pi model/thinking defaults", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     useOverlayStore.setState({ claims: [], count: 0 });

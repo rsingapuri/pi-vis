@@ -40,6 +40,7 @@ test.describe("Pinned Pi llama.cpp manager exception", () => {
       await expect(panel.locator(".xterm-rows")).toContainText(router.baseUrl);
       await expect(panel.locator(".xterm-rows")).toContainText("pivis-e2e.gguf");
       expect(router.requests.some((request) => request.startsWith("GET /models"))).toBe(true);
+      expect(router.requests).toContain("GET /props?model=pivis-e2e.gguf&autoload=false");
 
       await window.keyboard.press("Escape");
       await expect(panel).toHaveCount(0);

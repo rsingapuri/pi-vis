@@ -106,6 +106,7 @@ function preflight() {
   }
 
   configureSigningEnvironment({ notaryProfile, log, fail });
+  process.env.PIVIS_REQUIRE_SIGNED_ARTIFACTS = "1";
 }
 
 function verifyArtifacts(version) {

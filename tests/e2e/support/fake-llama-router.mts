@@ -30,6 +30,18 @@ export async function createFakeLlamaRouter(): Promise<FakeLlamaRouter> {
       return;
     }
 
+    if (
+      request.method === "GET" &&
+      url.pathname === "/props" &&
+      url.searchParams.size === 2 &&
+      url.searchParams.get("model") === "pivis-e2e.gguf" &&
+      url.searchParams.get("autoload") === "false"
+    ) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ chat_template: "pivis-e2e-chat-template" }));
+      return;
+    }
+
     response.writeHead(404, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: { message: "Unexpected fake-router request" } }));
   });

@@ -124,7 +124,7 @@ async function assertDockNeverFlashed(page: Page): Promise<void> {
     .toBe(false);
 }
 
-test.describe("Pinned real Pi 0.85.1 regressions", () => {
+test.describe("Pinned real Pi regressions", () => {
   test("real factory widgets, unified draft custody, and custom Escape share one live authority", async () => {
     test.setTimeout(180_000);
     const fixture = createRealSdkFixture({ extensionFiles: [EXTENSION] });
@@ -550,7 +550,11 @@ test.describe("Pinned real Pi 0.85.1 regressions", () => {
           .poll(() => tree.locator(".tree-viewer__row").count(), { timeout: 30_000 })
           .toBeGreaterThan(0);
         await expect(tree.getByText("Loading tree…", { exact: true })).toHaveCount(0);
-        await expect(tree.locator(".tree-viewer__row")).toHaveCount(2);
+        // Pi 0.99 persists the prompt/tool baseline as the first ordinary
+        // system-message tree entry. Pi's native default tree filter keeps
+        // that navigation point visible as `[system]` alongside the turn.
+        await expect(tree.locator(".tree-viewer__row")).toHaveCount(3);
+        await expect(tree.getByText("[system]", { exact: true })).toBeVisible();
         await expect(tree).toContainText("real regression tree turn");
         await expect(tree).toContainText("REAL-REGRESSION-TREE-ANSWER");
         await window.keyboard.press("Escape");
@@ -569,9 +573,12 @@ test.describe("Pinned real Pi 0.85.1 regressions", () => {
       );
       const input = await inputView(window);
       await slash(input, "/tree");
-      await expect(window.locator(".tree-viewer .tree-viewer__row")).toHaveCount(2, {
+      await expect(window.locator(".tree-viewer .tree-viewer__row")).toHaveCount(3, {
         timeout: 30_000,
       });
+      await expect(
+        window.locator(".tree-viewer").getByText("[system]", { exact: true }),
+      ).toBeVisible();
     } catch (error) {
       throw await withDiagnostics(error, fixture, launch, provider);
     } finally {

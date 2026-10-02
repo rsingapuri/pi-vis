@@ -1,7 +1,7 @@
 import type { SessionId } from "@shared/ids.js";
 import type { SessionStatus, SessionSummary, TranscriptBlock } from "@shared/ipc-contract.js";
 import {
-  CacheMissNoticeEventSchema,
+  CacheNoticeEventSchema,
   type KnownPiEvent,
   type PiEvent,
   PiEventSchema,
@@ -2806,6 +2806,13 @@ const buildSessionsStore = (
       replaced = true;
       return { sessions };
     });
+    if (replaced && get().sessions.get(sessionId)?.status === "ready") {
+      // Cache diagnostics are derived from Pi's active root-to-leaf branch.
+      // Navigation installs a complete new history owner, so replay notices
+      // for that exact branch rather than retaining the predecessor leaf's
+      // synthetic rows (or waiting for another ready/status boundary).
+      void get().refreshHistoricalCacheMissNotices(sessionId);
+    }
     return replaced;
   },
 
@@ -3051,15 +3058,22 @@ const buildSessionsStore = (
     if (!observation) return;
     const sessionEpoch = session.sessionEpoch;
     const sessionFile = session.sessionFile;
+    const historyGeneration = session.historyGeneration;
     try {
       const result = await querySession(sessionId, { type: "get_cache_miss_notices" }, observation);
       if (result.status !== "ok" || !result.response.success) return;
-      const parsed = CacheMissNoticeEventSchema.array().safeParse(
+      const parsed = CacheNoticeEventSchema.array().safeParse(
         (result.response.data as { notices?: unknown } | undefined)?.notices,
       );
       if (!parsed.success) return;
       const current = get().sessions.get(sessionId);
-      if (current?.sessionEpoch !== sessionEpoch || current.sessionFile !== sessionFile) return;
+      if (
+        current?.sessionEpoch !== sessionEpoch ||
+        current.sessionFile !== sessionFile ||
+        current.historyGeneration !== historyGeneration
+      ) {
+        return;
+      }
       get().applyEvents(sessionId, parsed.data);
     } catch {}
   },

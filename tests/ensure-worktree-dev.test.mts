@@ -6,6 +6,13 @@ import { ensureWorktreeDev } from "../scripts/ensure-worktree-dev.mjs";
 
 const fixtures: string[] = [];
 
+function ensure(options: Record<string, unknown>) {
+  return ensureWorktreeDev({
+    verifyPiSecurityClosure: () => ({ braceExpansionVersion: "5.0.12" }),
+    ...options,
+  });
+}
+
 function worktree(name: string, lock = "same-lock"): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `pivis-${name}-`));
   fixtures.push(root);
@@ -37,7 +44,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("ensure-worktree-dev Electron preflight", () => {
+describe("ensure-worktree-dev dependency preflight", () => {
   it("accepts and preserves a same-lock sibling node_modules link after read-only verification", () => {
     const current = worktree("current");
     const sibling = worktree("sibling");
@@ -45,7 +52,7 @@ describe("ensure-worktree-dev Electron preflight", () => {
     fs.symlinkSync(siblingModules, path.join(current, "node_modules"), "dir");
     const log = vi.fn();
 
-    expect(ensureWorktreeDev({ root: current, roots: [current, sibling], log })).toEqual({
+    expect(ensure({ root: current, roots: [current, sibling], log })).toEqual({
       root: current,
       dependencyRoot: fs.realpathSync(sibling),
       linked: true,
@@ -64,9 +71,10 @@ describe("ensure-worktree-dev Electron preflight", () => {
     const readyModules = installDependencies(ready);
     const log = vi.fn();
 
-    expect(
-      ensureWorktreeDev({ root: current, roots: [current, incomplete, ready], log }),
-    ).toMatchObject({ dependencyRoot: ready, linked: true });
+    expect(ensure({ root: current, roots: [current, incomplete, ready], log })).toMatchObject({
+      dependencyRoot: ready,
+      linked: true,
+    });
     expect(fs.realpathSync(path.join(current, "node_modules"))).toBe(fs.realpathSync(readyModules));
     expect(log).toHaveBeenCalledWith(
       `[ensure-worktree-dev] linked ${path.join(current, "node_modules")} -> ${readyModules}`,
@@ -79,13 +87,57 @@ describe("ensure-worktree-dev Electron preflight", () => {
     const installScript = path.join(nodeModules, "electron", "install.js");
     const before = fs.readFileSync(installScript, "utf8");
 
-    expect(() => ensureWorktreeDev({ root: current, roots: [current] })).toThrow(
+    expect(() => ensure({ root: current, roots: [current] })).toThrow(
       /Electron is not provisioned[\s\S]*without `--ignore-scripts`/,
     );
     expect(fs.readFileSync(installScript, "utf8")).toBe(before);
     expect(fs.existsSync(path.join(nodeModules, "electron", "dist", "runtime", "electron"))).toBe(
       false,
     );
+  });
+
+  it("fails read-only when a local dependency tree has an unsafe Pi closure", () => {
+    const current = worktree("current");
+    const nodeModules = installDependencies(current);
+    const marker = path.join(nodeModules, "security-marker");
+    fs.writeFileSync(marker, "keep");
+    const verifyPiSecurityClosure = vi.fn(() => {
+      throw new Error('brace-expansion must be "5.0.12"; found "5.0.9"');
+    });
+
+    expect(() => ensure({ root: current, roots: [current], verifyPiSecurityClosure })).toThrow(
+      /Pi security closure is not verified[\s\S]*without `--ignore-scripts`/,
+    );
+    expect(verifyPiSecurityClosure).toHaveBeenCalledWith({
+      projectRoot: current,
+      piPackageDirectory: path.join(current, "node_modules", "@earendil-works", "pi-coding-agent"),
+    });
+    expect(fs.readFileSync(marker, "utf8")).toBe("keep");
+  });
+
+  it("skips an unsafe same-lock sibling and links only the verified Pi closure", () => {
+    const current = worktree("current");
+    const unsafe = worktree("unsafe");
+    installDependencies(unsafe);
+    const ready = worktree("ready");
+    const readyModules = installDependencies(ready);
+    const checkedRoots: string[] = [];
+    const verifyPiSecurityClosure = vi.fn(({ projectRoot }: { projectRoot: string }) => {
+      checkedRoots.push(projectRoot);
+      if (projectRoot === unsafe) throw new Error("stale Pi dependency closure");
+      return { braceExpansionVersion: "5.0.12" };
+    });
+
+    expect(
+      ensure({
+        root: current,
+        roots: [current, unsafe, ready],
+        verifyPiSecurityClosure,
+        log: vi.fn(),
+      }),
+    ).toMatchObject({ dependencyRoot: ready, linked: true });
+    expect(fs.realpathSync(path.join(current, "node_modules"))).toBe(fs.realpathSync(readyModules));
+    expect(checkedRoots).toEqual([unsafe, ready, current]);
   });
 
   it("preserves an unusable real local node_modules instead of linking over it", () => {
@@ -97,7 +149,7 @@ describe("ensure-worktree-dev Electron preflight", () => {
     const sibling = worktree("sibling");
     installDependencies(sibling);
 
-    expect(() => ensureWorktreeDev({ root: current, roots: [current, sibling] })).toThrow(
+    expect(() => ensure({ root: current, roots: [current, sibling] })).toThrow(
       /not a complete dependency install[\s\S]*npm install/,
     );
     expect(fs.lstatSync(localModules).isSymbolicLink()).toBe(false);
@@ -115,9 +167,27 @@ describe("ensure-worktree-dev Electron preflight", () => {
         throw new Error("source changed during link");
       });
 
+    expect(() => ensure({ root: current, roots: [current, sibling], verifyElectron })).toThrow(
+      "source changed during link",
+    );
+    expect(fs.existsSync(path.join(current, "node_modules"))).toBe(false);
+    expect(fs.existsSync(path.join(sibling, "node_modules"))).toBe(true);
+  });
+
+  it("removes only its new link when Pi verification fails after linking", () => {
+    const current = worktree("current");
+    const sibling = worktree("sibling");
+    installDependencies(sibling);
+    const verifyPiSecurityClosure = vi
+      .fn()
+      .mockReturnValueOnce({ braceExpansionVersion: "5.0.12" })
+      .mockImplementationOnce(() => {
+        throw new Error("Pi closure changed during link");
+      });
+
     expect(() =>
-      ensureWorktreeDev({ root: current, roots: [current, sibling], verifyElectron }),
-    ).toThrow("source changed during link");
+      ensure({ root: current, roots: [current, sibling], verifyPiSecurityClosure }),
+    ).toThrow("Pi closure changed during link");
     expect(fs.existsSync(path.join(current, "node_modules"))).toBe(false);
     expect(fs.existsSync(path.join(sibling, "node_modules"))).toBe(true);
   });
@@ -138,9 +208,9 @@ describe("ensure-worktree-dev Electron preflight", () => {
         throw new Error("source changed during link");
       });
 
-    expect(() =>
-      ensureWorktreeDev({ root: current, roots: [current, sibling], verifyElectron }),
-    ).toThrow("source changed during link");
+    expect(() => ensure({ root: current, roots: [current, sibling], verifyElectron })).toThrow(
+      "source changed during link",
+    );
     expect(fs.lstatSync(currentModules).isSymbolicLink()).toBe(false);
     expect(fs.readFileSync(marker, "utf8")).toBe("keep");
   });
@@ -162,9 +232,9 @@ describe("ensure-worktree-dev Electron preflight", () => {
         throw new Error("source changed during link");
       });
 
-    expect(() =>
-      ensureWorktreeDev({ root: current, roots: [current, sibling], verifyElectron }),
-    ).toThrow("source changed during link");
+    expect(() => ensure({ root: current, roots: [current, sibling], verifyElectron })).toThrow(
+      "source changed during link",
+    );
     const preserved = fs.lstatSync(currentModules);
     expect(preserved.isSymbolicLink()).toBe(true);
     expect({ dev: preserved.dev, ino: preserved.ino }).toEqual(replacementIdentity);

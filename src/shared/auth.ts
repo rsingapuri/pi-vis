@@ -23,6 +23,9 @@ export interface ProviderAuthStatus {
   source: "api_key" | "oauth" | "environment" | "none";
   /** Primary environment variable name, when known. */
   envVar?: string | undefined;
+  /** Human-readable environment source when authentication uses a token alias
+   *  or a multi-variable workload-identity configuration. */
+  environmentLabel?: string | undefined;
   /** Whether this provider supports native pi OAuth login. */
   supportsOAuth?: boolean | undefined;
 }
@@ -36,58 +39,118 @@ export interface ProviderDef {
 }
 
 /**
- * Known providers, transcribed from pi's docs/providers.md table
- * (and shipping docs). The envVar column is the primary env var pi
- * checks for that provider. supportsOAuth marks providers pi can
- * authenticate via interactive /login (OAuth/SSO flows).
+ * API-key variables in the exact order Pi 0.99.2 discovers them. Providers
+ * with ambient-only authentication keep an empty list; their compound rules
+ * are mirrored by main's status projection.
+ */
+export const PROVIDER_API_KEY_ENV_VARS: Readonly<Record<string, readonly string[]>> = {
+  "amazon-bedrock": [],
+  "ant-ling": ["ANT_LING_API_KEY"],
+  anthropic: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+  "azure-openai-responses": ["AZURE_OPENAI_API_KEY"],
+  baseten: ["BASETEN_API_KEY"],
+  cerebras: ["CEREBRAS_API_KEY"],
+  "cloudflare-ai-gateway": ["CLOUDFLARE_API_KEY"],
+  "cloudflare-workers-ai": ["CLOUDFLARE_API_KEY"],
+  deepseek: ["DEEPSEEK_API_KEY"],
+  fireworks: ["FIREWORKS_API_KEY"],
+  "github-copilot": ["COPILOT_GITHUB_TOKEN"],
+  google: ["GEMINI_API_KEY"],
+  "google-vertex": ["GOOGLE_CLOUD_API_KEY"],
+  groq: ["GROQ_API_KEY"],
+  huggingface: ["HF_TOKEN"],
+  "kimi-coding": ["KIMI_API_KEY"],
+  meta: ["META_API_KEY"],
+  minimax: ["MINIMAX_API_KEY"],
+  "minimax-cn": ["MINIMAX_CN_API_KEY"],
+  mistral: ["MISTRAL_API_KEY"],
+  moonshotai: ["MOONSHOT_API_KEY"],
+  "moonshotai-cn": ["MOONSHOT_API_KEY"],
+  nvidia: ["NVIDIA_API_KEY"],
+  openai: ["OPENAI_API_KEY"],
+  "openai-codex": [],
+  opencode: ["OPENCODE_API_KEY"],
+  "opencode-go": ["OPENCODE_API_KEY"],
+  openrouter: ["OPENROUTER_API_KEY"],
+  "qwen-token-plan": ["QWEN_TOKEN_PLAN_API_KEY"],
+  "qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
+  "qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_API_KEY"],
+  radius: ["RADIUS_API_KEY"],
+  together: ["TOGETHER_API_KEY"],
+  typesafe: ["TYPESAFE_API_KEY"],
+  "vercel-ai-gateway": ["AI_GATEWAY_API_KEY"],
+  xai: ["XAI_API_KEY"],
+  xiaomi: ["XIAOMI_API_KEY"],
+  "xiaomi-token-plan-ams": ["XIAOMI_TOKEN_PLAN_AMS_API_KEY"],
+  "xiaomi-token-plan-cn": ["XIAOMI_TOKEN_PLAN_CN_API_KEY"],
+  "xiaomi-token-plan-sgp": ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"],
+  zai: ["ZAI_API_KEY"],
+  "zai-coding-cn": ["ZAI_CODING_CN_API_KEY"],
+};
+
+function provider(
+  key: string,
+  displayName: string,
+  supportsOAuth = false,
+  primaryEnvVar = PROVIDER_API_KEY_ENV_VARS[key]?.[0],
+): ProviderDef {
+  return {
+    key,
+    displayName,
+    ...(primaryEnvVar ? { envVar: primaryEnvVar } : {}),
+    ...(supportsOAuth ? { supportsOAuth: true } : {}),
+  };
+}
+
+/**
+ * Exact built-in provider IDs, names, primary API-key variables, and OAuth
+ * capabilities from the pinned Pi 0.99.2 runtime. Anthropic's documented
+ * primary variable remains `ANTHROPIC_API_KEY`; its actual resolution order is
+ * captured above and mirrored by main.
  */
 export const PROVIDERS: readonly ProviderDef[] = [
-  { key: "openai", displayName: "OpenAI", envVar: "OPENAI_API_KEY", supportsOAuth: true },
-  { key: "anthropic", displayName: "Anthropic", envVar: "ANTHROPIC_API_KEY", supportsOAuth: true },
-  { key: "openrouter", displayName: "OpenRouter", envVar: "OPENROUTER_API_KEY" },
-  { key: "google", displayName: "Google", envVar: "GEMINI_API_KEY" },
-  { key: "deepseek", displayName: "DeepSeek", envVar: "DEEPSEEK_API_KEY" },
-  { key: "groq", displayName: "Groq", envVar: "GROQ_API_KEY" },
-  { key: "xai", displayName: "xAI", envVar: "XAI_API_KEY" },
-  { key: "mistral", displayName: "Mistral", envVar: "MISTRAL_API_KEY" },
-  { key: "cerebras", displayName: "Cerebras", envVar: "CEREBRAS_API_KEY" },
-  { key: "fireworks", displayName: "Fireworks", envVar: "FIREWORKS_API_KEY" },
-  { key: "together", displayName: "Together", envVar: "TOGETHER_API_KEY" },
-  { key: "baseten", displayName: "Baseten", envVar: "BASETEN_API_KEY" },
-  {
-    key: "qwen-token-plan",
-    displayName: "Qwen Token Plan",
-    envVar: "QWEN_TOKEN_PLAN_API_KEY",
-  },
-  {
-    key: "qwen-token-plan-individual",
-    displayName: "Qwen Token Plan (Individual)",
-    envVar: "QWEN_TOKEN_PLAN_API_KEY",
-  },
-  {
-    key: "qwen-token-plan-cn",
-    displayName: "Qwen Token Plan (China)",
-    envVar: "QWEN_TOKEN_PLAN_CN_API_KEY",
-  },
-  { key: "nvidia", displayName: "NVIDIA", envVar: "NVIDIA_API_KEY" },
-  { key: "kimi-coding", displayName: "Kimi Coding", envVar: "KIMI_API_KEY" },
-  { key: "minimax", displayName: "MiniMax", envVar: "MINIMAX_API_KEY" },
-  { key: "zai", displayName: "ZAI", envVar: "ZAI_API_KEY" },
-  { key: "opencode", displayName: "OpenCode", envVar: "OPENCODE_API_KEY" },
-  { key: "xiaomi", displayName: "Xiaomi", envVar: "XIAOMI_API_KEY" },
-  { key: "xiaomi-pro", displayName: "Xiaomi Pro", envVar: "XIAOMI_PRO_API_KEY" },
-  { key: "cloudflare", displayName: "Cloudflare", envVar: "CLOUDFLARE_API_KEY" },
-  {
-    key: "cloudflare-ai-gateway",
-    displayName: "Cloudflare AI Gateway",
-    envVar: "CLOUDFLARE_AI_GATEWAY_API_KEY",
-  },
-  {
-    key: "vercel-ai-gateway",
-    displayName: "Vercel AI Gateway",
-    envVar: "VERCEL_AI_GATEWAY_API_KEY",
-  },
-  { key: "github-copilot", displayName: "GitHub Copilot", supportsOAuth: true },
+  provider("amazon-bedrock", "Amazon Bedrock"),
+  provider("ant-ling", "Ant Ling"),
+  provider("anthropic", "Anthropic", true, "ANTHROPIC_API_KEY"),
+  provider("azure-openai-responses", "Azure OpenAI"),
+  provider("baseten", "Baseten"),
+  provider("cerebras", "Cerebras"),
+  provider("cloudflare-ai-gateway", "Cloudflare AI Gateway"),
+  provider("cloudflare-workers-ai", "Cloudflare Workers AI"),
+  provider("deepseek", "DeepSeek"),
+  provider("fireworks", "Fireworks"),
+  provider("github-copilot", "GitHub Copilot", true),
+  provider("google", "Google"),
+  provider("google-vertex", "Google Vertex AI"),
+  provider("groq", "Groq"),
+  provider("huggingface", "Hugging Face"),
+  provider("kimi-coding", "Kimi For Coding", true),
+  provider("meta", "Meta", true),
+  provider("minimax", "MiniMax"),
+  provider("minimax-cn", "MiniMax CN"),
+  provider("mistral", "Mistral"),
+  provider("moonshotai", "Moonshot AI"),
+  provider("moonshotai-cn", "Moonshot AI CN"),
+  provider("nvidia", "NVIDIA"),
+  provider("openai", "OpenAI", true),
+  provider("openai-codex", "OpenAI Codex (legacy)", true),
+  provider("opencode", "OpenCode Zen"),
+  provider("opencode-go", "OpenCode Go"),
+  provider("openrouter", "OpenRouter", true),
+  provider("qwen-token-plan", "Qwen Token Plan"),
+  provider("qwen-token-plan-cn", "Qwen Token Plan CN"),
+  provider("qwen-token-plan-individual", "Qwen Token Plan Individual"),
+  provider("radius", "Radius", true),
+  provider("together", "Together"),
+  provider("typesafe", "TypeSafe"),
+  provider("vercel-ai-gateway", "Vercel AI Gateway"),
+  provider("xai", "xAI", true),
+  provider("xiaomi", "Xiaomi"),
+  provider("xiaomi-token-plan-ams", "Xiaomi Token Plan AMS"),
+  provider("xiaomi-token-plan-cn", "Xiaomi Token Plan CN"),
+  provider("xiaomi-token-plan-sgp", "Xiaomi Token Plan SGP"),
+  provider("zai", "Z.AI"),
+  provider("zai-coding-cn", "Z.AI Coding CN"),
 ];
 
 /** Look up a provider definition by key. Returns undefined for unknown keys. */

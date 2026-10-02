@@ -90,10 +90,9 @@ export async function entriesToTranscript(
           type: "compaction",
           data: {
             summary: entry.summary,
-            reason: entry.reason,
             tokensBefore: entry.tokensBefore,
-            estimatedTokensAfter: entry.estimatedTokensAfter,
             firstKeptEntryId: entry.firstKeptEntryId,
+            ...(entry.systemMessage !== undefined ? { systemMessage: entry.systemMessage } : {}),
             ...(entry.details !== undefined ? { details: entry.details } : {}),
             ...(entry.fromHook !== undefined ? { fromHook: entry.fromHook } : {}),
             ...(entry.usage !== undefined ? { usage: entry.usage } : {}),
@@ -121,6 +120,10 @@ export async function entriesToTranscript(
         const msg = entry.message;
         const role = msg.role;
         const content = msg.content;
+
+        // Pi 0.87+ persists transcript-backed system prompt/tool state. It is
+        // model context, not a human-visible conversation bubble.
+        if (role === "system") break;
 
         if (role === "toolResult") {
           // Keep persisted results identical to the live reducer, including
@@ -479,6 +482,8 @@ export async function entriesToTranscript(
         break;
       }
       case "label":
+      case "context_edit":
+      case "usage":
       case "model_change":
       case "thinking_level_change":
       case "session_info":

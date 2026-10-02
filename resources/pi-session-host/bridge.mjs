@@ -51,7 +51,18 @@ function modelAccess(session) {
       getProviders: () => runtime.getProviders?.() ?? [],
       checkAuth: (providerId) => runtime.checkAuth(providerId),
       login: (providerId, authType, interaction) =>
-        runtime.login(providerId, authType, interaction),
+        runtime.login(providerId, authType, interaction, {
+          // OpenAI's ChatGPT OAuth flow binds its token exchange to a stable
+          // installation UUID. Pi's CLI supplies this public settings-backed
+          // callback; SDK embedders must do the same.
+          getDeviceId: () => {
+            const getOrCreateDeviceId = session.settingsManager?.getOrCreateDeviceId;
+            if (typeof getOrCreateDeviceId !== "function") {
+              throw new Error("Pinned Pi settings do not expose a stable device ID");
+            }
+            return getOrCreateDeviceId.call(session.settingsManager);
+          },
+        }),
       getProviderName: (provider) => {
         try {
           return runtime.getProvider?.(provider)?.name ?? provider;
@@ -1195,6 +1206,8 @@ export function setupCommandBridge({
       // from public session/message data so showCacheMissNotices still works.
       const cacheMissNotice = buildCacheMissNotice(s, event);
       if (cacheMissNotice) authority.observeEvent(cacheMissNotice);
+      const cacheWarmingNotice = buildCacheWarmingNotice(s, event);
+      if (cacheWarmingNotice) authority.observeEvent(cacheWarmingNotice);
       if (event?.type === "agent_settled") endInterruptibleOperationsByKind("agent");
     });
     authority.publishSnapshot(true);
@@ -1288,6 +1301,7 @@ export function setupCommandBridge({
       // s.model is a pure-data Model object (id/name/api/provider/baseUrl/...),
       // structured-clone-safe over IPC. `?? null` matches the nullable schema.
       model: s.model ?? null,
+      ...(s.routedModel ? { routedModel: structuredClone(s.routedModel) } : {}),
       thinkingLevel: s.thinkingLevel,
       isStreaming: s.isStreaming,
       isIdle: s.isIdle,
@@ -2316,7 +2330,7 @@ export function setupCommandBridge({
         // rejects AND the promise later rejects.
         case "prompt": {
           let responded = false;
-          const respond = (ok, errMsg) => {
+          const respond = (ok, errMsg, data) => {
             if (responded) return;
             responded = true;
             authority.publishSnapshot();
@@ -2325,6 +2339,7 @@ export function setupCommandBridge({
               id,
               success: ok,
               ...(errMsg ? { error: errMsg } : {}),
+              ...(data !== undefined ? { data } : {}),
             });
           };
           void trackInterruptibleOperation(
@@ -2338,9 +2353,11 @@ export function setupCommandBridge({
                     ? { streamingBehavior: command.streamingBehavior }
                     : {}),
                   source: "rpc",
-                  preflightResult: (didSucceed) => {
-                    if (didSucceed) respond(true);
-                    else respond(false, "Prompt rejected");
+                  preflightResult: (disposition) => {
+                    if (!["handled", "queued", "started"].includes(disposition)) {
+                      throw new Error("Pinned Pi returned an invalid prompt disposition");
+                    }
+                    respond(true, undefined, { disposition });
                   },
                 }),
               ),
@@ -2353,14 +2370,18 @@ export function setupCommandBridge({
         // steer()/followUp() queue a message; they resolve promptly (no full
         // turn), so a plain await + success is correct.
         case "steer": {
-          await runForSurface(() => _session.steer(command.message, command.images));
-          send({ type: "response", id, success: true });
+          const disposition = await runForSurface(() =>
+            _session.steer(command.message, command.images, { source: "rpc" }),
+          );
+          send({ type: "response", id, success: true, data: { disposition } });
           break;
         }
 
         case "follow_up": {
-          await runForSurface(() => _session.followUp(command.message, command.images));
-          send({ type: "response", id, success: true });
+          const disposition = await runForSurface(() =>
+            _session.followUp(command.message, command.images, { source: "rpc" }),
+          );
+          send({ type: "response", id, success: true, data: { disposition } });
           break;
         }
 
@@ -3065,6 +3086,28 @@ function previousCacheRequest(message, reportedCache) {
   };
 }
 
+function previousCacheWarm(entry) {
+  const usage = entry?.usage;
+  const promptTokens =
+    usageNumber(usage, "input") +
+    usageNumber(usage, "cacheRead") +
+    usageNumber(usage, "cacheWrite");
+  if (promptTokens <= 0) return undefined;
+  const rawTimestamp = entry?.timestamp;
+  const parsedTimestamp =
+    typeof rawTimestamp === "number"
+      ? rawTimestamp
+      : typeof rawTimestamp === "string"
+        ? Date.parse(rawTimestamp)
+        : 0;
+  return {
+    promptTokens,
+    modelKey: `${entry?.provider ?? ""}/${entry?.model ?? ""}`,
+    timestamp: Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0,
+    reportedCache: true,
+  };
+}
+
 function cacheMissNoticeId(message) {
   const usage = message?.usage;
   return [
@@ -3128,11 +3171,49 @@ function cacheEntries(session) {
   return session.sessionManager?.getBranch?.() ?? session.sessionManager?.getEntries?.() ?? [];
 }
 
+function cacheWarmingNotice(entry, afterEntryId) {
+  if (entry?.type !== "usage" || entry.kind !== "cache_warm") return undefined;
+  if (
+    typeof entry.id !== "string" ||
+    typeof entry.provider !== "string" ||
+    typeof entry.model !== "string" ||
+    !entry.usage
+  ) {
+    return undefined;
+  }
+  return {
+    type: "cache_warming_notice",
+    noticeId: `cache-warm:${entry.id}`,
+    usage: entry.usage,
+    provider: entry.provider,
+    model: entry.model,
+    ...(typeof entry.note === "string" ? { note: entry.note } : {}),
+    ...(afterEntryId ? { afterEntryId } : {}),
+  };
+}
+
+function buildCacheWarmingNotice(session, event) {
+  if (
+    event?.type !== "entry_appended" ||
+    session.settingsManager?.getShowCacheMissNotices?.() !== true
+  ) {
+    return undefined;
+  }
+  return cacheWarmingNotice(event.entry);
+}
+
+function assistantMessageIsError(message) {
+  return (
+    message?.stopReason === "error" ||
+    (typeof message?.errorMessage === "string" && message.errorMessage.length > 0)
+  );
+}
+
 function buildCacheMissNotice(session, event) {
   if (
     event?.type !== "message_end" ||
     event.message?.role !== "assistant" ||
-    event.message?.stopReason === "error" ||
+    assistantMessageIsError(event.message) ||
     event.message?.stopReason === "aborted" ||
     session.settingsManager?.getShowCacheMissNotices?.() !== true
   ) {
@@ -3145,6 +3226,10 @@ function buildCacheMissNotice(session, event) {
       previous = undefined;
       continue;
     }
+    if (entry?.type === "usage" && entry.kind === "cache_warm") {
+      previous = previousCacheWarm(entry) ?? previous;
+      continue;
+    }
     if (entry?.type === "message" && entry.message?.role === "assistant") {
       previous = previousCacheRequest(entry.message, previous?.reportedCache ?? false) ?? previous;
     }
@@ -3152,25 +3237,128 @@ function buildCacheMissNotice(session, event) {
   return detectCacheMissNotice(session, event.message, previous);
 }
 
+function assistantMessagePresentation(message, entryId) {
+  const content = message?.content;
+  const hasText =
+    (typeof content === "string" && content.length > 0) ||
+    (Array.isArray(content) &&
+      content.some(
+        (part) =>
+          (part?.type === "text" && typeof part.text === "string" && part.text.length > 0) ||
+          (part?.type === "thinking" &&
+            typeof part.thinking === "string" &&
+            part.thinking.length > 0),
+      ));
+  const toolCallIds = Array.isArray(content)
+    ? content
+        .filter((part) => part?.type === "toolCall" && typeof part.id === "string")
+        .map((part) => part.id)
+    : [];
+  const isError = assistantMessageIsError(message);
+
+  // Match entriesToTranscript exactly. An error without assistant text emits
+  // one error block at entryId and suppresses tool calls. With text, the error
+  // row follows the assistant unless tool cards follow it in turn.
+  if (isError && !hasText) return { anchor: entryId, toolCallIds: [] };
+  if (isError && toolCallIds.length === 0) {
+    return { anchor: `${entryId}-error`, toolCallIds };
+  }
+  return {
+    anchor: hasText || toolCallIds.length > 0 ? entryId : undefined,
+    toolCallIds,
+  };
+}
+
+function entryPresentationAnchor(entry, projectedToolCallIds) {
+  if (typeof entry?.id !== "string") return undefined;
+  if (entry.type === "compaction" || entry.type === "branch_summary") return entry.id;
+  if (entry.type === "custom_message") {
+    if (!entry.display) return undefined;
+    return Object.hasOwn(entry, "content") ||
+      Object.hasOwn(entry, "details") ||
+      typeof entry.customType === "string"
+      ? entry.id
+      : undefined;
+  }
+  if (entry.type === "custom") {
+    return typeof entry.customType === "string" &&
+      entry.customType !== "pivis.shell_turn_start" &&
+      entry.customType !== "pivis.shell_turn_complete"
+      ? entry.id
+      : undefined;
+  }
+  if (entry.type !== "message") return undefined;
+  const message = entry.message;
+  if (message?.role === "user" || message?.role === "bashExecution") return entry.id;
+  if (message?.role === "assistant") {
+    const presentation = assistantMessagePresentation(message, entry.id);
+    for (const toolCallId of presentation.toolCallIds) projectedToolCallIds.add(toolCallId);
+    return presentation.anchor;
+  }
+  if (message?.role === "toolResult") {
+    return typeof message.toolCallId === "string" && projectedToolCallIds.has(message.toolCallId)
+      ? undefined
+      : entry.id;
+  }
+  if (message?.role === "custom" && message.display) {
+    return Object.hasOwn(message, "content") ||
+      Object.hasOwn(message, "details") ||
+      typeof message.customType === "string"
+      ? entry.id
+      : undefined;
+  }
+  return undefined;
+}
+
 function buildHistoricalCacheMissNotices(session) {
   if (session.settingsManager?.getShowCacheMissNotices?.() !== true) return [];
   const notices = [];
   let previous;
+  // Warming notices are synthetic transcript rows. Advance this anchor to
+  // each notice as it is projected so multiple usage entries after one
+  // assistant retain their persisted order instead of repeatedly inserting
+  // at the same assistant boundary in reverse order.
+  let lastPresentationAnchorId;
+  const projectedToolCallIds = new Set();
   for (const entry of cacheEntries(session)) {
     if (entry?.type === "compaction" || entry?.type === "branch_summary") {
       previous = undefined;
+      lastPresentationAnchorId =
+        entryPresentationAnchor(entry, projectedToolCallIds) ?? lastPresentationAnchorId;
+      continue;
+    }
+    if (entry?.type === "usage" && entry.kind === "cache_warm") {
+      const warmingNotice = cacheWarmingNotice(entry, lastPresentationAnchorId);
+      if (warmingNotice) {
+        notices.push(warmingNotice);
+        lastPresentationAnchorId = warmingNotice.noticeId;
+      }
+      previous = previousCacheWarm(entry) ?? previous;
       continue;
     }
     const message = entry?.type === "message" ? entry.message : undefined;
-    if (message?.role !== "assistant") continue;
+    if (message?.role !== "assistant") {
+      lastPresentationAnchorId =
+        entryPresentationAnchor(entry, projectedToolCallIds) ?? lastPresentationAnchorId;
+      continue;
+    }
+    const assistantAnchor = entryPresentationAnchor(entry, projectedToolCallIds);
     const notice = detectCacheMissNotice(session, message, previous);
     if (
       notice &&
-      message.stopReason !== "error" &&
+      !assistantMessageIsError(message) &&
       message.stopReason !== "aborted" &&
       typeof entry.id === "string"
     ) {
-      notices.push({ ...notice, afterEntryId: entry.id });
+      const noticeAnchor = assistantAnchor ?? lastPresentationAnchorId;
+      const anchoredNotice = {
+        ...notice,
+        ...(noticeAnchor ? { afterEntryId: noticeAnchor } : {}),
+      };
+      notices.push(anchoredNotice);
+      lastPresentationAnchorId = anchoredNotice.noticeId;
+    } else {
+      lastPresentationAnchorId = assistantAnchor ?? lastPresentationAnchorId;
     }
     previous = previousCacheRequest(message, previous?.reportedCache ?? false) ?? previous;
   }

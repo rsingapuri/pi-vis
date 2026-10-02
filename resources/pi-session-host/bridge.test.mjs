@@ -70,8 +70,8 @@ function makeSession(overrides = {}) {
     // methods
     subscribe: vi.fn(() => vi.fn()),
     prompt: vi.fn(),
-    steer: vi.fn(async () => {}),
-    followUp: vi.fn(async () => {}),
+    steer: vi.fn(async () => "queued"),
+    followUp: vi.fn(async () => "queued"),
     abort: vi.fn(async () => {}),
     abortCompaction: vi.fn(),
     abortBranchSummary: vi.fn(),
@@ -670,7 +670,7 @@ describe("setupCommandBridge — wiring", () => {
     });
     session.prompt.mockImplementation(async (_text, options) => {
       await actions.newSession();
-      options.preflightResult(true);
+      options.preflightResult("handled");
     });
 
     await expect(
@@ -718,7 +718,7 @@ describe("setupCommandBridge — wiring", () => {
     });
     session.prompt.mockImplementation(async (_text, options) => {
       await actions.newSession();
-      options.preflightResult(true);
+      options.preflightResult("handled");
     });
     sendControl.mockClear();
     sendFrame.mockClear();
@@ -862,6 +862,50 @@ describe("setupCommandBridge — wiring", () => {
     });
     expect(session.sessionManager.getBranch).toHaveBeenCalledTimes(1);
     expect(session.sessionManager.getEntries).not.toHaveBeenCalled();
+  });
+
+  it("projects a live cache-warm usage entry when cache notices are enabled", () => {
+    const usage = {
+      input: 30_000,
+      output: 1,
+      cacheRead: 29_500,
+      cacheWrite: 0,
+      totalTokens: 59_501,
+      cost: { input: 0.01, output: 0, cacheRead: 0.002, cacheWrite: 0, total: 0.012 },
+    };
+    const { session, send } = setup({
+      settingsManager: {
+        setEnabledModels: vi.fn(),
+        getEnabledModels: vi.fn(() => undefined),
+        getShowCacheMissNotices: vi.fn(() => true),
+      },
+    });
+    const subscriber = session.subscribe.mock.calls[0][0];
+
+    subscriber({
+      type: "entry_appended",
+      entry: {
+        type: "usage",
+        id: "warm-1",
+        kind: "cache_warm",
+        provider: "anthropic",
+        model: "claude-x",
+        note: "extension override",
+        usage,
+      },
+    });
+
+    expect(send).toHaveBeenCalledWith({
+      type: "event",
+      event: {
+        type: "cache_warming_notice",
+        noticeId: "cache-warm:warm-1",
+        provider: "anthropic",
+        model: "claude-x",
+        note: "extension override",
+        usage,
+      },
+    });
   });
 
   it("before-invalidate only emits panel_clear_all when a panel was open", () => {
@@ -1011,6 +1055,7 @@ describe("setupCommandBridge — target intent dispatch", () => {
 
   it("runs public runtime login with an app-owned interaction and emits no credential", async () => {
     const login = vi.fn(async () => ({ type: "api_key", key: "never-publish-this" }));
+    const getOrCreateDeviceId = vi.fn(() => "stable-device-id");
     const modelRuntime = {
       ...makeSession().modelRuntime,
       getProviders: vi.fn(() => [
@@ -1029,7 +1074,17 @@ describe("setupCommandBridge — target intent dispatch", () => {
       fail: vi.fn(),
     };
     const createProviderAuthSurface = vi.fn(() => surface);
-    const { send, dispatchIntent } = setup({ modelRuntime }, { createProviderAuthSurface });
+    const { send, dispatchIntent } = setup(
+      {
+        modelRuntime,
+        settingsManager: {
+          setEnabledModels: vi.fn(),
+          getEnabledModels: vi.fn(() => undefined),
+          getOrCreateDeviceId,
+        },
+      },
+      { createProviderAuthSurface },
+    );
 
     await expect(
       dispatchIntent({
@@ -1043,6 +1098,12 @@ describe("setupCommandBridge — target intent dispatch", () => {
       }),
     ).resolves.toMatchObject({ status: "admitted" });
     await vi.waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+    expect(login).toHaveBeenCalledWith("project-dynamic", "api_key", surface.interaction, {
+      getDeviceId: expect.any(Function),
+    });
+    const loginOptions = login.mock.calls[0][3];
+    expect(loginOptions.getDeviceId()).toBe("stable-device-id");
+    expect(getOrCreateDeviceId).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(surface.complete).toHaveBeenCalledTimes(1));
     const outcome = send.mock.calls
       .map(([message]) => message)
@@ -1253,7 +1314,9 @@ describe("setupCommandBridge — target intent dispatch", () => {
         },
       }),
     });
-    session.prompt.mockImplementation(async (_text, options) => options.preflightResult(true));
+    session.prompt.mockImplementation(async (_text, options) =>
+      options.preflightResult(options.expandPromptTemplates ? "handled" : "started"),
+    );
     const intents = [
       ["interrupt", {}],
       [
@@ -2303,7 +2366,7 @@ describe("setupCommandBridge — target intent dispatch", () => {
         }),
       },
     );
-    session.prompt.mockImplementation(async (_text, options) => options.preflightResult(true));
+    session.prompt.mockImplementation(async (_text, options) => options.preflightResult("started"));
 
     await expect(
       dispatchIntent(envelope("intent-compact-long", { kind: "compact" })),
@@ -3170,8 +3233,18 @@ describe("setupCommandBridge — command mapping", () => {
   it("steer passes message + images and resolves success", async () => {
     const { session, run } = setup();
     const res = await run({ type: "steer", message: "go", images: [{ data: "x" }] });
-    expect(session.steer).toHaveBeenCalledWith("go", [{ data: "x" }]);
-    expect(res.success).toBe(true);
+    expect(session.steer).toHaveBeenCalledWith("go", [{ data: "x" }], { source: "rpc" });
+    expect(res).toMatchObject({ success: true, data: { disposition: "queued" } });
+  });
+
+  it("follow_up passes the RPC source and returns Pi's handled disposition", async () => {
+    const { session, run } = setup();
+    session.followUp.mockResolvedValueOnce("handled");
+
+    const res = await run({ type: "follow_up", message: "handled by hook", images: [] });
+
+    expect(session.followUp).toHaveBeenCalledWith("handled by hook", [], { source: "rpc" });
+    expect(res).toMatchObject({ success: true, data: { disposition: "handled" } });
   });
 
   it("set_model resolves the Model and immediately publishes its direct snapshot", async () => {
@@ -3838,9 +3911,10 @@ describe("setupCommandBridge — command mapping", () => {
     expect(getMessageRenderer).toHaveBeenCalledWith("unregistered-card");
   });
 
-  it("replays non-persisted cache-miss notices with history anchors", async () => {
+  it("keeps a historical cache warm ordered after its synthetic cache miss", async () => {
     const previous = {
       role: "assistant",
+      content: [{ type: "text", text: "previous response" }],
       provider: "anthropic",
       model: "claude-x",
       timestamp: 0,
@@ -3867,10 +3941,25 @@ describe("setupCommandBridge — command mapping", () => {
         getShowCacheMissNotices: vi.fn(() => true),
       },
       sessionManager: {
-        getLeafId: vi.fn(() => "entry-2"),
+        getLeafId: vi.fn(() => "warm-after-miss"),
         getBranch: vi.fn(() => [
           { id: "entry-1", type: "message", message: previous },
           { id: "entry-2", type: "message", message: current },
+          {
+            id: "warm-after-miss",
+            type: "usage",
+            kind: "cache_warm",
+            provider: "anthropic",
+            model: "claude-x",
+            usage: {
+              input: 30_000,
+              output: 0,
+              cacheRead: 30_000,
+              cacheWrite: 0,
+              totalTokens: 60_000,
+              cost: { input: 0, output: 0, cacheRead: 0.03, cacheWrite: 0, total: 0.03 },
+            },
+          },
         ]),
       },
     });
@@ -3883,15 +3972,257 @@ describe("setupCommandBridge — command mapping", () => {
           {
             type: "cache_miss_notice",
             noticeId: "cache-miss:360000:anthropic:claude-x:30000:0:0:0",
-            afterEntryId: "entry-2",
+            // The current assistant has no visible content in persisted
+            // history, so the notice follows the last projected row.
+            afterEntryId: "entry-1",
             missedTokens: 30_000,
             missedCost: 0.3,
             idleMs: 6 * 60_000,
             modelChanged: false,
           },
+          {
+            type: "cache_warming_notice",
+            noticeId: "cache-warm:warm-after-miss",
+            provider: "anthropic",
+            model: "claude-x",
+            afterEntryId: "cache-miss:360000:anthropic:claude-x:30000:0:0:0",
+          },
         ],
       },
     });
+  });
+
+  it("replays persisted cache-warm usage with its preceding assistant anchor", async () => {
+    const usage = {
+      input: 30_000,
+      output: 1,
+      cacheRead: 29_500,
+      cacheWrite: 0,
+      totalTokens: 59_501,
+      cost: { input: 0.01, output: 0, cacheRead: 0.002, cacheWrite: 0, total: 0.012 },
+    };
+    const { run } = setup({
+      settingsManager: {
+        setEnabledModels: vi.fn(),
+        getEnabledModels: vi.fn(() => undefined),
+        getShowCacheMissNotices: vi.fn(() => true),
+      },
+      sessionManager: {
+        getLeafId: vi.fn(() => "warm-1"),
+        getBranch: vi.fn(() => [
+          {
+            id: "assistant-1",
+            type: "message",
+            message: {
+              role: "assistant",
+              provider: "anthropic",
+              model: "claude-x",
+              content: [{ type: "text", text: "ready" }],
+              timestamp: 1,
+              stopReason: "stop",
+              usage: {
+                input: 30_000,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 30_001,
+                cost: { input: 0.01, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 },
+              },
+            },
+          },
+          {
+            type: "usage",
+            id: "warm-1",
+            kind: "cache_warm",
+            provider: "anthropic",
+            model: "claude-x",
+            usage,
+          },
+          {
+            type: "usage",
+            id: "warm-2",
+            kind: "cache_warm",
+            provider: "anthropic",
+            model: "claude-x",
+            note: "second refresh",
+            usage,
+          },
+        ]),
+      },
+    });
+
+    await expect(run({ type: "get_cache_miss_notices" })).resolves.toMatchObject({
+      success: true,
+      data: {
+        notices: [
+          {
+            type: "cache_warming_notice",
+            noticeId: "cache-warm:warm-1",
+            provider: "anthropic",
+            model: "claude-x",
+            usage,
+            afterEntryId: "assistant-1",
+          },
+          {
+            type: "cache_warming_notice",
+            noticeId: "cache-warm:warm-2",
+            provider: "anthropic",
+            model: "claude-x",
+            note: "second refresh",
+            usage,
+            afterEntryId: "cache-warm:warm-1",
+          },
+        ],
+      },
+    });
+  });
+
+  it("anchors historical cache warms to every visible persisted entry in order", async () => {
+    const usage = {
+      input: 30_000,
+      output: 0,
+      cacheRead: 30_000,
+      cacheWrite: 0,
+      totalTokens: 60_000,
+      cost: { input: 0, output: 0, cacheRead: 0.03, cacheWrite: 0, total: 0.03 },
+    };
+    const warm = (id) => ({
+      id,
+      type: "usage",
+      kind: "cache_warm",
+      provider: "anthropic",
+      model: "claude-x",
+      usage,
+    });
+    const { run } = setup({
+      settingsManager: {
+        setEnabledModels: vi.fn(),
+        getEnabledModels: vi.fn(() => undefined),
+        getShowCacheMissNotices: vi.fn(() => true),
+      },
+      sessionManager: {
+        getBranch: vi.fn(() => [
+          {
+            id: "assistant-1",
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [
+                { type: "text", text: "done" },
+                { type: "toolCall", id: "call-1", name: "read", arguments: {} },
+              ],
+              provider: "anthropic",
+              model: "claude-x",
+              timestamp: 1,
+              stopReason: "stop",
+              usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+            },
+          },
+          {
+            id: "custom-visible",
+            type: "custom_message",
+            customType: "notice",
+            display: true,
+            content: "visible",
+          },
+          warm("warm-after-custom"),
+          {
+            id: "custom-hidden",
+            type: "custom_message",
+            customType: "notice",
+            display: false,
+            content: "hidden",
+          },
+          warm("warm-after-hidden"),
+          {
+            id: "compaction-1",
+            type: "compaction",
+            summary: "summary",
+            firstKeptEntryId: "compaction-1",
+            tokensBefore: 500,
+          },
+          warm("warm-after-compaction"),
+          { id: "branch-1", type: "branch_summary", summary: "branch" },
+          warm("warm-after-branch"),
+          { id: "user-1", type: "message", message: { role: "user", content: "next" } },
+          warm("warm-after-user"),
+          {
+            id: "custom-role-1",
+            type: "message",
+            message: { role: "custom", display: true, content: "custom role" },
+          },
+          warm("warm-after-custom-role"),
+          { id: "custom-entry-1", type: "custom", customType: "extension-card", data: {} },
+          warm("warm-after-custom-entry"),
+          {
+            id: "bash-1",
+            type: "message",
+            message: { role: "bashExecution", command: "pwd", output: "/tmp" },
+          },
+          {
+            id: "tool-result-1",
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolCallId: "call-1",
+              toolName: "read",
+              content: [{ type: "text", text: "updated in place" }],
+            },
+          },
+          warm("warm-after-tool-result"),
+          {
+            id: "standalone-result-1",
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolCallId: "orphan-call",
+              toolName: "read",
+              content: [{ type: "text", text: "standalone" }],
+            },
+          },
+          warm("warm-after-standalone-result"),
+          {
+            id: "error-with-text",
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "partial" }],
+              stopReason: "error",
+              errorMessage: "provider failed",
+            },
+          },
+          warm("warm-after-text-error"),
+          {
+            id: "error-without-text",
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "provider failed immediately",
+            },
+          },
+          warm("warm-after-empty-error"),
+        ]),
+      },
+    });
+
+    const response = await run({ type: "get_cache_miss_notices" });
+    expect(
+      response.data.notices.map(({ noticeId, afterEntryId }) => [noticeId, afterEntryId]),
+    ).toEqual([
+      ["cache-warm:warm-after-custom", "custom-visible"],
+      ["cache-warm:warm-after-hidden", "cache-warm:warm-after-custom"],
+      ["cache-warm:warm-after-compaction", "compaction-1"],
+      ["cache-warm:warm-after-branch", "branch-1"],
+      ["cache-warm:warm-after-user", "user-1"],
+      ["cache-warm:warm-after-custom-role", "custom-role-1"],
+      ["cache-warm:warm-after-custom-entry", "custom-entry-1"],
+      ["cache-warm:warm-after-tool-result", "bash-1"],
+      ["cache-warm:warm-after-standalone-result", "standalone-result-1"],
+      ["cache-warm:warm-after-text-error", "error-with-text-error"],
+      ["cache-warm:warm-after-empty-error", "error-without-text"],
+    ]);
   });
 
   it("compact passes the customInstructions STRING (not an object)", async () => {
@@ -4056,7 +4387,7 @@ describe("setupCommandBridge — command mapping", () => {
     session.prompt.mockImplementation((_text, options) => {
       session.isStreaming = true;
       session.isIdle = false;
-      options.preflightResult(true);
+      options.preflightResult("started");
       return promptDone;
     });
     await expect(
@@ -4234,7 +4565,7 @@ describe("setupCommandBridge — command mapping", () => {
     const { handleSubmit } = setup(
       {
         prompt: vi.fn((_text, options) => {
-          options.preflightResult(true);
+          options.preflightResult("started");
           return Promise.resolve();
         }),
       },
@@ -4298,7 +4629,7 @@ describe("setupCommandBridge — command mapping", () => {
             steering: [...steering],
             followUp: [],
           });
-          options.preflightResult(true);
+          options.preflightResult("queued");
         }),
       },
       {
@@ -4338,7 +4669,11 @@ describe("setupCommandBridge — command mapping", () => {
     expect(harness.authority.semanticSnapshot().queues).toMatchObject({
       steering: ["passive handler queue"],
       steeringIntentIds: ["passive-handler-submit"],
-      management: { available: true },
+      management: {
+        available: false,
+        message: expect.stringContaining("Input hooks are active"),
+        removableIntentIds: ["passive-handler-submit"],
+      },
     });
   });
 
@@ -4390,7 +4725,7 @@ describe("setupCommandBridge — command mapping", () => {
           steering: [...steering],
           followUp: [],
         });
-        options.preflightResult(true);
+        options.preflightResult("queued");
       }),
     });
 
@@ -4448,7 +4783,7 @@ describe("setupCommandBridge — command mapping", () => {
             followUp: [],
           });
         }
-        options.preflightResult(true);
+        options.preflightResult(queuePrompt ? "queued" : "started");
       }),
     });
     const submit = (intentId, text, expectedEpoch) =>
@@ -4521,7 +4856,7 @@ describe("setupCommandBridge — command mapping", () => {
           steering: [...successorSteering],
           followUp: [],
         });
-        options.preflightResult(true);
+        options.preflightResult("queued");
       }),
     });
     await harness.runtime.setRebindSession.mock.calls[0][0](successor);
@@ -4562,19 +4897,14 @@ describe("setupCommandBridge — command mapping", () => {
           return { steering: cleared, followUp: [] };
         }),
         prompt: vi.fn(async (text, options) => {
-          try {
-            steering.push(text);
-            emitSessionEvent({
-              type: "queue_update",
-              steering: [...steering],
-              followUp: [],
-            });
-            await queueAppend.promise;
-            options.preflightResult(true);
-          } catch (error) {
-            options.preflightResult(false);
-            throw error;
-          }
+          steering.push(text);
+          emitSessionEvent({
+            type: "queue_update",
+            steering: [...steering],
+            followUp: [],
+          });
+          await queueAppend.promise;
+          options.preflightResult("queued");
         }),
       },
       {
@@ -4620,25 +4950,41 @@ describe("setupCommandBridge — command mapping", () => {
     queueAppend.resolve();
   });
 
-  it("prompt responds early via preflightResult(true) without awaiting the turn", async () => {
-    const { session, run } = setup();
-    // prompt() never resolves (a real turn is long-running); preflight fires.
-    session.prompt.mockImplementationOnce((_msg, opts) => {
-      opts.preflightResult(true);
-      return new Promise(() => {}); // never settles
-    });
-    const res = await run({ type: "prompt", message: "hello" });
-    expect(res.success).toBe(true);
-    expect(session.prompt).toHaveBeenCalled();
-  });
+  it.each(["handled", "queued", "started"])(
+    "prompt reports the %s disposition without awaiting later work",
+    async (disposition) => {
+      const { session, run } = setup();
+      // prompt() may retain later cleanup/turn work after the accepted path is
+      // known; the bridge must answer from Pi's exact disposition callback.
+      session.prompt.mockImplementationOnce((_msg, opts) => {
+        opts.preflightResult(disposition);
+        return new Promise(() => {}); // never settles
+      });
+      const res = await run({ type: "prompt", message: "hello" });
+      expect(res).toMatchObject({ success: true, data: { disposition } });
+      expect(session.prompt).toHaveBeenCalledWith(
+        "hello",
+        expect.objectContaining({ source: "rpc" }),
+      );
+    },
+  );
 
-  it("prompt reports a rejected preflight as an error", async () => {
-    const { session, run } = setup();
-    session.prompt.mockImplementationOnce((_msg, opts) => {
-      opts.preflightResult(false);
-      return new Promise(() => {});
-    });
-    const res = await run({ type: "prompt", message: "hello" });
+  it("prompt reports a rejection before preflight as an error", async () => {
+    const { session, run, send } = setup();
+    session.prompt.mockRejectedValueOnce(new Error("Prompt rejected before acceptance"));
+    await run({ type: "prompt", message: "hello" });
+    await vi.waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "response",
+          success: false,
+          error: "Prompt rejected before acceptance",
+        }),
+      ),
+    );
+    const res = send.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === "response" && message.success === false);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/rejected/i);
   });

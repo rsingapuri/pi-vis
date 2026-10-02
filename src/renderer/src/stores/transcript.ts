@@ -157,6 +157,7 @@ export interface CompactionBlockData {
   tokensBefore?: number | undefined;
   estimatedTokensAfter?: number | undefined;
   firstKeptEntryId?: string | undefined;
+  systemMessage?: unknown;
   aborted?: boolean | undefined;
   willRetry?: boolean | undefined;
   errorMessage?: string | undefined;
@@ -561,6 +562,7 @@ export function mapHistoryBlocks(history: TranscriptBlock[]): TypedTranscriptBlo
             tokensBefore: d.tokensBefore as number | undefined,
             estimatedTokensAfter: d.estimatedTokensAfter as number | undefined,
             firstKeptEntryId: d.firstKeptEntryId as string | undefined,
+            systemMessage: d.systemMessage,
             aborted: d.aborted as boolean | undefined,
             willRetry: d.willRetry as boolean | undefined,
             errorMessage: d.errorMessage as string | undefined,
@@ -1115,22 +1117,117 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
       return state;
     }
 
+    case "cache_warming_notice": {
+      if (transcriptHasBlockId(state, event.noticeId)) return state;
+      const note = event.note ? ` (${event.note})` : "";
+      const cost = event.usage.cost.total.toFixed(6).replace(/(\.\d{3}\d*?)0+$/, "$1");
+      const block: TypedTranscriptBlock = {
+        id: event.noticeId,
+        type: "custom_message",
+        data: { content: `Cache warmed${note}: $${cost}` },
+      };
+      if (!event.afterEntryId) return { ...state, blocks: [...blocks, block] };
+      const toolPrefix = `${event.afterEntryId}-tool-`;
+      const anchorIndex = blocks.reduce(
+        (last, candidate, index) =>
+          candidate.id === event.afterEntryId || candidate.id.startsWith(toolPrefix) ? index : last,
+        -1,
+      );
+      if (anchorIndex >= 0) {
+        return {
+          ...state,
+          blocks: [...blocks.slice(0, anchorIndex + 1), block, ...blocks.slice(anchorIndex + 1)],
+        };
+      }
+      // seedFromHistory archives the complete hydrated transcript. Search
+      // those chunks before falling back to the live tail, otherwise every
+      // replayed cache-warm notice drifts to the end of the conversation.
+      for (
+        let chunkIndex = state.archivedBlockChunks.length - 1;
+        chunkIndex >= 0;
+        chunkIndex -= 1
+      ) {
+        const chunk = state.archivedBlockChunks[chunkIndex];
+        if (!chunk) continue;
+        let archivedAnchorIndex = -1;
+        for (let index = 0; index < chunk.length; index += 1) {
+          const candidate = chunk[index];
+          if (
+            candidate &&
+            (candidate.id === event.afterEntryId || candidate.id.startsWith(toolPrefix))
+          ) {
+            archivedAnchorIndex = index;
+          }
+        }
+        if (archivedAnchorIndex < 0) continue;
+        const chunks = state.archivedBlockChunks.slice();
+        chunks[chunkIndex] = [
+          ...chunk.slice(0, archivedAnchorIndex + 1),
+          block,
+          ...chunk.slice(archivedAnchorIndex + 1),
+        ];
+        return {
+          ...state,
+          archivedBlockChunks: chunks,
+          archivedBlockCount: state.archivedBlockCount + 1,
+        };
+      }
+      // The preceding persisted entry can legitimately have no visible block
+      // (for example context_edit or usage). Retaining billed usage at the
+      // tail is more honest than silently dropping it.
+      return { ...state, blocks: [...blocks, block] };
+    }
+
     case "entry_appended": {
       const entry = event.entry;
-      if (entry.type !== "custom" || typeof entry.customType !== "string") return state;
       if (transcriptHasBlockId(state, entry.id)) return state;
-      const block: TypedTranscriptBlock = {
-        id: entry.id,
-        type: "custom_entry",
-        data: {
-          entryId: entry.id,
-          customType: entry.customType,
-          ...(entry.data !== undefined ? { data: entry.data } : {}),
-        },
-      };
+      let block: TypedTranscriptBlock;
+      if (entry.type === "custom" && typeof entry.customType === "string") {
+        block = {
+          id: entry.id,
+          type: "custom_entry",
+          data: {
+            entryId: entry.id,
+            customType: entry.customType,
+            ...(entry.data !== undefined ? { data: entry.data } : {}),
+          },
+        };
+      } else if (entry.type === "custom_message" && entry.display) {
+        const extracted = extractTextAndImages(entry.content);
+        block = {
+          id: entry.id,
+          type: "custom_message",
+          data: {
+            content: extracted.text,
+            images: extracted.images,
+            rawContent: entry.content,
+            customType: typeof entry.customType === "string" ? entry.customType : undefined,
+            details: entry.details,
+          },
+        };
+      } else if (entry.type === "compaction") {
+        block = {
+          id: entry.id,
+          type: "compaction",
+          data: {
+            summary: typeof entry.summary === "string" ? entry.summary : undefined,
+            tokensBefore: typeof entry.tokensBefore === "number" ? entry.tokensBefore : undefined,
+            firstKeptEntryId:
+              typeof entry.firstKeptEntryId === "string" ? entry.firstKeptEntryId : undefined,
+            details: entry.details,
+            fromHook: typeof entry.fromHook === "boolean" ? entry.fromHook : undefined,
+            usage: entry.usage as PiUsage | undefined,
+            systemMessage: entry.systemMessage,
+          },
+        };
+      } else {
+        // context_edit and usage alter model context/accounting but have no
+        // ordinary chat row. Cache warming receives a separate opt-in notice.
+        return state;
+      }
       // Pi persists the assistant message only after message_end. If an
       // extension appends an entry while that message is streaming, file order
-      // places the custom entry before the assistant; mirror Pi 0.80.4's TUI.
+      // places it before the assistant; mirror Pi's TUI.
       const assistantIndex = activeAssistantId
         ? blocks.findIndex((candidate) => candidate.id === activeAssistantId)
         : -1;
@@ -1541,6 +1638,12 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
     }
 
     case "tool_execution_start": {
+      // Pi 0.99 emits nested ctx.executeTool() activity with a parent id. The
+      // parent tool result retains the bounded nestedCalls record for
+      // inspection; rendering each nested execution as an independent
+      // top-level card duplicates codemode/MCP work and orphans it from the
+      // model-issued call.
+      if (event.parentToolCallId) return state;
       // A duplicate start for an in-flight call must keep the original block
       // as the target for updates/end, rather than replacing its map entry.
       if (activeToolCallIds.has(event.toolCallId)) return state;
@@ -1567,6 +1670,7 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
     }
 
     case "tool_execution_update": {
+      if (event.parentToolCallId) return state;
       const blockId = activeToolCallIds.get(event.toolCallId);
       if (!blockId) return state;
       const partial = extractToolResult(event.partialResult);
@@ -1610,6 +1714,7 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
     }
 
     case "tool_execution_end": {
+      if (event.parentToolCallId) return state;
       const blockId = activeToolCallIds.get(event.toolCallId);
       if (!blockId) return state;
       const newActiveIds = new Map(activeToolCallIds);
@@ -1666,7 +1771,6 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
           willRetry: event.willRetry,
           errorMessage: event.errorMessage,
           details: event.result?.details,
-          fromHook: typeof event.result?.fromHook === "boolean" ? event.result.fromHook : undefined,
           usage: event.result?.usage,
         },
       };

@@ -42,6 +42,7 @@ export const CompactionMarkerSchema = z.object({
   tokensBefore: z.number().optional(),
   estimatedTokensAfter: z.number().optional(),
   firstKeptEntryId: z.string().optional(),
+  systemMessage: z.unknown().optional(),
   aborted: z.boolean().optional(),
   willRetry: z.boolean().optional(),
   errorMessage: z.string().optional(),

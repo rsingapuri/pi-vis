@@ -23,6 +23,7 @@ function main() {
     log(`Using notarytool keychain profile: ${notaryProfile}`);
   }
   configureSigningEnvironment({ notaryProfile, skipNotarization, log, fail });
+  process.env.PIVIS_REQUIRE_SIGNED_ARTIFACTS = "1";
   run("npm", ["run", "dist"]);
 }
 

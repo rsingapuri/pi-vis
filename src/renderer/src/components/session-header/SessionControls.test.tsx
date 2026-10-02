@@ -10,7 +10,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { type SessionViewState, useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { createTranscriptState } from "../../stores/transcript.js";
-import { SessionControls, thinkingLevelsForModel } from "./SessionHeader.js";
+import {
+  SessionControls,
+  modelPresentationLabel,
+  thinkingLevelsForModel,
+} from "./SessionHeader.js";
 
 const sessionId = "s-controls" as SessionId;
 
@@ -124,6 +128,21 @@ describe("thinkingLevelsForModel", () => {
   });
 });
 
+describe("modelPresentationLabel", () => {
+  it("keeps a virtual selection visible alongside its latest physical route", () => {
+    expect(
+      modelPresentationLabel("Auto [router]", {
+        model: { id: "claude-sonnet", name: "Claude Sonnet", provider: "anthropic" },
+        thinkingLevel: "high",
+      }),
+    ).toBe("Auto [router] → Claude Sonnet [anthropic] · high");
+  });
+
+  it("leaves ordinary physical model labels unchanged", () => {
+    expect(modelPresentationLabel("Claude Sonnet [anthropic]")).toBe("Claude Sonnet [anthropic]");
+  });
+});
+
 describe("SessionControls dropdown toggles", () => {
   afterEach(() => {
     useSessionsStore.setState({ sessions: new Map() });
@@ -188,6 +207,120 @@ describe("SessionControls dropdown toggles", () => {
         ...container.querySelectorAll(".session-header__thinking .session-header__dropdown-item"),
       ].map((item) => item.textContent),
     ).toEqual(["off", "max"]);
+    unmount();
+  });
+
+  it("shows the selected virtual model and latest routed physical model", () => {
+    setSession();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      const session = sessions.get(sessionId)!;
+      sessions.set(sessionId, {
+        ...session,
+        authorityProjection: {
+          ...session.authorityProjection!,
+          authoritativeSnapshot: {
+            ...session.authorityProjection!.authoritativeSnapshot!,
+            model: { id: "auto", name: "Auto", provider: "router", api: "pi-virtual" },
+            routedModel: {
+              model: { id: "claude", name: "Claude", provider: "anthropic" },
+              thinkingLevel: "high",
+            },
+          },
+        },
+      });
+      return { sessions };
+    });
+
+    const { container, unmount } = mount(<SessionControls sessionId={sessionId} />);
+    const button = container.querySelector<HTMLButtonElement>(".session-header__model-btn");
+    expect(button?.textContent).toContain("Auto [router] → Claude [anthropic] · high");
+    expect(button?.title).toBe("Auto [router] → Claude [anthropic] · high");
+    unmount();
+  });
+
+  it("clears a stale compatibility route when semantic authority selects a physical model", () => {
+    setSession();
+    const staleRoute = {
+      model: { id: "claude", name: "Claude", provider: "anthropic" },
+      thinkingLevel: "high" as const,
+    };
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      const session = sessions.get(sessionId)!;
+      sessions.set(sessionId, {
+        ...session,
+        runtimeSnapshot: {
+          routedModel: staleRoute,
+        } as unknown as NonNullable<SessionViewState["runtimeSnapshot"]>,
+        authorityProjection: {
+          ...session.authorityProjection!,
+          authoritativeSnapshot: {
+            ...session.authorityProjection!.authoritativeSnapshot!,
+            model: { id: "auto", name: "Auto", provider: "router", api: "pi-virtual" },
+            routedModel: staleRoute,
+          },
+        },
+      });
+      return { sessions };
+    });
+
+    const { container, unmount } = mount(<SessionControls sessionId={sessionId} />);
+    const button = container.querySelector<HTMLButtonElement>(".session-header__model-btn");
+    expect(button?.textContent).toContain("Auto [router] → Claude [anthropic] · high");
+
+    act(() => {
+      useSessionsStore.setState((state) => {
+        const sessions = new Map(state.sessions);
+        const session = sessions.get(sessionId)!;
+        const authoritativeSnapshot = {
+          ...session.authorityProjection!.authoritativeSnapshot!,
+          model: { id: "glm-5", name: "GLM 5", provider: "zai" },
+        };
+        delete authoritativeSnapshot.routedModel;
+        sessions.set(sessionId, {
+          ...session,
+          authorityProjection: {
+            ...session.authorityProjection!,
+            authoritativeSnapshot,
+          },
+        });
+        return { sessions };
+      });
+    });
+
+    const updatedButton = container.querySelector<HTMLButtonElement>(".session-header__model-btn");
+    expect(updatedButton?.textContent).toBe("GLM 5 [zai]");
+    expect(updatedButton?.title).toBe("GLM 5 [zai]");
+    unmount();
+  });
+
+  it("uses the compatibility route only while no semantic snapshot exists", () => {
+    setSession();
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      const session = sessions.get(sessionId)!;
+      sessions.set(sessionId, {
+        ...session,
+        runtimeSnapshot: {
+          routedModel: {
+            model: { id: "claude", name: "Claude", provider: "anthropic" },
+            thinkingLevel: "high",
+          },
+        } as unknown as NonNullable<SessionViewState["runtimeSnapshot"]>,
+        authorityProjection: {
+          ...session.authorityProjection!,
+          semantic: { state: "unavailable", reason: "test" },
+          authoritativeSnapshot: undefined,
+        },
+      });
+      return { sessions };
+    });
+
+    const { container, unmount } = mount(<SessionControls sessionId={sessionId} />);
+    const button = container.querySelector<HTMLButtonElement>(".session-header__model-btn");
+    expect(button?.textContent).toBe("GLM 5 [zai] → Claude [anthropic] · high");
+    expect(button?.disabled).toBe(true);
     unmount();
   });
 

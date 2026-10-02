@@ -12,10 +12,20 @@ resulting `.app`, commits/tags the release, pushes the tag, and creates the
 GitHub Release with the zip and dmg assets.
 
 The automated contract is fail-closed: clean `npm ci` (whose root lifecycle
-serially provisions and verifies Electron before the exact node-pty patch), a zero-advisory
-production `npm audit`, typecheck, lint, unit, render, Electron E2E, and
+serially provisions and verifies Electron, verifies the installed Pi security
+closure against the authoritative root lock, and only then applies the exact
+node-pty patch), a zero-advisory production `npm audit`, typecheck, lint, unit, render, Electron E2E, and
 `npm ls --all`, followed by the signed `dist` and its
-final-app verifier. There is no supported test-skip path. For a pinned-Pi
+final-app verifier. The macOS signer admits only genuine Mach-O/fat code (rather
+than detached-xattr-signing arbitrary unpacked fonts, images, WASM, or foreign
+binaries), and the artifact gate requires strict signatures to survive both the
+real installer ZIP extraction and a copy out of the mounted DMG. Signed entry
+points fail if an unsigned artifact is produced; plain unsigned `dist`
+rehearsals log that the signature-transfer portion was skipped. The runtime
+artifact verifier independently requires packaged
+Electron to match the exact safe lock version (at least 43.5.0) and resolves
+`brace-expansion@5.0.12` from packaged Pi's actual minimatch location. There is
+no supported test-skip path. For a pinned-Pi
 candidate, also rehearse `npm ci`, `npm run test:full`, and `npm run dist`, then
 complete the provider-spending Kitty journey and manual GUI/IME checks in the
 root release guide before publishing.

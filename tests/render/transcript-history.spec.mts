@@ -23,7 +23,11 @@ test("live compaction preserves earlier GUI scrollback", async ({ page }) => {
     );
     state.applyEvent(state.activeSessionId, {
       type: "compaction_end",
-      result: { summary: "compact summary" },
+      result: {
+        summary: "compact summary",
+        firstKeptEntryId: "kept-entry",
+        tokensBefore: 500,
+      },
     });
   });
 

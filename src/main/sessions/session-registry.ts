@@ -193,6 +193,8 @@ export interface SessionRecord {
     | undefined;
   /** Serializes a pathless host's discovered-file reservation before binding. */
   _initialSessionFileReservation?: Promise<void> | undefined;
+  /** Lock acquisitions and compensating unlocks that teardown must settle. */
+  _lockSettlements: Set<Promise<void>>;
   _activating?: boolean | undefined;
   _activationDone?: Promise<void> | undefined;
   _resolveActivationDone?: (() => void) | undefined;
@@ -205,6 +207,8 @@ export interface SessionRecord {
   _releasedActivationVisits: Map<string, number>;
   _restartChain?: Promise<void> | undefined;
   _restartTimer?: ReturnType<typeof setTimeout> | undefined;
+  /** Planned predecessor shutdown that must settle before another host can own this record. */
+  _retiringHost?: Promise<void> | undefined;
   /** Distinguishes a pre-ready retry failure from one already counted by host failure handling. */
   _automaticRestartAttempt?: { failureAccounted: boolean } | undefined;
   _dead?: boolean | undefined;
@@ -397,6 +401,7 @@ type SessionFileChangedCallback = (
 export class SessionRegistry {
   private sessions = new Map<SessionId, SessionRecord>();
   private byFile = new Map<string, SessionId>();
+  private stopAllPromise: Promise<void> | null = null;
 
   constructor(
     private onEvent: SessionEventCallback,
@@ -763,6 +768,7 @@ export class SessionRegistry {
     confinedSessionDescriptor?: number,
     confinedSessionRoot?: string,
   ): SessionId {
+    if (this.stopAllPromise) throw new Error("Session registry is shutting down");
     if (sessionFile) {
       const resolved = path.resolve(sessionFile);
       const existing = this.byFile.get(resolved);
@@ -793,6 +799,7 @@ export class SessionRegistry {
       lastActiveAt: Date.now(),
       availability: "unavailable",
       _rapidFailureCount: 0,
+      _lockSettlements: new Set(),
       _releasedActivationVisits: new Map(),
       _retainedIntents: new Map(),
       _pendingSubmissionPromises: new Map(),
@@ -828,6 +835,7 @@ export class SessionRegistry {
     env?: Record<string, string> | Promise<Record<string, string>>,
     activationVisitId?: string,
   ): Promise<void> {
+    if (this.stopAllPromise) throw new Error("Session registry is shutting down");
     const record = this.sessions.get(sessionId);
     if (!record) throw new Error(`Unknown session: ${sessionId}`);
     // A rapid switch-away can reach main while session.activate is still
@@ -851,6 +859,15 @@ export class SessionRegistry {
     if (record._restartTimer) {
       clearTimeout(record._restartTimer);
       record._restartTimer = undefined;
+    }
+    const retiringHost = record._retiringHost;
+    if (retiringHost) {
+      await retiringHost;
+      if (this.sessions.get(sessionId) !== record || record._dead) return;
+      // Another activation may have won while both callers were awaiting the
+      // same predecessor. Re-check every admission fence before spawning.
+      if (record._activating) return record._activationDone;
+      if (record.proc && (record.status === "starting" || record.status === "ready")) return;
     }
 
     record._activationVisitId = activationVisitId;
@@ -937,12 +954,12 @@ export class SessionRegistry {
       this.attachHost(record, proc);
       await proc.waitForReady();
       if (record._dead || record.proc !== proc) {
-        proc.stop();
+        await this.retireHost(record, proc);
         return;
       }
       await this.recoverEditorAfterRestart(record, proc);
       if (record._dead || record.proc !== proc) {
-        proc.stop();
+        await this.retireHost(record, proc);
         return;
       }
       record._procReady = true;
@@ -953,7 +970,7 @@ export class SessionRegistry {
       // owner that changes while the initial resync is still in flight.
       await this.resyncSession(sessionId);
       if (record._dead || record.proc !== proc) {
-        proc.stop();
+        await this.retireHost(record, proc);
         return;
       }
       // Keep the recovery budget across a successful ready handshake. Rapid
@@ -975,8 +992,9 @@ export class SessionRegistry {
       ) {
         this.captureEditorRecovery(record);
       }
-      failedProc?.stop();
       if (record.proc === failedProc) record.proc = undefined;
+      if (failedProc) await this.retireHost(record, failedProc);
+      else await record._retiringHost;
       record._procReady = false;
       record.status = "failed";
       record.error = message;
@@ -986,7 +1004,7 @@ export class SessionRegistry {
         record._activationVisitInteracted = undefined;
         record._activationVisitReleaseCancelled = undefined;
       }
-      this.releaseLock(record);
+      await this.releaseLock(record);
       this.onStatusChanged(sessionId, "failed", message);
       this.publishUnavailable(record, message);
       throw error;
@@ -2136,13 +2154,31 @@ export class SessionRegistry {
     record._rapidFailureCount = rapid ? record._rapidFailureCount + 1 : 1;
   }
 
+  private retireHost(record: SessionRecord, proc: SessionHost): Promise<void> {
+    const retirement = proc.stop();
+    record._retiringHost = retirement;
+    void retirement.then(() => {
+      if (record._retiringHost === retirement) record._retiringHost = undefined;
+    });
+    return retirement;
+  }
+
   private scheduleAutomaticRestart(record: SessionRecord): void {
+    if (this.sessions.get(record.sessionId) !== record) return;
+    const retirement = record._retiringHost;
+    if (retirement) {
+      // A disconnect begins durable SDK/extension cleanup. Never admit its
+      // successor (or release its advisory lock) until the predecessor has
+      // actually exited, including bounded TERM/KILL escalation.
+      void retirement.then(() => this.scheduleAutomaticRestart(record));
+      return;
+    }
     if (
       record._rapidFailureCount > MAX_AUTOMATIC_RESTART_ATTEMPTS ||
       record._dead ||
       !record._piPath
     ) {
-      this.releaseLock(record);
+      void this.releaseLock(record);
       return;
     }
     if (record._restartTimer) return;
@@ -2196,7 +2232,7 @@ export class SessionRegistry {
     record.proc = undefined;
     this.retireHostUi(record);
     record._procReady = false;
-    proc.stop();
+    this.retireHost(record, proc);
     record.status = "failed";
     record.error = reason;
     this.publishDispatchFailureEscrow(record, proc, reason);
@@ -4717,7 +4753,7 @@ export class SessionRegistry {
       this.onPanelEvent(record.sessionId, { type: "panel_clear_all" });
       this.onPanelEvent(record.sessionId, { type: "unified_panel_reset" });
       record._mutationSequence++;
-      proc?.stop();
+      if (proc) await this.retireHost(record, proc);
       record.worktreePath = worktreePath;
       try {
         await this.activateSession(sessionId, piPath, env);
@@ -4820,11 +4856,11 @@ export class SessionRegistry {
       // The child may already be cold, failed, or unresponsive. In all cases
       // disposal below is still required and session files remain untouched.
     } finally {
-      this.closeSession(sessionId);
+      await this.closeSession(sessionId);
     }
   }
 
-  private closeSession(sessionId: SessionId): void {
+  private async closeSession(sessionId: SessionId): Promise<void> {
     const record = this.sessions.get(sessionId);
     if (!record) return;
     record._dead = true;
@@ -4841,10 +4877,16 @@ export class SessionRegistry {
     record._pendingUiAcks.clear();
     this.cancelPendingRendererCancellation(record);
     record._rendererCancellationObligation = undefined;
+    // Snapshot after publishing `_dead`: every lock operation that crossed
+    // its admission checks is already registered, and later operations fail
+    // closed. This includes compensating unlocks for acquisitions that finish
+    // only after shutdown began.
+    const lockSettlements = [...record._lockSettlements];
     const proc = record.proc;
     record.proc = undefined;
-    proc?.stop();
-    this.releaseLock(record);
+    const retirement = proc ? this.retireHost(record, proc) : record._retiringHost;
+    await Promise.all([retirement ?? Promise.resolve(), ...lockSettlements]);
+    await this.releaseLock(record);
     this.releaseConfinedSource(record);
     this.sessions.delete(sessionId);
     if (record.sessionFile && this.byFile.get(path.resolve(record.sessionFile)) === sessionId) {
@@ -4981,8 +5023,8 @@ export class SessionRegistry {
     this.onPanelEvent(sessionId, { type: "panel_clear_all" });
     this.onPanelEvent(sessionId, { type: "unified_panel_reset" });
     record._mutationSequence++;
-    proc.stop();
-    this.releaseLock(record);
+    await this.retireHost(record, proc);
+    await this.releaseLock(record);
     record.status = "cold";
     record.error = undefined;
     this.publishUnavailable(record, "Unused activation visit released");
@@ -4997,7 +5039,7 @@ export class SessionRegistry {
     return true;
   }
 
-  deactivateSession(sessionId: SessionId): void {
+  async deactivateSession(sessionId: SessionId): Promise<void> {
     const record = this.sessions.get(sessionId);
     if (!record) return;
     for (const pending of [...record._pendingUnifiedSubmits.values()]) {
@@ -5034,7 +5076,8 @@ export class SessionRegistry {
     }
     const proc = record.proc;
     record.proc = undefined;
-    proc?.stop();
+    if (proc) await this.retireHost(record, proc);
+    else await record._retiringHost;
     record._procReady = false;
     record.status = "cold";
     this.publishUnavailable(record, "Session deactivated explicitly");
@@ -5181,38 +5224,54 @@ export class SessionRegistry {
       this.handleRuntimeFailure(record, proc, reason);
     } else {
       this.retireHostUi(record);
-      this.releaseLock(record);
+      void this.releaseLock(record);
       this.onStatusChanged(record.sessionId, "failed", reason);
     }
     record._handlingLockCompromise = false;
   }
 
-  private async acquireLock(record: SessionRecord): Promise<void> {
-    if (!record.sessionFile || record._hasLock) return;
-    const resolved = path.resolve(record.sessionFile);
-    try {
-      const token = await this.lockPath(record, resolved, "primary");
-      if (record._dead || record._lockCompromised) {
-        this.unlockPath(resolved);
-        throw new Error("Session lock was compromised during acquisition");
+  private trackLockSettlement<T>(record: SessionRecord, operation: Promise<T>): Promise<T> {
+    // Install a rejection handler immediately; the original promise still
+    // propagates its result to its caller, while teardown gets a never-rejecting
+    // settlement it can safely join with every other record cleanup.
+    const settlement = operation.then(
+      () => {},
+      () => {},
+    );
+    record._lockSettlements.add(settlement);
+    void settlement.then(() => record._lockSettlements.delete(settlement));
+    return operation;
+  }
+
+  private acquireLock(record: SessionRecord): Promise<void> {
+    if (!record.sessionFile || record._hasLock) return Promise.resolve();
+    const acquisition = (async () => {
+      const resolved = path.resolve(record.sessionFile!);
+      try {
+        const token = await this.lockPath(record, resolved, "primary");
+        if (record._dead || record._lockCompromised) {
+          await this.unlockPath(resolved);
+          throw new Error("Session lock was compromised during acquisition");
+        }
+        record._hasLock = true;
+        record._lockPath = resolved;
+        record._primaryLockToken = token;
+      } catch (error) {
+        record._hasLock = false;
+        throw new Error(
+          `Session file lock contention prevented activation: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
-      record._hasLock = true;
-      record._lockPath = resolved;
-      record._primaryLockToken = token;
-    } catch (error) {
-      record._hasLock = false;
-      throw new Error(
-        `Session file lock contention prevented activation: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    })();
+    return this.trackLockSettlement(record, acquisition);
   }
 
-  private unlockPath(file: string | undefined): void {
-    if (!file) return;
-    void lockfile.unlock(file, { lockfilePath: `${file}.lock`, realpath: false }).catch(() => {});
+  private unlockPath(file: string | undefined): Promise<void> {
+    if (!file) return Promise.resolve();
+    return lockfile.unlock(file, { lockfilePath: `${file}.lock`, realpath: false }).catch(() => {});
   }
 
-  private releaseLock(record: SessionRecord): void {
+  private releaseLock(record: SessionRecord): Promise<void> {
     const primary = record._lockPath;
     const successor = record._transitionLock?.targetFile;
     // Retire callback identities before unlock, because proper-lockfile may
@@ -5222,11 +5281,13 @@ export class SessionRegistry {
     record._hasLock = false;
     record._lockPath = undefined;
     record._transitionLock = undefined;
-    this.unlockPath(primary);
-    this.unlockPath(successor);
+    const unlocked = Promise.all([this.unlockPath(primary), this.unlockPath(successor)]).then(
+      () => {},
+    );
     // A failed/retired activation must not retain a rejected reservation and
     // block a later activation from attempting to acquire its file anew.
     record._initialSessionFileReservation = undefined;
+    return this.trackLockSettlement(record, unlocked);
   }
 
   private async permitInitialSessionFile(
@@ -5237,53 +5298,56 @@ export class SessionRegistry {
     const target = path.resolve(sessionFile);
     const prior = record._initialSessionFileReservation;
     if (prior) return prior;
-    const reservation = (async () => {
-      if (
-        this.sessions.get(record.sessionId) !== record ||
-        record.proc !== proc ||
-        record._dead ||
-        record._closing
-      ) {
-        throw new Error("Session lifecycle rejected initial session-file lock");
-      }
-      if (record.sessionFile) {
+    const reservation = this.trackLockSettlement(
+      record,
+      (async () => {
         if (
-          path.resolve(record.sessionFile) !== target ||
-          !record._hasLock ||
-          record._lockPath !== target
+          this.sessions.get(record.sessionId) !== record ||
+          record.proc !== proc ||
+          record._dead ||
+          record._closing
         ) {
-          throw new Error("Initial session file does not match the held advisory lock");
+          throw new Error("Session lifecycle rejected initial session-file lock");
         }
-        return;
-      }
-      const occupied = this.byFile.get(target);
-      if (occupied && occupied !== record.sessionId)
-        throw new Error("Target session file is already active");
-      let token: string;
-      try {
-        token = await this.lockPath(record, target, "primary");
-      } catch (error) {
-        throw new Error(
-          `Session file lock contention prevented activation: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      // Closing can race proper-lockfile's async acquisition. Do not leave a
-      // lock behind for a record that no longer owns a live host.
-      if (
-        this.sessions.get(record.sessionId) !== record ||
-        record.proc !== proc ||
-        record._dead ||
-        record._closing
-      ) {
-        this.unlockPath(target);
-        throw new Error("Session lifecycle changed while reserving initial session file");
-      }
-      record._hasLock = true;
-      record._lockPath = target;
-      record._primaryLockToken = token;
-      record.sessionFile = target;
-      this.byFile.set(target, record.sessionId);
-    })();
+        if (record.sessionFile) {
+          if (
+            path.resolve(record.sessionFile) !== target ||
+            !record._hasLock ||
+            record._lockPath !== target
+          ) {
+            throw new Error("Initial session file does not match the held advisory lock");
+          }
+          return;
+        }
+        const occupied = this.byFile.get(target);
+        if (occupied && occupied !== record.sessionId)
+          throw new Error("Target session file is already active");
+        let token: string;
+        try {
+          token = await this.lockPath(record, target, "primary");
+        } catch (error) {
+          throw new Error(
+            `Session file lock contention prevented activation: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        // Closing can race proper-lockfile's async acquisition. Do not leave a
+        // lock behind for a record that no longer owns a live host.
+        if (
+          this.sessions.get(record.sessionId) !== record ||
+          record.proc !== proc ||
+          record._dead ||
+          record._closing
+        ) {
+          await this.unlockPath(target);
+          throw new Error("Session lifecycle changed while reserving initial session file");
+        }
+        record._hasLock = true;
+        record._lockPath = target;
+        record._primaryLockToken = token;
+        record.sessionFile = target;
+        this.byFile.set(target, record.sessionId);
+      })(),
+    );
     record._initialSessionFileReservation = reservation;
     return reservation;
   }
@@ -5337,19 +5401,24 @@ export class SessionRegistry {
       lock.successorLocked = true;
       return;
     }
-    try {
-      const token = await this.lockPath(record, target, "successor", request.transitionId);
-      if (record._dead || record._lockCompromised || record._transitionLock !== lock) {
-        this.unlockPath(target);
-        throw new Error("Session lock was compromised during transition reservation");
-      }
-      lock.successorLocked = true;
-      lock.successorLockToken = token;
-    } catch (error) {
-      throw new Error(
-        `Session file lock contention prevented transition: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    await this.trackLockSettlement(
+      record,
+      (async () => {
+        try {
+          const token = await this.lockPath(record, target, "successor", request.transitionId);
+          if (record._dead || record._lockCompromised || record._transitionLock !== lock) {
+            await this.unlockPath(target);
+            throw new Error("Session lock was compromised during transition reservation");
+          }
+          lock.successorLocked = true;
+          lock.successorLockToken = token;
+        } catch (error) {
+          throw new Error(
+            `Session file lock contention prevented transition: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      })(),
+    );
   }
 
   private abortTransitionLock(record: SessionRecord, transitionId: string): void {
@@ -5357,7 +5426,7 @@ export class SessionRegistry {
     if (!lock || lock.transitionId !== transitionId) return;
     if (lock.targetFile && lock.targetFile !== lock.oldLockPath) {
       lock.successorLockToken = undefined;
-      this.unlockPath(lock.targetFile);
+      void this.trackLockSettlement(record, this.unlockPath(lock.targetFile));
     }
     record._transitionLock = undefined;
   }
@@ -5390,7 +5459,9 @@ export class SessionRegistry {
     }
     record.sessionFile = lock.targetFile;
     this.byFile.set(lock.targetFile, record.sessionId);
-    if (old && old !== lock.targetFile) this.unlockPath(old);
+    if (old && old !== lock.targetFile) {
+      void this.trackLockSettlement(record, this.unlockPath(old));
+    }
     record._transitionLock = undefined;
   }
 
@@ -5435,8 +5506,21 @@ export class SessionRegistry {
     return id ? this.sessions.get(id) : undefined;
   }
 
-  stopAll(): void {
-    for (const record of [...this.sessions.values()]) this.closeSession(record.sessionId);
+  stopAll(): Promise<void> {
+    if (this.stopAllPromise) return this.stopAllPromise;
+    // Publish the single-flight before closeSession can synchronously trigger
+    // any lifecycle callback that requests another registry-wide stop.
+    this.stopAllPromise = Promise.resolve().then(async () => {
+      const records = [...this.sessions.values()];
+      const results = await Promise.allSettled(
+        records.map((record) => this.closeSession(record.sessionId)),
+      );
+      const errors = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (errors.length > 0) throw new AggregateError(errors, "Failed to stop every session");
+    });
+    return this.stopAllPromise;
   }
 
   getAll(): SessionRecord[] {

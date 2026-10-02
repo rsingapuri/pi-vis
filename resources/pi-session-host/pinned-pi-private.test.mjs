@@ -18,21 +18,21 @@ describe("pinned private llama.cpp adapter", () => {
     tempRoot = undefined;
   });
 
-  it("selects exactly the hidden llama.cpp factory from the installed pinned Pi", async () => {
+  it("selects exactly the built-in llama.cpp factory from the installed pinned Pi", async () => {
     expect(INSTALLED_PI_VERSION).toBe(PINNED_PRIVATE_LLAMA_VERSION);
     const extension = await importPinnedLlamaExtension(PINNED_PI_CLI, INSTALLED_PI_VERSION);
 
     expect(extension).toEqual({
       name: "llama.cpp",
       factory: expect.any(Function),
-      hidden: true,
+      builtin: true,
     });
     expect(Object.isFrozen(extension)).toBe(true);
   });
 
   it("refuses to reuse the exception for a different Pi version", async () => {
-    await expect(importPinnedLlamaExtension(PINNED_PI_CLI, "0.84.2")).rejects.toThrow(
-      /approved only for Pi 0\.85\.1/,
+    await expect(importPinnedLlamaExtension(PINNED_PI_CLI, "0.99.1")).rejects.toThrow(
+      /approved only for Pi 0\.99\.2/,
     );
   });
 
@@ -43,7 +43,7 @@ describe("pinned private llama.cpp adapter", () => {
     mkdirSync(path.join(distDir, "extensions"), { recursive: true });
     writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ type: "module" }));
     writeFileSync(path.join(distDir, "cli.js"), "// fake pinned Pi CLI\n");
-    writeFileSync(path.join(distDir, "index.js"), "export const VERSION = '0.85.1';\n");
+    writeFileSync(path.join(distDir, "index.js"), "export const VERSION = '0.99.2';\n");
     writeFileSync(
       path.join(distDir, "extensions", "index.js"),
       "export const builtInExtensions = [];\n",

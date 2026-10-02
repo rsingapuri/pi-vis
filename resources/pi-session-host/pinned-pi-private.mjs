@@ -1,7 +1,7 @@
 /**
  * The one approved private Pi dependency in the SDK host.
  *
- * Pi 0.85.1's CLI installs its llama.cpp manager from a hidden built-in
+ * Pi 0.99.2's CLI installs its llama.cpp manager from a built-in
  * extension registry that is shipped in the package but omitted from package
  * exports. Pi-Vis loads only that registry entry, then hands the factory back
  * to Pi through DefaultResourceLoader's public `extensionFactories` option.
@@ -14,7 +14,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolvePiEntry } from "./bootstrap.mjs";
 
-export const PINNED_PRIVATE_LLAMA_VERSION = "0.85.1";
+export const PINNED_PRIVATE_LLAMA_VERSION = "0.99.2";
 const LLAMA_EXTENSION_NAME = "llama.cpp";
 
 export async function importPinnedLlamaExtension(piPath, piVersion) {
@@ -40,7 +40,12 @@ export async function importPinnedLlamaExtension(piPath, piVersion) {
   }
 
   const extension = matches[0];
-  if (typeof extension.factory !== "function" || extension.hidden !== true) {
+  if (
+    typeof extension.factory !== "function" ||
+    extension.builtin !== true ||
+    extension.hidden !== undefined ||
+    extension.replaceable !== undefined
+  ) {
     throw new Error(
       `Pi ${piVersion}'s private ${LLAMA_EXTENSION_NAME} extension has an unexpected shape`,
     );
@@ -51,6 +56,6 @@ export async function importPinnedLlamaExtension(piPath, piVersion) {
   return Object.freeze({
     name: LLAMA_EXTENSION_NAME,
     factory: extension.factory,
-    hidden: true,
+    builtin: true,
   });
 }

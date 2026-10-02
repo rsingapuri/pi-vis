@@ -181,7 +181,7 @@ describe("SessionHost", () => {
   });
 
   it("round-trips exact-owner navigation presentation acknowledgement", async () => {
-    fake.emitReady("0.85.1");
+    fake.emitReady("0.99.2");
     await host.waitForReady();
     const owner = { hostInstanceId: fake.hostInstanceId, sessionEpoch: fake.sessionEpoch };
 
@@ -844,7 +844,7 @@ describe("SessionHost", () => {
 
   describe("Shell Turn I/O round-trips", () => {
     it("forwards sequenced input and returns the host acknowledgement", async () => {
-      await fake.emitReady("0.85.1");
+      await fake.emitReady("0.99.2");
       await host.waitForReady();
 
       await expect(host.sendShellInput("shell-1", 2, "yes\n")).resolves.toEqual({
@@ -862,7 +862,7 @@ describe("SessionHost", () => {
     });
 
     it("forwards resize revisions, reconstruction acknowledgement, and signals", async () => {
-      await fake.emitReady("0.85.1");
+      await fake.emitReady("0.99.2");
       await host.waitForReady();
 
       await expect(host.sendShellResize("shell-1", 4, 120, 40)).resolves.toBe(true);
@@ -1024,7 +1024,7 @@ describe("SessionHost", () => {
     });
 
     it("emits only valid editor_source_cleared lifecycle evidence", async () => {
-      await fake.emitReady("0.85.1");
+      await fake.emitReady("0.99.2");
       await host.waitForReady();
       const cleared = vi.fn();
       host.on("editorSourceCleared", cleared);
@@ -1100,9 +1100,28 @@ describe("SessionHost", () => {
   });
 
   describe("stop", () => {
-    it("escalates to SIGKILL when the host ignores SIGTERM", () => {
+    it("uses the child's graceful IPC-disconnect cleanup without sending a signal", async () => {
+      const signals: Array<NodeJS.Signals | undefined> = [];
+      fake.kill = (signal?: NodeJS.Signals) => {
+        signals.push(signal);
+        return true;
+      };
+
+      host.stop();
+      expect(fake.disconnectCalls).toBe(1);
+      await Promise.resolve();
+      expect(fake.exitCode).toBe(0);
+      expect(signals).toEqual([]);
+    });
+
+    it("bounds a host that ignores graceful disconnect and SIGTERM with SIGKILL", () => {
       const signals: Array<NodeJS.Signals | undefined> = [];
       (fake as unknown as { signalCode: NodeJS.Signals | null }).signalCode = null;
+      fake.disconnect = () => {
+        fake.disconnectCalls++;
+        fake.connected = false;
+        fake.emit("disconnect");
+      };
       fake.kill = (signal?: NodeJS.Signals) => {
         signals.push(signal);
         fake.killed = true;
@@ -1114,6 +1133,9 @@ describe("SessionHost", () => {
       vi.useFakeTimers();
       try {
         host.stop();
+        expect(fake.disconnectCalls).toBe(1);
+        expect(signals).toEqual([]);
+        vi.advanceTimersByTime(4500);
         expect(signals).toEqual(["SIGTERM"]);
         vi.advanceTimersByTime(3000);
         expect(signals).toEqual(["SIGTERM", "SIGKILL"]);

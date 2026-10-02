@@ -386,6 +386,7 @@ describe("loadHistory complete scrollback and cache", () => {
         type: "compaction",
         summary: "summary",
         firstKeptEntryId: "u2",
+        tokensBefore: 500,
       },
       {
         id: "u3",
@@ -482,7 +483,7 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
     expect((blocks[0]?.data as { summary: string }).summary).toMatch(/empty branch summary/i);
   });
 
-  it("skips non-rendering meta entries (label/model_change/thinking_level_change/session_info)", async () => {
+  it("skips non-rendering model-context and meta entries", async () => {
     const branch = [
       {
         type: "message",
@@ -507,14 +508,141 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
       },
       {
         type: "message",
+        id: "system1",
+        parentId: "tlc1",
+        timestamp: "t3a",
+        message: { role: "system", content: "private model context" },
+      },
+      {
+        type: "context_edit",
+        id: "edit1",
+        parentId: "system1",
+        timestamp: "t3b",
+        targetId: "u1",
+        replacement: null,
+      },
+      {
+        type: "usage",
+        id: "usage1",
+        parentId: "edit1",
+        timestamp: "t3c",
+        kind: "cache_warm",
+        provider: "anthropic",
+        model: "claude-sonnet",
+        usage: {
+          input: 10,
+          output: 0,
+          cacheRead: 10,
+          cacheWrite: 0,
+          totalTokens: 20,
+          cost: { input: 0, output: 0, cacheRead: 0.001, cacheWrite: 0, total: 0.001 },
+        },
+      },
+      {
+        type: "message",
         id: "a1",
-        parentId: "l1",
+        parentId: "usage1",
         timestamp: "t4",
         message: { role: "assistant", content: [{ type: "text", text: "hello!" }] },
       },
     ];
     const blocks = await entriesToTranscript(branch);
     expect(blocks.map((b) => b.type)).toEqual(["user", "assistant"]);
+  });
+
+  it("preserves normalized retain-none compaction state and nested tool result metadata", async () => {
+    const nestedUsage = {
+      input: 100,
+      output: 20,
+      cacheRead: 5,
+      cacheWrite: 2,
+      totalTokens: 127,
+      cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.2, total: 3.3 },
+    };
+    const blocks = await entriesToTranscript([
+      {
+        type: "message",
+        id: "assistant-1",
+        parentId: null,
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "parent-call",
+              name: "codemode",
+              arguments: { code: "await tools.read(...)" },
+            },
+          ],
+        },
+      },
+      {
+        type: "message",
+        id: "result-1",
+        parentId: "assistant-1",
+        message: {
+          role: "toolResult",
+          toolCallId: "parent-call",
+          toolName: "codemode",
+          content: [{ type: "text", text: "complete" }],
+          nestedCalls: {
+            calls: [
+              {
+                id: "child-call",
+                name: "read",
+                arguments: { path: "README.md" },
+                status: "ok",
+                durationMs: 2,
+              },
+            ],
+            complete: true,
+          },
+          usage: nestedUsage,
+          isError: false,
+        },
+      },
+      {
+        type: "compaction",
+        id: "compaction-1",
+        parentId: "result-1",
+        summary: "fresh start",
+        firstKeptEntryId: "compaction-1",
+        tokensBefore: 500,
+        systemMessage: {
+          role: "system",
+          content: "Updated prompt",
+          timestamp: 1_700_000_000_000,
+        },
+      },
+    ]);
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toMatchObject({
+      type: "tool_call",
+      data: {
+        toolCallId: "parent-call",
+        outputText: "complete",
+        resultMetadata: {
+          nestedCalls: {
+            calls: [expect.objectContaining({ id: "child-call", name: "read", status: "ok" })],
+            complete: true,
+          },
+        },
+        usage: nestedUsage,
+      },
+    });
+    expect(blocks[1]).toMatchObject({
+      type: "compaction",
+      data: {
+        summary: "fresh start",
+        firstKeptEntryId: "compaction-1",
+        systemMessage: {
+          role: "system",
+          content: "Updated prompt",
+          timestamp: 1_700_000_000_000,
+        },
+      },
+    });
   });
 
   it("preserves Pi 0.80.4 custom entries for SDK-host rendering", async () => {
@@ -908,7 +1036,6 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
         summary: "summary",
         firstKeptEntryId: "custom-entry",
         tokensBefore: 500,
-        estimatedTokensAfter: 125,
         details: "extension-details",
         fromHook: true,
       },
@@ -976,7 +1103,6 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
     });
     expect(blocks[4]?.data).toMatchObject({
       summary: "summary",
-      estimatedTokensAfter: 125,
       details: "extension-details",
       fromHook: true,
     });
@@ -1174,6 +1300,7 @@ describe("entriesToTranscript (pure helper used by /tree navigate)", () => {
         timestamp: "t2",
         summary: "compacted earlier",
         firstKeptEntryId: "u2",
+        tokensBefore: 500,
       },
       {
         type: "message",

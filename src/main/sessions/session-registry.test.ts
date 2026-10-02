@@ -199,6 +199,90 @@ describe("SessionRegistry direct AgentSession authority", () => {
     expect(h.registry.getSession(id)).toBeUndefined();
   });
 
+  it("shares stopAll and waits for every detached host to exit", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const fake = h.fakes[0]!;
+    vi.spyOn(fake, "disconnect").mockImplementation(() => {
+      fake.disconnectCalls++;
+      fake.connected = false;
+      fake.emit("disconnect");
+    });
+
+    const first = h.registry.stopAll();
+    const reentrant = h.registry.stopAll();
+    let settled = false;
+    void first.then(() => {
+      settled = true;
+    });
+    await tick();
+
+    expect(reentrant).toBe(first);
+    expect(fake.disconnectCalls).toBe(1);
+    expect(settled).toBe(false);
+    expect(() => h.registry.openSession("/tmp/too-late")).toThrow(
+      "Session registry is shutting down",
+    );
+
+    fake.emitExit(0);
+    await first;
+
+    expect(h.registry.getSession(id)).toBeUndefined();
+    expect(settled).toBe(true);
+  });
+
+  it("waits for a shutdown-racing lock acquisition to finish its compensating unlock", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pivis-stop-lock-race-"));
+    const sessionFile = path.join(dir, "session.jsonl");
+    await writeFile(sessionFile, "");
+    let releaseLockAcquisition!: () => void;
+    const lockAcquisition = new Promise<void>((resolve) => {
+      releaseLockAcquisition = resolve;
+    });
+    let releaseUnlock!: () => void;
+    const unlock = new Promise<void>((resolve) => {
+      releaseUnlock = resolve;
+    });
+    const lockSpy = vi.spyOn(lockfile, "lock").mockImplementation(async () => {
+      await lockAcquisition;
+      return async () => {};
+    });
+    const unlockSpy = vi.spyOn(lockfile, "unlock").mockImplementation(async () => {
+      await unlock;
+    });
+    const h = harness();
+    const id = h.registry.openSession(dir, sessionFile);
+    try {
+      const activation = h.registry.activateSession(id, "/tmp/pi", {});
+      await vi.waitFor(() => expect(lockSpy).toHaveBeenCalledOnce());
+
+      const stopping = h.registry.stopAll();
+      let settled = false;
+      void stopping.then(() => {
+        settled = true;
+      });
+      await tick();
+      expect(settled).toBe(false);
+
+      releaseLockAcquisition();
+      await vi.waitFor(() => expect(unlockSpy).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+
+      releaseUnlock();
+      await stopping;
+      await activation;
+      expect(h.registry.getSession(id)).toBeUndefined();
+      expect(settled).toBe(true);
+    } finally {
+      releaseLockAcquisition();
+      releaseUnlock();
+      lockSpy.mockRestore();
+      unlockSpy.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed for real-host controls without the explicit test environment", async () => {
     const h = harness();
     const prior = process.env.PIVIS_TEST_REAL_HOST_CONTROL;
@@ -281,7 +365,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
       forceClose.mock.invocationCallOrder[0]!,
     );
     expect(h.registry.getSession(id)).toBeUndefined();
-    expect(h.fakes[0]!.killed).toBe(true);
+    expect(h.fakes[0]!.disconnectCalls).toBe(1);
+    expect(h.fakes[0]!.exitCode).toBe(0);
+    expect(h.fakes[0]!.killed).toBe(false);
   });
 
   it("forces cleanup when the best-effort streaming escape times out", async () => {
@@ -444,13 +530,52 @@ describe("SessionRegistry direct AgentSession authority", () => {
       released: true,
     });
 
-    expect(fake.killed).toBe(true);
+    expect(fake.disconnectCalls).toBe(1);
+    expect(fake.exitCode).toBe(0);
+    expect(fake.killed).toBe(false);
     expect(h.registry.getSession(id)).toMatchObject({
       status: "cold",
       proc: undefined,
     });
     expect(h.panelEvents).toContainEqual([id, { type: "unified_panel_reset" }]);
     h.registry.stopAll();
+  });
+
+  it("retains the advisory lock until an activation-visit host actually exits", async () => {
+    const { root, sessionFile } = persistedSessionFixture("activation-retirement-lock");
+    const h = harness({
+      configureFake: (fake, spawnIndex) => {
+        if (spawnIndex !== 0) return;
+        fake.disconnect = () => {
+          if (!fake.connected) throw new Error("Host process IPC channel closed");
+          fake.disconnectCalls++;
+          fake.connected = false;
+          fake.emit("disconnect");
+        };
+      },
+    });
+    const id = h.registry.openSession(root, sessionFile);
+    try {
+      await h.registry.activateSession(id, "/tmp/pi", {}, "visit-with-lock");
+      const record = h.registry.getSession(id)!;
+      const predecessor = h.fakes[0]!;
+
+      const releasing = h.registry.releaseActivationVisit(id, "visit-with-lock");
+      await vi.waitFor(() => expect(predecessor.disconnectCalls).toBe(1));
+
+      expect(predecessor.exitCode).toBeNull();
+      expect(record._hasLock).toBe(true);
+      expect(record._retiringHost).toBeDefined();
+
+      predecessor.emitExit(0);
+      await expect(releasing).resolves.toEqual({ released: true });
+      expect(record._hasLock).toBe(false);
+      expect(record._retiringHost).toBeUndefined();
+    } finally {
+      h.registry.stopAll();
+      await tick();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("cancels an in-flight activation release when the user returns", async () => {
@@ -703,7 +828,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
         status: "failed",
         proc: undefined,
       });
-      expect(h.fakes[0]!.killed).toBe(true);
+      expect(h.fakes[0]!.disconnectCalls).toBe(1);
+      await vi.waitFor(() => expect(h.fakes[0]!.exitCode).toBe(0));
+      expect(h.fakes[0]!.killed).toBe(false);
       await expect(
         h.registry.dispatchIntent({
           sessionId: id,
@@ -789,7 +916,9 @@ describe("SessionRegistry direct AgentSession authority", () => {
         sessionFile: oldFile,
       });
       expect(record.snapshot?.sessionEpoch).toBe(sessionEpoch);
-      expect(h.fakes[0]!.killed).toBe(true);
+      expect(h.fakes[0]!.disconnectCalls).toBe(1);
+      await vi.waitFor(() => expect(h.fakes[0]!.exitCode).toBe(0));
+      expect(h.fakes[0]!.killed).toBe(false);
       await expect(
         h.registry.dispatchIntent({
           sessionId: id,
@@ -3140,6 +3269,38 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
+  it("does not start automatic recovery while an unresponsive predecessor is disposing", async () => {
+    const h = harness({
+      configureFake: (fake, spawnIndex) => {
+        if (spawnIndex !== 0) return;
+        fake.disconnect = () => {
+          if (!fake.connected) throw new Error("Host process IPC channel closed");
+          fake.disconnectCalls++;
+          fake.connected = false;
+          fake.emit("disconnect");
+        };
+      },
+    });
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const predecessor = h.fakes[0]!;
+    const predecessorHost = h.registry.getSession(id)!.proc!;
+
+    predecessorHost.emit("unresponsive");
+    await vi.waitFor(() => expect(predecessor.disconnectCalls).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(predecessor.exitCode).toBeNull();
+    expect(h.fakes).toHaveLength(1);
+    expect(h.registry.getSession(id)?._retiringHost).toBeDefined();
+
+    predecessor.emitExit(0);
+    await vi.waitFor(() => expect(h.fakes).toHaveLength(2));
+    await vi.waitFor(() => expect(h.registry.getSession(id)?.status).toBe("ready"));
+    expect(h.registry.getSession(id)?._retiringHost).toBeUndefined();
+    h.registry.stopAll();
+  });
+
   it("automatically recovers an exit carrying the fatal IPC backpressure diagnostic", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
@@ -3376,6 +3537,35 @@ describe("SessionRegistry direct AgentSession authority", () => {
       text: "just-updated draft",
       attachments: [expect.objectContaining({ name: "fresh.txt" })],
     });
+    h.registry.stopAll();
+  });
+
+  it("does not spawn a worktree replacement before its predecessor exits", async () => {
+    const h = harness({
+      configureFake: (fake, spawnIndex) => {
+        if (spawnIndex !== 0) return;
+        fake.disconnect = () => {
+          if (!fake.connected) throw new Error("Host process IPC channel closed");
+          fake.disconnectCalls++;
+          fake.connected = false;
+          fake.emit("disconnect");
+        };
+      },
+    });
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const predecessor = h.fakes[0]!;
+
+    const respawn = h.registry.setWorktreeAndRespawn(id, "/tmp/project-worktree", "/tmp/pi", {});
+    await vi.waitFor(() => expect(predecessor.disconnectCalls).toBe(1));
+
+    expect(predecessor.exitCode).toBeNull();
+    expect(h.fakes).toHaveLength(1);
+
+    predecessor.emitExit(0);
+    await respawn;
+    expectDirectHostSpawns(h.spawnArgs, 2);
+    expect(h.registry.getSession(id)?.status).toBe("ready");
     h.registry.stopAll();
   });
 

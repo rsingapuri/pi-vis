@@ -507,7 +507,12 @@ describe("transcript reducer", () => {
       state,
       e({
         type: "compaction_end",
-        result: { summary: "Compacted 500 tokens", estimatedTokensAfter: 1_250 },
+        result: {
+          summary: "Compacted 500 tokens",
+          firstKeptEntryId: "kept-entry",
+          tokensBefore: 1_750,
+          estimatedTokensAfter: 1_250,
+        },
       }),
     );
     expect(state.blocks).toHaveLength(1);
@@ -1023,12 +1028,116 @@ describe("transcript reducer", () => {
     );
     state = applyPiEvent(
       state,
-      e({ type: "compaction_end", result: { summary: "summary", usage: PI_USAGE } }),
+      e({
+        type: "compaction_end",
+        result: {
+          summary: "summary",
+          firstKeptEntryId: "kept-entry",
+          tokensBefore: 500,
+          usage: PI_USAGE,
+        },
+      }),
     );
 
     const blocks = allTranscriptBlocks(state);
     expect(blocks[0]).toMatchObject({ type: "tool_call", data: { usage: PI_USAGE } });
     expect(blocks[1]).toMatchObject({ type: "compaction", data: { usage: PI_USAGE } });
+  });
+
+  it("keeps nested ctx.executeTool activity inside the parent result", () => {
+    let state = applyPiEvent(
+      createTranscriptState(),
+      e({
+        type: "tool_execution_start",
+        toolCallId: "parent",
+        toolName: "codemode",
+        args: { code: "await tools.read(...)" },
+      }),
+    );
+    for (const event of [
+      {
+        type: "tool_execution_start" as const,
+        toolCallId: "child",
+        toolName: "read",
+        args: { path: "README.md" },
+        parentToolCallId: "parent",
+      },
+      {
+        type: "tool_execution_update" as const,
+        toolCallId: "child",
+        toolName: "read",
+        args: { path: "README.md" },
+        partialResult: { content: [{ type: "text", text: "partial" }] },
+        parentToolCallId: "parent",
+      },
+      {
+        type: "tool_execution_end" as const,
+        toolCallId: "child",
+        toolName: "read",
+        result: { content: [{ type: "text", text: "done" }] },
+        isError: false,
+        parentToolCallId: "parent",
+      },
+    ]) {
+      state = applyPiEvent(state, e(event));
+    }
+    state = applyPiEvent(
+      state,
+      e({
+        type: "tool_execution_end",
+        toolCallId: "parent",
+        toolName: "codemode",
+        result: {
+          content: [{ type: "text", text: "complete" }],
+          structuredContent: { value: 42 },
+        },
+        isError: false,
+      }),
+    );
+    state = applyPiEvent(
+      state,
+      e({
+        type: "message_start",
+        message: {
+          role: "toolResult",
+          toolCallId: "parent",
+          toolName: "codemode",
+          content: [{ type: "text", text: "complete" }],
+          nestedCalls: {
+            calls: [
+              {
+                id: "child",
+                name: "read",
+                arguments: { path: "README.md" },
+                status: "ok",
+                durationMs: 2,
+              },
+            ],
+            complete: true,
+          },
+          usage: PI_USAGE,
+          isError: false,
+          timestamp: 1_700_000_000_000,
+        },
+      }),
+    );
+
+    expect(state.blocks).toHaveLength(1);
+    expect(state.blocks[0]).toMatchObject({
+      type: "tool_call",
+      data: {
+        toolCallId: "parent",
+        outputText: "complete",
+        resultMetadata: {
+          structuredContent: { value: 42 },
+          nestedCalls: {
+            calls: [expect.objectContaining({ id: "child", name: "read", status: "ok" })],
+            complete: true,
+          },
+        },
+        usage: PI_USAGE,
+      },
+    });
   });
 });
 
@@ -1376,6 +1485,57 @@ describe("transcript reducer — role-based message_start", () => {
     expect(applyPiEvent(withNotice, event)).toBe(withNotice);
   });
 
+  it("anchors replayed cache-warming notices inside hydrated history", () => {
+    const initial = seedFromHistory(createTranscriptState(), [
+      { id: "assistant-1", type: "assistant", data: { role: "assistant", content: "Done" } },
+      {
+        id: "assistant-1-tool-call-1",
+        type: "tool_call",
+        data: {
+          toolCallId: "call-1",
+          toolName: "read",
+          outputText: "ok",
+          isError: false,
+          isStreaming: false,
+        },
+      },
+      { id: "user-2", type: "user", data: { content: "Next" } },
+    ]);
+    const event = e({
+      type: "cache_warming_notice",
+      noticeId: "cache-warm:warm-1",
+      usage: PI_USAGE,
+      provider: "anthropic",
+      model: "claude-sonnet",
+      note: "extension override",
+      afterEntryId: "assistant-1",
+    });
+
+    const withNotice = applyPiEvent(initial, event);
+    const withSecondNotice = applyPiEvent(
+      withNotice,
+      e({
+        ...event,
+        noticeId: "cache-warm:warm-2",
+        note: "second refresh",
+        afterEntryId: "cache-warm:warm-1",
+      }),
+    );
+    expect(allTranscriptBlocks(withSecondNotice).map((block) => block.id)).toEqual([
+      "assistant-1",
+      "assistant-1-tool-call-1",
+      "cache-warm:warm-1",
+      "cache-warm:warm-2",
+      "user-2",
+    ]);
+    expect(withSecondNotice.archivedBlockCount).toBe(5);
+    expect(allTranscriptBlocks(withSecondNotice)[2]).toMatchObject({
+      type: "custom_message",
+      data: { content: "Cache warmed (extension override): $3.300" },
+    });
+    expect(applyPiEvent(withNotice, event)).toBe(withNotice);
+  });
+
   it("ignores replayed cache notices whose history anchor is absent", () => {
     const initial = seedFromHistory(createTranscriptState(), [
       { id: "user-2", type: "user", data: { content: "Next" } },
@@ -1418,6 +1578,100 @@ describe("transcript reducer — role-based message_start", () => {
         data: { count: 2 },
       });
     }
+  });
+
+  it("renders new public entry_appended payloads without exposing context-only rows", () => {
+    let state = applyPiEvent(
+      createTranscriptState(),
+      e({
+        type: "entry_appended",
+        entry: {
+          id: "custom-message-1",
+          type: "custom_message",
+          customType: "notice",
+          display: true,
+          content: [{ type: "text", text: "visible" }],
+          details: { retained: true },
+        },
+      }),
+    );
+    state = applyPiEvent(
+      state,
+      e({
+        type: "entry_appended",
+        entry: {
+          id: "compaction-1",
+          type: "compaction",
+          summary: "fresh start",
+          firstKeptEntryId: "compaction-1",
+          tokensBefore: 500,
+          systemMessage: {
+            role: "system",
+            content: "new prompt",
+            timestamp: 1_700_000_000_000,
+          },
+        },
+      }),
+    );
+    const visible = state;
+    state = applyPiEvent(
+      state,
+      e({
+        type: "entry_appended",
+        entry: {
+          id: "context-edit-1",
+          type: "context_edit",
+          targetId: "system-1",
+          replacement: null,
+        },
+      }),
+    );
+    state = applyPiEvent(
+      state,
+      e({
+        type: "entry_appended",
+        entry: {
+          id: "usage-1",
+          type: "usage",
+          kind: "cache_warm",
+          provider: "anthropic",
+          model: "claude-sonnet",
+          usage: PI_USAGE,
+        },
+      }),
+    );
+
+    expect(state).toBe(visible);
+    expect(state.blocks).toMatchObject([
+      {
+        id: "custom-message-1",
+        type: "custom_message",
+        data: { content: "visible", details: { retained: true } },
+      },
+      {
+        id: "compaction-1",
+        type: "compaction",
+        data: {
+          summary: "fresh start",
+          firstKeptEntryId: "compaction-1",
+          systemMessage: {
+            role: "system",
+            content: "new prompt",
+            timestamp: 1_700_000_000_000,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("does not expose transcript-backed system messages as chat bubbles", () => {
+    const system = { role: "system", content: "private model context" };
+    let state = applyPiEvent(
+      createTranscriptState(),
+      e({ type: "message_start", message: system }),
+    );
+    state = applyPiEvent(state, e({ type: "message_end", message: system }));
+    expect(state.blocks).toEqual([]);
   });
 
   it("custom message_start without display renders nothing (matches pi's TUI)", () => {
@@ -1679,7 +1933,13 @@ describe("transcript reducer — streaming perf invariants", () => {
       state = addUserBlock(state, `archived-${index}`);
     }
     const preCompactionArray = state.blocks;
-    state = applyPiEvent(state, e({ type: "compaction_end", result: { summary: "summary" } }));
+    state = applyPiEvent(
+      state,
+      e({
+        type: "compaction_end",
+        result: { summary: "summary", firstKeptEntryId: "kept-entry", tokensBefore: 500 },
+      }),
+    );
     expect(state.archivedBlockChunks[0]).toBe(preCompactionArray);
     const archivedChunk = state.archivedBlockChunks[0];
     const firstArchivedBlock = archivedChunk?.[0];
@@ -1706,7 +1966,14 @@ describe("transcript reducer — streaming perf invariants", () => {
     for (let index = 0; index < 500; index += 1) {
       state = applyPiEvent(
         state,
-        e({ type: "compaction_end", result: { summary: `summary-${index}` } }),
+        e({
+          type: "compaction_end",
+          result: {
+            summary: `summary-${index}`,
+            firstKeptEntryId: `kept-${index}`,
+            tokensBefore: 500,
+          },
+        }),
       );
     }
 
@@ -1956,7 +2223,13 @@ describe("transcript reducer — compaction preserves scrollback", () => {
     let state = withUserBlocks(250);
     const originalIds = state.blocks.map((block) => block.id);
 
-    state = applyPiEvent(state, e({ type: "compaction_end", result: { summary: "s1" } }));
+    state = applyPiEvent(
+      state,
+      e({
+        type: "compaction_end",
+        result: { summary: "s1", firstKeptEntryId: "kept-1", tokensBefore: 500 },
+      }),
+    );
 
     const allBlocks = allTranscriptBlocks(state);
     expect(allBlocks.slice(0, -1).map((block) => block.id)).toEqual(originalIds);
@@ -1968,12 +2241,24 @@ describe("transcript reducer — compaction preserves scrollback", () => {
 
   it("preserves scrollback across repeated compactions", () => {
     let state = withUserBlocks(250);
-    state = applyPiEvent(state, e({ type: "compaction_end", result: { summary: "s1" } }));
+    state = applyPiEvent(
+      state,
+      e({
+        type: "compaction_end",
+        result: { summary: "s1", firstKeptEntryId: "kept-1", tokensBefore: 500 },
+      }),
+    );
     for (let i = 0; i < 50; i++) state = addUserBlock(state, `post${i}`);
     const beforeSecondCompaction = allTranscriptBlocks(state);
     const firstArchive = state.archivedBlockChunks[0];
 
-    state = applyPiEvent(state, e({ type: "compaction_end", result: { summary: "s2" } }));
+    state = applyPiEvent(
+      state,
+      e({
+        type: "compaction_end",
+        result: { summary: "s2", firstKeptEntryId: "kept-2", tokensBefore: 500 },
+      }),
+    );
 
     const allBlocks = allTranscriptBlocks(state);
     expect(allBlocks.slice(0, -1)).toEqual(beforeSecondCompaction);
@@ -1987,7 +2272,10 @@ describe("transcript reducer — compaction preserves scrollback", () => {
   it("compaction on an empty transcript still produces just the marker", () => {
     const state = applyPiEvent(
       createTranscriptState(),
-      e({ type: "compaction_end", result: { summary: "s" } }),
+      e({
+        type: "compaction_end",
+        result: { summary: "s", firstKeptEntryId: "kept-entry", tokensBefore: 500 },
+      }),
     );
     expect(state.blocks).toHaveLength(1);
     expect(state.blocks[0]?.type).toBe("compaction");

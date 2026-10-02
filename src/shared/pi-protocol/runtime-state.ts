@@ -144,6 +144,19 @@ export const RuntimeModelSchema = z
   .passthrough();
 
 /**
+ * The physical model that most recently served a request made through a
+ * virtual-model selection. Pi leaves this undefined for ordinary physical
+ * selections and until a virtual model has produced its first response.
+ */
+export const RoutedModelSchema = z
+  .object({
+    model: RuntimeModelSchema,
+    thinkingLevel: ThinkingLevelSchema.optional(),
+  })
+  .strict();
+export type RoutedModel = z.infer<typeof RoutedModelSchema>;
+
+/**
  * Owner-local runtime selection retained by main while replacing the host for
  * the same session record. The child treats this only as a fallback when the
  * active persisted branch does not identify its own model/thinking choice.
@@ -207,6 +220,7 @@ export const AgentSessionSnapshotSchema = z.object({
   retryAttempt: z.number().int().nonnegative(),
   isBashRunning: z.boolean(),
   model: RuntimeModelSchema.nullable(),
+  routedModel: RoutedModelSchema.optional(),
   thinkingLevel: ThinkingLevelSchema,
   availableThinkingLevels: z.array(ThinkingLevelSchema).optional(),
   sessionId: z.string(),
@@ -1369,6 +1383,7 @@ export const SemanticSnapshotSchema = z
     dispatchedIntentHighWatermark: NonNegativeIntegerSchema.optional(),
     dispatchedIntentTruncated: z.boolean().optional(),
     model: RuntimeModelSchema.nullable(),
+    routedModel: RoutedModelSchema.optional(),
     thinkingLevel: ThinkingLevelSchema,
     availableThinkingLevels: z.array(ThinkingLevelSchema).optional(),
     sessionName: z.string().optional(),

@@ -21,12 +21,86 @@ const BaseEntrySchema = z.object({
   timestamp: z.string().or(z.number()).optional(),
 });
 
+const TextContentSchema = z
+  .object({
+    type: z.literal("text"),
+    text: z.string(),
+    textSignature: z.string().optional(),
+  })
+  .passthrough();
+
+const ThinkingContentSchema = z
+  .object({
+    type: z.literal("thinking"),
+    thinking: z.string(),
+    thinkingSignature: z.string().optional(),
+    redacted: z.boolean().optional(),
+  })
+  .passthrough();
+
+const ImageContentSchema = z
+  .object({
+    type: z.literal("image"),
+    data: z.string(),
+    mimeType: z.string(),
+  })
+  .passthrough();
+
+const ToolCallContentSchema = z
+  .object({
+    type: z.literal("toolCall"),
+    id: z.string(),
+    name: z.string(),
+    arguments: z.record(z.unknown()),
+    thoughtSignature: z.string().optional(),
+    namespace: z.string().optional(),
+  })
+  .passthrough();
+
+const ContextEditableContentSchema = z.union([
+  z.string(),
+  z.array(z.discriminatedUnion("type", [TextContentSchema, ImageContentSchema])),
+  z.array(
+    z.discriminatedUnion("type", [TextContentSchema, ThinkingContentSchema, ToolCallContentSchema]),
+  ),
+]);
+
+const SystemMessageSchema = z
+  .object({
+    role: z.literal("system"),
+    content: z.union([z.string(), z.array(TextContentSchema)]),
+    sections: z.record(z.string().nullable()).optional(),
+    toolsAdded: z.array(z.unknown()).optional(),
+    toolsRemoved: z.array(z.unknown()).optional(),
+    timestamp: z.number(),
+  })
+  .passthrough();
+
+const NestedToolCallsSchema = z
+  .object({
+    calls: z.array(
+      z
+        .object({
+          id: z.string(),
+          name: z.string(),
+          arguments: z.record(z.unknown()).optional(),
+          argumentsBytes: z.number().optional(),
+          status: z.enum(["ok", "error", "unfinished"]),
+          durationMs: z.number().optional(),
+          error: z.string().optional(),
+        })
+        .passthrough(),
+    ),
+    complete: z.boolean(),
+  })
+  .passthrough();
+
 // Real pi v3 nests message data under a `message` key. The body carries
 // role/content + toolResult-specific fields; entry-level fields (id, parentId,
 // timestamp) live on the envelope.
 const MessageBodySchema = z
   .object({
-    role: z.enum(["user", "assistant", "toolResult", "bashExecution", "custom"]),
+    role: z.enum(["system", "user", "assistant", "toolResult", "bashExecution", "custom"]),
     // bashExecution has no content field. Other public roles retain their
     // content as unknown so text/image arrays survive schema validation.
     content: z.unknown().optional(),
@@ -34,6 +108,7 @@ const MessageBodySchema = z
     toolName: z.string().optional(),
     isError: z.boolean().optional(),
     usage: PiUsageSchema.optional(),
+    nestedCalls: NestedToolCallsSchema.optional(),
   })
   .passthrough();
 
@@ -55,11 +130,13 @@ export const ThinkingLevelChangeEntrySchema = BaseEntrySchema.extend({
 
 export const CompactionEntrySchema = BaseEntrySchema.extend({
   type: z.literal("compaction"),
-  summary: z.string().optional(),
-  reason: z.enum(["manual", "threshold", "overflow"]).optional(),
-  tokensBefore: z.number().optional(),
-  estimatedTokensAfter: z.number().optional(),
-  firstKeptEntryId: z.string().optional(),
+  summary: z.string(),
+  tokensBefore: z.number(),
+  // The draft/write API accepts null for retain-none. Pi persists that as the
+  // new compaction entry's own ID, so a file entry always has a string here.
+  firstKeptEntryId: z.string(),
+  // Complete prompt/tool transcript state captured at the boundary.
+  systemMessage: SystemMessageSchema.optional(),
   details: z.unknown().optional(),
   usage: PiUsageSchema.optional(),
   fromHook: z.boolean().optional(),
@@ -102,6 +179,26 @@ export const SessionInfoEntrySchema = BaseEntrySchema.extend({
   name: z.string().optional(),
 }).passthrough();
 
+export const ContextEditEntrySchema = BaseEntrySchema.extend({
+  type: z.literal("context_edit"),
+  targetId: z.string(),
+  replacement: z
+    .object({
+      content: ContextEditableContentSchema,
+    })
+    .strict()
+    .nullable(),
+}).passthrough();
+
+export const UsageEntrySchema = BaseEntrySchema.extend({
+  type: z.literal("usage"),
+  usage: PiUsageSchema,
+  kind: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  note: z.string().optional(),
+}).passthrough();
+
 export const KnownSessionEntrySchema = z.discriminatedUnion("type", [
   MessageEntrySchema,
   ModelChangeEntrySchema,
@@ -110,6 +207,8 @@ export const KnownSessionEntrySchema = z.discriminatedUnion("type", [
   BranchSummaryEntrySchema,
   CustomEntrySchema,
   CustomMessageEntrySchema,
+  ContextEditEntrySchema,
+  UsageEntrySchema,
   LabelEntrySchema,
   SessionInfoEntrySchema,
 ]);
@@ -127,3 +226,5 @@ export type MessageEntry = z.infer<typeof MessageEntrySchema>;
 export type CompactionEntry = z.infer<typeof CompactionEntrySchema>;
 export type CustomMessageEntry = z.infer<typeof CustomMessageEntrySchema>;
 export type SessionInfoEntry = z.infer<typeof SessionInfoEntrySchema>;
+export type ContextEditEntry = z.infer<typeof ContextEditEntrySchema>;
+export type UsageEntry = z.infer<typeof UsageEntrySchema>;

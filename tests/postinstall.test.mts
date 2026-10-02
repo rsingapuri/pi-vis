@@ -33,12 +33,16 @@ afterEach(() => {
 });
 
 describe("root postinstall", () => {
-  it("provisions Electron synchronously before applying the fail-closed node-pty patch", () => {
+  it("provisions Electron, verifies Pi, then applies the fail-closed node-pty patch", () => {
     const order: string[] = [];
     const result = runPostinstall({
       provisionElectronFn: vi.fn(() => {
         order.push("electron");
         return { version: "43.0.0", binaryPath: "/electron", packageDirectory: "/package" };
+      }),
+      verifyPiSecurityClosureFn: vi.fn(() => {
+        order.push("pi-security");
+        return { braceExpansionVersion: "5.0.12" };
       }),
       patchNodePtyFn: vi.fn(() => {
         order.push("node-pty");
@@ -46,21 +50,41 @@ describe("root postinstall", () => {
       }),
     });
 
-    expect(order).toEqual(["electron", "node-pty"]);
+    expect(order).toEqual(["electron", "pi-security", "node-pty"]);
+    expect(result.piSecurity).toEqual({ braceExpansionVersion: "5.0.12" });
     expect(result.nodePty).toEqual({ changed: false, packageDirectory: "/node-pty" });
   });
 
-  it("does not patch after failed provisioning and does not hide a node-pty patch failure", () => {
+  it("stops after provisioning or security failure and does not hide a node-pty failure", () => {
+    const verifyAfterProvisionFailure = vi.fn();
     const patchAfterProvisionFailure = vi.fn();
     expect(() =>
       runPostinstall({
         provisionElectronFn: () => {
           throw new Error("electron failed");
         },
+        verifyPiSecurityClosureFn: verifyAfterProvisionFailure,
         patchNodePtyFn: patchAfterProvisionFailure,
       }),
     ).toThrow("electron failed");
+    expect(verifyAfterProvisionFailure).not.toHaveBeenCalled();
     expect(patchAfterProvisionFailure).not.toHaveBeenCalled();
+
+    const patchAfterSecurityFailure = vi.fn();
+    expect(() =>
+      runPostinstall({
+        provisionElectronFn: () => ({
+          version: "43.0.0",
+          binaryPath: "/electron",
+          packageDirectory: "/package",
+        }),
+        verifyPiSecurityClosureFn: () => {
+          throw new Error("Pi security closure drift");
+        },
+        patchNodePtyFn: patchAfterSecurityFailure,
+      }),
+    ).toThrow("Pi security closure drift");
+    expect(patchAfterSecurityFailure).not.toHaveBeenCalled();
 
     expect(() =>
       runPostinstall({
@@ -69,6 +93,7 @@ describe("root postinstall", () => {
           binaryPath: "/electron",
           packageDirectory: "/package",
         }),
+        verifyPiSecurityClosureFn: () => ({ braceExpansionVersion: "5.0.12" }),
         patchNodePtyFn: () => {
           throw new Error("node-pty drift");
         },

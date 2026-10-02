@@ -13,9 +13,15 @@ import path from "node:path";
 import { lock, unlock } from "proper-lockfile";
 
 import type { AuthCredential, ProviderAuthStatus, ProviderDef } from "@shared/auth.js";
-import { PROVIDERS, findProvider, getProviderDisplayName } from "@shared/auth.js";
+import {
+  PROVIDERS,
+  PROVIDER_API_KEY_ENV_VARS,
+  findProvider,
+  getProviderDisplayName,
+} from "@shared/auth.js";
 import { boundedProcessFailureKind, captureProcessOutput } from "./bounded-process.js";
 import { appendDiagnostic } from "./diagnostics.js";
+import { mergeUserPiEnv } from "./pi-env.js";
 
 // ── Paths ────────────────────────────────────────────────────────────────
 
@@ -152,6 +158,124 @@ function toStatusEntry(key: string, credential: AuthCredential | undefined): Pro
   };
 }
 
+const ANTHROPIC_FEDERATION_ENV = [
+  "ANTHROPIC_FEDERATION_RULE_ID",
+  "ANTHROPIC_ORGANIZATION_ID",
+  "ANTHROPIC_IDENTITY_TOKEN_FILE",
+] as const;
+
+function hasEnvironmentValue(environment: Record<string, string>, variable: string): boolean {
+  return Boolean(environment[variable]);
+}
+
+function detectAnthropicEnvironmentSource(environment: Record<string, string>): string | undefined {
+  // This order is authentication semantics, not presentation preference. It
+  // exactly mirrors Pi's anthropic provider: bearer, OAuth token, API key,
+  // then workload-identity federation.
+  for (const variable of PROVIDER_API_KEY_ENV_VARS.anthropic ?? []) {
+    if (hasEnvironmentValue(environment, variable)) return `${variable} env var`;
+  }
+  if (ANTHROPIC_FEDERATION_ENV.every((variable) => hasEnvironmentValue(environment, variable))) {
+    return "Anthropic workload identity";
+  }
+  return undefined;
+}
+
+function detectBedrockEnvironmentSource(environment: Record<string, string>): string | undefined {
+  if (hasEnvironmentValue(environment, "AWS_BEARER_TOKEN_BEDROCK")) {
+    return "AWS_BEARER_TOKEN_BEDROCK env var";
+  }
+  if (hasEnvironmentValue(environment, "AWS_PROFILE")) return "AWS profile";
+  if (
+    hasEnvironmentValue(environment, "AWS_ACCESS_KEY_ID") &&
+    hasEnvironmentValue(environment, "AWS_SECRET_ACCESS_KEY")
+  ) {
+    return "AWS access keys";
+  }
+  if (
+    hasEnvironmentValue(environment, "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") ||
+    hasEnvironmentValue(environment, "AWS_CONTAINER_CREDENTIALS_FULL_URI")
+  ) {
+    return "AWS ECS task role";
+  }
+  if (hasEnvironmentValue(environment, "AWS_WEB_IDENTITY_TOKEN_FILE")) {
+    return "AWS web identity token";
+  }
+  return undefined;
+}
+
+function detectCloudflareEnvironmentSource(
+  provider: ProviderDef,
+  environment: Record<string, string>,
+): string | undefined {
+  if (
+    !hasEnvironmentValue(environment, "CLOUDFLARE_API_KEY") ||
+    !hasEnvironmentValue(environment, "CLOUDFLARE_ACCOUNT_ID")
+  ) {
+    return undefined;
+  }
+  if (
+    provider.key === "cloudflare-ai-gateway" &&
+    !hasEnvironmentValue(environment, "CLOUDFLARE_GATEWAY_ID")
+  ) {
+    return undefined;
+  }
+  return "Cloudflare environment";
+}
+
+function detectVertexEnvironmentSource(environment: Record<string, string>): string | undefined {
+  if (hasEnvironmentValue(environment, "GOOGLE_CLOUD_API_KEY")) {
+    return "GOOGLE_CLOUD_API_KEY env var";
+  }
+
+  const credentialsPath = environment.GOOGLE_APPLICATION_CREDENTIALS;
+  const hasCredentials = credentialsPath
+    ? fs.existsSync(credentialsPath)
+    : fs.existsSync(
+        path.join(os.homedir(), ".config", "gcloud", "application_default_credentials.json"),
+      );
+  const hasProject =
+    hasEnvironmentValue(environment, "GOOGLE_CLOUD_PROJECT") ||
+    hasEnvironmentValue(environment, "GCLOUD_PROJECT");
+  if (hasCredentials && hasProject && hasEnvironmentValue(environment, "GOOGLE_CLOUD_LOCATION")) {
+    return "Google application default credentials";
+  }
+  return undefined;
+}
+
+function detectEnvironmentSource(
+  provider: ProviderDef,
+  environment: Record<string, string>,
+): string | undefined {
+  switch (provider.key) {
+    case "anthropic":
+      return detectAnthropicEnvironmentSource(environment);
+    case "amazon-bedrock":
+      return detectBedrockEnvironmentSource(environment);
+    case "cloudflare-ai-gateway":
+    case "cloudflare-workers-ai":
+      return detectCloudflareEnvironmentSource(provider, environment);
+    case "google-vertex":
+      return detectVertexEnvironmentSource(environment);
+    default:
+      break;
+  }
+
+  const variable = PROVIDER_API_KEY_ENV_VARS[provider.key]?.[0];
+  if (variable && hasEnvironmentValue(environment, variable)) return `${variable} env var`;
+  return undefined;
+}
+
+/** Build the exact environment an SDK host receives before Pi-Vis-owned
+ * control variables are appended. Advanced Settings overrides the recovered
+ * login-shell value, matching getHostEnv(). */
+export function mergeAuthEnvironment(
+  loginShellEnv: Record<string, string>,
+  piEnv: Record<string, string> | undefined,
+): Record<string, string> {
+  return mergeUserPiEnv(loginShellEnv, piEnv);
+}
+
 // ── List auth status (merge file entries + known providers + env) ────────
 
 export function listAuthStatus(
@@ -173,30 +297,25 @@ export function listAuthStatus(
       const existing = result.find((p) => p.key === def.key);
       if (existing) {
         // Don't override file source if present
-        if (existing.source === "none" && def.envVar) {
-          const envVal = loginShellEnv[def.envVar];
-          if (envVal) {
-            existing.source = "environment";
-            existing.envVar = def.envVar;
-          }
+        const environmentLabel = detectEnvironmentSource(def, loginShellEnv);
+        if (existing.source === "none" && environmentLabel) {
+          existing.source = "environment";
+          existing.envVar = def.envVar;
+          existing.environmentLabel = environmentLabel;
         }
         if (def.supportsOAuth && !existing.supportsOAuth) {
           existing.supportsOAuth = true;
         }
       }
     } else {
-      let source: ProviderAuthStatus["source"] = "none";
-      if (def.envVar) {
-        const envVal = loginShellEnv[def.envVar];
-        if (envVal) {
-          source = "environment";
-        }
-      }
+      const environmentLabel = detectEnvironmentSource(def, loginShellEnv);
+      const source: ProviderAuthStatus["source"] = environmentLabel ? "environment" : "none";
       result.push({
         key: def.key,
         displayName: def.displayName,
         source,
         envVar: def.envVar,
+        environmentLabel,
         supportsOAuth: def.supportsOAuth,
       });
     }
@@ -286,7 +405,10 @@ let watchAbortController: AbortController | null = null;
  * Watches the directory (not the file) so atomic rename replacements
  * are detected. Debounces at ~150ms.
  */
-export function startAuthWatch(onChange: AuthChangeCallback): void {
+export function startAuthWatch(
+  onChange: AuthChangeCallback,
+  getPiEnv: () => Record<string, string> | undefined = () => undefined,
+): void {
   stopAuthWatch();
 
   const abortController = new AbortController();
@@ -308,9 +430,8 @@ export function startAuthWatch(onChange: AuthChangeCallback): void {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(async () => {
         if (signal.aborted) return;
-        const auth = readAuth();
-        const loginShellEnv = await getLoginShellEnv();
-        const providers = listAuthStatus(auth, loginShellEnv);
+        const providers = await getAuthStatus(getPiEnv());
+        if (signal.aborted) return;
         onChange(providers);
       }, 150);
     });
@@ -336,8 +457,25 @@ export function stopAuthWatch(): void {
 
 // ── Convenience: get full status list (for startup/refresh) ────────────
 
-export async function getAuthStatus(): Promise<ProviderAuthStatus[]> {
+export async function getAuthStatus(
+  piEnv?: Record<string, string> | undefined,
+): Promise<ProviderAuthStatus[]> {
   const auth = readAuth();
   const loginShellEnv = await getLoginShellEnv();
-  return listAuthStatus(auth, loginShellEnv);
+  return listAuthStatus(auth, mergeAuthEnvironment(loginShellEnv, piEnv));
+}
+
+/** Publish a fresh auth projection after a committed Settings patch changes
+ * piEnv. Kept here as a directly testable seam so IPC cannot accidentally
+ * refresh from the pre-commit environment or forget removals represented by an
+ * empty object. */
+export async function publishAuthStatusForSettingsUpdate(
+  updates: object,
+  committedPiEnv: Record<string, string> | undefined,
+  onChange: AuthChangeCallback,
+  readStatus: typeof getAuthStatus = getAuthStatus,
+): Promise<boolean> {
+  if (!Object.prototype.hasOwnProperty.call(updates, "piEnv")) return false;
+  onChange(await readStatus(committedPiEnv));
+  return true;
 }

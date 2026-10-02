@@ -2093,7 +2093,7 @@ describe("sessions store - transcript recovery", () => {
     );
     useSessionsStore.getState().applyEvent(SESSION_A, {
       type: "compaction_end",
-      result: { summary: "compacted" },
+      result: { summary: "compacted", firstKeptEntryId: "kept-entry", tokensBefore: 500 },
     });
     publishSemantic(
       SESSION_A,
@@ -8057,6 +8057,104 @@ describe("sessions store - tree navigation presentation", () => {
         expectedOwner: owner,
       }),
     );
+  });
+
+  it("refreshes cache notices for the installed leaf and rejects a predecessor query", async () => {
+    let resolveConversion!: (history: unknown[]) => void;
+    let resolvePredecessorQuery!: (result: unknown) => void;
+    const conversion = new Promise<unknown[]>((resolve) => {
+      resolveConversion = resolve;
+    });
+    const predecessorQuery = new Promise<unknown>((resolve) => {
+      resolvePredecessorQuery = resolve;
+    });
+    let cacheQueryCount = 0;
+    const queryResult = (
+      payload: { queryId?: string; query?: { type?: string } },
+      noticeId: string,
+    ) => ({
+      status: "ok",
+      queryId: payload.queryId,
+      owner,
+      queryType: payload.query?.type,
+      response: {
+        success: true,
+        data: {
+          notices: [
+            {
+              type: "cache_miss_notice",
+              noticeId,
+              afterEntryId: "selected-assistant",
+              missedTokens: 25_000,
+              missedCost: 0.12,
+              idleMs: 0,
+              modelChanged: false,
+            },
+          ],
+        },
+      },
+    });
+    navigationInvoke.mockImplementation((channel: string, payload: unknown) => {
+      if (channel === "session.transcriptForEntries") return conversion;
+      if (channel === "session.query") {
+        cacheQueryCount++;
+        if (cacheQueryCount === 1) return predecessorQuery;
+        return Promise.resolve(
+          queryResult(
+            payload as { queryId?: string; query?: { type?: string } },
+            "cache-current-leaf",
+          ),
+        );
+      }
+      if (channel === "session.acknowledgeNavigationPresentation") {
+        return Promise.resolve({ acknowledged: true });
+      }
+      throw new Error(`unexpected channel: ${channel}`);
+    });
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      const session = sessions.get(SESSION_A)!;
+      sessions.set(SESSION_A, { ...session, sessionFile: "/f/navigation-cache.jsonl" });
+      return { sessions };
+    });
+    useSessionsStore
+      .getState()
+      .seedHistory(SESSION_A, [
+        { id: "old-assistant", type: "assistant", data: { content: "old leaf" } },
+      ]);
+
+    installNavigationAttach("cache-navigation", "selected-leaf");
+    await vi.waitFor(() => expect(cacheQueryCount).toBe(1));
+    resolveConversion([
+      {
+        id: "selected-assistant",
+        type: "assistant",
+        data: { role: "assistant", content: "selected leaf" },
+      },
+      { id: "selected-user", type: "user", data: { content: "next" } },
+    ]);
+
+    await vi.waitFor(() => {
+      expect(cacheQueryCount).toBe(2);
+      expect(
+        allTranscriptBlocks(useSessionsStore.getState().sessions.get(SESSION_A)!.transcript).map(
+          (block) => block.id,
+        ),
+      ).toEqual(["selected-assistant", "cache-current-leaf", "selected-user"]);
+    });
+
+    const predecessorPayload = navigationInvoke.mock.calls.find(
+      ([channel]) => channel === "session.query",
+    )?.[1] as { queryId?: string; query?: { type?: string } };
+    resolvePredecessorQuery(queryResult(predecessorPayload, "cache-stale-predecessor"));
+    await predecessorQuery;
+    await Promise.resolve();
+
+    expect(
+      allTranscriptBlocks(useSessionsStore.getState().sessions.get(SESSION_A)!.transcript).map(
+        (block) => block.id,
+      ),
+    ).toEqual(["selected-assistant", "cache-current-leaf", "selected-user"]);
   });
 
   it("fences a delayed persisted hydration when the in-memory branch is installed", async () => {

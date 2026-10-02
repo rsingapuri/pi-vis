@@ -21,7 +21,7 @@ function deferred() {
 }
 
 function makeSession(overrides = {}) {
-  return {
+  const session = {
     isStreaming: false,
     isIdle: true,
     isCompacting: false,
@@ -41,10 +41,6 @@ function makeSession(overrides = {}) {
       getCommand: vi.fn(() => undefined),
       hasHandlers: vi.fn(() => false),
     },
-    prompt: vi.fn((_text, options) => {
-      options.preflightResult(true);
-      return Promise.resolve();
-    }),
     abort: vi.fn(async () => {}),
     abortBranchSummary: vi.fn(),
     abortCompaction: vi.fn(),
@@ -53,6 +49,18 @@ function makeSession(overrides = {}) {
     clearQueue: vi.fn(() => ({})),
     ...overrides,
   };
+  session.prompt ??= vi.fn((text, options) => {
+    const commandName = options.expandPromptTemplates ? text.slice(1).split(/\s/, 1)[0] : undefined;
+    const disposition =
+      commandName && session.extensionRunner.getCommand(commandName)
+        ? "handled"
+        : session.isStreaming
+          ? "queued"
+          : "started";
+    options.preflightResult(disposition);
+    return Promise.resolve();
+  });
+  return session;
 }
 
 async function readyAttach(authority, rendererGeneration, presentation) {
@@ -166,7 +174,7 @@ describe("state authority", () => {
         getSteeringMessages: vi.fn(() => steering),
         prompt: vi.fn((text, options) => {
           steering = [text];
-          options.preflightResult(true);
+          options.preflightResult("queued");
           return Promise.resolve();
         }),
         clearQueue: vi.fn(() => {
@@ -335,7 +343,7 @@ describe("state authority", () => {
         getSteeringMessages: vi.fn(() => [...steering]),
         prompt: vi.fn((text, options) => {
           steering = [...steering, text];
-          options.preflightResult(true);
+          options.preflightResult("queued");
           return Promise.resolve();
         }),
       },
@@ -440,7 +448,7 @@ describe("state authority", () => {
     let calls = 0;
     const { authority, session, sendRecord } = setup({
       prompt: vi.fn((_text, options) => {
-        options.preflightResult(true);
+        options.preflightResult("started");
         if (++calls === 1) {
           session.isStreaming = true;
           return first.promise;
@@ -476,7 +484,7 @@ describe("state authority", () => {
     let promptCalls = 0;
     const { authority, session } = setup({
       prompt: vi.fn((_text, options) => {
-        options.preflightResult(true);
+        options.preflightResult("started");
         promptCalls++;
         if (promptCalls === 1) return firstDrain.promise;
         session.isStreaming = true;
@@ -524,7 +532,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((_text, options) => {
         steering = ["original"];
-        options.preflightResult(true);
+        options.preflightResult("queued");
         steering = [];
         authority.observeEvent({
           type: "message_start",
@@ -552,7 +560,7 @@ describe("state authority", () => {
     const promptDone = deferred();
     const { authority, sendRecord } = setup({
       prompt: vi.fn((_text, options) => {
-        options.preflightResult(true);
+        options.preflightResult("started");
         authority.observeEvent({
           type: "message_start",
           message: { role: "user", content: "extension-transformed direct prompt" },
@@ -587,7 +595,7 @@ describe("state authority", () => {
           { type: "queue_update", steering: [], followUp: [] },
           "direct-after-empty-update",
         );
-        options.preflightResult(true);
+        options.preflightResult("started");
         harness.authority.observeEvent({
           type: "message_start",
           message: { role: "user", content: "direct after empty queue update" },
@@ -621,7 +629,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((_text, options) => {
         steering.push("original");
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return promptDone.promise;
       }),
     });
@@ -643,7 +651,7 @@ describe("state authority", () => {
         isStreaming: true,
         getSteeringMessages: vi.fn(() => steering),
         prompt: vi.fn((_text, options) => {
-          options.preflightResult(true);
+          options.preflightResult("queued");
           return promptDone.promise;
         }),
         clearQueue: vi.fn(() => {
@@ -702,7 +710,7 @@ describe("state authority", () => {
           { type: "queue_update", steering: [...steering], followUp: [] },
           "continued-input",
         );
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return Promise.resolve();
       }),
       clearQueue: vi.fn(() => {
@@ -723,7 +731,11 @@ describe("state authority", () => {
     expect(authority.semanticSnapshot().queues).toMatchObject({
       steering: ["unchanged queued steering"],
       steeringIntentIds: ["continued-input"],
-      management: { available: true },
+      management: {
+        available: false,
+        message: expect.stringContaining("Input hooks are active"),
+        removableIntentIds: ["continued-input"],
+      },
     });
     await expect(
       authority.manageQueue({
@@ -772,7 +784,7 @@ describe("state authority", () => {
           { type: "queue_update", steering: [...steering], followUp: [] },
           "continued-after-side-effect",
         );
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return promptDone.promise;
       }),
     });
@@ -806,7 +818,7 @@ describe("state authority", () => {
       prompt: vi.fn((text, options) => {
         const queue = options.streamingBehavior === "steer" ? steering : followUp;
         queue.push(text);
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return Promise.resolve();
       }),
       clearQueue: vi.fn(() => {
@@ -817,9 +829,11 @@ describe("state authority", () => {
       }),
       steer: vi.fn(async (text) => {
         steering.push(text);
+        return "queued";
       }),
       followUp: vi.fn(async (text) => {
         followUp.push(text);
+        return "queued";
       }),
     });
 
@@ -858,6 +872,9 @@ describe("state authority", () => {
     expect(steering).toEqual(["first revised"]);
     expect(authority.snapshot().steeringIntentIds).toEqual(["queue-one"]);
     expect(session.clearQueue).toHaveBeenCalledTimes(3);
+    for (const call of session.steer.mock.calls) {
+      expect(call[2]).toEqual({ source: "interactive" });
+    }
 
     await expect(
       authority.manageQueue({
@@ -882,6 +899,170 @@ describe("state authority", () => {
     expect(session.clearQueue).toHaveBeenCalledTimes(4);
   });
 
+  it("starts every hook-free replay before the active agent can observe a partial queue", async () => {
+    let steering = [];
+    let replayCalls = 0;
+    let observedDuringReplay;
+    const { authority } = setup({
+      isStreaming: true,
+      isIdle: false,
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((text, options) => {
+        steering.push(text);
+        options.preflightResult("queued");
+        return Promise.resolve();
+      }),
+      clearQueue: vi.fn(() => {
+        const cleared = { steering: [...steering], followUp: [] };
+        steering = [];
+        return cleared;
+      }),
+      steer: vi.fn(async (text) => {
+        const replayCall = ++replayCalls;
+        // Pi awaits _runInputHandlers() even when hasHandlers("input") is
+        // false. The active agent may resume after the first append, so it
+        // must already be behind every replay continuation in the microtask
+        // queue. A sequential rebuild exposes only "second" here.
+        await Promise.resolve();
+        steering.push(text);
+        if (replayCall === 1) {
+          queueMicrotask(() => {
+            observedDuringReplay = [...steering];
+          });
+        }
+        return "queued";
+      }),
+      followUp: vi.fn(async () => "queued"),
+    });
+
+    await authority.submit(makeRequest("queue-one", { text: "first", requestedMode: "steer" }));
+    await authority.submit(makeRequest("queue-two", { text: "second", requestedMode: "steer" }));
+
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "move",
+        targetIntentId: "queue-two",
+        direction: "earlier",
+      }),
+    ).resolves.toMatchObject({ applied: true });
+    expect(observedDuringReplay).toEqual(["second", "first"]);
+    expect(steering).toEqual(["second", "first"]);
+  });
+
+  it("refuses a nonempty queue replay before clearing when input hooks are active", async () => {
+    let steering = [];
+    const clearQueue = vi.fn(() => {
+      const cleared = { steering: [...steering], followUp: [] };
+      steering = [];
+      return cleared;
+    });
+    const steer = vi.fn(async (text) => {
+      steering.push(text);
+      return "queued";
+    });
+    const harness = setup({
+      isStreaming: true,
+      isIdle: false,
+      extensionRunner: {
+        getCommand: vi.fn(() => undefined),
+        hasHandlers: vi.fn((kind) => kind === "input"),
+      },
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((text, options) => {
+        const intentId = text === "keep" ? "keep" : "remove";
+        harness.authority.observeInputAdmissionResult(
+          intentId,
+          {
+            text,
+            images: options.images,
+            source: "interactive",
+            streamingBehavior: options.streamingBehavior,
+          },
+          { action: "continue" },
+        );
+        steering.push(text);
+        harness.authority.observeEvent(
+          { type: "queue_update", steering: [...steering], followUp: [] },
+          intentId,
+        );
+        options.preflightResult("queued");
+        return Promise.resolve();
+      }),
+      clearQueue,
+      steer,
+      followUp: vi.fn(async () => "queued"),
+    });
+    const { authority } = harness;
+
+    await authority.submit(makeRequest("keep", { text: "keep", requestedMode: "steer" }));
+    await authority.submit(makeRequest("remove", { text: "remove", requestedMode: "steer" }));
+
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "remove",
+        targetIntentId: "remove",
+      }),
+    ).resolves.toMatchObject({
+      message: expect.stringContaining("Input hooks are active"),
+    });
+    expect(clearQueue).not.toHaveBeenCalled();
+    expect(steer).not.toHaveBeenCalled();
+    expect(steering).toEqual(["keep", "remove"]);
+    expect(authority.snapshot().steeringIntentIds).toEqual(["keep", "remove"]);
+
+    // A full clear has no replay and remains safe under the same hook set.
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "clear",
+        expectedSteeringIntentIds: ["keep", "remove"],
+        expectedFollowUpIntentIds: [],
+      }),
+    ).resolves.toMatchObject({ applied: true, operation: "clear" });
+    expect(clearQueue).toHaveBeenCalledOnce();
+    expect(steering).toEqual([]);
+  });
+
+  it("fails closed when a hook-free public replay reports a non-queued disposition", async () => {
+    let steering = [];
+    const steer = vi.fn(async () => "handled");
+    const { authority } = setup({
+      isStreaming: true,
+      isIdle: false,
+      getSteeringMessages: vi.fn(() => steering),
+      prompt: vi.fn((text, options) => {
+        steering.push(text);
+        options.preflightResult("queued");
+        return Promise.resolve();
+      }),
+      clearQueue: vi.fn(() => {
+        const cleared = { steering: [...steering], followUp: [] };
+        steering = [];
+        return cleared;
+      }),
+      steer,
+      followUp: vi.fn(async () => "queued"),
+    });
+
+    await authority.submit(makeRequest("keep", { text: "keep", requestedMode: "steer" }));
+    await authority.submit(makeRequest("remove", { text: "remove", requestedMode: "steer" }));
+
+    await expect(
+      authority.manageQueue({
+        kind: "manageQueue",
+        operation: "remove",
+        targetIntentId: "remove",
+      }),
+    ).resolves.toMatchObject({
+      uncertain: true,
+      message: expect.stringContaining("handled an item"),
+    });
+    expect(steer).toHaveBeenCalledWith("keep", [], { source: "interactive" });
+    expect(authority.snapshot().steeringIntentIds).toEqual([]);
+  });
+
   it("removes only the targeted duplicate-text queue item", async () => {
     let steering = [];
     const { authority } = setup({
@@ -890,7 +1071,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((text, options) => {
         steering.push(text);
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return Promise.resolve();
       }),
       clearQueue: vi.fn(() => {
@@ -898,8 +1079,9 @@ describe("state authority", () => {
       }),
       steer: vi.fn(async (text) => {
         steering.push(text);
+        return "queued";
       }),
-      followUp: vi.fn(async () => {}),
+      followUp: vi.fn(async () => "queued"),
     });
 
     await authority.submit(
@@ -928,12 +1110,12 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((text, options) => {
         steering.push(text);
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return Promise.resolve();
       }),
       clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
-      steer: vi.fn(async () => {}),
-      followUp: vi.fn(async () => {}),
+      steer: vi.fn(async () => "queued"),
+      followUp: vi.fn(async () => "queued"),
     });
 
     await authority.submit(makeRequest("owned", { text: "plain", requestedMode: "steer" }));
@@ -961,7 +1143,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((_text, options) => {
         steering.push("extension transformed text");
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return Promise.resolve();
       }),
     });
@@ -995,7 +1177,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((text, options) => {
         steering.push(text);
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return Promise.resolve();
       }),
       clearQueue: vi.fn(() => {
@@ -1003,8 +1185,9 @@ describe("state authority", () => {
       }),
       steer: vi.fn(async (text) => {
         steering.push(text);
+        return "queued";
       }),
-      followUp: vi.fn(async () => {}),
+      followUp: vi.fn(async () => "queued"),
     });
 
     await authority.submit(makeRequest("safe", { text: "keep me", requestedMode: "steer" }));
@@ -1061,9 +1244,12 @@ describe("state authority", () => {
           hasHandlers: vi.fn(() => false),
         },
         prompt: vi.fn((text, options) => {
-          options.preflightResult(true);
-          if (text === "/e2e-notify") return extensionDone.promise;
+          if (text === "/e2e-notify") {
+            options.preflightResult("handled");
+            return extensionDone.promise;
+          }
           steering = [text];
+          options.preflightResult("queued");
           return normalDone.promise;
         }),
       },
@@ -1114,7 +1300,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((_text, options) => {
         steering = ["GUI transformed", "extension addition"];
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return promptDone.promise;
       }),
     });
@@ -1146,7 +1332,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((_text, options) => {
         steering = ["extension prefix original"];
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return promptDone.promise;
       }),
     });
@@ -1197,7 +1383,7 @@ describe("state authority", () => {
           },
           "handled-normal",
         );
-        options.preflightResult(true);
+        options.preflightResult("handled");
         return promptDone.promise;
       }),
     });
@@ -1210,7 +1396,7 @@ describe("state authority", () => {
           requestedMode: "steer",
         }),
       ),
-    ).resolves.toMatchObject({ disposition: "consumed", queued: true });
+    ).resolves.toMatchObject({ disposition: "consumed", queued: false });
     expect(authority.snapshot()).toMatchObject({
       steering: ["handled extension work"],
       steeringIntentIds: [null],
@@ -1232,10 +1418,8 @@ describe("state authority", () => {
   it("does not consume idle input when streaming appears before delayed preflight rejection", async () => {
     vi.useFakeTimers();
     const promptDone = deferred();
-    let reportPreflight;
     const { authority, session } = setup({
-      prompt: vi.fn((_text, options) => {
-        reportPreflight = options.preflightResult;
+      prompt: vi.fn(() => {
         session.isStreaming = true;
         return promptDone.promise;
       }),
@@ -1248,16 +1432,14 @@ describe("state authority", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(settled).toBe(false);
 
-    reportPreflight(false);
+    promptDone.reject(new Error("input rejected"));
     await expect(pending).resolves.toMatchObject({ disposition: "rejected" });
-    promptDone.resolve();
   });
 
   it("does not attach a rejected idle admission's images to unrelated hook-started work", async () => {
     vi.useFakeTimers();
     const promptDone = deferred();
     const image = { data: "rejected-image", mimeType: "image/png" };
-    let reportPreflight;
     let steering = [];
     const harness = setup({
       extensionRunner: {
@@ -1271,8 +1453,7 @@ describe("state authority", () => {
         harness.authority.observeEvent({ type: "queue_update", steering: [], followUp: [] });
         return { steering: cleared, followUp: [] };
       }),
-      prompt: vi.fn((_text, options) => {
-        reportPreflight = options.preflightResult;
+      prompt: vi.fn(() => {
         // The hook starts unrelated work in the same lane, then remains
         // unresolved beyond the diagnostic admission deadline.
         harness.session.isStreaming = true;
@@ -1297,7 +1478,6 @@ describe("state authority", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     await expect(pending).resolves.toMatchObject({ disposition: "admitting" });
 
-    reportPreflight(false);
     promptDone.reject(new Error("input rejected"));
     await flush();
     await authority.requestEscape("esc-unrelated-hook-work");
@@ -1317,7 +1497,7 @@ describe("state authority", () => {
     const { authority } = setup(
       {
         prompt: vi.fn((_text, options) => {
-          options.preflightResult(true);
+          options.preflightResult("started");
           return Promise.reject(new Error("failed after preflight"));
         }),
       },
@@ -1344,22 +1524,16 @@ describe("state authority", () => {
         return Promise.resolve();
       }),
       prompt: vi.fn(async (text, options) => {
-        try {
-          // Mirror Pi's public prompt branch after its awaited input hook.
-          await inputHook.promise;
-          if (harness.session.isStreaming) {
-            options.preflightResult(true);
-            return;
-          }
-          // Pi invokes this immediately before _runAgentPrompt(). The host
-          // fence must throw here so this post-abort branch never starts.
-          options.preflightResult(true);
-          startedTurns.push(text);
-        } catch (error) {
-          // Pi reports the caught callback failure, then rethrows it.
-          options.preflightResult(false);
-          throw error;
+        // Mirror Pi's public prompt branch after its awaited input hook.
+        await inputHook.promise;
+        if (harness.session.isStreaming) {
+          options.preflightResult("queued");
+          return;
         }
+        // Pi invokes this immediately before _runAgentPrompt(). The host
+        // fence must throw here so this post-abort branch never starts.
+        options.preflightResult("started");
+        startedTurns.push(text);
       }),
     });
     const { authority, session, sendRecord } = harness;
@@ -1449,7 +1623,7 @@ describe("state authority", () => {
         // before the immediately following preflight callback.
         harness.session.isStreaming = false;
         harness.session.isIdle = true;
-        options.preflightResult(true);
+        options.preflightResult("queued");
       }),
     });
     const { authority, sendRecord } = harness;
@@ -1511,23 +1685,18 @@ describe("state authority", () => {
         return { steering: cleared, followUp: [] };
       }),
       prompt: vi.fn(async (text, options) => {
-        try {
-          // Abort has been signalled but can remain observably streaming while
-          // Pi waits for its active turn to settle.
-          harness.session.isStreaming = true;
-          harness.session.isIdle = false;
-          await inputHook.promise;
-          steering.push(text);
-          harness.authority.observeEvent(
-            { type: "queue_update", steering: [...steering], followUp: [] },
-            "idle-dynamic-cancel",
-          );
-          options.preflightResult(true);
-          startedTurns.push(text);
-        } catch (error) {
-          options.preflightResult(false);
-          throw error;
-        }
+        // Abort has been signalled but can remain observably streaming while
+        // Pi waits for its active turn to settle.
+        harness.session.isStreaming = true;
+        harness.session.isIdle = false;
+        await inputHook.promise;
+        steering.push(text);
+        harness.authority.observeEvent(
+          { type: "queue_update", steering: [...steering], followUp: [] },
+          "idle-dynamic-cancel",
+        );
+        options.preflightResult("queued");
+        startedTurns.push(text);
       }),
     });
     const { authority, session, sendRecord } = harness;
@@ -1585,25 +1754,20 @@ describe("state authority", () => {
         return { steering: cleared, followUp: [] };
       }),
       prompt: vi.fn(async (text, options) => {
-        try {
-          if (text === "late cancelled queue") await inputHook.promise;
-          // Faithfully model pinned Pi: _queueSteer appends and emits its
-          // synchronous queue_update before prompt() invokes preflightResult.
-          steering.push(text);
-          harness.authority.observeEvent(
-            {
-              type: "queue_update",
-              steering: [...steering],
-              followUp: [],
-            },
-            "late-queue",
-          );
-          await Promise.resolve();
-          options.preflightResult(true);
-        } catch (error) {
-          options.preflightResult(false);
-          throw error;
-        }
+        if (text === "late cancelled queue") await inputHook.promise;
+        // Faithfully model pinned Pi: _queueSteer appends and emits its
+        // synchronous queue_update before prompt() invokes preflightResult.
+        steering.push(text);
+        harness.authority.observeEvent(
+          {
+            type: "queue_update",
+            steering: [...steering],
+            followUp: [],
+          },
+          "late-queue",
+        );
+        await Promise.resolve();
+        options.preflightResult("queued");
       }),
     });
     const { authority, session, sendRecord } = harness;
@@ -1676,24 +1840,19 @@ describe("state authority", () => {
         return { steering: cleared, followUp: [] };
       }),
       prompt: vi.fn(async (_text, options) => {
-        try {
-          await inputHook.promise;
-          // A handled input hook may enqueue its own work and then return
-          // success without Pi automatically appending the submitted prompt.
-          steering.push("extension-owned same lane");
-          harness.authority.observeEvent(
-            {
-              type: "queue_update",
-              steering: [...steering],
-              followUp: [],
-            },
-            "handled-cancelled",
-          );
-          options.preflightResult(true);
-        } catch (error) {
-          options.preflightResult(false);
-          throw error;
-        }
+        await inputHook.promise;
+        // A handled input hook may enqueue its own work and then consume the
+        // submitted prompt without Pi automatically appending it.
+        steering.push("extension-owned same lane");
+        harness.authority.observeEvent(
+          {
+            type: "queue_update",
+            steering: [...steering],
+            followUp: [],
+          },
+          "handled-cancelled",
+        );
+        options.preflightResult("handled");
       }),
     });
     const { authority, session, sendRecord } = harness;
@@ -1751,34 +1910,29 @@ describe("state authority", () => {
         return { steering: cleared, followUp: [] };
       }),
       prompt: vi.fn(async (text, options) => {
-        try {
-          await inputHook.promise;
-          steering.push(text);
-          harness.authority.observeEvent(
-            {
-              type: "queue_update",
-              steering: [...steering],
-              followUp: [],
-            },
-            "cancelled-before-unrelated",
-          );
-          // _queueSteer emits before awaiting agent.steer(). Unrelated work can
-          // append during that await, so the cancelled slot need not be newest.
-          await Promise.resolve();
-          steering.push("unrelated after cancelled");
-          harness.authority.observeEvent(
-            {
-              type: "queue_update",
-              steering: [...steering],
-              followUp: [],
-            },
-            "cancelled-before-unrelated",
-          );
-          options.preflightResult(true);
-        } catch (error) {
-          options.preflightResult(false);
-          throw error;
-        }
+        await inputHook.promise;
+        steering.push(text);
+        harness.authority.observeEvent(
+          {
+            type: "queue_update",
+            steering: [...steering],
+            followUp: [],
+          },
+          "cancelled-before-unrelated",
+        );
+        // _queueSteer emits before awaiting agent.steer(). Unrelated work can
+        // append during that await, so the cancelled slot need not be newest.
+        await Promise.resolve();
+        steering.push("unrelated after cancelled");
+        harness.authority.observeEvent(
+          {
+            type: "queue_update",
+            steering: [...steering],
+            followUp: [],
+          },
+          "cancelled-before-unrelated",
+        );
+        options.preflightResult("queued");
       }),
     });
     const { authority, session, sendRecord } = harness;
@@ -1836,22 +1990,17 @@ describe("state authority", () => {
         return { steering: cleared, followUp: [] };
       }),
       prompt: vi.fn(async (text, options) => {
-        try {
-          steering.push(text);
-          harness.authority.observeEvent(
-            {
-              type: "queue_update",
-              steering: [...steering],
-              followUp: [],
-            },
-            "already-appended",
-          );
-          await queueAppend.promise;
-          options.preflightResult(true);
-        } catch (error) {
-          options.preflightResult(false);
-          throw error;
-        }
+        steering.push(text);
+        harness.authority.observeEvent(
+          {
+            type: "queue_update",
+            steering: [...steering],
+            followUp: [],
+          },
+          "already-appended",
+        );
+        await queueAppend.promise;
+        options.preflightResult("queued");
       }),
     });
     const { authority, sendRecord } = harness;
@@ -1909,22 +2058,17 @@ describe("state authority", () => {
           return { steering: cleared, followUp: [] };
         }),
         prompt: vi.fn(async (text, options) => {
-          try {
-            await inputHook.promise;
-            steering.push(text);
-            harness.authority.observeEvent(
-              {
-                type: "queue_update",
-                steering: [...steering],
-                followUp: [],
-              },
-              "unsafe-cancelled",
-            );
-            options.preflightResult(true);
-          } catch (error) {
-            options.preflightResult(false);
-            throw error;
-          }
+          await inputHook.promise;
+          steering.push(text);
+          harness.authority.observeEvent(
+            {
+              type: "queue_update",
+              steering: [...steering],
+              followUp: [],
+            },
+            "unsafe-cancelled",
+          );
+          options.preflightResult("queued");
         }),
       },
       { onAdmissionStuck },
@@ -2107,39 +2251,34 @@ describe("state authority", () => {
         return { steering: cleared, followUp: [] };
       }),
       prompt: vi.fn(async (text, options) => {
-        try {
-          await resume.promise;
-          if (text === "first late") {
-            steering.push(text);
-            harness.authority.observeEvent(
-              {
-                type: "queue_update",
-                steering: [...steering],
-                followUp: [],
-              },
-              "first-late",
-            );
-            firstAppended.resolve();
-            await secondAppended.promise;
-          } else {
-            await firstAppended.promise;
-            steering.push(text);
-            harness.authority.observeEvent(
-              {
-                type: "queue_update",
-                steering: [...steering],
-                followUp: [],
-              },
-              "second-late",
-            );
-            secondAppended.resolve();
-            await releaseSecondCallback.promise;
-          }
-          options.preflightResult(true);
-        } catch (error) {
-          options.preflightResult(false);
-          throw error;
+        await resume.promise;
+        if (text === "first late") {
+          steering.push(text);
+          harness.authority.observeEvent(
+            {
+              type: "queue_update",
+              steering: [...steering],
+              followUp: [],
+            },
+            "first-late",
+          );
+          firstAppended.resolve();
+          await secondAppended.promise;
+        } else {
+          await firstAppended.promise;
+          steering.push(text);
+          harness.authority.observeEvent(
+            {
+              type: "queue_update",
+              steering: [...steering],
+              followUp: [],
+            },
+            "second-late",
+          );
+          secondAppended.resolve();
+          await releaseSecondCallback.promise;
         }
+        options.preflightResult("queued");
       }),
     });
     const { authority, session, sendRecord } = harness;
@@ -2196,7 +2335,8 @@ describe("state authority", () => {
     const { authority, session, setEditor } = setup({
       prompt: vi.fn((text, options) => {
         calls.push(text);
-        options.preflightResult(text !== "second");
+        if (text === "second") return Promise.reject(new Error("second rejected"));
+        options.preflightResult("started");
         return Promise.resolve();
       }),
     });
@@ -2293,7 +2433,7 @@ describe("state authority", () => {
     const pending = deferred();
     const { authority, session, sendRecord } = setup({
       prompt: vi.fn((_text, options) => {
-        options.preflightResult(true);
+        options.preflightResult("started");
         return pending.promise;
       }),
     });
@@ -2479,10 +2619,7 @@ describe("state authority", () => {
     const { authority, session, sendRecord } = setup(
       {
         extensionRunner: { getCommand: vi.fn(() => ({ name: "side-effect" })) },
-        prompt: vi.fn((_text, options) => {
-          options.preflightResult(true);
-          return Promise.reject(new Error("extension failed after invocation"));
-        }),
+        prompt: vi.fn(() => Promise.reject(new Error("extension failed before acceptance"))),
       },
       { getEditor: () => ({ revision: 1, text: "/side-effect", attachments: [] }) },
     );
@@ -2560,7 +2697,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((_text, options) => {
         steering = ["queued"];
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return promptDone.promise;
       }),
     });
@@ -2589,7 +2726,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((_text, options) => {
         steering = ["queued"];
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return promptDone.promise;
       }),
     });
@@ -2627,7 +2764,7 @@ describe("state authority", () => {
       }),
       prompt: vi.fn((_text, options) => {
         steering = ["original"];
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return promptDone.promise;
       }),
     });
@@ -2782,7 +2919,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((text, options) => {
         steering = [text];
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return Promise.resolve();
       }),
       clearQueue: vi
@@ -2843,7 +2980,7 @@ describe("state authority", () => {
       getSteeringMessages: vi.fn(() => steering),
       prompt: vi.fn((text, options) => {
         steering = [text];
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return Promise.resolve();
       }),
       clearQueue: vi.fn(() => {
@@ -3082,7 +3219,7 @@ describe("state authority", () => {
       isStreaming: true,
       isIdle: false,
       prompt: vi.fn((_text, options) => {
-        options.preflightResult(true);
+        options.preflightResult("queued");
         return prompt.promise;
       }),
     });
@@ -3276,8 +3413,8 @@ describe("state authority", () => {
         return false;
       },
     });
-    session.prompt = vi.fn(async (_text, options) => {
-      options.preflightResult(false);
+    session.prompt = vi.fn(async () => {
+      throw new Error("prompt rejected before acceptance");
     });
     const { authority } = setup(session);
 
@@ -4767,7 +4904,7 @@ describe("state authority", () => {
     const { authority, session, setEditor } = setup(
       {
         prompt: vi.fn((_text, options) => {
-          options.preflightResult(true);
+          options.preflightResult("started");
           session.isStreaming = true;
           return idleGate.promise;
         }),
@@ -4831,7 +4968,7 @@ describe("state authority", () => {
     session.isStreaming = true;
     const queuedGate = deferred();
     session.prompt.mockImplementation((_text, options) => {
-      options.preflightResult(true);
+      options.preflightResult("queued");
       return queuedGate.promise;
     });
     setEditor({ revision: 1, text: "queued-complete", attachments: [] });
@@ -4866,10 +5003,7 @@ describe("state authority", () => {
     const { authority } = setup(
       {
         extensionRunner: { getCommand: vi.fn(() => ({ invocationName: "explode" })) },
-        prompt: vi.fn((_text, options) => {
-          options.preflightResult(true);
-          return Promise.reject(new Error("extension exploded"));
-        }),
+        prompt: vi.fn(() => Promise.reject(new Error("extension exploded"))),
       },
       {
         sendFrame,

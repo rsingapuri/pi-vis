@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildProjectTrustOptions, createTrustResolver } from "./bootstrap.mjs";
+import {
+  buildProjectTrustOptions,
+  createTrustResolver,
+  promptProjectTrustChoice,
+} from "./bootstrap.mjs";
 
 // The trust resolver is the security linchpin of the SDK-host architecture:
 // without it, DefaultResourceLoader leaves projectTrusted at its `true` default
@@ -76,6 +80,30 @@ describe("createTrustResolver — deny-by-default flow", () => {
 
     await expect(resolveTrust({})).resolves.toBe(true);
     expect(setMany).toHaveBeenCalledWith([{ path: CWD, decision: true }]);
+  });
+
+  it("binds cross-cwd switch/resume/import prompts and decisions to each effective runtime cwd", async () => {
+    const initialCwd = "/workspace/initial";
+    for (const [operation, effectiveCwd] of [
+      ["switch", "/workspace/switched"],
+      ["resume", "/workspace/resumed"],
+      ["import", "/workspace/imported"],
+    ]) {
+      const { pi, setMany } = makeFakePi({ stored: null });
+      const createDialog = vi.fn(async () => ({ value: "Trust this folder" }));
+      const { resolveTrust } = createTrustResolver(pi, AGENT_DIR, effectiveCwd, (labels) =>
+        promptProjectTrustChoice(createDialog, effectiveCwd, labels),
+      );
+
+      await expect(resolveTrust({ reason: operation })).resolves.toBe(true);
+      expect(createDialog).toHaveBeenCalledWith(
+        "select",
+        expect.stringContaining(`Trust ${effectiveCwd}?`),
+        { options: expect.arrayContaining(["Trust this folder", "Do not trust"]) },
+      );
+      expect(createDialog.mock.calls[0][1]).not.toContain(initialCwd);
+      expect(setMany).toHaveBeenCalledWith([{ path: effectiveCwd, decision: true }]);
+    }
   });
 
   it("'Do not trust' persists DENY and returns false", async () => {

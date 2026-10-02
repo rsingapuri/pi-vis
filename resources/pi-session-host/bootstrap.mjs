@@ -85,6 +85,54 @@ export async function importPiTui(piPath) {
   return import(pathToFileURL(tuiEntry).href);
 }
 
+/**
+ * Reproduce Pi's public CLI built-in extension set for an SDK-created session.
+ * createAgentSessionServices() intentionally does not inject these factories
+ * for embedders. Pi 0.99 exposes codemode, tool search, and MCP creators on its
+ * public root; llama.cpp remains the single exact-version private lookup.
+ *
+ * `builtin` (rather than the former `hidden` inline shape) preserves Pi's
+ * settings and project-trust semantics: `builtin:<name>` loads by default,
+ * can be disabled through ordinary extension settings, and is loaded only
+ * after project trust resolves. The three composable integrations are
+ * replaceable exactly as in Pi's own CLI registry.
+ */
+export function createPiBuiltinExtensions(pi, pinnedLlamaExtension) {
+  const creators = [
+    ["codemode", pi?.createCodemodeExtension],
+    ["tool-search", pi?.createToolSearchExtension],
+    ["mcp", pi?.createMcpExtension],
+  ];
+  for (const [name, creator] of creators) {
+    if (typeof creator !== "function") {
+      throw new Error(`Pinned Pi public SDK is missing the ${name} built-in extension creator`);
+    }
+  }
+
+  const extensions = [
+    ...(pinnedLlamaExtension ? [pinnedLlamaExtension] : []),
+    {
+      name: "codemode",
+      factory: pi.createCodemodeExtension(),
+      replaceable: true,
+      builtin: true,
+    },
+    {
+      name: "tool-search",
+      factory: pi.createToolSearchExtension(),
+      replaceable: true,
+      builtin: true,
+    },
+    {
+      name: "mcp",
+      factory: pi.createMcpExtension(),
+      replaceable: true,
+      builtin: true,
+    },
+  ];
+  return Object.freeze(extensions.map((extension) => Object.freeze(extension)));
+}
+
 // ─── Session runtime options ─────────────────────────────────────────────────
 
 /**
@@ -336,6 +384,28 @@ export function buildProjectTrustOptions(cwd) {
   });
   options.push({ label: "Do not trust (this session only)", trusted: false, updates: [] });
   return options;
+}
+
+/**
+ * Present the project-trust choice for one effective runtime cwd.
+ *
+ * AgentSessionRuntime reuses its factory for cross-cwd switch/resume/import
+ * operations. The caller must therefore bind this helper to that invocation's
+ * cwd, never the cwd captured when the host process first started.
+ *
+ * @param {Function} createDialog - host UI dialog broker
+ * @param {string} cwd - effective cwd of the runtime being created
+ * @param {string[]} labels - trust choices from buildProjectTrustOptions()
+ * @returns {Promise<string | null>} selected label, or null on cancellation
+ */
+export async function promptProjectTrustChoice(createDialog, cwd, labels) {
+  const response = await createDialog(
+    "select",
+    `This folder has project-local pi extensions/settings that run with full access to your machine. Trust ${cwd}?`,
+    { options: labels },
+  );
+  if (response?.cancelled) return null;
+  return typeof response?.value === "string" ? response.value : null;
 }
 
 /**

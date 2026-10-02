@@ -31,6 +31,7 @@ import {
 import {
   getAuthStatus,
   getLoginShellEnv,
+  publishAuthStatusForSettingsUpdate,
   removeProvider,
   saveApiKey,
   startAuthWatch,
@@ -106,6 +107,7 @@ const activeWorktreeOperations = new Set<SessionId>();
 const lastWorktreeOperationErrors = new Map<SessionId, string>();
 const reservedCreatedWorktrees = new Map<string, SessionId>();
 let sessionSearchService: SessionSearchService | null = null;
+let stopAllSessionsPromise: Promise<void> | null = null;
 
 function isClosedHostTransportError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -457,9 +459,12 @@ export function initIpc(win: BrowserWindow): void {
   initExtensionUpdates((status) => safeSend("extensionUpdates.status", status));
 
   // Start watching auth.json for external changes
-  startAuthWatch((providers) => {
-    safeSend("auth.changed", { providers });
-  });
+  startAuthWatch(
+    (providers) => {
+      safeSend("auth.changed", { providers });
+    },
+    () => getSettings().piEnv,
+  );
 
   ipcMain.handle("pi.info", async () => {
     const piInfo = getPinnedPi(getSettings().piBinaryPath);
@@ -1613,6 +1618,18 @@ export function initIpc(win: BrowserWindow): void {
   ipcMain.handle("settings.set", async (_evt, updates: Partial<ReturnType<typeof getSettings>>) => {
     const next = saveSettings(updates);
     refreshBackgroundUpdateChecks();
+    // The Accounts surface describes the same effective environment as a
+    // newly spawned SDK host. Publish after the settings commit so adding,
+    // replacing, or removing an auth variable updates the open view without
+    // requiring an auth.json write or an app restart.
+    try {
+      await publishAuthStatusForSettingsUpdate(updates, next.piEnv, (providers) => {
+        safeSend("auth.changed", { providers });
+      });
+    } catch {
+      // Settings persistence succeeded. A status refresh is best-effort and
+      // the explicit auth.status read remains available for retry.
+    }
     // Color-scheme changes are handled entirely renderer-side: the host emits
     // stable per-role ANSI INDICES (color-agnostic), and the renderer resolves
     // them against the active palette at paint time. So a scheme swap recolors
@@ -1822,7 +1839,7 @@ export function initIpc(win: BrowserWindow): void {
 
   ipcMain.handle("auth.status", async () => {
     try {
-      return await getAuthStatus();
+      return await getAuthStatus(getSettings().piEnv);
     } catch {
       return [];
     }
@@ -1861,22 +1878,61 @@ export function initIpc(win: BrowserWindow): void {
   });
 }
 
-export function stopAllSessions(): void {
-  // Kill all PTY sessions (embedded terminals for login)
-  try {
-    killAllPtys();
-  } catch {
-    /* best effort */
-  }
-  try {
-    stopAuthWatch();
-  } catch {
-    /* best effort */
-  }
-  eventBatcher?.dispose();
-  void sessionSearchService?.stop();
-  sessionSearchService = null;
-  registry?.stopAll();
+export function stopAllSessions(): Promise<void> {
+  if (stopAllSessionsPromise) return stopAllSessionsPromise;
+  // Assign the single-flight before invoking any cleanup hook. A synchronous
+  // re-entrant stop request therefore observes and returns this exact promise.
+  stopAllSessionsPromise = Promise.resolve().then(async () => {
+    const errors: unknown[] = [];
+    // Kill all PTY sessions (embedded terminals for login)
+    try {
+      killAllPtys();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      stopAuthWatch();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      eventBatcher?.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    eventBatcher = null;
+    const searchService = sessionSearchService;
+    sessionSearchService = null;
+    const activeRegistry = registry;
+
+    const shutdownTasks: Promise<unknown>[] = [];
+    if (searchService) {
+      try {
+        shutdownTasks.push(searchService.stop());
+      } catch (error) {
+        shutdownTasks.push(Promise.reject(error));
+      }
+    }
+    if (activeRegistry) {
+      try {
+        shutdownTasks.push(activeRegistry.stopAll());
+      } catch (error) {
+        shutdownTasks.push(Promise.reject(error));
+      }
+    }
+
+    const results = await Promise.allSettled(shutdownTasks);
+    for (const result of results) {
+      if (result.status === "rejected") {
+        console.error("Failed to complete a main-process shutdown task:", result.reason);
+        errors.push(result.reason);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "Failed to complete every main-process shutdown task");
+    }
+  });
+  return stopAllSessionsPromise;
 }
 
 const backgroundUpdateScheduler = new UpdateCheckScheduler({

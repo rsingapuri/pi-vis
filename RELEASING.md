@@ -80,8 +80,10 @@ npm run release -- --patch --generate-notes --dry-run
 The command bumps `package.json`/`package-lock.json`, recreates dependencies with
 `npm ci`, requires a clean production `npm audit`, runs typecheck, lint, unit,
 render, E2E, and `npm ls --all`, builds
-signed/notarized artifacts, runs the final packaged runtime and PTY smoke
-through both the plain-Node SDK-host and Electron-main resolution paths,
+signed/notarized artifacts, requires strict codesign validity to survive the
+actual installer ZIP extraction and an ordinary copy out of the mounted DMG,
+runs the final packaged runtime and PTY smoke through both the plain-Node
+SDK-host and Electron-main resolution paths,
 verifies codesigning, Gatekeeper acceptance, and notarization stapling, commits
 the version bump, tags
 `vX.Y.Z`, pushes the tag, and creates the GitHub Release with the zip and dmg
@@ -95,21 +97,35 @@ is no supported test-skip path: a rerun must pass the same checks again.
 
 ### Mandatory pre-release checks
 
-The ordered `npm run release` check list begins with `npm ci`; pristine pinned
-Pi 0.85.1 must resolve from the exact lock graph. Root `postinstall` serially
-provisions and verifies Electron before applying the independent, fail-closed
-node-pty compatibility patch; release installs must not suppress lifecycle
-scripts. The automated suite
+The ordered `npm run release` check list begins with `npm ci`; the official
+Pi 0.99.2 tarball and its audited transitive closure must resolve from the exact
+root lock graph. Root `postinstall` serially provisions and verifies Electron,
+verifies that the unchanged published Pi shrinkwrap is superseded by the safe
+installed `brace-expansion@5.0.12` closure, and only then applies the
+independent, fail-closed node-pty compatibility patch; release installs must not
+suppress lifecycle scripts. The automated suite
 (`npm audit --omit=dev`, typecheck, `lint`, `test`, `test:render`, `test:e2e`,
 `npm ls --all`) then runs; its
 Electron lane includes the isolated,
-repository-pinned Pi 0.85.1 SDK-host compatibility journeys described in
-`docs/testing.md`. The subsequent `dist` step runs `verify:packaged-pty` against
-the completed app. It checks the exact six-package Pi production closure,
+repository-pinned Pi 0.99.2 SDK-host compatibility journeys described in
+`docs/testing.md`. The subsequent `dist` step first runs
+`verify:mac-artifacts`: the custom signer signs only Mach-O/fat binaries and
+bundle containers, so unpacked fonts, images, WASM, ELF/PE binaries, and
+`app.asar` remain sealed resources instead of receiving non-portable detached
+xattr signatures. Signed artifacts must verify before and after the exact ZIP
+installer extraction and before and after the DMG payload is copied off its
+mounted image. An unsigned local `dist` may skip this transfer gate, while
+`dist:signed` and `release` fail closed if the app is unsigned. The step then
+runs `verify:packaged-pty` against the completed app. It checks the exact
+eight-package Pi production closure
+(coding-agent, chord, agent-core, pi-ai, codemode, MCP, telemetry, and pi-tui),
 absence of retired client/protocol packages, the modular CLI anchor, exact
-version execution of the bundled CLI, the private llama registry adapter, and native
-PTY paths before the packaged Electron journey; it must not be skipped or
-replaced by a repository-tree smoke.
+version execution of the bundled CLI, the exact four-entry built-in registry
+with its isolated private llama adapter, public codemode/tool-search/MCP
+composition, the packaged Pi/minimatch resolution of `brace-expansion@5.0.12`,
+the packaged Electron framework's exact lock match and minimum safe 43.5.0
+version, and native PTY paths before the packaged Electron journey; it must not
+be skipped or replaced by a repository-tree smoke.
 
 For a pinned-Pi release candidate, retain successful output for this clean
 reproduction sequence before the signed release run:
@@ -131,7 +147,7 @@ manually before publishing:
    newline (not a submit) in the unified editor; Enter submits; a multiline
    paste inserts lines without submitting; session-switch keeps Shift+Enter
    working. The gated spec defaults to the repository-local pinned Pi, rejects
-   any version other than 0.85.1 before launch, and requires provider auth
+   any version other than 0.99.2 before launch, and requires provider auth
    (real API spend). `PIVIS_TEST_PI_BIN` is an explicit alternate-path override,
    not a `PATH` search:
 

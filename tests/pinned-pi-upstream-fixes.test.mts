@@ -54,7 +54,7 @@ const createPersistedSession = (): { root: string; file: string } => {
 const roles = (manager: SessionManager): string[] =>
   manager.getBranch().map((entry) => (entry.type === "message" ? entry.message.role : entry.type));
 
-describe("Pi 0.85.1 upstream regression fixes", () => {
+describe("Pinned Pi upstream regression fixes", () => {
   it.each([
     [
       "unterminated invalid fragment",

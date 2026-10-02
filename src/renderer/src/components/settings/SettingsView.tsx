@@ -595,6 +595,11 @@ function extensionUpdateMessage(status: ExtensionUpdateStatus): string {
   return "All user extensions are up to date";
 }
 
+/** Renderer-only presentation of main's already-redacted auth provenance. */
+export function providerEnvironmentDescription(provider: ProviderAuthStatus): string {
+  return `Managed via ${provider.environmentLabel ?? `${provider.envVar ?? "unknown"} env var`}`;
+}
+
 export function SettingsView({ onClose, initialSection }: SettingsViewProps): React.ReactElement {
   const { settings, update, updateReadingFonts } = useSettingsStore();
   const [localFonts, setLocalFonts] = useState<FontFamily[]>([]);
@@ -1188,7 +1193,9 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                             </button>
                           )}
                           {p.source === "environment" && (
-                            <span className="settings-hint">Managed via {p.envVar} env var</span>
+                            <span className="settings-hint">
+                              {providerEnvironmentDescription(p)}
+                            </span>
                           )}
                         </div>
                       );

@@ -161,6 +161,8 @@ export const ToolExecutionStartEventSchema = z.object({
   toolCallId: z.string(),
   toolName: z.string(),
   args: z.unknown(),
+  /** Present when a tool invokes another tool through ctx.executeTool(). */
+  parentToolCallId: z.string().optional(),
 });
 
 export const ToolExecutionUpdateEventSchema = z.object({
@@ -169,6 +171,7 @@ export const ToolExecutionUpdateEventSchema = z.object({
   toolName: z.string(),
   args: z.unknown(),
   partialResult: z.unknown(),
+  parentToolCallId: z.string().optional(),
 });
 
 export const ToolExecutionEndEventSchema = z.object({
@@ -177,6 +180,7 @@ export const ToolExecutionEndEventSchema = z.object({
   toolName: z.string(),
   result: z.unknown(),
   isError: z.boolean(),
+  parentToolCallId: z.string().optional(),
 });
 
 // queue_update carries pending steering/follow-up message arrays, not position counters
@@ -197,12 +201,12 @@ export const CompactionEndEventSchema = z.object({
   result: z
     .object({
       summary: z.string(),
-      firstKeptEntryId: z.string().optional(),
-      tokensBefore: z.number().optional(),
+      firstKeptEntryId: z.string(),
+      tokensBefore: z.number(),
       estimatedTokensAfter: z.number().optional(),
       usage: PiUsageSchema.optional(),
+      details: z.unknown().optional(),
     })
-    .passthrough()
     .optional(),
   aborted: z.boolean().optional(),
   willRetry: z.boolean().optional(),
@@ -324,6 +328,24 @@ export const CacheMissNoticeEventSchema = z.object({
   afterEntryId: z.string().optional(),
 });
 
+// Pi 0.99 persists successful prompt-cache refreshes as usage entries. The
+// interactive CLI renders them only when showCacheMissNotices is enabled; the
+// SDK host emits this app-owned projection under the same setting.
+export const CacheWarmingNoticeEventSchema = z.object({
+  type: z.literal("cache_warming_notice"),
+  noticeId: z.string(),
+  usage: PiUsageSchema,
+  provider: z.string(),
+  model: z.string(),
+  note: z.string().optional(),
+  afterEntryId: z.string().optional(),
+});
+
+export const CacheNoticeEventSchema = z.discriminatedUnion("type", [
+  CacheMissNoticeEventSchema,
+  CacheWarmingNoticeEventSchema,
+]);
+
 // extension_error uses extensionPath + error, not extensionName + message
 export const ExtensionErrorEventSchema = z.object({
   type: z.literal("extension_error"),
@@ -367,6 +389,7 @@ const KnownPiEventSchema = z.discriminatedUnion("type", [
   ThinkingLevelChangedEventSchema,
   EntryAppendedEventSchema,
   CacheMissNoticeEventSchema,
+  CacheWarmingNoticeEventSchema,
   ExtensionErrorEventSchema,
   SessionInfoChangedEventSchema,
 ]);
@@ -399,4 +422,6 @@ export type CompactionEndEvent = z.infer<typeof CompactionEndEventSchema>;
 export type ThinkingLevelChangedEvent = z.infer<typeof ThinkingLevelChangedEventSchema>;
 export type EntryAppendedEvent = z.infer<typeof EntryAppendedEventSchema>;
 export type CacheMissNoticeEvent = z.infer<typeof CacheMissNoticeEventSchema>;
+export type CacheWarmingNoticeEvent = z.infer<typeof CacheWarmingNoticeEventSchema>;
+export type CacheNoticeEvent = z.infer<typeof CacheNoticeEventSchema>;
 export type SessionInfoChangedEvent = z.infer<typeof SessionInfoChangedEventSchema>;

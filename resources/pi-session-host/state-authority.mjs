@@ -1221,6 +1221,7 @@ export function createStateAuthority({
       retryAttempt: s.retryAttempt,
       isBashRunning: s.isBashRunning,
       model: s.model ?? null,
+      ...(s.routedModel ? { routedModel: structuredClone(s.routedModel) } : {}),
       thinkingLevel: s.thinkingLevel,
       ...(typeof s.getAvailableThinkingLevels === "function"
         ? { availableThinkingLevels: s.getAvailableThinkingLevels() }
@@ -1512,6 +1513,7 @@ export function createStateAuthority({
       dispatchedIntentHighWatermark: dispatchedIntentBounds().high,
       dispatchedIntentTruncated: dispatchedIntentBounds().truncated,
       model: value.model,
+      ...(value.routedModel ? { routedModel: structuredClone(value.routedModel) } : {}),
       thinkingLevel: value.thinkingLevel,
       ...(Array.isArray(value.availableThinkingLevels)
         ? { availableThinkingLevels: value.availableThinkingLevels }
@@ -2591,51 +2593,36 @@ export function createStateAuthority({
             expandPromptTemplates: isSlashCommand,
             source: "interactive",
             streamingBehavior: request.requestedMode,
-            preflightResult: (success) => {
-              if (success) {
-                // For an initially idle admission, an input hook can start a
-                // turn before Pi resumes prompt() and takes its queue branch.
-                // Pi invokes this callback after that append. Preserve the
-                // conservative initial-streaming classification too: the
-                // active turn can settle between Pi's append and this callback.
-                admission.queuedAtAcceptance =
-                  wasStreaming ||
-                  session.isStreaming ||
-                  admission.queueAppendAttributed ||
-                  admission.queueActivityObserved;
-                if (admission.cancelled || admission.escapeGeneration !== escapeGeneration) {
-                  // The requested lane check inside this helper is the public
-                  // proof that there is anything to clear. Do not gate cleanup
-                  // on the stale admission-start streaming observation.
-                  clearLateQueueForCancelledAdmission(admission);
-                  // Pinned Pi invokes this public callback immediately before
-                  // idle _runAgentPrompt(), but after its streaming queue append.
-                  // The late-queue cleanup above uses only public queue APIs.
-                  // Pi then catches this throw, reports false, and rethrows.
-                  throw admission.cancellationError;
-                }
-                admission.crossedAcceptance = true;
-                crossedPreflight = true;
-                // Correlate synchronously at Pi's acceptance boundary. Waiting
-                // for the submit continuation leaves a re-entrant delivery
-                // window where message_start has no queue intent.
-                if (admission.queuedAtAcceptance) {
-                  registerQueuedIntent(
-                    request,
-                    queueLengthBeforePrompt,
-                    queueValuesBeforePrompt,
-                    admission,
-                  );
-                  // Input-handler participation can make the exact text slot
-                  // unprovable even though callback-time streaming proves the
-                  // prompt used Pi's queue path. Retain its original images as
-                  // unpaired ambiguity evidence for a later destructive clear.
-                  rememberAdmissionAttachments(admission);
-                } else {
-                  directDeliveryIntentId = request.intentId;
-                }
+            preflightResult: (disposition) => {
+              if (!["handled", "queued", "started"].includes(disposition)) {
+                throw new Error("Pinned Pi returned an invalid prompt disposition");
               }
-              preflightResolve(success);
+              // Pi 0.99 reports the actual post-hook path. This is stronger
+              // than re-inferring it from an earlier or later isStreaming
+              // sample, which misclassifies handled commands and hook-started
+              // unrelated work as queued GUI input.
+              admission.queuedAtAcceptance = disposition === "queued";
+              if (admission.cancelled || admission.escapeGeneration !== escapeGeneration) {
+                clearLateQueueForCancelledAdmission(admission);
+                throw admission.cancellationError;
+              }
+              admission.crossedAcceptance = true;
+              crossedPreflight = true;
+              // Correlate synchronously at Pi's acceptance boundary. Waiting
+              // for the submit continuation leaves a re-entrant delivery
+              // window where message_start has no queue intent.
+              if (disposition === "queued") {
+                registerQueuedIntent(
+                  request,
+                  queueLengthBeforePrompt,
+                  queueValuesBeforePrompt,
+                  admission,
+                );
+                rememberAdmissionAttachments(admission);
+              } else if (disposition === "started") {
+                directDeliveryIntentId = request.intentId;
+              }
+              preflightResolve(disposition);
             },
           }),
         request.intentId,
@@ -2681,7 +2668,7 @@ export function createStateAuthority({
     const admissionDeadline = new Promise((resolve) => {
       setTimeout(() => resolve("deadline"), 2_000).unref?.();
     });
-    const preflightOutcome = preflight.then((ok) => (ok ? "preflight" : "rejected"));
+    const preflightOutcome = preflight.then((disposition) => `preflight:${disposition}`);
     const promptOutcome = promptPromise.then(
       () => "settled",
       () => "failed",
@@ -2706,7 +2693,12 @@ export function createStateAuthority({
             "Escape fenced prompt admission before delivery; execution outcome is unknown and submitted input was not restored",
         });
       }
-      if (winner === "preflight" && !(admission.queuedAtAcceptance ?? wasStreaming)) {
+      if (winner === "preflight:handled") {
+        // Extension commands and handled input hooks have completed before Pi
+        // reports this disposition and intentionally start no GUI-owned turn.
+        winner = "settled";
+      }
+      if (winner === "preflight:started") {
         let streamingPoll;
         const stateObserved = new Promise((resolve) => {
           const check = () => {
@@ -2732,10 +2724,6 @@ export function createStateAuthority({
           message:
             "Escape fenced prompt admission before delivery; execution outcome is unknown and submitted input was not restored",
         });
-      }
-      if (winner === "rejected") {
-        activeIntents.delete(request.intentId);
-        return resultFor(request, "rejected", { message: "Prompt preflight rejected" });
       }
       if (winner === "failed") {
         try {
@@ -3758,7 +3746,16 @@ export function createStateAuthority({
     );
   }
 
-  function queueRebuildSafety(steering, followUp, excludedIntentId) {
+  function queueReplayHasNoInputHandlers() {
+    if (typeof session.extensionRunner?.hasHandlers !== "function") return false;
+    try {
+      return session.extensionRunner.hasHandlers("input") === false;
+    } catch {
+      return false;
+    }
+  }
+
+  function queueRebuildSafety(steering, followUp, excludedIntentId, replay = true) {
     if (pendingQueueClaims.size > 0) {
       return "A queued prompt is still being admitted; try again once it appears.";
     }
@@ -3796,7 +3793,12 @@ export function createStateAuthority({
     const steeringMessage = inspect("steer", steering, queueIdentity.steer);
     if (steeringMessage) return steeringMessage;
     const followUpMessage = inspect("followUp", followUp, queueIdentity.followUp);
-    return followUpMessage;
+    if (followUpMessage) return followUpMessage;
+    const replayCount = steering.length + followUp.length - (excludesOneIntent ? 1 : 0);
+    if (replay && replayCount > 0 && !queueReplayHasNoInputHandlers()) {
+      return "Input hooks are active, so the pending queue cannot be safely rebuilt.";
+    }
+    return undefined;
   }
 
   function queueManagementAvailability(steering, followUp) {
@@ -3848,9 +3850,9 @@ export function createStateAuthority({
 
   /**
    * Pi's public SDK exposes queue reads and clearQueue(), but no per-item
-   * mutation. Under the strict ownership proof above, clear-and-rebuild is
-   * safe: all queue mutations happen synchronously in this host's JS turn,
-   * so the agent loop cannot consume an intermediate empty/partial queue.
+   * mutation. Under the strict ownership and hook-free proofs above,
+   * clear-and-rebuild is safe only when every public replay is started in the
+   * clearing turn, before any individual asynchronous result is awaited.
    */
   async function manageQueue(intent) {
     const operation = intent.operation;
@@ -3871,7 +3873,14 @@ export function createStateAuthority({
     // target ID cannot be found in an unowned projection. Removal is checked
     // later because its exact target may be excluded from the rebuild proof.
     if (operation !== "remove") {
-      const safetyMessage = queueRebuildSafety(steering, followUp);
+      // Clearing an owned queue does not replay anything through input hooks.
+      // Every other whole-queue mutation must prove replay itself is safe.
+      const safetyMessage = queueRebuildSafety(
+        steering,
+        followUp,
+        undefined,
+        operation !== "clear",
+      );
       if (safetyMessage) {
         return queueManagementResult(operation, {
           ...(intent.targetIntentId ? { targetIntentId: intent.targetIntentId } : {}),
@@ -3967,15 +3976,16 @@ export function createStateAuthority({
         entry.payload.surface,
         () =>
           entry.payload.requestedMode === "steer"
-            ? session.steer(entry.payload.text, entry.payload.images)
-            : session.followUp(entry.payload.text, entry.payload.images),
+            ? session.steer(entry.payload.text, entry.payload.images, { source: "interactive" })
+            : session.followUp(entry.payload.text, entry.payload.images, {
+                source: "interactive",
+              }),
         entry.intentId,
       );
     const queueIds = (entries) => entries.map((entry) => entry.intentId);
     const allCurrentIntentIds = allEntries.map((entry) => entry.intentId);
 
     queueMutationActive = true;
-    let enqueuePromises = [];
     try {
       session.clearQueue();
       if (
@@ -3984,10 +3994,27 @@ export function createStateAuthority({
       ) {
         throw new Error("The SDK did not clear its pending queue");
       }
-      // Call every public enqueue method before awaiting any promise. Their
-      // bodies synchronously push into Pi's queue, preserving the complete
-      // queue before the event loop can run an agent-loop continuation.
-      enqueuePromises = nextEntries.map((entry) => Promise.resolve(enqueue(entry)));
+      // Even with no registered input hooks, Pi 0.99 awaits its asynchronous
+      // input-handler helper before appending each item. Start every public
+      // replay in this JS turn so all append continuations precede an active
+      // agent loop awakened by the first append. Awaiting one replay at a time
+      // would expose a partial rebuilt queue. The hook-free proof above keeps
+      // these concurrent starts ordered; then exact public dispositions prove
+      // that Pi actually restored every item to its requested lane.
+      const replayPromises = nextEntries.map((entry) => {
+        try {
+          return Promise.resolve(enqueue(entry));
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      });
+      const replaySettlements = await Promise.allSettled(replayPromises);
+      for (const settlement of replaySettlements) {
+        if (settlement.status === "rejected") throw settlement.reason;
+        if (settlement.value !== "queued") {
+          throw new Error(`The SDK ${settlement.value} an item while rebuilding its pending queue`);
+        }
+      }
       const steering = [...session.getSteeringMessages()];
       const followUp = [...session.getFollowUpMessages()];
       if (
@@ -4009,21 +4036,6 @@ export function createStateAuthority({
       });
     } finally {
       queueMutationActive = false;
-    }
-
-    try {
-      await Promise.all(enqueuePromises);
-    } catch (error) {
-      // The public methods already changed Pi's queue synchronously, but an
-      // asynchronous rejection means their final semantics are unknown. Keep
-      // the actual queue visible and fence future item-level mutations.
-      resetQueueIdentity();
-      return queueManagementResult(operation, {
-        ...(targetIntentId ? { targetIntentId } : {}),
-        ...(targetQueue ? { queue: targetQueue } : {}),
-        uncertain: true,
-        message: error instanceof Error ? error.message : String(error),
-      });
     }
 
     if (operation === "remove" && targetIntentId) {

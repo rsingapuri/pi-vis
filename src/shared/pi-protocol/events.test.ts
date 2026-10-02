@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BashExecutionEndEventSchema,
   BashTerminalDataEventSchema,
+  CompactionEndEventSchema,
   PiEventSchema,
 } from "./events.js";
 
@@ -43,6 +44,7 @@ describe("PiEventSchema", () => {
         reason: "threshold",
         result: {
           summary: "summary",
+          firstKeptEntryId: "kept-entry",
           tokensBefore: 12_000,
           estimatedTokensAfter: 3_250,
         },
@@ -61,7 +63,12 @@ describe("PiEventSchema", () => {
     expect(
       PiEventSchema.parse({
         type: "compaction_end",
-        result: { summary: "summary", usage },
+        result: {
+          summary: "summary",
+          firstKeptEntryId: "kept-entry",
+          tokensBefore: 12_000,
+          usage,
+        },
       }),
     ).toMatchObject({ result: { usage } });
   });
@@ -80,7 +87,7 @@ describe("PiEventSchema", () => {
     });
   });
 
-  it("preserves Pi 0.85.1 provider thinking, endTurn, and tool-call namespace metadata", () => {
+  it("preserves pinned-Pi provider thinking, endTurn, and tool-call namespace metadata", () => {
     const message = {
       role: "assistant",
       providerThinkingLevel: "high",
@@ -102,6 +109,72 @@ describe("PiEventSchema", () => {
         assistantMessageEvent: { type: "toolcall_end", contentIndex: 0 },
       }),
     ).toMatchObject({ message });
+  });
+
+  it.each(["tool_execution_start", "tool_execution_update", "tool_execution_end"])(
+    "preserves parentToolCallId on nested %s events",
+    (type) => {
+      const common = {
+        type,
+        toolCallId: "child-call",
+        toolName: "read",
+        parentToolCallId: "parent-call",
+        args: { path: "README.md" },
+      };
+      const event =
+        type === "tool_execution_update"
+          ? { ...common, partialResult: { content: [{ type: "text", text: "partial" }] } }
+          : type === "tool_execution_end"
+            ? { ...common, result: { content: [{ type: "text", text: "done" }] }, isError: false }
+            : common;
+
+      expect(PiEventSchema.parse(event)).toMatchObject({
+        type,
+        parentToolCallId: "parent-call",
+      });
+    },
+  );
+
+  it("requires the persisted string boundary on a successful compaction result", () => {
+    const event = {
+      type: "compaction_end" as const,
+      result: {
+        summary: "fresh start",
+        firstKeptEntryId: "compaction-entry-id",
+        tokensBefore: 500,
+        details: { source: "hook" },
+      },
+    };
+
+    expect(CompactionEndEventSchema.parse(event)).toMatchObject(event);
+    expect(
+      CompactionEndEventSchema.safeParse({
+        ...event,
+        result: { ...event.result, firstKeptEntryId: null },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts Pi 0.99 cache-warming projections as known events", () => {
+    expect(
+      PiEventSchema.parse({
+        type: "cache_warming_notice",
+        noticeId: "cache-warm:warm-1",
+        usage,
+        provider: "anthropic",
+        model: "claude-sonnet",
+        note: "extension override",
+        afterEntryId: "assistant-1",
+      }),
+    ).toEqual({
+      type: "cache_warming_notice",
+      noticeId: "cache-warm:warm-1",
+      usage,
+      provider: "anthropic",
+      model: "claude-sonnet",
+      note: "extension override",
+      afterEntryId: "assistant-1",
+    });
   });
 
   it("accepts the complete PTY Shell Turn lifecycle without treating raw bytes as unknown", () => {

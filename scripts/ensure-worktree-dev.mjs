@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyElectronInstallation } from "./postinstall.mjs";
+import { verifyInstalledPiSecurityClosure } from "./verify-pi-security-closure.mjs";
 
 function execGit(args, cwd) {
   return execFileSync("git", args, {
@@ -92,10 +93,35 @@ function verifyWorktreeElectron(root, verifyElectron) {
   }
 }
 
+function piSecurityClosureError(root, error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `[ensure-worktree-dev] Pi security closure is not verified in ${path.join(root, "node_modules")}: ${reason}\nRun \`npm install\` without \`--ignore-scripts\` in that dependency-owning worktree, then retry this command.`,
+    { cause: error },
+  );
+}
+
+function verifyWorktreePiSecurity(root, verifyPiSecurityClosure) {
+  try {
+    return verifyPiSecurityClosure({
+      projectRoot: root,
+      piPackageDirectory: path.join(root, "node_modules", "@earendil-works", "pi-coding-agent"),
+    });
+  } catch (error) {
+    throw piSecurityClosureError(root, error);
+  }
+}
+
+function verifyWorktreeDependencies(root, verifyElectron, verifyPiSecurityClosure) {
+  verifyWorktreeElectron(root, verifyElectron);
+  verifyWorktreePiSecurity(root, verifyPiSecurityClosure);
+}
+
 export function ensureWorktreeDev({
   root = repoRoot(),
   roots = worktreeRoots(root),
   verifyElectron = verifyElectronInstallation,
+  verifyPiSecurityClosure = verifyInstalledPiSecurityClosure,
   log = console.error,
 } = {}) {
   const nodeModules = path.join(root, "node_modules");
@@ -108,7 +134,7 @@ export function ensureWorktreeDev({
       // Electron 43 lazily installs from index.js. This preflight must remain
       // read-only so parallel workers never become competing installers when
       // a local or shared dependency tree skipped its root postinstall.
-      verifyWorktreeElectron(linkedRoot ?? root, verifyElectron);
+      verifyWorktreeDependencies(linkedRoot ?? root, verifyElectron, verifyPiSecurityClosure);
       return { root, dependencyRoot: linkedRoot ?? root, linked: linkedRoot !== undefined };
     }
     fs.rmSync(nodeModules, { force: true });
@@ -134,7 +160,7 @@ export function ensureWorktreeDev({
     }
   }
 
-  let invalidElectronError;
+  let invalidDependencyError;
   const sourceRoot = roots.find((candidate) => {
     if (
       candidate === root ||
@@ -144,15 +170,15 @@ export function ensureWorktreeDev({
       return false;
     }
     try {
-      verifyWorktreeElectron(candidate, verifyElectron);
+      verifyWorktreeDependencies(candidate, verifyElectron, verifyPiSecurityClosure);
       return true;
     } catch (error) {
-      invalidElectronError ??= error;
+      invalidDependencyError ??= error;
       return false;
     }
   });
   if (!sourceRoot) {
-    if (invalidElectronError) throw invalidElectronError;
+    if (invalidDependencyError) throw invalidDependencyError;
     throw new Error(
       "[ensure-worktree-dev] node_modules is missing and no sibling worktree with installed dependencies was found.\n" +
         "Run `npm install` once in this worktree (or in a sibling with the same package-lock.json), then retry this command.",
@@ -171,7 +197,7 @@ export function ensureWorktreeDev({
   // Re-resolve through the new link before returning. This turns a concurrent
   // source removal or incomplete link into the same actionable failure.
   try {
-    verifyWorktreeElectron(root, verifyElectron);
+    verifyWorktreeDependencies(root, verifyElectron, verifyPiSecurityClosure);
   } catch (error) {
     try {
       const currentLink = fs.lstatSync(nodeModules);

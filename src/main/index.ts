@@ -9,6 +9,7 @@ import {
   session,
   shell,
 } from "electron";
+import { installBeforeQuitFence } from "./app-quit.js";
 import {
   appendDiagnostic,
   configureDiagnosticLogging,
@@ -306,6 +307,10 @@ if (!hasSingleInstanceLock) {
   }
 
   app.whenReady().then(() => {
+    // A quit request can arrive while Electron is still becoming ready. The
+    // before-quit fence has already begun the one-way teardown in that case,
+    // so never create a fresh registry/window behind its completed snapshot.
+    if (appQuitting) return;
     if (hideWindowForTests && process.platform === "darwin") {
       app.dock?.hide();
     }
@@ -343,6 +348,7 @@ if (!hasSingleInstanceLock) {
     powerMonitor.on("resume", refreshBackgroundUpdateChecks);
 
     app.on("activate", () => {
+      if (appQuitting) return;
       if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
       }
@@ -355,9 +361,23 @@ if (!hasSingleInstanceLock) {
     }
   });
 
-  app.on("before-quit", () => {
-    appQuitting = true;
-    stopBackgroundUpdateChecks();
-    stopAllSessions();
+  installBeforeQuitFence({
+    app,
+    begin: () => {
+      appQuitting = true;
+      stopBackgroundUpdateChecks();
+    },
+    stop: stopAllSessions,
+    onError: (error) => {
+      appendDiagnostic("main", "quit-drain-error", error);
+    },
+    onTimeout: (timeoutMs) => {
+      appendDiagnostic(
+        "main",
+        "quit-drain-timeout",
+        `Session shutdown did not settle within ${timeoutMs}ms`,
+        { timeoutMs },
+      );
+    },
   });
 }

@@ -6,6 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { patchNodePty } from "./patch-node-pty.mjs";
+import { verifyInstalledPiSecurityClosure } from "./verify-pi-security-closure.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -121,13 +122,18 @@ export function provisionElectron({
 
 export function runPostinstall({
   provisionElectronFn = provisionElectron,
+  verifyPiSecurityClosureFn = verifyInstalledPiSecurityClosure,
   patchNodePtyFn = patchNodePty,
 } = {}) {
   const electron = provisionElectronFn();
+  // The published Pi shrinkwrap pins a vulnerable transitive version. Verify
+  // that npm honored the audited root-lock closure before any later patch can
+  // make a partially provisioned install look usable.
+  const piSecurity = verifyPiSecurityClosureFn();
   // Preserve the exact-version/source fail-closed native patch after Electron
   // provisioning; a successful Electron download must never mask patch drift.
   const nodePty = patchNodePtyFn();
-  return { electron, nodePty };
+  return { electron, piSecurity, nodePty };
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -136,6 +142,9 @@ if (isMain) {
     const result = runPostinstall();
     console.log(
       `[postinstall] Provisioned Electron ${result.electron.version} at ${result.electron.binaryPath}`,
+    );
+    console.log(
+      `[postinstall] Verified Pi security closure with brace-expansion@${result.piSecurity.braceExpansionVersion}`,
     );
     console.log(
       `[postinstall] ${result.nodePty.changed ? "Patched" : "Verified"} node-pty at ${result.nodePty.packageDirectory}`,

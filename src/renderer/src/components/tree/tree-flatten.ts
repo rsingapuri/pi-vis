@@ -350,6 +350,10 @@ export function passesFilter(
   const entry = node.entry;
   const isCurrentLeaf = entry.id === leafId;
 
+  // Billing-only usage rows are never navigation targets, even in Pi's
+  // explicit "all" filter.
+  if (entry.type === "usage") return false;
+
   // Hide content-less assistant turns (tool-call-only) unless they're the
   // current leaf or carry an error/abort — same as pi.
   if (entry.type === "message") {
@@ -366,6 +370,7 @@ export function passesFilter(
 
   const isSettingsEntry =
     entry.type === "label" ||
+    entry.type === "context_edit" ||
     entry.type === "custom" ||
     entry.type === "model_change" ||
     entry.type === "thinking_level_change" ||
@@ -550,6 +555,10 @@ export function entryDisplayText(
       return `[thinking: ${(entry as { thinkingLevel?: string }).thinkingLevel ?? "?"}]`;
     case "custom":
       return `[custom: ${(entry as { customType?: string }).customType ?? "?"}]`;
+    case "context_edit": {
+      const edit = entry as { targetId?: string; replacement?: unknown };
+      return `[context ${edit.replacement === null ? "omit" : "replace"}: ${edit.targetId ?? "?"}]`;
+    }
     case "custom_message": {
       const c = (entry as { content?: unknown; customType?: string }).content;
       return `[${(entry as { customType?: string }).customType ?? "custom"}]: ${oneLine(extractContent(c))}`;

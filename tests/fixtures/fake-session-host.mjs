@@ -1276,12 +1276,13 @@ async function handleCommand(id, command) {
       runtimeCompacting = false;
       completeOperation("compaction", operationToken);
       const summary = `Compacted ${userMessagesForForking.length} messages`;
-      appendEntry({ type: "compaction", summary, reason: "manual", tokensBefore: 1000 });
+      const firstKeptEntryId = lastEntryId ?? sessionId;
+      appendEntry({ type: "compaction", summary, firstKeptEntryId, tokensBefore: 1000 });
       logOperation("persisted", { kind: "compaction", token: operationToken, summary });
       emitEvent({
         type: "compaction_end",
         reason: "manual",
-        result: { summary, tokensBefore: 1000 },
+        result: { summary, firstKeptEntryId, tokensBefore: 1000 },
       });
       reply(id, true, { summary, cancelled: false, tokensBefore: 1000, tokensAfter: 200 });
       publishSnapshot();

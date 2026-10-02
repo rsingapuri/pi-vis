@@ -42,6 +42,8 @@ export class FakeHostProcess extends EventEmitter {
   killed = false;
   /** Set on exit(); tests can read for assertion. */
   exitCode = null;
+  /** Signal recorded on process exit; real ChildProcess initializes this to null. */
+  signalCode = null;
   /** Signal passed to kill(). */
   killSignal = undefined;
   pid = 42_000 + Math.floor(Math.random() * 1000);
@@ -59,6 +61,7 @@ export class FakeHostProcess extends EventEmitter {
   stderr = new EventEmitter();
   stdin = new EventEmitter();
   connected = true;
+  disconnectCalls = 0;
   hostInstanceId = crypto.randomUUID();
   transportSequence = 0;
   sessionEpoch = 0;
@@ -344,10 +347,28 @@ export class FakeHostProcess extends EventEmitter {
   }
 
   /** Emit the process "exit" event (SessionHost treats it as host death). */
-  emitExit(code) {
+  emitExit(code, signal = null) {
     this.exitCode = code;
+    this.signalCode = signal;
     this.connected = false; // IPC channel closes on exit (post-exit send fails)
-    this.emit("exit", code, null);
+    this.emit("exit", code, signal);
+  }
+
+  /**
+   * Emulate planned parent-side IPC shutdown. The real SDK host receives its
+   * `disconnect` event, disposes the runtime, and exits cleanly; this fake
+   * settles that lifecycle on the next microtask.
+   */
+  disconnect() {
+    if (!this.connected) throw new Error("Host process IPC channel closed");
+    this.disconnectCalls++;
+    this.connected = false;
+    this.emit("disconnect");
+    queueMicrotask(() => {
+      if (this.exitCode !== null) return;
+      this.exitCode = 0;
+      this.emit("exit", 0, null);
+    });
   }
 
   /**
@@ -364,6 +385,7 @@ export class FakeHostProcess extends EventEmitter {
     // delay keeps ordering realistic without hanging a test.
     queueMicrotask(() => {
       this.exitCode = 128 + 15; // SIGTERM convention
+      this.signalCode = this.killSignal;
       this.connected = false; // IPC channel closes on exit
       this.emit("exit", this.exitCode, this.killSignal);
     });

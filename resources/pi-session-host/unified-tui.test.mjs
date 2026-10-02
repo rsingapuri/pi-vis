@@ -30,7 +30,7 @@ import { importPi, importPiTui, initHostTheme } from "./bootstrap.mjs";
 import { buildEditorTheme } from "./editor-theme.mjs";
 import { createUIContext } from "./ui-context.mjs";
 
-const PINNED_PI_VERSION = "0.85.1";
+const PINNED_PI_VERSION = "0.99.2";
 const REPOSITORY_PINNED_PI_CLI = fileURLToPath(
   new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/cli.js", import.meta.url),
 );

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AgentSessionSnapshotSchema,
   AuthorityAttachBaselineSchema,
   AuthorityAttachResponseSchema,
   AuthorityCursorSchema,
@@ -116,6 +117,55 @@ describe("session runtime resume state", () => {
         thinkingLevel: "extreme",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("Pi 0.99 virtual-model routing state", () => {
+  const routedModel = {
+    model: { id: "claude-sonnet", name: "Claude Sonnet", provider: "anthropic" },
+    thinkingLevel: "high",
+  } as const;
+
+  it("preserves the selected virtual model and its latest physical route", () => {
+    expect(
+      SemanticSnapshotSchema.parse(
+        snapshot({
+          model: { id: "auto", name: "Auto", provider: "router", api: "pi-virtual" },
+          routedModel,
+        }),
+      ).routedModel,
+    ).toEqual(routedModel);
+
+    expect(
+      AgentSessionSnapshotSchema.safeParse({
+        hostInstanceId: "host-a",
+        sessionEpoch: 4,
+        snapshotSequence: 1,
+        capturedAt: 1,
+        isStreaming: false,
+        isIdle: true,
+        isCompacting: false,
+        isRetrying: false,
+        retryAttempt: 0,
+        isBashRunning: false,
+        model: { id: "auto", provider: "router", api: "pi-virtual" },
+        routedModel,
+        thinkingLevel: "medium",
+        sessionId: "session-a",
+        pendingMessageCount: 0,
+        steering: [],
+        followUp: [],
+        hostFacts: {
+          submitting: false,
+          actualCompaction: false,
+          navigation: false,
+          pendingDialogs: 0,
+          custodyCount: 0,
+        },
+        catalog: {},
+        editor: { revision: 0, text: "", attachments: [] },
+      }).success,
+    ).toBe(true);
   });
 });
 

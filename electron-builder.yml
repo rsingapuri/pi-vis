@@ -31,6 +31,12 @@ asarUnpack:
   - out/main/extension-update-worker.js
   - out/main/chunks/**
 mac:
+  # @electron/osx-sign's default walker signs every file that looks binary,
+  # including unpacked fonts, images, WASM, ELF, and app.asar. Those detached
+  # xattr signatures are lost when a user copies the app or extracts the ZIP,
+  # invalidating the outer bundle. The custom hook signs only real Mach-O/fat
+  # code and bundle containers, so signatures remain portable.
+  sign: ./scripts/mac-sign.mjs
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:

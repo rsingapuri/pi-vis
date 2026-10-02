@@ -93,7 +93,14 @@ describe("ContextLoader", () => {
   it("centers the exact repeated occurrence with bounded pre-compaction ancestry", async () => {
     const fixture = await corpus([
       message("one", undefined, "user", "before compaction"),
-      { type: "compaction", id: "compact", parentId: "one", summary: "summary" },
+      {
+        type: "compaction",
+        id: "compact",
+        parentId: "one",
+        summary: "summary",
+        firstKeptEntryId: "one",
+        tokensBefore: 500,
+      },
       message("two", "compact", "assistant", "repeat phrase and repeat phrase"),
       message("three", "two", "assistant", "following"),
     ]);

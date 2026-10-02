@@ -213,6 +213,13 @@ export class HostRequestTransportFencedError extends HostRequestUnavailableError
 
 // Maximum time to wait for host to start
 const STARTUP_TIMEOUT_MS = 60_000;
+// The child owns durable session cleanup and starts a four-second fallback exit
+// when its IPC channel closes (long enough for Pi's bounded MCP stdio teardown).
+// Give that lifecycle path a small margin before escalating to process signals,
+// then retain a final hard-kill bound for a genuinely wedged native dependency
+// or extension.
+const GRACEFUL_DISCONNECT_TIMEOUT_MS = 4_500;
+const SIGTERM_TIMEOUT_MS = 3_000;
 
 /**
  * Runtime type guard for structural test doubles and the active SDK host.
@@ -551,6 +558,7 @@ export class SessionHost extends EventEmitter {
 
     this.proc.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
       this.faultInjector.dispose();
+      this.clearShutdownTimers();
       this.exitCode = code;
       this.versionTooLow = code === 42;
       if (this.startupTimer) {
@@ -1949,10 +1957,56 @@ export class SessionHost extends EventEmitter {
     );
   }
 
+  private shutdownRequested = false;
+  private stopPromise: Promise<void> | null = null;
+  private terminateTimer: ReturnType<typeof setTimeout> | null = null;
   private killTimer: ReturnType<typeof setTimeout> | null = null;
 
-  stop(): void {
-    if (this.killTimer) return;
+  private clearShutdownTimers(): void {
+    if (this.terminateTimer) {
+      clearTimeout(this.terminateTimer);
+      this.terminateTimer = null;
+    }
+    if (this.killTimer) {
+      clearTimeout(this.killTimer);
+      this.killTimer = null;
+    }
+  }
+
+  private terminateAfterGracefulDisconnect(): void {
+    if (this.proc.exitCode !== null || this.proc.signalCode !== null) return;
+    appendDiagnostic("session-host", "shutdown-escalation", undefined, {
+      pid: this.proc.pid,
+      sessionFile: this.sessionFile,
+      signal: "SIGTERM",
+      reason: "graceful-disconnect-timeout",
+    });
+    this.proc.kill("SIGTERM");
+    this.killTimer = setTimeout(() => {
+      // child.killed only means a signal was sent, not that the process exited.
+      // Escalate whenever the child still has neither an exit code nor an exit
+      // signal after both bounded graceful phases.
+      if (this.proc.exitCode === null && this.proc.signalCode === null) {
+        appendDiagnostic("session-host", "shutdown-escalation", undefined, {
+          pid: this.proc.pid,
+          sessionFile: this.sessionFile,
+          signal: "SIGKILL",
+          reason: "sigterm-timeout",
+        });
+        this.proc.kill("SIGKILL");
+      }
+    }, SIGTERM_TIMEOUT_MS);
+    this.killTimer.unref?.();
+  }
+
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise =
+      this.proc.exitCode !== null || this.proc.signalCode !== null
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => this.proc.once("exit", () => resolve()));
+    if (this.shutdownRequested) return this.stopPromise;
+    this.shutdownRequested = true;
     this.faultInjector.dispose();
     // Clear startup/dialog timers so a pending waitForReady doesn't fire its
     // timeout after an explicit stop (and so the timers don't leak).
@@ -1964,22 +2018,44 @@ export class SessionHost extends EventEmitter {
       clearTimeout(this.dialogTimer);
       this.dialogTimer = null;
     }
-    this.proc.kill("SIGTERM");
-    this.killTimer = setTimeout(() => {
-      // child.killed only means a signal was sent, not that the process exited.
-      // Escalate whenever the child still has neither an exit code nor an exit
-      // signal after the grace period.
-      if (this.proc.exitCode === null && this.proc.signalCode === null) {
-        this.proc.kill("SIGKILL");
-      }
-    }, 3000);
-    this.killTimer.unref?.();
-    this.proc.once("exit", () => {
-      if (this.killTimer) {
-        clearTimeout(this.killTimer);
-        this.killTimer = null;
-      }
+    if (this.controlWatchdog) {
+      clearInterval(this.controlWatchdog);
+      this.controlWatchdog = null;
+    }
+
+    appendDiagnostic("session-host", "shutdown-requested", undefined, {
+      pid: this.proc.pid,
+      sessionFile: this.sessionFile,
+      transport: this.proc.connected ? "ipc-disconnect" : "signal",
     });
+
+    if (this.proc.exitCode !== null || this.proc.signalCode !== null) return this.stopPromise;
+
+    // host.mjs performs its durable runtime/session cleanup on IPC disconnect.
+    // Sending SIGTERM first bypasses that handler; signal-exit listeners from
+    // extensions can then keep the child alive until our old three-second
+    // SIGKILL timer fires. Close IPC first so normal planned teardown follows
+    // the same cleanup contract as parent exit.
+    if (this.proc.connected && typeof this.proc.disconnect === "function") {
+      try {
+        this.proc.disconnect();
+        if (this.proc.exitCode !== null || this.proc.signalCode !== null) return this.stopPromise;
+        this.terminateTimer = setTimeout(
+          () => this.terminateAfterGracefulDisconnect(),
+          GRACEFUL_DISCONNECT_TIMEOUT_MS,
+        );
+        this.terminateTimer.unref?.();
+        return this.stopPromise;
+      } catch (error) {
+        appendDiagnostic("session-host", "shutdown-disconnect-error", error, {
+          pid: this.proc.pid,
+          sessionFile: this.sessionFile,
+        });
+      }
+    }
+
+    this.terminateAfterGracefulDisconnect();
+    return this.stopPromise;
   }
 
   private rejectAllPending(err: Error): void {
